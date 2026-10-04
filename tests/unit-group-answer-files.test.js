@@ -164,6 +164,8 @@ function answerCardRendering() {
   const render = require('node:vm').runInNewContext('(' + fnSrc + ')', {
     require: p => p === './groupchat-journal' ? require('../renderer/groupchat-journal') : p === './conversation-message-view' ? { renderMessageBody: t => `<p>${esc(t)}</p>` } : require(p),
     escapeHtml: esc, sessions: new Map(), _renderMarkdown: t => t, _activeMeetingCwd: () => '', _formatGroupChatTime: () => '', _renderGroupAvatar: () => '',
+    // 编排群的标签与按钮由 renderer/orchestration-ui.js 提供；普通群聊下它们都返回空。
+    OrchUI: { roleBadge: () => '', peek: () => '', cardActions: () => '', defaultMinimized: () => false }, _orchLatestCardId: '',
   });
   const meeting = { id: 'g', groupChat: true }, members = { s: { slotIndex: 0, kind: 'claude', displayLabel: 'Claude 1' } };
   const old = render({ id: 'a1-m1', sid: 's', role: 'assistant', content: '升级前的历史回答' }, meeting, members);

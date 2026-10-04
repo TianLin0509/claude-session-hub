@@ -2968,6 +2968,12 @@ class SessionManager extends EventEmitter {
     });
   }
 
+  // 只读：CLI hook 报告的本轮是否仍在进行（AI 编排模式据此决定何时投递通知）。
+  isAgentTurnActive(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return !!(s && s.agentTurnActive);
+  }
+
   noteAgentTurnFinished(sessionId, event = {}) {
     const s = this.sessions.get(sessionId);
     if (!s || !s.agentTurnActive) return false;

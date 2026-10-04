@@ -1460,6 +1460,7 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
 
 const { addMeetingSubInternal } = registerMeetingCreateIpc(ipcMain, {
   fs,
+  getOrchestrationService: () => global.__orchestrationService || null,
   getHookPort: () => hookPort,
   getHubDataDir,
   getMeetingWorkspaceDir,
@@ -1599,6 +1600,7 @@ try {
       const attempt=matches[0];return {attempt,sourceCompletedAt:orch.state.devChatHistory?.receipts?.[attempt.attemptId]?.sourceCompletedAt};
     },
     sendToRenderer,
+    onStatus: id => global.__orchestrationService?.onDeliveryStatus(id),
   });
   global.__deliveryEngine.registerIpc(ipcMain);
   global.__deliveryEngine.startWatching();
@@ -1817,6 +1819,7 @@ try {
 // Group chat cards come from members' Markdown answer files (2026-09-30).
 const answerFileMonitor = require('./main/groupchat/answer-file-monitor').createAnswerFileMonitor({
   getHubDataDir, meetingManager, sendToRenderer, logger: console,
+  onChanged: (id, orch) => global.__orchestrationService?.onAnswersChanged(id, orch),
   getOrchestrator: id => groupchat.getOrchestrator(getHubDataDir(), id),
 });
 answerFileMonitor.start();
@@ -1886,6 +1889,10 @@ const resumeSession = createResumeSessionHandler({
     assistantService.requireAssistantResume(meta);
     await assistantService.connectBridge();
     return assistantService.getLaunchOptions(meta.kind, meta.hubId);
+  },
+  prepareOrchestratorResume: meta => {
+    if (!global.__orchestrationService) throw new Error('AI 编排服务尚未就绪，编排员暂不能恢复');
+    return global.__orchestrationService.resumeOptions(meta);
   },
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutBySid,
@@ -2006,6 +2013,20 @@ try {
   assistantService.startWatching();
   phoneService = require('./main/ipc/phone-handlers').registerPhoneIpc(ipcMain, assistantService, {dataDir:getHubDataDir(),electron:require('electron')});
 } catch (error) { console.error('[assistant] service unavailable:', error.message); }
+// AI 编排模式（2026-10-04）：编排员通过 hub_orchestrator 工具驱动群聊与交付工作流。
+try {
+  global.__orchestrationService = require('./main/orchestration/service').createOrchestrationService({
+    meetingManager, sessionManager, getHubDataDir, sendToRenderer, logger: console,
+    getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    getDeliveryEngine: () => global.__deliveryEngine,
+    getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
+    addMeetingSubInternal,
+    ensureMemberReady: (meeting, memberId) => global.__loopEngine?.ensureMemberReady(meeting, memberId),
+    getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
+  });
+  require('./main/ipc/orchestration-handlers').registerOrchestrationIpc(ipcMain, () => global.__orchestrationService);
+  global.__orchestrationService.start().catch(error => console.error('[orchestration] start failed:', error.message));
+} catch (error) { console.error('[orchestration] service unavailable:', error.message); }
 // 原生 Claude 额度看门狗。同样依赖 sendToPty 的 _deps，所以排在这之后。
 claudeQuotaResume.start();
 registerClaudeQuotaIpc(ipcMain, claudeQuotaResume);
@@ -3577,6 +3598,7 @@ async function runFinalShutdownCleanup() {
   capture('terminal-output-batcher', () => terminalOutputBatcher.dispose({ flush: true }));
   capture('dev-workbench', () => devWorkbench?.dispose());
   capture('hub-assistant', () => assistantService?.close());
+  capture('hub-orchestration', () => global.__orchestrationService?.stop());
   capture('hub-phone', () => phoneService?.close());
   clearTimeout(sessionSearchPrewarmTimer);
   const workerResults = await Promise.allSettled([
@@ -3687,6 +3709,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
 
   shutdownDrainState = 'draining';
   global.__deliveryEngine?.freeze();
+  global.__orchestrationService?.freeze();
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
   // Freeze Agent League dispatch before SessionManager starts terminating PTYs.
   // Active tasks remain durable/orphan-recoverable and the phase lease is only
@@ -3703,7 +3726,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
         shutdownDrainPromise = null;
         console.error('[shutdown] PTY drain did not reach a safe state; close was cancelled and may be retried', result);
         restoreWindowAfterFailedShutdown();
-        global.__deliveryEngine?.startWatching();
+        global.__deliveryEngine?.startWatching(); global.__orchestrationService?.unfreeze();
         return result;
       }
       closeHookServerForShutdown();
@@ -3727,7 +3750,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
       shutdownDrainPromise = null;
       console.error('[shutdown] PTY drain failed; refusing unsafe Electron teardown:', error && error.stack || error);
       restoreWindowAfterFailedShutdown();
-      global.__deliveryEngine?.startWatching();
+      global.__deliveryEngine?.startWatching(); global.__orchestrationService?.unfreeze();
       return { safeToQuit: false, error: error && error.message ? error.message : String(error) };
     });
   return shutdownDrainPromise;

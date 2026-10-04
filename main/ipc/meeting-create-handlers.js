@@ -274,8 +274,16 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     //   require('../../core/community-provider').assertProviderAvailable(slot && slot.kind);
     // }
     // @community-end
-    if (safe.serialWorkflow?.soloDevelopment || safe.serialWorkflow?.templateId === 'dev-task-solo'
-      || (safe.mode === 'dev' && (!Array.isArray(devSlots) || devSlots.length < 2))) {
+    // AI 编排模式：首位成员是编排员，其余成员可以没有（编排员按计划自己组队）。
+    const orchestration = safe.orchestration && safe.orchestration.enabled === true ? safe.orchestration : null;
+    const orchestrationService = orchestration && typeof deps.getOrchestrationService === 'function' ? deps.getOrchestrationService() : null;
+    if (orchestration && !orchestrationService) throw new Error('AI 编排服务尚未就绪，请稍后再建群');
+    if (orchestration) {
+      safe.orchestration = { enabled: true, settings: orchestration.settings || {} };
+      safe.serialWorkflow = null;
+    } else delete safe.orchestration;
+    if (!orchestration && (safe.serialWorkflow?.soloDevelopment || safe.serialWorkflow?.templateId === 'dev-task-solo'
+      || (safe.mode === 'dev' && (!Array.isArray(devSlots) || devSlots.length < 2)))) {
       throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
     }
     const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
@@ -300,7 +308,8 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     }
     // Initialization only: adding each session below otherwise selects every new member.
     // Existing rooms and later add-meeting-sub calls keep their own selection behavior.
-    const devParticipants = safe.mode === 'dev'
+    const devParticipants = orchestration ? [0]
+      : safe.mode === 'dev'
       ? (Array.isArray(safe.participants) ? safe.participants.slice() : [safe.slotSpecs?.[0]?.index ?? 0])
       : null;
     if (devParticipants) safe.participants = devParticipants.slice();
@@ -308,12 +317,13 @@ function registerMeetingCreateIpc(ipcMain, deps) {
 
     if (Array.isArray(safe.slots) && safe.slots.length > 0) {
       const errors = [];
-      for (const slot of safe.slots) {
+      for (const [slotIndex, slot] of safe.slots.entries()) {
         try {
+          const orchestratorOpts = orchestration && slotIndex === 0 ? orchestrationService.launchOptions(slot.kind) : null;
           await addMeetingSubInternal(
             meeting.id,
             slot.kind,
-            sessionOptionsForMeetingSlot(slot, safe.workspace),
+            { ...sessionOptionsForMeetingSlot(slot, safe.workspace), ...(orchestratorOpts || {}) },
           );
         } catch (err) {
           errors.push({ slot, message: err && err.message || String(err) });
@@ -330,10 +340,21 @@ function registerMeetingCreateIpc(ipcMain, deps) {
         throw new Error('所有子会话创建失败：\n' + (detail || '（未知原因）'));
       }
       meetingManager.setSlotSpecs(meeting.id, safe.slotSpecs);
-      if (errors.length > 0) {
-        sendToRenderer('meeting-created-with-errors', { meeting: finalMeeting, errors });
+      if (orchestration) {
+        try { orchestrationService.onMeetingCreated(meeting.id); }
+        catch (err) {
+          for (const sid of (meetingManager.getMeeting(meeting.id)?.subSessions || [])) { try { deps.sessionManager.closeSession(sid); } catch {} }
+          try { meetingManager.closeMeeting(meeting.id); } catch {}
+          try { groupchat.cleanup?.(getHubDataDir(), meeting.id); } catch {}
+          const detail = errors.map(er => `${er.slot.kind}：${er.message}`).join('；');
+          throw new Error('编排员没有创建成功：' + (detail || err.message));
+        }
       }
-      sendToRenderer('meeting-created', { meeting: finalMeeting });
+      if (errors.length > 0) {
+        sendToRenderer('meeting-created-with-errors', { meeting: meetingManager.getMeeting(meeting.id) || finalMeeting, errors });
+      }
+      // 取最新：编排群在上面登记了编排员身份。
+      sendToRenderer('meeting-created', { meeting: meetingManager.getMeeting(meeting.id) || finalMeeting });
     } else {
       sendToRenderer('meeting-created', { meeting });
     }

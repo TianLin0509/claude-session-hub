@@ -291,6 +291,8 @@ function buildSystemPromptText(displayName, scene, opts = {}) {
     parts.push('', RESEARCH_SCENE_PROMPT, '', COMMITTEE_DISCIPLINE);
   }
   // @community-end
+  // AI 编排模式：编排员守则或成员说明（只随首次系统规则发送）。
+  if (typeof opts.extraRules === 'string' && opts.extraRules.trim()) parts.push('', opts.extraRules.trim());
   return parts.join('\n');
 }
 

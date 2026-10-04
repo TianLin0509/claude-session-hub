@@ -67,6 +67,27 @@ if (typeof document !== 'undefined') (function () {
   const GroupAnswers = require('../core/group-answer-files.js');
   const Delivery = require('../core/delivery-workflow.js');
   const DeliveryControls = require('./delivery-workflow-controls.js');
+  const OrchUI = require('./orchestration-ui.js');
+  let _orchLatestCardId = '';
+  // 编排群：把一段文字填进输入框末尾并聚焦（「我要修改」「调整目标」）。
+  function _orchFocusInput(prefix) {
+    const box = document.getElementById('mr-input-box');
+    const m = meetingData[activeMeetingId];
+    if (!box || !m) return;
+    const current = box.innerText.trim();
+    _renderComposerRaw(box, current ? current : prefix);
+    _setInputDraft(m.id, box.innerText);
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.focus();
+    const range = document.createRange(); range.selectNodeContents(box); range.collapse(false);
+    const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+  }
+  OrchUI.init(meetingId => {
+    const m = meetingData[meetingId];
+    if (!m || activeMeetingId !== meetingId) return;
+    _updateInputPreflight(m);
+    void refreshGroupChatPanel(m);
+  });
   const Recipients = require('../core/groupchat-recipients.js');
   const SourceFinal = require('../core/groupchat-source-final.js');
   const _devFileStates = {}, _devFileRequests = new Set();
@@ -2522,11 +2543,12 @@ if (typeof document !== 'undefined') (function () {
     const resend = message.sid ? `<button type="button" class="mr-gc-retry-btn${text.trim() ? '' : ' is-failure'}" data-gc-resend-member="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="把本轮问题重新发给这位成员；它写好回答文件后卡片自动更新">重新发送</button>` : '';
     const unread = !!text.trim() && answer?.state !== 'draft';
     return `
-      <article ${journal.attributes(meeting, message, escapeHtml)} class="mr-gc-msg ai${slot ? ` slot-${(slot.slotIndex || 0) + 1}` : ''}${text.trim() ? '' : ' answer-missing'}" data-gc-msg-id="${escapeHtml(message.id || '')}" data-user-question="false" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${unread}" data-phase="message" data-answer-state="${escapeHtml(answer ? answer.state : 'none')}">
+      <article ${journal.attributes(meeting, message, escapeHtml, { defaultMinimized: OrchUI.defaultMinimized(meeting, message) })} class="mr-gc-msg ai${slot ? ` slot-${(slot.slotIndex || 0) + 1}` : ''}${text.trim() ? '' : ' answer-missing'}" data-gc-msg-id="${escapeHtml(message.id || '')}" data-user-question="false" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${unread}" data-phase="message" data-answer-state="${escapeHtml(answer ? answer.state : 'none')}">
         ${_renderGroupAvatar(slot, false)}
         <div class="mr-gc-msg-body">
-          <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${journal.actions({ copy, prompt, retry: text.trim() ? resend : '', submit: text.trim() ? '' : resend, minimize: true })}</div>
+          <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${OrchUI.roleBadge(meeting, message, escapeHtml)}${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${OrchUI.peek(meeting, message, escapeHtml)}${journal.actions({ copy, prompt, retry: text.trim() ? resend : '', submit: text.trim() ? '' : resend, minimize: true })}</div>
           <div class="mr-gc-bubble-row"><div class="mr-gc-bubble"><div class="gc-journal-reading">${journal.disclosure()}<div class="gc-journal-text">${body}</div></div></div></div>
+          ${OrchUI.cardActions(meeting, message, _orchLatestCardId)}
         </div>
       </article>`;
   }
@@ -2550,7 +2572,7 @@ if (typeof document !== 'undefined') (function () {
     const isUser = message.role === 'user';
     const slot = isUser ? null : memberBySid[message.sid];
     const slotCls = slot ? ` slot-${(slot.slotIndex || 0) + 1}` : '';
-    const label = isUser ? (isDispatchCard(message)?'工作流':'我') : (message.speaker || (slot && slot.displayLabel) || 'AI');
+    const label = isUser ? (isDispatchCard(message)?(OrchUI.dispatchLabel(message) || '工作流'):'我') : (message.speaker || (slot && slot.displayLabel) || 'AI');
     // 投委会发言（committeeAct）：幕次 badge + 气泡左侧色条标识（折叠交给通用「长回答折叠」，不重复做）
     const cAct = message.committeeAct || '';
     let actBadge = '';
@@ -2645,6 +2667,11 @@ if (typeof document !== 'undefined') (function () {
         : status === 'absent' ? '本轮已跳过该 AI，无回答。'
         : '本轮未提取到内容。点「同步」从 transcript 重新提取。';
       body = `<div class="mr-gc-md mr-gc-empty-placeholder">${escapeHtml(ph)}</div>`;
+    } else if (isUser && isDispatchCard(message) && OrchUI.dispatchLabel(message)) {
+      // 编排群：Hub 给编排员的通知、编排员派给成员的问题，默认折叠，点开看原文。
+      const notice = message.dispatch.kind === 'orch-notice';
+      const firstLine = String(contentStr || '').split(/\r?\n/).map(s => s.trim()).find(s => s && s !== '【Hub 通知】') || '';
+      body = `<details class="mr-gc-dispatch-details mr-orch-dispatch"><summary>${escapeHtml(notice ? 'Hub 通知编排员：' : '编排员派给 ' + (message.dispatch.toLabels || []).join('、') + '：')}${escapeHtml(firstLine.replace(/^-\s*/, '').slice(0, 90))}</summary><div class="mr-gc-md conversation-user-text">${escapeHtml(contentStr || '')}</div></details>`;
     } else if (isUser && isDispatchCard(message) && message.dispatch?.kind==='delivery') {
       body=require('./delivery-dispatch-view').render(message,escapeHtml);
     } else if (isUser && isDispatchCard(message)) {
@@ -2840,6 +2867,7 @@ if (typeof document !== 'undefined') (function () {
       }
     }
     const _collapsedSet = _gcCollapsedActs[meeting.id] || (_gcCollapsedActs[meeting.id] = new Set());
+    _orchLatestCardId = OrchUI.enabled(meeting) ? OrchUI.latestOrchestratorMessageId(meeting, renderMessages) : '';
     const messageHtml = renderMessages.map(m => {
       let sep = '';
       const actKey = (m && m.committeeAct) ? `${m.committeeAct}#${m.committeeRound || ''}` : null;
@@ -3874,6 +3902,7 @@ if (typeof document !== 'undefined') (function () {
   async function _handleGcPanelClick(ev, panel) {
     const meeting = _currentGcPanelMeeting(panel);
     if (!meeting) return;
+    if (OrchUI.handleCardClick(ev, meeting, { onError: message => _showGcEscapeNotice(message, 'error'), focusInput: _orchFocusInput })) return;
     const bubble = _closestInPanel(ev.target, '.mr-gc-msg[data-unread-answer="true"] .mr-gc-bubble', panel);
     if (bubble && !_gcViewingTurnN[meeting.id] && document.hasFocus() && !document.hidden) {
       const article = bubble.closest('[data-source-sid]');
@@ -5607,6 +5636,11 @@ if (typeof document !== 'undefined') (function () {
       return;
     }
     row.style.display = '';
+    if (OrchUI.enabled(current)) {
+      OrchUI.renderStrip(row, current, { escapeHtml, onError: message => _showGcEscapeNotice(message, 'error'), focusInput: _orchFocusInput });
+      _updateInputHistoryButton(current);
+      return;
+    }
     if (Delivery.enabled(current) && current.serialWorkflow.enabled) {
       DeliveryControls.render(row,current,id=>{if(activeMeetingId===id)_updateInputPreflight(meetingData[id]);},message=>_showGcEscapeNotice(message,'error'));
       _updateInputHistoryButton(current);
@@ -6479,7 +6513,7 @@ if (typeof document !== 'undefined') (function () {
 
     el.innerHTML = `
       <div class="mr-header-left">
-        <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
+        <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>${OrchUI.headerTag(meeting)}
         <span class="mr-header-meta" id="mr-header-meta"></span>
         ${meeting.workspace ? `<button type="button" class="mr-workspace-chip" id="mr-workspace-chip" title="在文件管理中打开 · ${escapeHtml(meeting.workspace)}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/></svg><span>${meeting.workspaceLabel ? `${escapeHtml(meeting.workspaceLabel)} · ` : ''}${escapeHtml(meeting.workspace)}</span></button>` : ''}
       </div>
@@ -7285,6 +7319,7 @@ if (typeof document !== 'undefined') (function () {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }
     if(Delivery.enabled(meeting))inputBox.dataset.placeholder='输入任务，Hub 按工作流安排各步骤成员推进；运行中可补充要求，暂停后点上方「继续」';
+    if(OrchUI.active(meeting))inputBox.dataset.placeholder='发给编排员：说目标、改要求或问进展（@成员 可直接点名）';
     // 灰态：readonly + class 切换
     if (isFreeZeroSelected) {
       inputBox.setAttribute('readonly', '');
@@ -7411,6 +7446,14 @@ if (typeof document !== 'undefined') (function () {
     // 而不是往输入框里塞文本再模拟点击。
     // 开发群聊处于讨论阶段时，循环配置虽然在，也只走普通群聊 —— 这是「先讨论再开工」的全部机制。
     function _dispatchMeetingInput(m, finalText, heroIdBySid, recipientSids=Recipients.selectedSids(m)) {
+      // AI 编排模式：默认只发给编排员；@成员 时直接发给被点名的成员并抄送编排员。
+      if (OrchUI.active(m)) {
+        const route = OrchUI.resolveRecipients(m, finalText, sid => (typeof sessions !== 'undefined' && sessions.get(sid)?.title) || '');
+        if (!route.sids.length) { _restoreQuestionAndPreserveDraft(m.id, finalText); _showGcEscapeNotice('编排员会话不可用，消息未发送', 'error'); return; }
+        void OrchUI.noteUserMessage(m, finalText, route.direct);
+        handleMeetingSend(finalText, m, { heroIdBySid, recipientSids: route.sids });
+        return;
+      }
       // 循环工作流（评审 gate + 自动重来）→ main 进程驱动（崩溃续跑）；串行 → renderer 驱动；否则普通群聊单轮
       if (Delivery.enabled(m) && m.serialWorkflow.enabled) {
         void DeliveryControls.submit(m,finalText,recipientSids).then(result=>{
