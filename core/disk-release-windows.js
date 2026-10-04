@@ -32,11 +32,21 @@ function powershell(script, input, { timeoutMs = 60000 } = {}) {
   });
 }
 
+function retainLiveProcessRows(rows, probe = pid => process.kill(pid, 0)) {
+  return rows.filter(row => {
+    if (row.cmd) return true;
+    try { probe(Number(row.pid)); return true; }
+    catch (error) { return error.code !== 'ESRCH'; }
+  });
+}
+
 async function readProcesses() {
   if (process.platform !== 'win32') throw new Error('硬盘释放目前支持 Windows');
   const rows = await powershell(`@(Get-CimInstance Win32_Process | Select-Object @{n='pid';e={[int]$_.ProcessId}},@{n='name';e={$_.Name}},@{n='cmd';e={$_.CommandLine}}) | ConvertTo-Json -Compress -Depth 3`);
   if (!Array.isArray(rows) || rows.length === 0) throw new Error('无法检查活动程序，未执行清理');
-  return rows;
+  // CIM can enumerate a process that exits before its command line is read.
+  // Exclude only confirmed-gone PIDs; permission failures remain protected.
+  return retainLiveProcessRows(rows);
 }
 
 async function allocatedSizes(files) {
@@ -65,4 +75,4 @@ ConvertTo-Json -InputObject @($numbers.ToArray()) -Compress
 `, files.map(file => file.path));
 }
 
-module.exports = { powershell, readProcesses, allocatedSizes };
+module.exports = { powershell, readProcesses, allocatedSizes, retainLiveProcessRows };

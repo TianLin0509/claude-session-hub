@@ -85,6 +85,17 @@ async function screenshot(client, name) {
     await waitFor(client, `document.querySelector('#sidebar-strip .strip-disk')`);
     await click(client, '#sidebar-strip .strip-disk');
     await waitFor(client, `!document.querySelector('#disk-release-panel').hidden && document.querySelector('[data-dr-review]')`);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const count = await client.eval(`document.querySelectorAll('#disk-release-panel input[data-dr-key]:checked').length`);
+      if (count === 2) break;
+      const text = await client.eval(`document.querySelector('#disk-release-panel').textContent`);
+      if (count !== 0 || !/活动程序仍在使用，或无法确认活动状态/.test(text)) break;
+      assert.ok(fs.existsSync(removable), 'uncertain process state must preserve removable data');
+      assert.ok(fs.existsSync(changed), 'uncertain process state must preserve changed data');
+      console.log('PASS uncertain activity preserves data; retry with the visible rescan button');
+      await click(client, '[data-dr-rescan]');
+      await waitFor(client, `document.querySelector('#disk-release-panel [data-dr-review]')`);
+    }
     assert.equal(await client.eval(`document.querySelector('#memory-release-panel').hidden`), true, 'disk entry must not open memory panel');
     assert.equal(await client.eval(`document.querySelectorAll('#disk-release-panel input[data-dr-key]:checked').length`), 2,
       `only the two old safe fixtures should be selected: ${await client.eval("document.querySelector('#disk-release-panel').textContent")}`);

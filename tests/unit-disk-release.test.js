@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createDiskReleaseEngine, PLAN_TTL_MS } = require('../core/disk-release-engine');
-const { allocatedSizes } = require('../core/disk-release-windows');
+const { allocatedSizes, retainLiveProcessRows } = require('../core/disk-release-windows');
 const { acquireDiskReleaseLock } = require('../core/disk-release-lock');
 const { inside, defaultScopes } = require('../core/disk-release-policy');
 
@@ -53,6 +53,16 @@ function setup(t, overrides = {}) {
   return { root, target, file, engine, options, setRows: value => { rows = value; } };
 }
 const request = (plan, keys = plan.items.filter(item => item.tier !== 'info').map(item => item.key)) => ({ scanId: plan.scanId, keys, confirmed: true });
+
+test('departed processes do not block cleanup while unreadable live processes stay protected', () => {
+  const rows = [{ pid: 1, name: 'node.exe', cmd: null }, { pid: 2, name: 'node.exe', cmd: null },
+    { pid: 3, name: 'node.exe', cmd: null }, { pid: 4, name: 'node.exe', cmd: 'node active' }];
+  const result = retainLiveProcessRows(rows, pid => {
+    if (pid === 1) { const error = new Error('gone'); error.code = 'ESRCH'; throw error; }
+    if (pid === 2) { const error = new Error('access denied'); error.code = 'EPERM'; throw error; }
+  });
+  assert.deepEqual(result.map(row => row.pid), [2, 3, 4]);
+});
 
 test('confirmed selection deletes only selected test data, keeps neighboring source and writes a receipt', async t => {
   const { root, file, engine } = setup(t);
