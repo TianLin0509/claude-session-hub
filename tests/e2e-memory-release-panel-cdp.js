@@ -52,7 +52,7 @@ async function spawnOrphanCli() {
   fs.copyFileSync(process.execPath, fake);
   const pidFile = path.join(FAKE_DIR, 'pid.txt');
   const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1e6);`;
-  const child = spawn('cmd.exe', ['/c', 'start', '""', '/b', fake, '-e', script], { windowsHide: true, stdio: 'ignore' });
+  const child = spawn('cmd.exe', ['/c', 'start', '""', '/b', fake, '-e', script, '--resume', '0f0f0f0f-1111-2222-3333-444444444444'], { windowsHide: true, stdio: 'ignore' });
   await new Promise(resolve => child.once('exit', resolve));
   const pid = Number(await waitFor('orphan pid file', () => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8'), 10000));
   assert.ok(alive(pid));

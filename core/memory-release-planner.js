@@ -230,7 +230,11 @@ function buildMemoryReleasePlan(input = {}) {
     if (assigned.has(proc.pid) || !CLI_NAMES.has(lower(proc.name))) continue;
     if (/--chrome-native-host/.test(proc.cmd) || realParent(proc, byPid)) continue;
     if (ancestorChain(proc, byPid).some(isHubProcess)) continue;
-    const pids = take(subtreePids(proc.pid, childrenMap, byPid));
+    // 只认带会话编号、整棵树没有窗口的 CLI 会话进程：Claude/Codex 桌面版同名，
+    // 资源管理器重启后它们的父进程也会「不在」，但它们有窗口、命令行里没有会话编号。
+    const tree = subtreePids(proc.pid, childrenMap, byPid);
+    if (!sessionIdsInCmd(proc.cmd).length || [...tree].some(pid => byPid.get(pid)?.hasWindow)) continue;
+    const pids = take(tree);
     const cpu = treeCpuState(pids, byPid, snapshot.cpuWindowMs, snapshot.cpuCount);
     const idle = cpu.known && cpu.idle;
     const ids = sessionIdsInCmd(proc.cmd);

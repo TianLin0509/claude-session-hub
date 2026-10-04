@@ -128,6 +128,18 @@ test('a busy orphan CLI is shown but not offered', () => {
   assert.equal(orphan.selected, false);
 });
 
+test('desktop apps with the same exe name are never treated as orphan CLIs', () => {
+  const snap = snapshotOf([
+    ...fixture().processes,
+    proc(1100, 777, 'claude.exe', '"C:\\Users\\x\\AppData\\Local\\AnthropicClaude\\claude.exe"', 300, { hasWindow: true }),
+    proc(1200, 778, 'codex.exe', 'codex.exe app', 200),
+  ]);
+  const plan = buildMemoryReleasePlan({ snapshot: snap, selfPid: 100, manifests: new Map([[100, manifest]]), reclaimReport });
+  assert.ok(!plan.items.some(i => i.key.startsWith('orphan:1100')), 'windowed desktop app is not an orphan');
+  assert.ok(!plan.items.some(i => i.key.startsWith('orphan:1200')), 'no session id → not an orphan');
+  assert.ok(!plan.items.some(i => i.tier !== 'info' && (i.members || []).some(m => m.pid === 1100 || m.pid === 1200)));
+});
+
 test('script hosts are labelled by what they run', () => {
   assert.equal(describeScript({ name: 'python.exe', cmd: 'python.exe C:\\work\\scripts\\image_worker.py --x' }), 'Python · scripts/image_worker.py');
   assert.equal(describeScript({ name: 'node.exe', cmd: '"C:\\node.exe" C:\\a\\b\\server.js' }), 'Node · b/server.js');
