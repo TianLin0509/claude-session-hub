@@ -9,7 +9,7 @@ const ACTIVE=['dispatching','waiting','unknown'];
 const LONG_POLL_SECONDS=15; // 中继支持长等待时，新消息一到即返回；旧中继忽略该参数、立即返回
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 class PhoneChannel{
- constructor({assistant,journal,renderHtml=null,transcribe,fastLane=null,imageRoots=[],speak=null}){Object.assign(this,{assistant,journal,renderHtml,transcribe,fastLane,imageRoots,speak});this.closed=false;this.issue=null;this.online=false;this.lastPoll=0;}
+ constructor({assistant,journal,renderHtml=null,transcribe,fastLane=null,imageRoots=[],speak=null,inboxRoot=null}){Object.assign(this,{assistant,journal,renderHtml,transcribe,fastLane,imageRoots,speak,inboxRoot});this.closed=false;this.issue=null;this.online=false;this.lastPoll=0;}
  status(){const s=this.journal.state;return{ok:true,version:'1.1.0',protocol:2,enabled:s.enabled,connected:this.online,issue:this.issue,paired:!!s.credentials,pending:s.inbox.filter(r=>r.state==='queued').length,unknown:s.inbox.filter(r=>r.state==='unknown').length,voice:true,phoneApp:s.phoneApp||null,backend:this.assistant.overview().backendKind||null};}
  async request(endpoint,{method='GET',body,role='hub',wait=0}={}){const c=this.journal.state.credentials;if(!c)throw Error('请先连接手机');const q=method==='GET'?`?channel=${c.channel}&role=${role}&after=${this.journal.state.cursor}${wait?'&wait='+wait:''}`:'';const headers={Authorization:'Bearer '+c.hubToken,'Content-Type':'application/json'};if(endpoint==='/create'){const file='C:/VibeData/Secrets/aihub-phone-relay-registration.txt';const secret=process.env.HUB_PHONE_REGISTER_KEY||(fs.existsSync(file)?fs.readFileSync(file,'utf8').trim():'');if(!/^[A-Za-z0-9_-]{43}$/.test(secret))throw Error('手机连接服务尚未配置，请先完成手机服务部署');headers['X-Register-Key']=secret;}const r=await fetch(c.url+endpoint+q,{method,headers,body:body&&JSON.stringify({...body,channel:c.channel,role}),signal:AbortSignal.timeout(wait?(wait+15)*1000:20000)});if(!r.ok)throw Error('手机连接服务暂时不可用（'+r.status+'）');return r.json();}
  async pair(){const s=this.journal.state;if(!s.credentials)this.journal.change(x=>{x.credentials=credentials();x.notices=this.assistant.notifications({limit:200}).notifications.map(n=>n.id);x.created=Date.now();});const {channel,hubToken,phoneToken}=s.credentials;await this.request('/create',{method:'POST',body:{channel,hubToken,phoneToken}});this.journal.change(x=>{x.enabled=true;});this.start();return{...this.status(),code:invite(s.credentials)};}
@@ -32,11 +32,13 @@ class PhoneChannel{
  async ingest(messages){const s=this.journal.state;
   for(const packet of messages){if(packet.seq<=s.cursor)continue;if(!s.inbox.some(r=>r.id===packet.id)){try{const m=open(s.credentials.key,s.credentials.channel,packet.id,'phone',packet.payload);this.validate(m);
      if(m.type==='hello'){this.journal.change(x=>{x.cursor=packet.seq;x.lastInbound=Date.now();x.phoneCaps=m.caps.map(String).slice(0,20);x.phoneApp=String(m.app||'').slice(0,20);x.inbox.push({id:packet.id,type:'hello',state:'done'});});await this.sendProfile(packet.id).catch(e=>console.warn('[phone] profile',e.message));this.sendReminders();continue;}
+     if(m.attachment){const saved=this.saveAttachment(m.attachment);m.text=m.text+'\n\n（我从手机分享了一个文件：'+saved+'）';m.noFast=true;m.shared=require('node:path').basename(saved);delete m.attachment;}
      this.journal.change(x=>{x.inbox.push({...m,id:packet.id,state:'queued',t:{received:Date.now()}});x.cursor=packet.seq;x.lastInbound=Date.now();});if(m.type==='text')this.log({id:packet.id,role:'user',input:'text',text:m.text});}catch{this.journal.change(x=>{x.cursor=packet.seq;});this.emit('invalid-'+packet.id,{type:'status',requestId:packet.id,state:'rejected',text:'消息校验未通过，未提交任务。'});}}else this.journal.change(x=>{x.cursor=packet.seq;});}
  }
  validate(m){
   if(!TYPES.includes(m.type))throw Error('消息类型不支持');
   if(m.type==='text'&&(typeof m.text!=='string'||!m.text.trim()||m.text.length>50000))throw Error('任务文字无效');
+  if(m.attachment!==undefined&&(m.type!=='text'||typeof m.attachment!=='object'||typeof m.attachment.name!=='string'||m.attachment.name.length>160||typeof m.attachment.data!=='string'||m.attachment.data.length>7400000))throw Error('分享的文件无效（单个不超过 4MB）');
   if(m.type==='voice_message'&&(typeof m.pcm!=='string'||!m.pcm||m.pcm.length>Math.ceil(MAX_VOICE_BYTES/3)*4+4))throw Error('语音无效');
   if(m.type==='set_profile'&&!['kind','model'].every(k=>typeof m[k]==='string'&&m[k]&&m[k].length<=160))throw Error('助理设置无效');
   if(m.type==='hello'&&(!Array.isArray(m.caps)||m.caps.length>20))throw Error('手机能力声明无效');
@@ -45,18 +47,29 @@ class PhoneChannel{
  }
  supports(cap){return(this.journal.state.phoneCaps||[]).includes(cap);}
  // 提醒同步到手机：手机按时间设本地闹钟，App 在后台也能准时响。
- syncReminder({action,reminder}){if(!reminder||!this.journal.state.credentials)return;this.emit('reminder-'+action+'-'+reminder.id,{type:'reminder',action,id:reminder.id,at:reminder.at,text:reminder.text});this.kick();}
- sendReminders(){for(const r of this.assistant.reminders?.upcoming?.()||[])this.emit('reminder-set-'+r.id,{type:'reminder',action:'set',id:r.id,at:r.at,text:r.text});}
+ syncReminder({action,reminder}){if(!reminder||!this.journal.state.credentials)return;this.emit('reminder-'+action+'-'+reminder.id+(action==='set'?'-'+reminder.at:''),{type:'reminder',action,id:reminder.id,at:reminder.at,text:reminder.text,repeat:reminder.repeat||''});this.kick();}
+ sendReminders(){for(const r of this.assistant.reminders?.upcoming?.()||[])this.emit('reminder-set-'+r.id+'-'+r.at,{type:'reminder',action:'set',id:r.id,at:r.at,text:r.text,repeat:r.repeat||''});}
+ // 手机分享来的文件：存进工作区当天的「手机分享」文件夹，消息里给出路径交给助理会话处理。
+ saveAttachment(a){
+  const fs=require('node:fs'),path=require('node:path');
+  const now=new Date(Date.now()+8*3600000),day=now.toISOString().slice(0,10).replace(/-/g,''),hms=now.toISOString().slice(11,19).replace(/:/g,'');
+  const dir=path.join(this.inboxRoot||'C:/AIWork',day+'-手机分享');fs.mkdirSync(dir,{recursive:true});
+  const safe=String(a.name||'文件').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').replace(/^\.+/,'').slice(-100)||'文件';
+  const file=path.join(dir,hms+'-'+safe),data=Buffer.from(a.data,'base64');if(data.length>5.5*1024*1024)throw Error('分享的文件超过 5MB');
+  fs.writeFileSync(file,data);return file;
+ }
  // 手机对话记录（助理 Tab「对话记录」）：记失败不影响收发。
  log(entry){try{this.assistant.logDialog?.(entry);}catch(e){console.warn('[phone] dialog log',e.message);}}
  assistantLabel(){const p=this.assistant.currentProfile?.();if(!p)return'助理会话';let kind=p.kind;try{kind=require('../ai-kinds').getKindLabel(p.kind);}catch{}return[kind,p.label].filter(Boolean).join(' · ');}
  // 助理设置与回答方式任一变化（电脑面板改的也算）都重发 profile，手机两边保持一致。
- profileSignature(){return JSON.stringify([this.assistant.currentProfile?.(),this.assistant.frontDesk?.()]);}
+ profileSignature(){return JSON.stringify([this.assistant.currentProfile?.(),this.assistant.frontDesk?.(),this.watchingCount()]);}
+ // 关注中且正在运行的任务数：手机据此在后台继续等结果，任务停下就不再常驻后台。
+ watchingCount(){try{return(this.assistant.followedTasks?.()||[]).filter(w=>['watching','waiting-binding'].includes(w.state)&&this.assistant.sessionBusy?.(w.sessionId)).length;}catch{return 0;}}
  async sendProfile(requestId){
   if(!this.supports('profile')||!this.assistant.phoneProfile)return;
   const profile=await this.assistant.phoneProfile();
   this.journal.change(x=>{x.profileSignature=this.profileSignature();});
-  this.emit('profile-'+crypto.randomUUID(),{type:'profile',...(requestId?{requestId}:{}),...profile,switching:!!this.assistant.switching});
+  this.emit('profile-'+crypto.randomUUID(),{type:'profile',...(requestId?{requestId}:{}),...profile,watching:this.watchingCount(),switching:!!this.assistant.switching});
  }
  async tick(){const s=this.journal.state;if(this.working||this.closed||!s.enabled||!s.credentials)return;this.working=true;this.lastPoll=Date.now();
  try{
@@ -98,7 +111,7 @@ class PhoneChannel{
   // 快速通道：约 1 秒答复；交还标记、出错或超时都回到完整助理，不丢消息。
   async tryFastLane(row){
    this.journal.change(()=>{row.fastTried=true;});
-   if(!this.fastLane.eligible(row.text))return false;
+   if(row.noFast||!this.fastLane.eligible(row.text))return false;
    try{
     const started=Date.now(),result=await this.fastLane.answer(row.text,{history:this.assistant.recentHistory?.()||[],userPrefs:this.assistant.memory?.read?.().user||'',...(this.assistant.frontDesk?{model:this.assistant.frontDesk().model}:{}),hubStatus:this.assistant.statusDigest?.()||''});
     if(result.handoff){console.log('[phone] fast lane handoff',row.id.slice(0,8),Date.now()-started+'ms');return false;}

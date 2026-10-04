@@ -22,7 +22,8 @@ function buildStatusDigest({ sessions = [], ledger = [], followed = [], reminder
   else lines.push('最近 24 小时没有会话产出新结果。');
   if (followed.length) lines.push('关注中的任务：' + followed.slice(0, 6).map(w => `「${clip(w.title, 24)}」`).join('、'));
   const upcoming = reminders.filter(r => !r.firedAt && r.at > now).sort((a, b) => a.at - b.at).slice(0, 5);
-  if (upcoming.length) lines.push('待提醒：' + upcoming.map(r => `${when(r.at, now)} ${clip(r.text, 30)}`).join('；'));
+  const REP = { daily: '（每天）', weekdays: '（每个工作日）', weekly: '（每周）' };
+  if (upcoming.length) lines.push('待提醒：' + upcoming.map(r => `${when(r.at, now)} ${clip(r.text, 30)}${REP[r.repeat] || ''}`).join('；'));
   let text = lines.join('\n');
   if (text.length > maxChars) text = text.slice(0, maxChars) + '…';
   return text;

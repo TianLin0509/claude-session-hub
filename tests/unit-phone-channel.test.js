@@ -204,3 +204,22 @@ test('phone can ask to read a reply aloud; reminders and interactive pages are p
  const page=packets(h,'answer-p-page-')[0];assert.equal(page.type,'html');assert.match(page.html,/点我/);assert.equal(page.name,'交互页');
  fs.rmSync(root,{recursive:true,force:true});
 });
+test('repeating reminders move to the next day / workday after firing; shared files are saved and go to the assistant session; phone learns how many tasks are watched',async()=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');const {AssistantReminders,nextOccurrence}=require('../core/hub-assistant/reminders');
+ const fri9=Date.parse('2026-10-09T01:00:00Z');// 北京时间周五 09:00
+ assert.equal(new Date(nextOccurrence(fri9,'weekdays',fri9)+8*3600000).getUTCDay(),1,'周五之后的工作日是周一');
+ assert.equal(nextOccurrence(fri9,'daily',fri9)-fri9,86400000);assert.equal(nextOccurrence(fri9,'weekly',fri9)-fri9,7*86400000);
+ const kv=new Map(),store={get:k=>kv.get(k),set:(k,v)=>kv.set(k,v)};let t=fri9-60000;const fired=[],moved=[];
+ const rem=new AssistantReminders({store,now:()=>t,onFire:r=>fired.push(r),onReschedule:r=>moved.push(r.at)});
+ const r=rem.add({when:'2026-10-09 09:00',text:'看日报',repeat:'weekdays'});
+ t=fri9+1000;rem.fireDue();assert.equal(fired.length,1);assert.equal(rem.upcoming()[0].id,r.id,'重复提醒响后仍在');assert.equal(new Date(rem.upcoming()[0].at+8*3600000).getUTCDay(),1);assert.equal(moved.length,1,'新时间同步给手机');
+ assert.throws(()=>rem.add({when:'2026-10-09 10:00',text:'x',repeat:'monthly'}),/重复方式/);clearTimeout(rem.timer);rem.stop();
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'share-'));const h=harness();h.channel.inboxRoot=root;h.channel.fastLane={eligible:()=>true,answer:async()=>{throw Error('附件不该走快答')}};
+ const id=crypto.randomUUID();h.incoming(id,{type:'text',text:'帮我总结',attachment:{name:'../报告.pdf',mime:'application/pdf',data:Buffer.from('PDF内容').toString('base64')}});await h.channel.tick();
+ assert.equal(h.calls.length,1,'交给助理会话');const sent=h.calls[0].text;const m=sent.match(/手机分享了一个文件：(.+)）/);assert.ok(m,'消息里带文件路径');
+ assert.equal(fs.readFileSync(m[1],'utf8'),'PDF内容');assert.ok(m[1].startsWith(root)&&/手机分享/.test(m[1])&&!/\.\.[\/]/.test(m[1]),'存在工作区当天的手机分享文件夹，文件名不能跳出目录');
+ assert.equal(JSON.stringify(h.s.inbox).includes('UERG'),false,'大块文件数据不留在手机通道记录里');
+ h.assistant.followedTasks=()=>[{sessionId:'a',state:'watching'},{sessionId:'b',state:'paused-closed'},{sessionId:'c',state:'watching'},{sessionId:'d',state:'waiting-binding'}];let busy=new Set(['a','b','d']);h.assistant.sessionBusy=id=>busy.has(id);assert.equal(h.channel.watchingCount(),2,'只算关注中且正在干活的（刚开、还在绑定的也算）');
+ busy=new Set();assert.equal(h.channel.watchingCount(),0,'任务跑完手机就不必常驻后台');
+ fs.rmSync(root,{recursive:true,force:true});
+});

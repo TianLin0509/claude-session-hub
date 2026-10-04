@@ -4,6 +4,19 @@
 // 手机端另按时间设本地闹钟，App 在后台也能准时响。
 const { randomUUID } = require('node:crypto');
 const LATE_LIMIT = 24 * 3600000, CHECK_MS = 30000;
+const REPEATS = { '': '', daily: '每天', weekdays: '每个工作日', weekly: '每周' };
+const DAY = 86400000;
+// 下一次（北京时间的星期判断工作日）：从原定时间往后推，直到晚于 now。
+function nextOccurrence(at, repeat, now) {
+  if (!repeat) return null;
+  let t = at;
+  const weekdayBJ = ms => new Date(ms + 8 * 3600000).getUTCDay();
+  do {
+    t += repeat === 'weekly' ? 7 * DAY : DAY;
+    if (repeat === 'weekdays') while ([0, 6].includes(weekdayBJ(t))) t += DAY;
+  } while (t <= now);
+  return t;
+}
 
 // 「2026-10-05 15:00」「2026-10-05T15:00」按北京时间理解；带时区的 ISO 照常解析。
 function parseWhen(value, now = Date.now()) {
@@ -19,15 +32,18 @@ function parseWhen(value, now = Date.now()) {
 }
 
 class AssistantReminders {
-  constructor({ store, onFire = () => {}, isOwner = () => true, now = () => Date.now() }) {
-    this.store = store; this.onFire = onFire; this.isOwner = isOwner; this.now = now; this.timer = null;
+  constructor({ store, onFire = () => {}, onReschedule = null, isOwner = () => true, now = () => Date.now() }) {
+    this.store = store; this.onFire = onFire; this.onReschedule = onReschedule; this.isOwner = isOwner; this.now = now; this.timer = null;
   }
   list() { return (this.store.get('reminders') || []).slice(); }
   save(rows) { this.store.set('reminders', rows.filter(r => !r.firedAt || this.now() - r.firedAt < 7 * 86400000)); }
-  add({ when, text, source = 'assistant' }) {
+  add({ when, text, source = 'assistant', repeat = '' }) {
+    if (!(repeat in REPEATS)) throw new Error('重复方式只能是 daily（每天）、weekdays（每个工作日）或 weekly（每周）');
     const body = String(text || '').trim().slice(0, 200);
     if (!body) throw new Error('请写明提醒内容');
-    const row = { id: randomUUID(), at: parseWhen(when, this.now()), text: body, source, createdAt: this.now() };
+    let at = parseWhen(when, this.now());
+    if (repeat === 'weekdays') while ([0, 6].includes(new Date(at + 8 * 3600000).getUTCDay())) at += DAY;
+    const row = { id: randomUUID(), at, text: body, source, createdAt: this.now(), ...(repeat ? { repeat } : {}) };
     this.save([...this.list(), row]); this.schedule();
     return row;
   }
@@ -43,10 +59,13 @@ class AssistantReminders {
     if (!this.isOwner()) return [];
     const now = this.now(), rows = this.list(), fired = [];
     for (const r of rows) if (!r.firedAt && r.at <= now) {
+      const late = now - r.at > 120000, fresh = now - r.at <= LATE_LIMIT;
+      // 重复提醒：响过后排到下一次，记录不消失；错过太久的直接排下一次，不补发。
+      if (r.repeat) { if (fresh) fired.push({ ...r, late }); r.lastFiredAt = now; r.at = nextOccurrence(r.at, r.repeat, now); this.onReschedule?.(r); continue; }
       r.firedAt = now;
-      if (now - r.at <= LATE_LIMIT) { r.late = now - r.at > 120000; fired.push(r); } else r.expired = true;
+      if (fresh) { r.late = late; fired.push(r); } else r.expired = true;
     }
-    if (fired.length || rows.some(r => r.expired)) this.save(rows);
+    if (fired.length || rows.some(r => r.expired || r.lastFiredAt === now)) this.save(rows);
     for (const r of fired) { try { this.onFire(r); } catch (e) { console.warn('[assistant] reminder', e.message); } }
     return fired;
   }
@@ -60,4 +79,4 @@ class AssistantReminders {
   }
   stop() { this.stopped = true; clearTimeout(this.timer); }
 }
-module.exports = { AssistantReminders, parseWhen };
+module.exports = { AssistantReminders, parseWhen, nextOccurrence, REPEATS };
