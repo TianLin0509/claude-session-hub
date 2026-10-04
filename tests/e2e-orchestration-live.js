@@ -10,7 +10,8 @@ const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher'), {
 
 const SCENARIO = process.argv[2] || 'main';
 const ORCH = { kind: process.env.ORCH_KIND || 'claude', model: process.env.ORCH_MODEL || 'claude-opus-5-5', effort: process.env.ORCH_EFFORT || 'high' };
-const MEMBER_HINT = process.env.MEMBER_HINT || '成员用低档模型省额度：Codex 成员用 gpt-6-luna、low 思考；Claude 成员用 claude-haiku-4-5-20251001。';
+// 测试环境的 Codex 账号不可用（默认授权文件无效；订阅凭据不复制，避免刷新登录影响真实账号），成员都用 Claude Haiku。
+const MEMBER_HINT = process.env.MEMBER_HINT || '成员用低档模型省额度：这台测试环境的 Codex 账号不可用，成员都用 Claude 的 claude-haiku-4-5-20251001；开发位和审核位同后端时在 sameKindReason 写明这个原因。';
 const MAX_MIN = Number(process.env.MAX_MIN || (SCENARIO === 'budget' ? 60 : 100));
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), `hub-orch-live-${SCENARIO}-`)), DATA = path.join(ROOT, 'data');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
