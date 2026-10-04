@@ -32,7 +32,8 @@ class AssistantWatches{
         if(watch.nativeSessionId&&nativeId(meta)!==watch.nativeSessionId)throw new Error('原生会话身份发生变化，已暂停关注');
         const result=this.readFinal(meta,{cursor:watch.cursor});if(!result.available)throw new Error(result.issue);
         const seen=new Set(watch.seen),newRecords=result.records.filter(r=>!seen.has(r.notificationKey||r.id)&&(!watch.cursor?!!r.timestamp&&r.timestamp>=watch.createdAt:true));
-        const next={...watch,nativeSessionId:result.identity,cursor:result.cursor,seen:[...seen,...result.records.map(r=>r.notificationKey||r.id)].slice(-500),state:'watching',lastError:null};
+        for(const record of result.records)seen.add(record.notificationKey||record.id);
+        const next={...watch,nativeSessionId:result.identity,cursor:result.cursor,seen:[...seen].slice(-500),state:'watching',lastError:null};
         // Keep reading at the existing cadence. Only disk writes are skipped;
         // cursor advances without a final reply must still be persisted.
         if(!newRecords.length){this.saveChanged(watch,next);continue;}

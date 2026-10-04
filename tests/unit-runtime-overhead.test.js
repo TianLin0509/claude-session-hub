@@ -21,7 +21,8 @@ test('unchanged watches avoid writes but cursor advances, errors, recovery and n
   error=new Error('读取暂不可用');w.poll();w.poll();assert.equal(writes,2);assert.equal(w.list()[0].state,'error');
   error=null;w.poll();assert.equal(writes,3);assert.equal(w.list()[0].state,'watching');
   result={...result,cursor:{offset:50},records:[{id:'reply',notificationKey:'turn-one',text:'完整回复',timestamp:Date.now()}]};
-  w.poll();w.poll();assert.equal(notices.length,1);assert.equal(w.notifications().notifications[0].text,'完整回复');
+  w.poll();const writesAfterReply=writes;w.poll();assert.equal(writes,writesAfterReply,'re-reading the same final record does not write duplicate seen IDs');
+  assert.equal(notices.length,1);assert.equal(w.notifications().notifications[0].text,'完整回复');
 });
 
 test('eleven histories stay cached and larger windows serve smaller requests without changing turn IDs',async t=>{
