@@ -63,10 +63,10 @@ test('watch shorthand requires a unique named target and explicit reminder inten
  service.preparePrompt({text:'订单同步有回复就提醒我'});assert.equal((await service.invokeTool({name:'watch_session',arguments:{sessionId:x.meta.id,requestToken:service.currentRequest.token}})).ok,true);
  service.preparePrompt({text:'订单同步现在什么情况'});await assert.rejects(service.invokeTool({name:'watch_session',arguments:{sessionId:x.meta.id,requestToken:service.currentRequest.token}}),/没有明确/);
 });
-test('only the Hub holding the assistant entity runs its background watcher',t=>{const x=setup(t),dataDir=path.join(x.dir,'hub');let held=true,ownerPolls=0,otherPolls=0;
+test('only the Hub holding the assistant entity runs its scheduled reconciliation',t=>{const x=setup(t),dataDir=path.join(x.dir,'hub');let held=true,ownerPolls=0,otherPolls=0;
  const owner=new AssistantService({dataDir,getSession:id=>held&&id==='assistant-owner'?{id}:null,getAllSessions:()=>[]});const other=new AssistantService({dataDir,getSession:()=>null,getAllSessions:()=>[]});t.after(()=>{owner.close();other.close();});
- owner.store.set('sessionId','assistant-owner');owner.pollWatches=()=>{ownerPolls++;};other.pollWatches=()=>{otherPolls++;};
- t.mock.timers.enable({apis:['setInterval']});owner.startWatching({intervalMs:500});other.startWatching({intervalMs:500});t.mock.timers.tick(500);assert.equal(ownerPolls,1);assert.equal(otherPolls,0);held=false;t.mock.timers.tick(500);assert.equal(ownerPolls,1);assert.equal(otherPolls,0);
+ owner.store.set('sessionId','assistant-owner');owner.pollWatches=()=>{ownerPolls++;};other.pollWatches=()=>{otherPolls++;};owner.maybeRotateInBackground=other.maybeRotateInBackground=async()=>null;
+ t.mock.timers.enable({apis:['setInterval','setTimeout']});owner.startWatching({reconcileMs:500,startupDelayMs:100000});other.startWatching({reconcileMs:500,startupDelayMs:100000});t.mock.timers.tick(500);assert.equal(ownerPolls,1);assert.equal(otherPolls,0);held=false;t.mock.timers.tick(500);assert.equal(ownerPolls,1);assert.equal(otherPolls,0);
 });
 test('latest final survives large later tool output in incremental reads and a cold reader',t=>{const x=setup(t);x.final('7项已完成，等待第8项决策','original-turn');const reader=new LiveHistory(),original=reader.read(x.meta).records.at(-1);
  x.append({type:'response_item',payload:{type:'function_call_output',output:'工具输出'.repeat(350000)}});

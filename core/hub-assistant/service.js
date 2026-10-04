@@ -17,6 +17,7 @@ const backends=require('./backends');
 const profiles=require('./profiles');
 // 助理是长寿会话，每轮读入的资料会越积越多、回答随之变慢；何时换班见 rotation.js。
 const rotation=require('./rotation');
+const EVENT_KINDS=new Set(['claude','codex','deepseek','kimi']); // 这些后端答完一轮会发完成事件
 const HANDOFF_PROMPT='【换班交接】你即将换班，接班的是同一位助理的新会话，它只能看到你写的交接、成长记忆和 Hub 记录。先把这一班里发现的田哥稳定偏好或长期约定用 update_memory 记下来（已记过的不重复）。然后用不超过 300 字写交接，只写对接班有用的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
 class AssistantService {
   constructor(deps) {
@@ -29,6 +30,7 @@ class AssistantService {
     this.liveHistory=new (require('./final-readers').AssistantFinalReaders)(deps);
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
+    this.ledger=new (require('./ledger').AssistantLedger)(path.join(deps.dataDir,'assistant','ledger'),{read:(meta,options)=>this.liveHistory.read(meta,options)});
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
@@ -44,9 +46,43 @@ class AssistantService {
   captureContinuity(){for(const id of this.assistantIds()){const meta=this.sessionMetadata(id);if(!meta)continue;for(const row of this.liveHistory.read(meta).records)this.continuity.add({...row,provider:meta.kind,timestamp:row.timestamp||Date.now()});}}
   liveInventory(){return this.sessions().map(s=>{const result=s.isOpen?this.liveHistory.read(s):null;return{...s,nativeSessionId:nativeId(s),latestFinal:result?.records.at(-1)||null,liveIssue:result?.issue||null};});}
   readLiveFinal(sessionId){const meta=this.sessionMetadata(sessionId);if(!meta)throw new Error('找不到原会话');const result=this.liveHistory.read(meta);return{sessionId,title:meta.title,...result};}
-  startWatching({intervalMs=2000,rotationCheckMs=60000}={}){if(this.watchTimer)return;this.watchTimer=setInterval(()=>{try{const id=this.store.get('sessionId');if(id&&this.deps.getSession(id))this.pollWatches();}catch{}},Math.max(500,intervalMs));this.watchTimer.unref?.();
-    // 后台换班：你不在用时到点就写交接、换新会话，回来直接用干净的助理，不用等。
-    this.rotationTimer=setInterval(()=>{void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));},Math.max(1000,rotationCheckMs));this.rotationTimer.unref?.();}
+  // 不做固定频率的心跳：会话答完一轮由完成事件记账与提醒；换班按精确时间点（空闲 2 小时、每天 4 点）触发；
+  // 每 2 小时做一次全面核对补漏；只有被关注的会话不发完成事件（千问、GLM 等）时，才每 5 分钟补查关注任务。
+  startWatching({reconcileMs=2*3600000,safetyPollMs=300000,startupDelayMs=20000}={}){
+    if(this.reconcileTimer)return;
+    const unref=timer=>{timer?.unref?.();return timer;};
+    this.startupTimer=unref(setTimeout(()=>this.scheduledReconcile(),startupDelayMs));
+    this.reconcileTimer=unref(setInterval(()=>this.scheduledReconcile(),reconcileMs));
+    this.safetyTimer=unref(setInterval(()=>{try{if(this.ownsAssistant()&&this.watches.list().some(w=>w.state!=='paused-closed'&&!EVENT_KINDS.has(this.sessionMetadata(w.sessionId)?.kind)))this.pollWatches();}catch{}},safetyPollMs));
+    this.scheduleDaily();
+  }
+  // 只有当前持有助理会话的 Hub 做定时核对，多开 Hub 时不会两边同时写账本。
+  ownsAssistant(){const id=this.store.get('sessionId');return !!(id&&this.deps.getSession(id));}
+  scheduledReconcile(){
+    if(!this.ownsAssistant())return;
+    try{this.reconcileLedger();this.pollWatches();this.ledger.prune();}catch(error){console.warn('[assistant] reconcile',error.message);}
+    void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));
+  }
+  scheduleDaily(){
+    clearTimeout(this.dailyTimer);const next=rotation.dailyBoundary(Date.now())+86400000+30000;
+    this.dailyTimer=setTimeout(()=>{void this.maybeRotateInBackground().catch(()=>{});this.scheduleDaily();},Math.max(1000,next-Date.now()));this.dailyTimer.unref?.();
+  }
+  scheduleIdleRotation(lastActiveAt){
+    clearTimeout(this.idleTimer);
+    this.idleTimer=setTimeout(()=>{void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));},Math.max(1000,lastActiveAt+rotation.IDLE_MS+60000-Date.now()));this.idleTimer.unref?.();
+  }
+  // 任一会话答完一轮：助理自己 → 记上下文用量并排好空闲换班；其他会话 → 立即记账，被关注则立即提醒。
+  onTurnComplete(sessionId,event={}){
+    const at=Number(event.completedAt)||Date.now();
+    if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleRotation(at);return;}
+    const meta=this.sessionMetadata(sessionId);if(!meta||meta.purpose==='hub-assistant')return;
+    try{this.ledger.record({...meta,id:sessionId});}catch(error){console.warn('[assistant] ledger',error.message);}
+    if(this.ownsAssistant()&&this.watches.list().some(w=>w.sessionId===sessionId))this.pollWatches();
+  }
+  reconcileLedger(){
+    const metas=this.sessions().map(s=>({...(this.sessionMetadata(s.id)||s),id:s.id,isOpen:s.isOpen}));
+    return this.ledger.reconcile(metas,{groupSources:since=>readGroupHistory({dataDir:this.deps.dataDir,since,until:Date.now(),query:'',maxChars:20000,maxFiles:30,meetings:this.deps.getMeetings?.()})});
+  }
   // 定时器只检查「关注的任务有没有新回复」（结果推到手机和助理页靠它）。工作台按需刷新：
   // 你每问一次、助理按需查资料或打开工作档案时才重建，平时不读写文件（2026-10-04 田哥要求）。
   pollWatches(){return this.watches.poll();}
@@ -122,11 +158,40 @@ class AssistantService {
     if(require('../session-runtime-truth').sessionRuntimeIsActive(session)||['running','waiting'].includes(session.status)||this.deps.hasPendingPrompt?.(id))throw new Error('助理正在回答，请等本轮结束后再新开');
     return this.maybeRotateInBackground({reason:'manual'});
   }
+  // 当天第一次换班时顺带复盘：主动记住田哥没明说的稳定偏好，并参考两家 CLI 自带记忆当天的更新。
+  reviewPrompt(sinceMs){
+    const files=this.nativeMemoryUpdates(sinceMs);
+    return HANDOFF_PROMPT+'在写交接之前先做今天的复盘：① 回顾今天和田哥的交流，他没说「记住」但已明确表态或反复体现的偏好与约定，用 update_memory 记下；与旧条目矛盾的更新，重复的合并，只出现一次的推测不记。'
+      +(files.length?'② 下面是今天更新过的 CLI 自带记忆（只在各自的 CLI 里自动生效），读一下，把与田哥合作方式相关、稳定有价值的内容同步进 USER.md / MEMORY.md：'+files.join('；')+'。':'② 今天两家 CLI 自带记忆没有相关更新。');
+  }
+  // Claude Code 自动记忆目录里 user/feedback 类条目、Codex 记忆摘要，取 since 之后改过的。
+  nativeMemoryUpdates(sinceMs){
+    const os=require('node:os'),home=os.homedir(),files=[];
+    const roots=this.deps.nativeMemoryRoots||(()=>{
+      const list=[];
+      try{const settings=JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(home,'.claude'),'settings.json'),'utf8'));if(settings.autoMemoryDirectory)list.push({kind:'claude',dir:settings.autoMemoryDirectory});}catch{}
+      for(const codexHome of [process.env.CODEX_HOME||path.join(home,'.codex'),...(()=>{try{return fs.readdirSync(path.join(home,'.codex-profiles')).map(name=>path.join(home,'.codex-profiles',name));}catch{return[];}})()])list.push({kind:'codex',dir:path.join(codexHome,'memories')});
+      return list;
+    })();
+    for(const root of roots){
+      try{
+        if(root.kind==='codex'){const file=path.join(root.dir,'memory_summary.md');if(fs.existsSync(file)&&fs.statSync(file).mtimeMs>sinceMs)files.push(file);continue;}
+        const realRoot=fs.realpathSync(root.dir);
+        for(const name of fs.readdirSync(realRoot)){
+          // 只列根目录下名字规整的 .md，且真实路径仍在该目录内（不跟随指向别处的链接）。
+          if(!/^[\w.-]+\.md$/.test(name))continue;const file=fs.realpathSync(path.join(realRoot,name));if(path.dirname(file)!==realRoot)continue;const stat=fs.statSync(file);
+          if(stat.mtimeMs<=sinceMs)continue;
+          const head=fs.readFileSync(file,'utf8').slice(0,600);if(/^\s*type:\s*(user|feedback)\s*$/m.test(head))files.push(file);
+        }
+      }catch{}
+    }
+    return files.slice(0,12);
+  }
   // 让旧助理写一段交接，写进交接记录（最长等 3 分钟；拿不到就只靠原始记录接续）。
-  async writeHandoff(kind,oldId){
+  async writeHandoff(kind,oldId,prompt=HANDOFF_PROMPT,timeoutMs=180000){
     const requestId='handoff-'+randomUUID();
-    try{const receipt=await this.deps.sendPrompt(oldId,HANDOFF_PROMPT,requestId);if(receipt?.ok===false)return null;}catch(error){console.warn('[assistant] handoff not sent',error.message);return null;}
-    for(const end=Date.now()+180000;Date.now()<end;await new Promise(r=>setTimeout(r,1500))){
+    try{const receipt=await this.deps.sendPrompt(oldId,prompt,requestId);if(receipt?.ok===false)return null;}catch(error){console.warn('[assistant] handoff not sent',error.message);return null;}
+    for(const end=Date.now()+timeoutMs;Date.now()<end;await new Promise(r=>setTimeout(r,1500))){
       const meta=this.sessionMetadata(oldId);if(!meta)return null;
       const hit=this.liveHistory.read(meta).records.find(row=>row.clientSubmissionId===requestId);
       if(hit?.text){
@@ -142,7 +207,13 @@ class AssistantService {
   async rotate(kind,oldId,{reason='size',handoff=false}={}){
     const old=this.deps.getSession(oldId);
     if(old&&(require('../session-runtime-truth').sessionRuntimeIsActive(old)||['running','waiting'].includes(old.status)||this.deps.hasPendingPrompt?.(oldId)))return null;
-    const handoffText=handoff&&old?await this.writeHandoff(kind,oldId):null;
+    const today=require('./ledger').localDay(Date.now()),review=handoff&&old&&this.store.get('lastReviewDay')!==today;
+    // 复盘窗口从上次复盘算起（隔了几天也不漏），复盘比普通交接多给时间。
+    const handoffText=handoff&&old?await this.writeHandoff(kind,oldId,review?this.reviewPrompt(this.store.get('lastReviewAt')||Date.now()-86400000):HANDOFF_PROMPT,review?420000:180000):null;
+    if(review&&handoffText){this.store.set('lastReviewDay',today);this.store.set('lastReviewAt',Date.now());}
+    // 交接超时而旧助理还在跑：这次不换班，等它空下来再说，避免把正在干活的会话休眠掉。
+    const stillBusy=s=>s&&(require('../session-runtime-truth').sessionRuntimeIsActive(s)||['running','waiting'].includes(s.status)||this.deps.hasPendingPrompt?.(s.id));
+    if(handoff&&old&&stillBusy(this.deps.getSession(oldId)))return null;
     this.captureContinuity();
     backends.retire(this.store,kind,oldId);this.store.set('rotateDue:'+kind,null);
     let result;
@@ -260,6 +331,8 @@ class AssistantService {
   requireAssistantResume(meta){if(meta?.hubId&&(this.store.get('retiredAssistants')||[]).some(r=>r.id===meta.hubId&&r.kind===meta.kind))return;if(!meta?.hubId||!this.assistantIds().includes(meta.hubId)||(meta.kind&&backends.bindings(this.store)[meta.kind]!==meta.hubId))throw new Error('恢复实体不是固定助理，未授予专属工具');}
   context(request={}) {
     const sessionId=this.store.get('sessionId'),session=this.deps.getSession(sessionId);
+    // 提问时先增量补齐账本（每个会话从上次读到的位置往后读），保证两次提问之间的答复一条不漏。
+    try{this.reconcileLedger();}catch(error){console.warn('[assistant] ledger catch-up',error.message);}
     const board=this.refreshDossier();
     // Retrieval budgets limit supplemental historical excerpts, never which
     // current sessions the assistant can see or manage.
@@ -270,7 +343,7 @@ class AssistantService {
     const {sources:groupSources,...groupCoverage}=groups;
     const groupChars=groupSources.reduce((n,s)=>n+s.text.length,0);
     const sources=[...board.sources.map(source=>({...source,timeScope:'当前原生最终答复快照；以该条timestamp为准，不代表它发生在历史检索窗口内'})),...natural.sources.filter(source=>!board.sources.some(live=>live.sessionId===source.sessionId&&source.role==='assistant'&&live.text===source.text)),...groups.sources];
-    return {...natural,assistantContinuity:this.continuity.packet(),assistantMemory:this.memory.packet(),asOf:Date.now(),available:natural.available||sources.length>0,sources,
+    return {...natural,assistantContinuity:this.continuity.packet(),assistantMemory:this.memory.packet(),workLedger:this.ledger.since(this.store.get('lastAskAt')||Date.now()-86400000),asOf:Date.now(),available:natural.available||sources.length>0,sources,
       selectedChars:sources.reduce((n,source)=>n+source.text.length,0),groupSelectedChars:groupChars,
       workbench:{revision:board.revision,mode:board.mode,markdownPath:board.markdownPath,markdown:board.markdown,
         inventory:board.openedInventory,activeCount:board.activeCount,openedCount:board.openedCount,unreadCount:board.unreadCount,needsInputCount:board.needsInputCount,knownCount:board.knownCount,timeMeaning:'这是当前工作台状态；历史变化请结合每条来源时间及请求窗口，不能把旧最终答复说成刚发生的变化。',
@@ -292,6 +365,7 @@ class AssistantService {
     if(request.sessionId!==undefined&&!this.isAssistantSession(request.sessionId))throw new Error('请求不是固定助理会话，消息未发送');
     if(active&&(require('../session-runtime-truth').sessionRuntimeIsActive(active)||active.status==='running'))throw new Error('助理正在处理上一条请求，请等本轮结束后发送；草稿已保留');
     const context=this.context({...resolveTimeRange(request.text,{hours:request.hours,timeZone:this.deps.timeZone}),query:request.historyQuery||''});
+    // 账本增量在助理真正读取本轮资料时才算送达（见 history_context），闲聊不读资料就保留到下次。
     const id=request.clientSubmissionId||request.requestId||randomUUID();
     this.currentRequest={id,sessionId:request.sessionId,text:request.text,token:randomUUID(),createdAt:Date.now()};
     if(request.sessionId)this.continuity.add({id:'user:'+id,sessionId:request.sessionId,provider:active?.kind||'codex',role:'user',deliveryState:'prepared',timestamp:this.currentRequest.createdAt,text:request.text});
@@ -327,6 +401,7 @@ class AssistantService {
       if(requestToken){
         if(requestToken!==this.currentRequest?.token)throw new Error('资料请求不属于当前用户回合');
         const response=this.snapshots.read(requestToken),last=this.store.get('lastContext');
+        if(!String(this.currentRequest?.id||'').startsWith('handoff-')&&response.packet?.asOf)this.store.set('lastAskAt',response.packet.asOf);
         this.dossier.noteServed(response.packet.workbench);
         if(last?.requestToken===requestToken)this.store.set('lastContext',{...last,snapshotRead:true,snapshotReadAt:response.snapshotReceipt.readAt,snapshotReadReceipt:response.snapshotReceipt});
         return response;
@@ -336,9 +411,13 @@ class AssistantService {
     if(name==='update_memory'){
       // 只有本轮绑定的固定助理能改成长记忆；写入由 Hub 校验长度、拦截密钥并备份。
       const current=this.currentRequest;
-      if(!hasCaller||!current||args.requestToken!==current.token)throw new Error('记忆写入不属于当前用户回合');
+      if(!hasCaller||!current||args.requestToken!==current.token||Date.now()-current.createdAt>30*60000)throw new Error('记忆写入不属于当前用户回合');
       requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
-      return this.memory.update({file:args.file,action:args.action,text:args.text,reason:args.reason});
+      const result=this.memory.update({file:args.file,action:args.action,text:args.text,reason:args.reason});
+      // 田哥没明说「记住」时的自动写入（包括换班复盘），都提示他一句，不认可可以直接删。
+      if(result.ok&&!result.unchanged&&(String(current.id).startsWith('handoff-')||!/记住|记下|记一下|别忘/.test(String(current.text||''))))this.watches.addNotice({id:'memory:'+randomUUID(),title:'助理记忆',kind:'memory-update',label:'助理自动记下的偏好',
+        text:'我记下了：'+String(args.text).slice(0,200).replace(/[。.\s]+$/,'')+(args.action==='add'?'':'（'+({remove:'删除',rewrite:'整理'}[args.action]||args.action)+'）')+'。不认可可以对我说，或在助理页「助理记忆」里改。'});
+      return result;
     }
     if(!['send_session','create_session','watch_session'].includes(name))throw new Error('未知工具');
     const current=this.currentRequest;
@@ -412,6 +491,6 @@ class AssistantService {
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};
     } catch(error) {this.store.finish(requestId,'unknown',{sessionId,error:error.message});return{ok:false,state:'unknown',sessionId,error:error.message};}
   }
-  close(){clearInterval(this.watchTimer);clearInterval(this.rotationTimer);this.bridge.close();this.store.close();}
+  close(){for(const timer of [this.startupTimer,this.dailyTimer,this.idleTimer])clearTimeout(timer);clearInterval(this.reconcileTimer);clearInterval(this.safetyTimer);this.bridge.close();this.store.close();}
 }
 module.exports={AssistantService};
