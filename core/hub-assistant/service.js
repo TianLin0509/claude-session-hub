@@ -30,7 +30,7 @@ class AssistantService {
     this.liveHistory=new (require('./final-readers').AssistantFinalReaders)(deps);
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
     this.dialog=new (require('./dialog-log').DialogLog)(path.join(deps.dataDir,'assistant'));
-    this.reminders=new (require('./reminders').AssistantReminders)({store:this.store,isOwner:()=>this.ownsAssistant(),onFire:r=>this.fireReminder(r)});
+    this.reminders=new (require('./reminders').AssistantReminders)({store:this.store,isOwner:()=>this.ownsAssistant(),onFire:r=>this.fireReminder(r),onReschedule:r=>{try{this.deps.onReminderChanged?.({action:'set',reminder:r});}catch{}}});
     // 提醒检查不能因数据库已关闭等异常把进程带崩（测试结束、Hub 退出时）。
     if(!deps.noReminderTimer)setTimeout(()=>{try{this.reminders.schedule();}catch(e){console.warn('[assistant] reminders',e.message);}},3000).unref?.();
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
@@ -455,14 +455,14 @@ class AssistantService {
       }
       return this.context(args);
     }
-    if(name==='list_reminders')return{ok:true,reminders:this.reminders.upcoming().map(r=>({id:r.id,when:new Date(r.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),text:r.text}))};
+    if(name==='list_reminders')return{ok:true,reminders:this.reminders.upcoming().map(r=>({id:r.id,when:new Date(r.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),text:r.text,...(r.repeat?{repeat:r.repeat}:{})}))};
     if(name==='set_reminder'||name==='cancel_reminder'){
       const current=this.currentRequest;
       if(!hasCaller||!current||args.requestToken!==current.token||Date.now()-current.createdAt>30*60000)throw new Error('提醒设置不属于当前用户回合');
       requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
       if(name==='cancel_reminder'){const r=this.reminders.cancel(String(args.id||''));try{this.deps.onReminderChanged?.({action:'cancel',reminder:r});}catch{}return{ok:true,cancelled:{id:r.id,text:r.text}};}
-      const r=this.reminders.add({when:args.when,text:args.text});try{this.deps.onReminderChanged?.({action:'set',reminder:r});}catch{}
-      return{ok:true,id:r.id,when:new Date(r.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),text:r.text};
+      const r=this.reminders.add({when:args.when,text:args.text,repeat:args.repeat||''});try{this.deps.onReminderChanged?.({action:'set',reminder:r});}catch{}
+      return{ok:true,id:r.id,when:new Date(r.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),text:r.text,...(r.repeat?{repeat:r.repeat}:{})};
     }
     if(name==='update_memory'){
       // 只有本轮绑定的固定助理能改成长记忆；写入由 Hub 校验长度、拦截密钥并备份。
