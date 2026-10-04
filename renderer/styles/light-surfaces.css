@@ -59,14 +59,29 @@
 :root:is([data-theme='codex'],[data-theme='claude']) .card-detail-dialog textarea {
   background: var(--surface-sunken); color: var(--fg-default); border-color: var(--border-mid);
 }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.tc-result,.tc-result-wrap,.card-detail-dialog pre,.turn-body pre,.mr-gc-md pre) {
+:root:is([data-theme='codex'],[data-theme='claude']) :is(.tc-result,.tc-result-wrap,.card-detail-dialog pre) {
   background: var(--surface-sunken); color: var(--fg-default); text-shadow: none;
 }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.turn-body,.mr-gc-md) pre code { background: transparent; color: var(--fg-default); text-shadow: none; }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.turn-body,.mr-gc-md) :is(.token.comment,.token.prolog,.token.doctype,.token.cdata) { color: var(--fg-muted); }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.turn-body,.mr-gc-md) :is(.token.punctuation,.token.operator) { color: var(--fg-default); }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.turn-body,.mr-gc-md) :is(.token.keyword,.token.atrule,.token.selector) { color: #7944a1; }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.turn-body,.mr-gc-md) :is(.token.string,.token.char,.token.inserted,.token.attr-value) { color: #18704a; }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.turn-body,.mr-gc-md) :is(.token.number,.token.boolean,.token.constant,.token.symbol) { color: #856000; }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.turn-body,.mr-gc-md) :is(.token.function,.token.class-name,.token.property,.token.tag,.token.attr-name) { color: var(--brand); }
-:root:is([data-theme='codex'],[data-theme='claude']) :is(.tc-result-err,.token.deleted) { color: var(--status-danger); }
+/* A fenced block is rendered by Hub, not by the model. Pair its light
+   background and text colors; override card-view's legacy !important dark fill
+   and global dark syntax colors. Unclassified tokens use the readable base. */
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) pre {
+  background: var(--surface-sunken) !important;
+  color: var(--fg-default);
+  border-color: var(--border-subtle);
+  text-shadow: none;
+}
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) pre code { background: transparent; color: var(--fg-default); text-shadow: none; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) .code-block-wrap :is(.code-toggle,.code-copy) {
+  background: var(--surface-sunken); color: var(--brand-text); border-color: var(--border-subtle);
+}
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) .code-block-wrap :is(.code-toggle,.code-copy):hover { background: var(--surface-hover); }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) .token { color: var(--fg-default) !important; text-shadow: none; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) :is(.token.comment,.token.prolog,.token.doctype,.token.cdata) { color: #596579 !important; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) :is(.token.punctuation,.token.operator) { color: var(--fg-default) !important; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) :is(.token.keyword,.token.atrule,.token.selector) { color: #7944a1 !important; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) :is(.token.string,.token.char,.token.inserted,.token.attr-value) { color: #18704a !important; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) :is(.token.number,.token.boolean,.token.constant,.token.symbol) { color: #856000 !important; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) :is(.token.function,.token.class-name,.token.property,.token.tag,.token.attr-name) { color: var(--brand-text) !important; }
+:root:is([data-theme='codex'],[data-theme='claude'],[data-theme='hub'],[data-theme='slate']) :is(.turn-body,.mr-gc-md) .token.deleted { color: var(--status-danger) !important; }
+:root:is([data-theme='codex'],[data-theme='claude']) .tc-result-err { color: var(--status-danger); }
