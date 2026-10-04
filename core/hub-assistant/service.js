@@ -288,7 +288,14 @@ class AssistantService {
   dialogLog({limit}={}){return{ok:true,entries:this.dialog.recent({limit}),desk:this.desk?.busy()||null};}
   // 电脑上对助理说的话（助理 Tab 输入框），与手机同一套回答方式。
   get desk(){if(!this._desk)this._desk=new (require('./desk').AssistantDesk)({assistant:this,fastLane:this.deps.fastLane||null});return this._desk;}
-  ask({text}={}){return this.desk.ask(text);}
+  ask({text,to,again}={}){return this.desk.ask(text,{to,again});}
+  // 助理页右侧「助理状态」：会话、上下文用量、记忆、关注的任务。
+  pageStatus(){
+    const ctx=this.contextStatus(),o=this.overview(),mem=this.memory,fs=require('node:fs');
+    const files=['user','memory'].map(kind=>{let entries=[],updatedAt=null;try{entries=mem.entries(kind);updatedAt=fs.statSync(mem.file(kind)).mtimeMs;}catch{}return{kind,count:entries.length,updatedAt,recent:entries.slice(-3).reverse().map(e=>e.replace(/^- /,'').slice(0,80))};});
+    return{ok:true,session:{label:this.assistantLabel(),status:o.status,available:o.available},context:{tokens:ctx.tokens||null,cap:ctx.cap||null,lastActiveAt:ctx.lastActiveAt||null,lastRotation:ctx.lastRotation?{at:ctx.lastRotation.at,reason:ctx.lastRotation.reasonLabel||ctx.lastRotation.reason}:null},
+      memory:files,followed:this.followedTasks().map(w=>({title:w.title,state:w.state||null,updatedAt:w.updatedAt||null})).slice(0,8),frontDesk:this.frontDesk()};
+  }
   assistantLabel(){const p=this.currentProfile();let kind=p.kind;try{kind=require('../ai-kinds').getKindLabel(p.kind);}catch{}return[kind,p.label].filter(Boolean).join(' · ');}
   // 手机端选择面板的数据：当前助理设置 + 各后端可选型号与深度（手机不内置型号表）。
   async phoneProfile(){

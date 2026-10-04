@@ -8,7 +8,7 @@ function registerAssistantIpc(ipcMain,deps){
     'get-overview':()=>service.overview(),status:()=>service.overview(),
     'ensure-session':()=>service.ensureSession(),context:request=>service.context(request),
     'switch-backend':request=>service.switchBackend(request),
-    'set-profile':request=>service.setProfile(request),'front-desk':()=>require('../../core/hub-assistant/front-desk').catalog(service.frontDesk()),'set-front-desk':request=>service.setFrontDesk(request),'dialog-log':request=>service.dialogLog(request),ask:request=>service.ask(request),'rotate-now':()=>service.rotateNow(),
+    'set-profile':request=>service.setProfile(request),'front-desk':()=>require('../../core/hub-assistant/front-desk').catalog(service.frontDesk()),'set-front-desk':request=>service.setFrontDesk(request),'dialog-log':request=>service.dialogLog(request),ask:request=>service.ask(request),'page-status':()=>service.pageStatus(),'rotate-now':()=>service.rotateNow(),
     'open-memory':async()=>{const file=service.memory.file('user');if(!deps.openPath)return{ok:false,error:'记忆文件暂不可打开'};const error=await deps.openPath(file);return error?{ok:false,error}:{ok:true,path:file};},'phone-profile':()=>service.phoneProfile(),
     send:request=>service.send(request),actions:()=>({ok:true,actions:service.store.list()}),
     notifications:request=>service.notifications(request),

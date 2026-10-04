@@ -146,8 +146,11 @@ test('phone dialog log keeps every message and reply with who answered, for the 
  const voice=crypto.randomUUID();push(voice,{type:'voice_message',pcm:'AQI=',durationMs:3000});await h.channel.tick();
  h.assistant.readLiveFinal=()=>({records:[{clientSubmissionId:voice,text:'田哥，已记下。'}]});await h.channel.tick();
  const rows=log.recent();
- assert.deepEqual(rows.map(r=>[r.role,r.lane||r.input,r.text]),[['user','text','一加一等于几'],['assistant','fast','田哥，2。'],['user','voice','记一下明天出差'],['assistant','assistant','田哥，已记下。']]);
- assert.equal(rows[1].by,'千问 3.8 Flash');assert.match(rows[3].by,/Claude · Sonnet 5.5/);assert.equal(rows[2].durationMs,3000);assert.ok(rows[1].ms>=0);
+ assert.deepEqual(rows.map(r=>[r.role,r.lane||r.input,r.text]),[['user','text','一加一等于几'],['assistant','fast','田哥，2。'],['user','voice','记一下明天出差'],['route','assistant',''],['assistant','assistant','田哥，已记下。']]);
+ assert.match(rows[3].by,/Claude · Sonnet 5.5/,'交给助理会话时写明交给了谁');
+ const answers=packets(h,'answer-');assert.equal(answers[0].lane,'fast');assert.equal(answers[0].by,'千问 3.8 Flash');assert.equal(answers.at(-1).lane,'assistant');assert.match(answers.at(-1).by,/Claude/);
+ const receipt=packets(h,'receipt-')[0];if(receipt){assert.match(receipt.text,/已交给助理会话（Claude/);}
+ assert.equal(rows[1].by,'千问 3.8 Flash');assert.match(rows[4].by,/Claude · Sonnet 5.5/);assert.equal(rows[2].durationMs,3000);assert.ok(rows[1].ms>=0);
  assert.equal(log.recent({limit:2}).length,2);fs.rmSync(dir,{recursive:true,force:true});
 });
 test('desk: desktop messages share the front desk — fast answers in place, work goes to the assistant session and its reply is logged; busy assistant queues',async()=>{

@@ -10,15 +10,17 @@ class AssistantDesk {
     this.a = assistant; this.fast = fastLane; this.pollMs = pollMs;
     this.queue = []; this.pending = null; this.timer = null; this.pumping = false;
   }
-  async ask(rawText) {
+  // to='assistant' 时这一条跳过快答、直接交给助理会话（田哥觉得难，或对快答不满意让助理再答）。
+  async ask(rawText, { to = 'auto', again = null } = {}) {
     const text = String(rawText || '').trim();
     if (!text || text.length > 50000) throw new Error('请输入要交给助理的内容');
     const id = randomUUID(), at = Date.now();
-    this.a.logDialog({ id, at, role: 'user', input: 'text', source: 'hub', text });
+    this.a.logDialog({ id, at, role: 'user', input: 'text', source: 'hub', text, ...(to === 'assistant' ? { forced: true } : {}), ...(again ? { again } : {}) });
     const fd = this.a.frontDesk();
-    if (fd.mode === 'api' && this.fast?.eligible(text)) {
+    if (to !== 'assistant' && fd.mode === 'api' && this.fast?.eligible(text)) {
       try {
         const r = await this.fast.answer(text, { history: this.a.recentHistory(), userPrefs: this.a.memory?.read?.().user || '', model: fd.model });
+        if (r.handoff) console.log('[assistant] desk fast lane handoff', Math.round(r.ms || 0) + 'ms');
         if (!r.handoff) {
           this.a.logDialog({ id, role: 'assistant', lane: 'fast', by: fd.modelLabel, text: r.text, ms: Date.now() - at });
           try { this.a.recordFastLane({ id, question: text, answer: r.text, model: r.model }); } catch {}
@@ -26,6 +28,7 @@ class AssistantDesk {
         }
       } catch (error) { console.warn('[assistant] desk fast lane fallback', error.message); }
     }
+    this.a.logDialog({ id, role: 'route', lane: 'assistant', by: this.a.assistantLabel() });
     this.queue.push({ id, text, at }); this.arm(); void this.pump();
     return { ok: true, id, lane: 'assistant' };
   }

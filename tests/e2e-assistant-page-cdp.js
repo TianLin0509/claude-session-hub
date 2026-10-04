@@ -41,7 +41,14 @@ async function main(){
   const reply=await until('fast reply',()=>cdp.eval('document.querySelector(".assistant-page .ap-msg.ai.fast")?.innerText||null'),30000);
   result.fastReply={text:reply.replace(/\s+/g,' '),ms:Date.now()-t0};assert.match(reply,/2/);assert.match(reply,/千问|DeepSeek/);
   assert.equal(await cdp.eval('document.querySelector(".ap-composer textarea").value'),'','发送后输入框清空');
-  await shot('03-fast-reply');result.checks.push(`电脑上说一句，${result.fastReply.ms}ms 收到快答并标明回答者`);
+  assert.match(await cdp.eval('document.querySelector(".assistant-page .ap-msg.me .ap-to")?.innerText||""'),/→ ⚡ 千问|→ ⚡ DeepSeek/,'我的消息下方写明交给了快答');
+  assert.equal(await cdp.eval('!!document.querySelector(".assistant-page .ap-again")'),true,'快答下方有「让助理会话再答」');
+  await shot('03-fast-reply');
+  await click('[data-ap="route"]');assert.equal(await cdp.eval('document.querySelector(".ap-route").innerText'),'交给助理会话');await click('[data-ap="route"]');assert.equal(await cdp.eval('document.querySelector(".ap-route").innerText'),'自动');
+  result.checks.push('输入框「自动 / 交给助理会话」开关可切换');
+  await click('[data-ap="status"]');await until('status panel',()=>cdp.eval('(()=>{const a=document.querySelector(".ap-status:not([hidden])");return !!a&&/助理会话/.test(a.innerText)&&/记忆/.test(a.innerText)&&/关注的任务/.test(a.innerText)&&/手机/.test(a.innerText)})()'),10000);
+  await shot('04-status');result.status=await cdp.eval('document.querySelector(".ap-status").innerText.replace(/\s+/g," ").slice(0,400)');
+  result.checks.push('状态栏显示助理会话、上下文、记忆、关注任务、手机');result.checks.push(`电脑上说一句，${result.fastReply.ms}ms 收到快答并标明回答者`);
   await click('#btn-home');await until('page closed',async()=>!(await visible()),5000);result.checks.push('点「工作台」助理页收起');
   await click('#btn-assistant');await until('page reopened with history',()=>cdp.eval('document.querySelectorAll(".assistant-page .ap-msg:not(.typing)").length>=2'),10000);result.checks.push('再进助理页，刚才的对话仍在');
   result.passed=true;

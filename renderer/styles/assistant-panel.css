@@ -91,8 +91,8 @@ body.assistant-session-active .assistant-backend{display:block}
 .ap-composer{display:flex;gap:10px;align-items:flex-end;max-width:760px;width:100%;box-sizing:border-box;margin:0 auto;padding:12px 24px 18px}
 .ap-composer textarea{flex:1;resize:none;min-height:42px;max-height:160px;padding:10px 14px;border:1px solid #dfe6f1;border-radius:14px;background:#fff;color:#1b2942;font:inherit;outline:none}
 .ap-composer textarea:focus{border-color:#9db4ec;box-shadow:0 0 0 3px #315acb1a}
-.ap-composer button{height:42px;padding:0 18px;border:0;border-radius:12px;background:#315acb;color:#fff;font:inherit;cursor:pointer}
-.ap-composer button:disabled{opacity:.5;cursor:wait}
+.ap-composer .ap-send{height:42px;padding:0 18px;border:0;border-radius:12px;background:#315acb;color:#fff;font:inherit;cursor:pointer}
+.ap-composer .ap-send:disabled{opacity:.5;cursor:wait}
 .ap-menu{position:fixed;z-index:2600;min-width:240px;max-width:320px;padding:6px;background:#fff;color:#1b2942;border:1px solid #dfe6f1;border-radius:12px;box-shadow:0 10px 30px #172f5122;font-size:13px}
 .ap-menu > button{display:flex;justify-content:space-between;width:100%;padding:8px 12px;border:0;border-radius:8px;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}
 .ap-menu > button:hover{background:#edf4ff}
@@ -106,3 +106,29 @@ body.assistant-session-active .assistant-backend{display:block}
 .ap-menu-row button{padding:5px 12px;border:1px solid #dfe6f1;border-radius:8px;background:#fff;color:#315acb;font:inherit;font-size:12px;cursor:pointer}
 .ap-menu-row button.primary{background:#315acb;border-color:#315acb;color:#fff}
 .ap-menu-row button:disabled{opacity:.6}
+/* 助理页 v2：对话列 + 可收起的右侧「助理状态」；每条消息标明交给了谁 */
+.ap-body{flex:1;display:flex;min-height:0}
+.ap-main{flex:1;display:flex;flex-direction:column;min-width:0}
+.ap-status-toggle[aria-pressed="true"]{background:#edf4ff;border-color:#c9d8f5;color:#315acb}
+.ap-status{width:300px;flex-shrink:0;overflow-y:auto;padding:6px 18px 20px;border-left:1px solid #e7ecf3;background:#fff;font-size:12px}
+.ap-status[hidden]{display:none}
+.ap-status section{padding:12px 0;border-bottom:1px solid #f0f3f8}
+.ap-status section:last-child{border-bottom:0}
+.ap-status h3{margin:0 0 8px;font-size:12px;font-weight:600;color:#4a5872}
+.ap-kv{display:flex;justify-content:space-between;gap:8px;margin:2px 0}
+.ap-kv b{font-weight:600;color:#1b2942}
+.ap-kv span{color:#7a8699}
+.ap-dim{margin:3px 0;color:#9aa5b5;font-size:11px}
+.ap-line{margin:3px 0;color:#1b2942;line-height:1.55;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.ap-mem{margin-bottom:10px}
+.ap-bar{height:5px;margin:6px 0 4px;border-radius:999px;background:#edf1f7;overflow:hidden}
+.ap-bar i{display:block;height:100%;border-radius:999px;background:#5b83e0}
+.ap-row{display:flex;gap:8px;margin-top:8px}
+.ap-row button{padding:4px 10px;border:1px solid #dfe6f1;border-radius:8px;background:#fff;color:#315acb;font:inherit;font-size:12px;cursor:pointer}
+.ap-row button:hover{background:#edf4ff}
+.ap-to{color:#5b6b85}
+.ap-again{padding:0;border:0;background:none;color:#315acb;font:inherit;font-size:11px;cursor:pointer}
+.ap-again:hover{text-decoration:underline}
+.ap-again:disabled{color:#9aa5b5;cursor:default;text-decoration:none}
+.ap-route{height:42px;padding:0 12px;border:1px solid #dfe6f1;border-radius:12px;background:#fff;color:#4a5872;font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}
+.ap-route.on{background:#edf4ff;border-color:#c9d8f5;color:#315acb}
