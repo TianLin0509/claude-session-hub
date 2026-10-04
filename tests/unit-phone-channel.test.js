@@ -219,7 +219,7 @@ test('repeating reminders move to the next day / workday after firing; shared fi
  assert.equal(h.calls.length,1,'交给助理会话');const sent=h.calls[0].text;const m=sent.match(/手机分享了一个文件：(.+)）/);assert.ok(m,'消息里带文件路径');
  assert.equal(fs.readFileSync(m[1],'utf8'),'PDF内容');assert.ok(m[1].startsWith(root)&&/手机分享/.test(m[1])&&!/\.\.[\/]/.test(m[1]),'存在工作区当天的手机分享文件夹，文件名不能跳出目录');
  assert.equal(JSON.stringify(h.s.inbox).includes('UERG'),false,'大块文件数据不留在手机通道记录里');
- h.assistant.followedTasks=()=>[{sessionId:'a',state:'watching'},{sessionId:'b',state:'paused-closed'},{sessionId:'c',state:'watching'}];h.assistant.sessions=()=>[{id:'a',status:'running'},{id:'b',status:'running'},{id:'c',status:'idle'}];assert.equal(h.channel.watchingCount(),1,'只算关注中且正在运行的');
- h.assistant.sessions=()=>[{id:'a',status:'idle'}];assert.equal(h.channel.watchingCount(),0,'任务跑完手机就不必常驻后台');
+ h.assistant.followedTasks=()=>[{sessionId:'a',state:'watching'},{sessionId:'b',state:'paused-closed'},{sessionId:'c',state:'watching'},{sessionId:'d',state:'waiting-binding'}];let busy=new Set(['a','b','d']);h.assistant.sessionBusy=id=>busy.has(id);assert.equal(h.channel.watchingCount(),2,'只算关注中且正在干活的（刚开、还在绑定的也算）');
+ busy=new Set();assert.equal(h.channel.watchingCount(),0,'任务跑完手机就不必常驻后台');
  fs.rmSync(root,{recursive:true,force:true});
 });
