@@ -105,6 +105,6 @@ test('orchestrator rules describe the role and the enforced limits; goal text fo
   const block = Prompt.orchestratorBlock({ settings: { roundCap: 6, timeCapMin: 90, requireConfirm: true } });
   assert.match(block, /编排员/); assert.match(block, /6 轮/); assert.match(block, /90 分钟/); assert.match(block, /orch_status/);
   const goal = Prompt.goalText({ goal: '做 X', acceptance: '测试通过', preset: 'development' });
-  assert.match(goal, /验收标准/); assert.match(goal, /不要执行合并/);
+  assert.match(goal, /验收标准/); assert.match(goal, /审查位独立验证候选通过后/); assert.match(goal, /验证不通过不得合并/);
   assert.match(Ledger.renderMarkdown(Ledger.create('m', {})), /计划账本/);
 });

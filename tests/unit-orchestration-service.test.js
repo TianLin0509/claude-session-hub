@@ -110,7 +110,7 @@ test('development workflows need different backends unless justified, and start 
   assert.equal(x.meetingObj.serialWorkflow.deliveryKind, 'file');
   assert.deepEqual(x.meetingObj.serialWorkflow.deliveryStages.map(s => s.members[0]), ['m2', 'm2', 'm3']);
   assert.match(x.engineCalls[0][1], /单测覆盖零速率/);
-  assert.match(x.engineCalls[0][1], /不要执行合并/);
+  assert.match(x.engineCalls[0][1], /验证不通过不得合并/);
   await assert.rejects(x.call('orch_start_workflow', { ...args, sameKindReason: 'x' }), /已有工作段在进行/);
 });
 
