@@ -93,7 +93,7 @@ class PhoneChannel{
     await this.flush().catch(()=>{});
     this.journal.change(()=>{row.t={...row.t,answerQueued:Date.now()};});
     try{this.assistant.recordFastLane?.({id:row.id,question:row.text,answer:result.text,model:result.model,inputMode:row.inputMode});}catch{}
-    const t=row.t||{};console.log('[phone] fast lane',row.id.slice(0,8),JSON.stringify({asr:t.asrDone&&t.asrStart?t.asrDone-t.asrStart:null,model:result.ms,first:result.firstMs,total:t.answerQueued-t.received}));
+    const t=row.t||{};console.log('[phone] fast lane',row.id.slice(0,8),JSON.stringify({via:result.via,asr:t.asrDone&&t.asrStart?t.asrDone-t.asrStart:null,model:result.ms,first:result.firstMs,total:t.answerQueued-t.received}));
     return true;
    }catch(e){console.warn('[phone] fast lane fallback',e.message);return false;}
   }
