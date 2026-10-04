@@ -1,4 +1,5 @@
 'use strict';
+const nativeRuntime = require('./native-agent-runtime.js');
 
 const ATTENTION_NONE = 'none';
 const ATTENTION_NEEDS_INPUT = 'needs-input';
@@ -35,8 +36,8 @@ function normalizeTurnId(value) {
 
 function attentionStateOf(session) {
   if (!session || typeof session !== 'object') return ATTENTION_NONE;
-  if (require('./native-agent-runtime.js').isNativeAgent(session)) {
-    if (require('./native-agent-runtime.js').nativeRuntimeTruth(session).state === 'waiting') return ATTENTION_NEEDS_INPUT;
+  if (nativeRuntime.isNativeAgent(session)) {
+    if (nativeRuntime.nativeRuntimeTruth(session).state === 'waiting') return ATTENTION_NEEDS_INPUT;
     return session.replyReady === true ? ATTENTION_REPLY_READY : ATTENTION_NONE;
   }
   if (VALID_ATTENTION_STATES.has(session.attentionState)) return session.attentionState;
@@ -53,8 +54,8 @@ function attentionStateOf(session) {
 }
 
 function sessionNeedsUserInput(session) {
-  if (require('./native-agent-runtime.js').isNativeAgent(session)) {
-    return require('./native-agent-runtime.js').nativeRuntimeTruth(session).state === 'waiting';
+  if (nativeRuntime.isNativeAgent(session)) {
+    return nativeRuntime.nativeRuntimeTruth(session).state === 'waiting';
   }
   return attentionStateOf(session) === ATTENTION_NEEDS_INPUT;
 }

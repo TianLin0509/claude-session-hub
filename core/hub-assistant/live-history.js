@@ -6,14 +6,15 @@ const {JsonlByteScanner}=require('../jsonl-byte-scanner');
 const {codexLineFilter,inspectCodexEnvelope}=require('../codex-rollout-reader');
 const {isUsableCodexRolloutPath}=require('../codex-transcript-parser');
 const {codexAgentMessageEventFromRecord}=require('../transcript-payload-utils');
+const aiKinds=require('../ai-kinds'),acpProfiles=require('../acp-profiles');
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function nativeId(meta){
   const kind=String(meta?.kind||'').replace(/-resume$/,'');
-  if(require('../ai-kinds').isCodexCliKind(kind))return meta.codexSid||meta.ccSessionId||null;
-  if(require('../ai-kinds').isClaudeFamily(kind))return meta.ccSessionId||null;
+  if(aiKinds.isCodexCliKind(kind))return meta.codexSid||meta.ccSessionId||null;
+  if(aiKinds.isClaudeFamily(kind))return meta.ccSessionId||null;
   if(kind==='gemini')return meta.geminiChatId||null;
   if(kind==='kimi')return meta.kimiSid||null;
-  if(require('../acp-profiles').isAcpKind(kind))return meta.acpSid||null;
+  if(acpProfiles.isAcpKind(kind))return meta.acpSid||null;
   return null;
 }
 function finalLineFilter(prefix,context){const e=inspectCodexEnvelope(prefix);if(e.recordType==='response_item'){if(!e.payloadType)return context.final?false:null;if(e.payloadType!=='message')return false;if(!e.role)return context.final?false:null;return e.role==='assistant';}return codexLineFilter(prefix,context,'turns');}
