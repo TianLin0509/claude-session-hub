@@ -79,6 +79,16 @@ function fixture(t, { settings = {}, dataDir } = {}) {
 const planArgs = { summary: '调研并实现', team: [{ memberId:'m2', role: '开发位' }, { memberId:'m3', role: '审核位' }],
   segments: [{ name: 'PF 实现', preset: 'development', goal: '实现 PF', acceptance: '单测通过' }] };
 
+test('lightweight: a new task starts with defaults and archives the previous task evidence',async t=>{
+  const x=fixture(t);
+  const ledger=x.service.ledgerFor('mt1');
+  ledger.status='finished';ledger.budget.roundCap=10;ledger.budget.roundsUsed=10;ledger.budget.timeCapMs=30*60000;
+  ledger.plan={version:1,summary:'上一个任务'};ledger.segments=[{name:'旧任务',status:'passed'}];
+  x.service.userMessage('mt1',{text:'接下来帮我分析新需求'});
+  assert.equal(ledger.budget.roundCap,8);assert.equal(ledger.budget.roundsUsed,0);assert.equal(ledger.budget.timeCapMs,180*60000);
+  assert.equal(ledger.plan,null);assert.deepEqual(ledger.segments,[]);assert.equal(ledger.taskHistory[0].budget.roundCap,10);
+});
+
 test('only the orchestrator session may call tools; nothing is dispatched before the plan is confirmed', async t => {
   const x = fixture(t);
   await assert.rejects(x.call('orch_status', {}, 's-other'), /只有编排群里的编排员/);

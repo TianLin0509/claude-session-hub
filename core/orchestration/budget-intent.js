@@ -19,9 +19,9 @@ function validate(input){
 function extract(text){
   const s=String(text||'');const out={};
   const marker='(?:允许|最多|至多|不超过|不多于|上限|限额|预算|额度|只做|只跑|控制在|限制在|迭代)';
-  const rounds=s.match(new RegExp(marker+'[^。！？\\n，,]{0,12}?('+NUM+')\\s*轮(?:以内|以下|之内)?'));
+  const rounds=[...s.matchAll(new RegExp(marker+'[^。！？\\n，,]{0,12}?('+NUM+')\\s*轮(?:以内|以下|之内)?','g'))].at(-1);
   if(rounds)out.roundCap=number(rounds[1]);
-  const time=s.match(new RegExp('(?:'+marker+'|运行时间|总时间|时长)[^。！？\\n，,]{0,12}?('+NUM+')\\s*(分钟|小时)'));
+  const time=[...s.matchAll(new RegExp('(?:'+marker+'|运行时间|总时间|时长)[^。！？\\n，,]{0,12}?('+NUM+')\\s*(分钟|小时)','g'))].at(-1);
   if(time)out.timeCapMin=number(time[1])*(time[2]==='小时'?60:1);
   return Object.keys(out).length?{...validate(out),sourceQuote:s.slice(0,4000)}:null;
 }

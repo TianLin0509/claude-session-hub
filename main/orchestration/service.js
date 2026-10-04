@@ -596,7 +596,12 @@ function createOrchestrationService(deps) {
     lastUserAt.set(meetingId, now());
     Ledger.noteUserMessage(ledger);
     if(!direct.length){
-      if(ledger.status==='finished')ledger.budgetIntent=null;
+      if(ledger.status==='finished'){
+        ledger.taskHistory=[...(ledger.taskHistory||[]),{plan:ledger.plan,segments:ledger.segments,budget:ledger.budget,asks:ledger.asks,reports:ledger.reports,endedAt:now()}];
+        ledger.budget=Ledger.create(meetingId,ledger.settings,now()).budget;
+        ledger.plan=null;ledger.segments=[];ledger.asks=[];ledger.reports=[];
+        ledger.budgetIntent=null;ledger.budgetError=null;
+      }
       ledger.userMessages=[...(ledger.userMessages||[]),String(text)].slice(-8);
       try{
         if(/按默认额度|使用默认额度|恢复默认额度/.test(String(text))){ledger.budgetIntent={roundCap:ledger.settings.roundCap,timeCapMin:ledger.settings.timeCapMin};ledger.budgetError=null;}

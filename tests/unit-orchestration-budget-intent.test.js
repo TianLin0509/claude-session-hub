@@ -6,6 +6,7 @@ test('explicit natural language recognizes Arabic and Chinese limits with time u
   assert.equal(B.extract('运行时间最多半小时').timeCapMin,30);
   assert.equal(B.extract('最多两小时').timeCapMin,120);
   assert.equal(B.extract('总时间30分钟').timeCapMin,30);
+  assert.equal(B.extract('原来允许8轮，现在允许10轮以内迭代').roundCap,10);
 });
 test('task data and unspecified dimensions never invent budget changes',()=>{
   assert.equal(B.extract('生成10轮比赛的赛程表'),null);
