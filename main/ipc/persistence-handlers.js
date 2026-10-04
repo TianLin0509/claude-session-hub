@@ -149,6 +149,8 @@ function buildMeetingsForState(meetingList, meetingManager) {
       serialWorkflow: (rendererMeeting.serialWorkflow && typeof rendererMeeting.serialWorkflow === 'object')
         ? rendererMeeting.serialWorkflow
         : (authoritative.serialWorkflow || null),
+      // 编排身份由主进程权威维护（成员由编排员动态加入），先取主进程值。
+      orchestration: authoritative.orchestration || rendererMeeting.orchestration || null,
     };
   });
 }

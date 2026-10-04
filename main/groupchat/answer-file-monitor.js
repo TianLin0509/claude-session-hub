@@ -7,7 +7,7 @@ const Answers = require('../../core/group-answer-files');
 const SWEEP_MS = 15_000;
 const HOT_MS = 24 * 3600_000;
 
-function createAnswerFileMonitor({ getHubDataDir, getOrchestrator, meetingManager, sendToRenderer, logger = console }) {
+function createAnswerFileMonitor({ getHubDataDir, getOrchestrator, meetingManager, sendToRenderer, onChanged = () => {}, logger = console }) {
   const hot = new Map();
   let subscription = null, timer = null;
   // touch=false for the sweep, so an idle room ages out of the hot set.
@@ -20,7 +20,10 @@ function createAnswerFileMonitor({ getHubDataDir, getOrchestrator, meetingManage
       if (!orch.state.answerFiles) return false;
       if (touch || !hot.has(meetingId)) hot.set(meetingId, Date.now());
       const changed = Answers.reconcile(orch,{changedPaths});
-      if (changed) sendToRenderer('groupchat:answer-file', { meetingId, revision: orch.state.revision });
+      if (changed) {
+        sendToRenderer('groupchat:answer-file', { meetingId, revision: orch.state.revision });
+        try { onChanged(meetingId, orch); } catch (error) { logger.warn?.('[answer-files] change hook failed:', error.message); }
+      }
       return changed;
     } catch (error) { logger.warn?.('[answer-files] reconcile failed:', meetingId, error.message); return false; }
   }

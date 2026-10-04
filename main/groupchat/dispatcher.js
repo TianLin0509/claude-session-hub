@@ -7,6 +7,7 @@ const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js')
 const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
 const DevFile = require('../../core/dev-file-workflow');
+const OrchestrationRules = require('../../core/orchestration/rules');
 const GroupAnswers = require('../../core/group-answer-files');
 const { isNativeSession, nativeTurnHasEnded } = require('../../core/codex-native-runtime');
 const { isClaudeFamily } = require('../../core/ai-kinds.js');
@@ -1288,7 +1289,9 @@ function createGroupChatDispatcher(deps) {
     if (!args.silent) {
       dispatchSeq = (meetingDispatchSeq.get(key) || 0) + 1;
       meetingDispatchSeq.set(key, dispatchSeq);
-      const fileHandoff=args.fileHandoff === true && (DevFile.enabled(meetingManager.getMeeting(meetingId)) || require('../../core/delivery-workflow').enabled(meetingManager.getMeeting(meetingId)));
+      // 编排群总是按文件交接：任何一轮新派发都不把在干活的成员标成「被抢占」。
+      const fileHandoff=(args.fileHandoff === true && (DevFile.enabled(meetingManager.getMeeting(meetingId)) || require('../../core/delivery-workflow').enabled(meetingManager.getMeeting(meetingId))))
+        || OrchestrationRules.enabled(meetingManager.getMeeting(meetingId));
       if(fileHandoff)meetingHandoffSeq.set(key,dispatchSeq);else meetingHandoffSeq.delete(key);
       try { supersedeActiveWatchersForMeeting(meetingId, fileHandoff); }
       catch (e) { warn('[groupchat] preempt supersede threw:', e && e.message); }
@@ -1504,6 +1507,7 @@ function createGroupChatDispatcher(deps) {
           kind: member.kind,
           // 产物写进本群聊的 workspace，而不是 home 下的公共 artifacts 目录。
           workspace: meeting.workspace || null,
+          extraRules: OrchestrationRules.rulesFor(getHubDataDir(), meeting, member.memberId),
         });
         // File protocol is sent once per actual session and role/name binding,
         // and only acknowledged after successful delivery. Ordinary messages

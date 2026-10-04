@@ -23,6 +23,12 @@ function cloneSerialWorkflow(workflow) {
   return JSON.parse(JSON.stringify(workflow));
 }
 
+// AI 编排模式（2026-10-04）：只存静态身份与设置；进度账本在 task-docs/<群>/orchestration/。
+function cloneOrchestration(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.enabled !== true) return null;
+  return JSON.parse(JSON.stringify(value));
+}
+
 function ensureStableSlotSpecs(slotSpecs, subSessions) {
   const count = Array.isArray(subSessions) ? subSessions.length : 0;
   const specs = Array.isArray(slotSpecs) ? slotSpecs.map(spec => ({ ...(spec || {}) })) : [];
@@ -96,6 +102,7 @@ class MeetingRoomManager {
       // free-mode（2026-05-04）：自由模式参与者 slot 列表，默认全员勾选
       participants: Array.isArray(opts.participants) ? opts.participants.slice() : [0, 1, 2],
       serialWorkflow: cloneSerialWorkflow(opts.serialWorkflow),
+      orchestration: cloneOrchestration(opts.orchestration),
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -171,6 +178,7 @@ class MeetingRoomManager {
       autoTitleGenerated: !!m.autoTitleGenerated,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
       serialWorkflow: cloneSerialWorkflow(m.serialWorkflow),
+      orchestration: cloneOrchestration(m.orchestration),
     } : null;
   }
 
@@ -191,6 +199,7 @@ class MeetingRoomManager {
       autoTitleGenerated: !!m.autoTitleGenerated,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
       serialWorkflow: cloneSerialWorkflow(m.serialWorkflow),
+      orchestration: cloneOrchestration(m.orchestration),
     }));
   }
 
@@ -280,11 +289,12 @@ class MeetingRoomManager {
       'lastMessageTime', 'lastCompletedAt', 'status', 'lastScene', 'scene', 'covenantText',
       'userRenamed', 'autoTitlePending', 'autoTitleGenerated',
       'serialWorkflow', 'workspace', 'workspaceLabel',
-      'completionNotificationEnabled',
+      'completionNotificationEnabled', 'orchestration',
     ];
     for (const key of allowed) {
       if (key in fields) {
-        m[key] = key === 'serialWorkflow' ? cloneSerialWorkflow(fields[key]) : fields[key];
+        m[key] = key === 'serialWorkflow' ? cloneSerialWorkflow(fields[key])
+          : key === 'orchestration' ? cloneOrchestration(fields[key]) : fields[key];
       }
     }
     // Placement is a three-state choice: top / normal / bottom.  Normalize at
@@ -296,7 +306,7 @@ class MeetingRoomManager {
     //   避免新群聊首次 markDirty 时 prev 残缺导致 title/subSessions 被默认值覆盖。
     if ('serialWorkflow' in fields || 'workspace' in fields || 'workspaceLabel' in fields
         || 'lastMessageTime' in fields || 'lastCompletedAt' in fields
-        || 'completionNotificationEnabled' in fields
+        || 'completionNotificationEnabled' in fields || 'orchestration' in fields
         || 'pinned' in fields || 'bottomed' in fields) {
       meetingStore.markDirty(meetingId, m);
     }
@@ -304,6 +314,7 @@ class MeetingRoomManager {
       ...m,
       subSessions: [...m.subSessions],
       serialWorkflow: cloneSerialWorkflow(m.serialWorkflow),
+      orchestration: cloneOrchestration(m.orchestration),
     };
   }
 
@@ -404,6 +415,7 @@ class MeetingRoomManager {
       participants: Array.isArray(meetingData.participants) ? meetingData.participants : null,
       // 串行工作流配置（2026-06-17 道雪）：重启恢复
       serialWorkflow: cloneSerialWorkflow(meetingData.serialWorkflow),
+      orchestration: cloneOrchestration(meetingData.orchestration),
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
@@ -441,6 +453,9 @@ class MeetingRoomManager {
     }
     if (!m.serialWorkflow && data.serialWorkflow && typeof data.serialWorkflow === 'object') {
       m.serialWorkflow = cloneSerialWorkflow(data.serialWorkflow);
+    }
+    if (!m.orchestration && data.orchestration && typeof data.orchestration === 'object') {
+      m.orchestration = cloneOrchestration(data.orchestration);
     }
     return true;
   }

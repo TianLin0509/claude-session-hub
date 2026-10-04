@@ -47,6 +47,9 @@ let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
 let _creating = false;
 let _presentation = { embedded: false, onCreated: null };
+// AI 编排模式（2026-10-04）：打开后成员 1 当编排员，其余成员可选（编排员按计划自己组队）。
+let _orchestrationOn = false;
+const ORCHESTRATOR_KINDS = ['claude', 'codex'];
 
 function _paintWorkspace(workspace) {
   if (workspace) _meetingWorkspace = workspace;
@@ -299,8 +302,11 @@ function _slotHtml(i, spec, isGroup) {
   ).join('');
   const avatarSrc = _aiLogo(def.kind);
   const avatarAlt = KIND_LABELS[def.kind] || def.kind;
-  const label = isGroup ? `成员 ${i + 1}` : `Slot ${i + 1} · ${SLOT_NAMES[i]}`;
-  const removeBtn = isGroup && i >= 1 && (_currentMode !== 'dev' || _groupSlots.length > 2)
+  const orchLead = isGroup && _orchestrationOn && i === 0;
+  const label = !isGroup ? `Slot ${i + 1} · ${SLOT_NAMES[i]}`
+    : orchLead ? '成员 1 · 编排员'
+    : _orchestrationOn ? `成员 ${i + 1} · 初始成员（可选）` : `成员 ${i + 1}`;
+  const removeBtn = isGroup && i >= 1 && (_orchestrationOn || _currentMode !== 'dev' || _groupSlots.length > 2)
     ? `<button type="button" class="mcm-remove-member" data-remove-member="${i}" title="移除此成员">×</button>`
     : '';
   const effortField = tuning.showEffort ? `
@@ -321,7 +327,7 @@ function _slotHtml(i, spec, isGroup) {
         <select class="mcm-codex-tier-select">${_selectOptions(tuning.codexTierOptions, tuning.codexSpeedTier)}</select>
       </label>` : '';
   return `
-    <div class="mcm-slot${isGroup ? ' mcm-group-member' : ''}" data-slot="${i}" data-kind="${_escapeHtml(def.kind)}">
+    <div class="mcm-slot${isGroup ? ' mcm-group-member' : ''}${orchLead ? ' mcm-orch-lead' : ''}" data-slot="${i}" data-kind="${_escapeHtml(def.kind)}">
       ${removeBtn}
       <div class="mcm-slot-head">
         <img class="mcm-avatar" src="${_escapeHtml(avatarSrc)}" alt="${_escapeHtml(avatarAlt)}">
@@ -459,6 +465,16 @@ function _ensureModal() {
           ${_renderSceneChoices('dev')}
         </div>
         <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin:-6px 0 12px; line-height:1.6;"></div>
+        <div class="mcm-orch-row" id="mcm-orch-row">
+          <label class="mcm-orch-switch"><input type="checkbox" id="mcm-orch-toggle" role="switch"><span class="mcm-orch-track" aria-hidden="true"></span><strong>编排员</strong></label>
+          <span class="mcm-orch-hint" id="mcm-orch-hint">打开后成员 1 当编排员：你只和它对话，它按任务增减成员（最多 3 位）、设计工作流并汇报进展；通过与否由审核位决定。</span>
+          <div class="mcm-orch-options" id="mcm-orch-options" hidden>
+            <label><input type="checkbox" id="mcm-orch-confirm" checked> 计划先给我确认</label>
+            <label>迭代上限 <input type="number" id="mcm-orch-rounds" min="2" max="30" value="8"> 轮</label>
+            <label>时长上限 <input type="number" id="mcm-orch-hours" min="0.5" max="24" step="0.5" value="3"> 小时</label>
+            <span class="mcm-orch-note">关掉开关 = 和现在完全一样</span>
+          </div>
+        </div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
           <span>开发群聊第一位实现、第二位独立验证与合并。需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
@@ -475,6 +491,38 @@ function _ensureModal() {
   document.body.appendChild(_modalEl);
   _bindEvents();
   return _modalEl;
+}
+
+function _setOrchestration(on) {
+  _orchestrationOn = !!on;
+  if (!_modalEl) return;
+  const toggle = _modalEl.querySelector('#mcm-orch-toggle');
+  if (toggle) toggle.checked = _orchestrationOn;
+  _modalEl.querySelector('#mcm-orch-row')?.classList.toggle('on', _orchestrationOn);
+  const options = _modalEl.querySelector('#mcm-orch-options');
+  if (options) options.hidden = !_orchestrationOn;
+  const caption = _modalEl.querySelector('.mcm-member-caption span');
+  if (caption) {
+    if (!caption.dataset.plainText) caption.dataset.plainText = caption.textContent;
+    caption.textContent = _orchestrationOn
+      ? '编排模式下，初始成员可留可删；编排员开工前会在计划里写明它要的队伍，你确认后才建。'
+      : caption.dataset.plainText;
+  }
+  const hint = _modalEl.querySelector('#mcm-orch-hint');
+  if (hint) hint.textContent = _orchestrationOn
+    ? '已开启：成员 1 当编排员。你只和它对话，它按任务增减成员（最多 3 位）、设计工作流并汇报进展；通过与否由审核位决定。初始成员可留可删。'
+    : '打开后成员 1 当编排员：你只和它对话，它按任务增减成员（最多 3 位）、设计工作流并汇报进展；通过与否由审核位决定。';
+  _renderSlots();
+}
+
+function _orchestrationPayload() {
+  if (!_orchestrationOn || !_modalEl) return null;
+  const rounds = Number(_modalEl.querySelector('#mcm-orch-rounds')?.value) || 8;
+  const hours = Number(_modalEl.querySelector('#mcm-orch-hours')?.value) || 3;
+  return { enabled: true, settings: {
+    requireConfirm: !!_modalEl.querySelector('#mcm-orch-confirm')?.checked,
+    roundCap: Math.round(rounds), timeCapMin: Math.round(hours * 60),
+  } };
 }
 
 function _bindEvents() {
@@ -519,6 +567,10 @@ function _bindEvents() {
     _renderProjectLibrary();
     void _chooseMeetingExistingWorkspace().catch(err => _showError(`选择目录失败：${err && err.message ? err.message : String(err)}`));
   });
+  _modalEl.querySelector('#mcm-orch-toggle').addEventListener('change', event => {
+    _syncGroupSlotsFromDom();
+    _setOrchestration(event.target.checked);
+  });
   _modalEl.querySelectorAll('input[name="mcm-scene"]').forEach(radio => {
     radio.addEventListener('change', () => {
       if (!radio.checked) return;
@@ -561,7 +613,9 @@ async function _onCreate() {
     if (!slots.length) throw new Error('请至少保留一个群聊成员');
     const sceneInput = _modalEl.querySelector('input[name="mcm-scene"]:checked');
     const scene = sceneInput ? sceneInput.value : 'general';
-    if (scene === 'dev' && slots.length < 2) throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
+    const orchestration = _orchestrationPayload();
+    if (orchestration && !ORCHESTRATOR_KINDS.includes(slots[0].kind)) throw new Error('编排员（成员 1）请选 Claude 或 Codex');
+    if (!orchestration && scene === 'dev' && slots.length < 2) throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
     // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
     const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
     const titleInput = _modalEl.querySelector('#mcm-title-input');
@@ -607,7 +661,8 @@ async function _onCreate() {
         if (_projectLibraryError) throw _projectLibraryError;
       }
     }
-    const serialWorkflow = _buildDefaultDevWorkflow(scene, slots, { atWorkRoot, projects: devProjects });
+    // 编排群的工作流由编排员按计划配置，建群时不预置。
+    const serialWorkflow = orchestration ? null : _buildDefaultDevWorkflow(scene, slots, { atWorkRoot, projects: devProjects });
     createBtn.textContent = '正在创建成员会话...';
     const meeting = await ipcRenderer.invoke('create-meeting', {
       mode,
@@ -617,11 +672,12 @@ async function _onCreate() {
       groupChat: _isGroupChat,
       groupMode: _isGroupChat ? 'deliberation' : null,
       groupRecentRawN: 5,
-      participants: _isGroupChat ? (scene === 'dev' ? [slots[0].index] : slots.map((_, i) => i)) : null,
+      participants: _isGroupChat ? (orchestration || scene === 'dev' ? [slots[0].index] : slots.map((_, i) => i)) : null,
       workspace: workspace.path,
       workspaceLabel: workspace.label,
       workspaceDraft: !!workspace.draft,
       serialWorkflow,
+      ...(orchestration ? { orchestration } : {}),
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
     const onCreated = _presentation.onCreated;
@@ -724,6 +780,8 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
     onCreated: typeof options.onCreated === 'function' ? options.onCreated : null,
   };
   _clearError();
+  _orchestrationOn = false;
+  _setOrchestration(false);
   _applyScene('dev', { clearTitle: true, resetSlots: true });
   _meetingWorkspaceMode = 'existing';
   _meetingWorkspace = null;

@@ -8,7 +8,7 @@ const GATE_LIMIT=3;
 const {getSessionRuntimeTruth}=require('../../core/session-runtime-truth');
 const {SessionOpenOwnership}=require('../../core/session-open-ownership');
 const terminal=r=>['done','cancelled'].includes(r?.status);
-function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDispatcher,ensureMemberReady,getMembers=()=>[],getAttemptEvidence=()=>null,sendToRenderer=()=>{},logger=console}) {
+function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDispatcher,ensureMemberReady,getMembers=()=>[],getAttemptEvidence=()=>null,sendToRenderer=()=>{},onStatus=()=>{},logger=console}) {
   const owners=new Map(),busy=new Set(),watching=new Set(),actions=new Set(),retiring=new Map(),activeDispatches=new Set(),gates=new Map();let timer=null,events=null,suspended=false,ownership=null;
   async function action(id,fn){if(actions.has(id))throw new Error('正在处理本群的工作流操作，请稍后查看');actions.add(id);try{return await fn();}finally{actions.delete(id);}}
   const meeting=id=>meetingManager.getMeeting(id);
@@ -54,7 +54,8 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     meetingManager.updateMeeting(id,{serialWorkflow:{...m.serialWorkflow,taskArmed:armed}});
     sendToRenderer('meeting-updated',{meeting:meeting(id)});emit(id);return status(id);
   }
-  function emit(id){sendToRenderer('delivery:changed',status(id));}
+  // onStatus：主进程订阅者（AI 编排模式）在每次状态落盘后收到通知；失败不影响工作流。
+  function emit(id){const s=status(id);sendToRenderer('delivery:changed',s);try{onStatus(id,s);}catch(error){logger.warn?.('[delivery] status hook failed:',error.message);}}
   function selectStep(id,step) {
     const m=meeting(id),indexes=step.members.map(member=>(m.slotSpecs || []).findIndex((s,i)=>(s.memberId || `m${i+1}`)===member));
     if(indexes.some(i=>i<0))throw new Error('工作流成员缺失，请核对成员设置');

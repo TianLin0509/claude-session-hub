@@ -9106,6 +9106,7 @@ function persistWorkscene(flush = false) {
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs : null,
       covenantText: m.covenantText || '',
       serialWorkflow: (m.serialWorkflow && typeof m.serialWorkflow === 'object') ? m.serialWorkflow : null,
+      orchestration: (m.orchestration && typeof m.orchestration === 'object') ? m.orchestration : null,
       completionNotificationEnabled: m.completionNotificationEnabled === true,
     }));
     if (flush) return ipcRenderer.invoke('persist-sessions:flush', list, meetingList);

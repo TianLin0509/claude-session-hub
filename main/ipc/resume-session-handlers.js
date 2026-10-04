@@ -85,6 +85,10 @@ function createResumeSessionHandler(deps) {
       }
       resumeOpts = await deps.prepareAssistantResume(meta);
     }
+    // AI 编排员：恢复时重新挂上编排工具（同一会话身份）。
+    if (meta.purpose === 'hub-orchestrator' && typeof deps.prepareOrchestratorResume === 'function') {
+      resumeOpts = { ...resumeOpts, ...(deps.prepareOrchestratorResume(meta) || {}) };
+    }
     if (isAgentLeague) {
       const agentId = path.basename(String(meta.cwd || '')).toLowerCase();
       const scopePrefix = meta.purpose === 'agent-league-virtual' ? 'agent-league-virtual-' : 'agent-league-';

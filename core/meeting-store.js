@@ -71,6 +71,7 @@ function _buildMeetingPayload(id, data) {
     immersive: !!data.immersive,
     // 串行工作流配置（2026-06-17 道雪）：群聊可反复用，需重启恢复
     serialWorkflow: (data.serialWorkflow && typeof data.serialWorkflow === 'object') ? data.serialWorkflow : null,
+    orchestration: (data.orchestration && typeof data.orchestration === 'object' && data.orchestration.enabled === true) ? data.orchestration : null,
     // 时间戳
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
     savedAt: now,
@@ -131,6 +132,7 @@ function loadMeetingFile(id) {
     if (typeof obj.workspaceLabel !== 'string') obj.workspaceLabel = null;
     if (!Array.isArray(obj.participants)) obj.participants = null;
     if (!obj.serialWorkflow || typeof obj.serialWorkflow !== 'object') obj.serialWorkflow = null;
+    if (!obj.orchestration || typeof obj.orchestration !== 'object' || obj.orchestration.enabled !== true) obj.orchestration = null;
     if (typeof obj.updatedAt !== 'number') obj.updatedAt = obj.savedAt || 0;
     if (v === 1) {
       // v1 → 缺 title/scene/createdAt/subSessions 等。返回时显式带 schemaVersion=1

@@ -20,10 +20,13 @@ function key(meeting, message) {
   const act = message.committeeAct ? `${message.committeeAct}#${message.committeeRound || ''}` : '';
   return JSON.stringify([meeting.id, message.sid, message.sourceMessage || message.turnNum || message.id, act]);
 }
-function preference(id) {
+// defaults 只在这张卡从没被用户折叠/展开过时生效（编排群的成员卡默认折叠成一行）。
+function preference(id, defaults = null) {
   if (!preferences.has(id)) {
-    const stored=read('gc-journal:'+id, {});
-    preferences.set(id,{expanded:stored.expanded===true,minimized:stored.minimized===true});
+    const stored=read('gc-journal:'+id, null);
+    preferences.set(id, stored && typeof stored === 'object'
+      ? {expanded:stored.expanded===true,minimized:stored.minimized===true}
+      : {expanded:false,minimized:!!(defaults && defaults.minimized)});
   }
   return preferences.get(id);
 }
@@ -38,8 +41,8 @@ const paths = {
   fold:'<path d="m7 9 5-5 5 5M7 15l5 5 5-5"/>',
 };
 function icon(name) { return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`; }
-function attributes(meeting, message, escapeHtml) {
-  const id = key(meeting,message), p = preference(id);
+function attributes(meeting, message, escapeHtml, { defaultMinimized = false } = {}) {
+  const id = key(meeting,message), p = preference(id, { minimized: defaultMinimized });
   return `data-journal-key="${escapeHtml(id)}" data-journal-color="${memberColor(meeting,message.sid)}" data-journal-expanded="${!!p.expanded}" data-journal-minimized="${!!p.minimized}"`;
 }
 function actions({copy = '', prompt = '', attempt = '', resync = '', retry = '', submit = '', minimize = true}) {
