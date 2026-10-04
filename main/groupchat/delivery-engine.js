@@ -127,8 +127,8 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       const now=current(id,run.id,step.id);if(!now || terminal(now))return;
       const attempt=now.steps.at(-1).dispatches.find(x=>x.id===dispatchId);attempt.state='settled';
       attempt.chatStatus=result?.status || 'unknown';
-      const failure=result?.results?.find(x=>['errored','absent','failed'].includes(x.status));
-      if(result?.status==='error' || result?.status==='no_subs' || failure){now.error=String(failure?.reason || result.reason || result.status);now.status='paused';}
+      const failure=result?.results?.find(x=>['errored','absent','failed','not_sent'].includes(x.status));
+      if(['error','no_subs','no_sent','not_sent'].includes(result?.status) || failure){now.error=String(failure?.reason || result.reason || result.status);now.status='paused';}
       // Completion changes diagnostics only. Files decide advancement, even after errors.
       save(id,now);tick(id);
     },error=>{const now=current(id,run.id,step.id);if(!now || terminal(now))return;now.error=error.message;now.status='paused';save(id,now);logger.error('[delivery] dispatch failed:',error);}).finally(()=>activeDispatches.delete(dispatchId)).catch(error=>{

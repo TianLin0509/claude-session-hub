@@ -117,7 +117,7 @@ function ledgerPanel(v, escapeHtml) {
       <td>${s.rounds}</td></tr>`).join('')
     : '<tr><td colspan="5" class="mr-orch-muted">还没有工作段</td></tr>';
   const plan = v.plan ? `<div class="mr-orch-plan"><strong>计划 v${v.plan.version}</strong>${v.plan.confirmedVersion === v.plan.version ? '<span class="mr-orch-pill s-passed">已确认</span>' : '<span class="mr-orch-pill s-paused">待确认</span>'}
-      <div class="mr-orch-plan-text">${escapeHtml(v.plan.summary)}</div></div>` : '<div class="mr-orch-muted">编排员还没有提交计划。</div>';
+      <div class="mr-orch-plan-text">${escapeHtml(v.plan.summary)}</div>${v.plan.budget ? `<div class="mr-orch-muted">计划额度：${escapeHtml(v.plan.budget.roundCap)} 轮 · ${escapeHtml(v.plan.budget.timeCapMin)} 分钟${v.plan.confirmedVersion === v.plan.version ? '' : '（确认后生效）'}</div>` : ''}</div>` : '<div class="mr-orch-muted">编排员还没有提交计划。</div>';
   const report = v.lastReport ? `<div class="mr-orch-report"><strong>最近汇报</strong>（${escapeHtml(v.lastReport.kind)}）<div class="mr-orch-plan-text">${escapeHtml(v.lastReport.summary)}</div></div>` : '';
   return `<div class="mr-orch-ledger" id="mr-orch-ledger">
     <div class="mr-orch-ledger-title"><strong>计划账本</strong><span class="mr-orch-muted">由 Hub 按工作流结果更新，编排员不能直接把状态改成「通过」</span><code class="mr-orch-ledger-file" title="${escapeHtml(v.ledgerFile || '')}">orchestration/ledger.md</code></div>
