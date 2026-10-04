@@ -382,8 +382,8 @@ function createWorkbench(ctx) {
   function renderFinalPanel() {
     const v = S.view;
     const f = v.final;
-    const voice = v.voice && v.voice.status ? h('span', { class: 'wr-pill', text: ctx.voiceLabel(v.voice), title: [v.voice.summary, v.voice.error].filter(Boolean).join('\n') })
-      : h('span', { class: 'wr-pill', text: '定稿停笔两分钟后，AI 自动据此优化文风' });
+    const voice = v.voice && v.voice.status ? h('span', { class: 'wb-hint', text: ctx.voiceLabel(v.voice), title: [v.voice.summary, v.voice.error].filter(Boolean).join('\n') })
+      : h('span', { class: 'wb-hint', text: '定稿停笔两分钟后，AI 自动据此优化文风' });
     return h('div', { class: 'wb-panel wb-final', 'data-col': FINAL_KEY },
       h('div', { class: 'wb-panel-bar' },
         h('b', { text: '定稿' }), h('span', { class: 'wr-muted', text: `${f.from ? `${f.from} 汇总 · ` : ''}${f.chars} 字` }),
