@@ -80,7 +80,7 @@ const planArgs = { summary: '调研并实现', team: [{ memberId:'m2', role: '�
   segments: [{ name: 'PF 实现', preset: 'development', goal: '实现 PF', acceptance: '单测通过' }] };
 
 test('lightweight: a new task starts with defaults and archives the previous task evidence',async t=>{
-  const x=fixture(t);
+  const x=fixture(t,{settings:{roundCap:8,timeCapMin:180}});
   const ledger=x.service.ledgerFor('mt1');
   ledger.status='finished';ledger.budget.roundCap=10;ledger.budget.roundsUsed=10;ledger.budget.timeCapMs=30*60000;
   ledger.plan={version:1,summary:'上一个任务'};ledger.segments=[{name:'旧任务',status:'passed'}];
@@ -328,7 +328,7 @@ test('review fixes: failed asks are released, finished rooms reopen, repeated pa
   assert.equal(ledger.status, 'running');
   ledger.status = 'finished';
   const plan = await x.call('orch_propose_plan', { summary: '补一张对比图', segments: [{ name: '对比图', preset: 'custom', acceptance: '图里有两条曲线' }] });
-  assert.equal(plan.version, 2);
+  assert.equal(plan.version, 1,'new task uses a fresh plan; prior evidence is archived');
   assert.equal(L.canDispatch(ledger).ok, true);
 });
 
