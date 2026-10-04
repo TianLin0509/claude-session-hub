@@ -5,7 +5,7 @@
 function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSessionId,
   openSession, closeOtherPanels = () => {}, showMessage }) {
   const nav = document.getElementById('btn-assistant');
-  let epoch = 0, opening = null, overview = null, sequence = 0, switching = false;
+  let epoch = 0, opening = null, overview = null, sequence = 0, switching = false, dialogDrawer = null;
   const setClass = (element, name, value) => { if (element.classList.contains(name) !== value) element.classList.toggle(name, value); };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const isOpen = () => document.body.classList.contains('assistant-session-active')
@@ -70,6 +70,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
   }
   function syncSession(session) {
     const active = session?.purpose === 'hub-assistant';
+    if (!active) dialogDrawer?.close();
     setClass(document.body, 'assistant-session-active', active);
     setClass(document.getElementById('terminal-panel'), 'assistant-session', active);
     setClass(nav, 'active', active);
@@ -116,10 +117,14 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     const memory = document.createElement('button'); memory.type='button'; memory.className='btn-zoom assistant-memory'; memory.textContent='助理记忆';
     memory.title='打开助理积累的偏好（USER.md）；同目录的 MEMORY.md 是长期记忆，CHANGES.md 是每次修改记录。可以直接编辑。';
     memory.addEventListener('click',()=>{void call('assistant:open-memory').catch(error=>showMessage?.(error.message));});
-    tools.prepend(notices, dossier, memory, phone, fresh); paintNotices();
+    // 对话记录：手机消息与回复（快答走 API 不进助理会话，只能在这里看）。
+    const dialogLog = document.createElement('button'); dialogLog.type='button'; dialogLog.className='btn-zoom assistant-dialog';
+    dialogLog.textContent='对话记录'; dialogLog.title='手机发来的消息与回复：快答（千问 / DeepSeek）和助理会话的回答都在这里';
+    dialogLog.addEventListener('click',()=>{dialogDrawer||(dialogDrawer=require('./assistant-dialog').createDialogDrawer({document,ipcRenderer}));void dialogDrawer.open();});
+    tools.prepend(notices, dialogLog, dossier, memory, phone, fresh); paintNotices();
   }
   function close() {
-    epoch++; document.querySelector('.assistant-backend-menu')?.remove();
+    epoch++; document.querySelector('.assistant-backend-menu')?.remove(); dialogDrawer?.close();
     setClass(document.body, 'assistant-session-active', false);
     setClass(document.getElementById('terminal-panel'), 'assistant-session', false);
     setClass(nav, 'active', false); nav.removeAttribute('aria-current');

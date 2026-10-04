@@ -135,3 +135,18 @@ test('phone set_front_desk applies immediately even while the assistant is busy;
  const bad=crypto.randomUUID();push(bad,{type:'set_front_desk',mode:'api',model:'unknown-model'});await h.channel.tick();
  assert.match(packets(h,'profileerror-'+bad)[0].text,/回答方式未切换/);assert.equal(h.assistant.frontDesk().model,'deepseek-v4.1-flash');
 });
+test('phone dialog log keeps every message and reply with who answered, for the assistant tab',async()=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');const {DialogLog}=require('../core/hub-assistant/dialog-log');const {FastLane}=require('../core/hub-assistant/fast-lane');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dialog-log-'));const log=new DialogLog(dir);
+ const h=harness();h.assistant.logDialog=e=>log.append(e);h.assistant.frontDesk=()=>({mode:'api',model:'qwen3.8-flash',modelLabel:'千问 3.8 Flash'});h.assistant.currentProfile=()=>({kind:'claude',label:'Sonnet 5.5 · 低'});
+ h.channel.fastLane=new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['田哥，2。'])});
+ const fast=crypto.randomUUID();h.incoming(fast,{type:'text',text:'一加一等于几'});await h.channel.tick();
+ let seq=10;const push=(i,v)=>h.remote.push({seq:++seq,id:i,payload:seal(h.c.key,h.c.channel,i,'phone',v)});h.incoming=push;
+ h.channel.fastLane=new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['【交给助理】'])});h.channel.transcribe=async()=>'记一下明天出差';
+ const voice=crypto.randomUUID();push(voice,{type:'voice_message',pcm:'AQI=',durationMs:3000});await h.channel.tick();
+ h.assistant.readLiveFinal=()=>({records:[{clientSubmissionId:voice,text:'田哥，已记下。'}]});await h.channel.tick();
+ const rows=log.recent();
+ assert.deepEqual(rows.map(r=>[r.role,r.lane||r.input,r.text]),[['user','text','一加一等于几'],['assistant','fast','田哥，2。'],['user','voice','记一下明天出差'],['assistant','assistant','田哥，已记下。']]);
+ assert.equal(rows[1].by,'千问 3.8 Flash');assert.match(rows[3].by,/Claude · Sonnet 5.5/);assert.equal(rows[2].durationMs,3000);assert.ok(rows[1].ms>=0);
+ assert.equal(log.recent({limit:2}).length,2);fs.rmSync(dir,{recursive:true,force:true});
+});

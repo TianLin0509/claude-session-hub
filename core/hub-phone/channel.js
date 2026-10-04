@@ -32,7 +32,7 @@ class PhoneChannel{
  async ingest(messages){const s=this.journal.state;
   for(const packet of messages){if(packet.seq<=s.cursor)continue;if(!s.inbox.some(r=>r.id===packet.id)){try{const m=open(s.credentials.key,s.credentials.channel,packet.id,'phone',packet.payload);this.validate(m);
      if(m.type==='hello'){this.journal.change(x=>{x.cursor=packet.seq;x.lastInbound=Date.now();x.phoneCaps=m.caps.map(String).slice(0,20);x.phoneApp=String(m.app||'').slice(0,20);x.inbox.push({id:packet.id,type:'hello',state:'done'});});await this.sendProfile(packet.id).catch(e=>console.warn('[phone] profile',e.message));continue;}
-     this.journal.change(x=>{x.inbox.push({...m,id:packet.id,state:'queued',t:{received:Date.now()}});x.cursor=packet.seq;x.lastInbound=Date.now();});}catch{this.journal.change(x=>{x.cursor=packet.seq;});this.emit('invalid-'+packet.id,{type:'status',requestId:packet.id,state:'rejected',text:'消息校验未通过，未提交任务。'});}}else this.journal.change(x=>{x.cursor=packet.seq;});}
+     this.journal.change(x=>{x.inbox.push({...m,id:packet.id,state:'queued',t:{received:Date.now()}});x.cursor=packet.seq;x.lastInbound=Date.now();});if(m.type==='text')this.log({id:packet.id,role:'user',input:'text',text:m.text});}catch{this.journal.change(x=>{x.cursor=packet.seq;});this.emit('invalid-'+packet.id,{type:'status',requestId:packet.id,state:'rejected',text:'消息校验未通过，未提交任务。'});}}else this.journal.change(x=>{x.cursor=packet.seq;});}
  }
  validate(m){
   if(!TYPES.includes(m.type))throw Error('消息类型不支持');
@@ -43,6 +43,9 @@ class PhoneChannel{
   if(m.type==='set_front_desk'&&(!['api','cli'].includes(m.mode)||m.model!==undefined&&(typeof m.model!=='string'||m.model.length>80)))throw Error('回答方式设置无效');
  }
  supports(cap){return(this.journal.state.phoneCaps||[]).includes(cap);}
+ // 手机对话记录（助理 Tab「对话记录」）：记失败不影响收发。
+ log(entry){try{this.assistant.logDialog?.(entry);}catch(e){console.warn('[phone] dialog log',e.message);}}
+ assistantLabel(){const p=this.assistant.currentProfile?.();if(!p)return'助理会话';let kind=p.kind;try{kind=require('../ai-kinds').getKindLabel(p.kind);}catch{}return[kind,p.label].filter(Boolean).join(' · ');}
  // 助理设置与回答方式任一变化（电脑面板改的也算）都重发 profile，手机两边保持一致。
  profileSignature(){return JSON.stringify([this.assistant.currentProfile?.(),this.assistant.frontDesk?.()]);}
  async sendProfile(requestId){
@@ -62,7 +65,7 @@ class PhoneChannel{
   for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='voice_message'))await this.transcribeRow(row);
   if(this.fastLane&&!this.assistant.fastLaneDisabled?.())for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='text'&&!r.fastTried))await this.tryFastLane(row);
   const active=s.inbox.find(r=>ACTIVE.includes(r.state));
-  if(active){let finals;try{finals=this.assistant.readLiveFinal(active.sessionId).records;}catch(e){finals=[];if(/找不到原会话/.test(e.message)){this.journal.change(()=>{active.state='lost';active.issue=e.message;});this.emit('lost-'+active.id,{type:'status',requestId:active.id,state:'unknown',text:'助理会话已不在本窗口，结果请在电脑上查看；不会自动重发。'});}}const answer=finals.find(r=>r.clientSubmissionId===active.id||active.turnId&&r.turnId===active.turnId);if(answer){const found=Date.now();await this.reply('answer-'+active.id,answer.text,{requestId:active.id});this.journal.change(()=>{active.state='answered';active.t={...active.t,answerFound:found,answerQueued:Date.now()};});
+  if(active){let finals;try{finals=this.assistant.readLiveFinal(active.sessionId).records;}catch(e){finals=[];if(/找不到原会话/.test(e.message)){this.journal.change(()=>{active.state='lost';active.issue=e.message;});this.emit('lost-'+active.id,{type:'status',requestId:active.id,state:'unknown',text:'助理会话已不在本窗口，结果请在电脑上查看；不会自动重发。'});}}const answer=finals.find(r=>r.clientSubmissionId===active.id||active.turnId&&r.turnId===active.turnId);if(answer){const found=Date.now();await this.reply('answer-'+active.id,answer.text,{requestId:active.id});this.journal.change(()=>{active.state='answered';active.t={...active.t,answerFound:found,answerQueued:Date.now()};});this.log({id:active.id,role:'assistant',lane:'assistant',by:this.assistantLabel(),text:answer.text,ms:active.t.received?active.t.answerQueued-active.t.received:null});
    const t=active.t||{},span=(a,b)=>t[a]&&t[b]?t[b]-t[a]:null;console.log('[phone] timing',active.id.slice(0,8),JSON.stringify({asr:span('asrStart','asrDone'),toDispatch:span('received','dispatch'),submit:span('dispatch','confirmed'),turn:span('confirmed','answerFound'),total:span('received','answerQueued')}));}}
   if(!s.inbox.some(r=>ACTIVE.includes(r.state))&&!this.assistant.switching){const row=s.inbox.find(r=>r.state==='queued');if(row){
     if(row.type==='voice'){this.journal.change(()=>{row.state='transcribing';});try{const text=await this.transcribe(row.pcm);if(!text.trim())throw Error('没有听清，请重新录音');this.emit('transcript-'+row.id,{type:'transcript',requestId:row.id,text});this.journal.change(()=>{row.state='transcribed';delete row.pcm;});}catch(e){this.emit('voiceerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:e.message});this.journal.change(()=>{row.state='rejected';delete row.pcm;});}}
@@ -71,7 +74,7 @@ class PhoneChannel{
      if(row.type==='voice_message')await this.transcribeRow(row);
      if(row.state==='queued'){
       // 助理暂时起不来时本条留在队首重试；连续 3 次失败就明确告诉手机，避免整条队列被挡住。
-      try{await this.dispatch(row);}catch(e){this.issue=e.message;this.journal.change(()=>{row.attempts=(row.attempts||0)+1;if(row.attempts>=3){row.state='rejected';row.issue=e.message;}});if(row.state==='rejected')this.emit('rejected-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'助理暂时无法接收：'+e.message+'。本条未提交，请稍后重发。'});}
+      try{await this.dispatch(row);}catch(e){this.issue=e.message;this.journal.change(()=>{row.attempts=(row.attempts||0)+1;if(row.attempts>=3){row.state='rejected';row.issue=e.message;}});if(row.state==='rejected'){this.log({id:row.id,role:'system',text:'助理暂时无法接收：'+e.message});}if(row.state==='rejected')this.emit('rejected-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'助理暂时无法接收：'+e.message+'。本条未提交，请稍后重发。'});}
      }
     }
    }}
@@ -82,8 +85,8 @@ class PhoneChannel{
  async flush(limit=8){for(const row of this.journal.state.outbox.filter(r=>!r.sent).slice(0,limit)){await this.request('/send',{method:'POST',body:{id:row.id,payload:row.payload}});this.journal.change(()=>{row.sent=true;});}}
   async transcribeRow(row){
    this.journal.change(()=>{row.state='transcribing';row.t={...row.t,asrStart:Date.now()};});
-   try{const text=(await this.transcribe(row.pcm)).trim();if(!text)throw Error('没有听清，请再说一次');this.emit('transcript-'+row.id,{type:'transcript',requestId:row.id,text,auto:true});this.journal.change(()=>{row.type='text';row.text=text;row.inputMode='voice';row.state='queued';row.t={...row.t,asrDone:Date.now()};delete row.pcm;});}
-   catch(e){this.emit('voiceerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'识别失败：'+e.message});this.journal.change(()=>{row.state='rejected';row.issue=e.message;delete row.pcm;});}
+   try{const text=(await this.transcribe(row.pcm)).trim();if(!text)throw Error('没有听清，请再说一次');this.emit('transcript-'+row.id,{type:'transcript',requestId:row.id,text,auto:true});this.journal.change(()=>{row.type='text';row.text=text;row.inputMode='voice';row.state='queued';row.t={...row.t,asrDone:Date.now()};delete row.pcm;});this.log({id:row.id,role:'user',input:'voice',text,durationMs:row.durationMs});}
+   catch(e){this.log({id:row.id,role:'system',input:'voice',text:'语音识别失败：'+e.message});this.emit('voiceerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'识别失败：'+e.message});this.journal.change(()=>{row.state='rejected';row.issue=e.message;delete row.pcm;});}
    await this.flush().catch(()=>{});
   }
   // 快速通道：约 1 秒答复；交还标记、出错或超时都回到完整助理，不丢消息。
@@ -97,6 +100,7 @@ class PhoneChannel{
     await this.reply('answer-'+row.id,result.text,{requestId:row.id,lane:'fast'},{cards:false});
     await this.flush().catch(()=>{});
     this.journal.change(()=>{row.t={...row.t,answerQueued:Date.now()};});
+    this.log({id:row.id,role:'assistant',lane:'fast',by:this.assistant.frontDesk?.().modelLabel||result.model,text:result.text,ms:row.t.answerQueued-row.t.received});
     try{this.assistant.recordFastLane?.({id:row.id,question:row.text,answer:result.text,model:result.model,inputMode:row.inputMode});}catch{}
     const t=row.t||{};console.log('[phone] fast lane',row.id.slice(0,8),JSON.stringify({via:result.via,asr:t.asrDone&&t.asrStart?t.asrDone-t.asrStart:null,model:result.ms,first:result.firstMs,total:t.answerQueued-t.received}));
     return true;
