@@ -47,7 +47,7 @@ let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
 let _creating = false;
 let _presentation = { embedded: false, onCreated: null };
-// AI 编排模式（2026-10-04）：打开后成员 1 当编排员，其余成员可选（编排员按计划自己组队）。
+// AI 编排模式：成员 1 当编排员，用户预先选定工作成员，编排员安排其分工与参与阶段。
 let _orchestrationOn = false;
 const ORCHESTRATOR_KINDS = ['claude', 'codex'];
 
@@ -305,7 +305,7 @@ function _slotHtml(i, spec, isGroup) {
   const orchLead = isGroup && _orchestrationOn && i === 0;
   const label = !isGroup ? `Slot ${i + 1} · ${SLOT_NAMES[i]}`
     : orchLead ? '成员 1 · 编排员'
-    : _orchestrationOn ? `成员 ${i + 1} · 初始成员（可选）` : `成员 ${i + 1}`;
+    : _orchestrationOn ? `成员 ${i + 1} · 工作成员` : `成员 ${i + 1}`;
   const removeBtn = isGroup && i >= 1 && (_orchestrationOn || _currentMode !== 'dev' || _groupSlots.length > 2)
     ? `<button type="button" class="mcm-remove-member" data-remove-member="${i}" title="移除此成员">×</button>`
     : '';
@@ -467,7 +467,7 @@ function _ensureModal() {
         <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin:-6px 0 12px; line-height:1.6;"></div>
         <div class="mcm-orch-row" id="mcm-orch-row">
           <label class="mcm-orch-switch"><input type="checkbox" id="mcm-orch-toggle" role="switch"><span class="mcm-orch-track" aria-hidden="true"></span><strong>编排员</strong></label>
-          <span class="mcm-orch-hint" id="mcm-orch-hint">打开后成员 1 当编排员：你只和它对话，它按任务增减成员（最多 3 位）、设计工作流并汇报进展；通过与否由审核位决定。</span>
+          <span class="mcm-orch-hint" id="mcm-orch-hint">打开后成员 1 当编排员：你只和它对话，它使用你选好的成员，自主分工、设计工作流并汇报进展；通过与否由审核位决定。</span>
           <div class="mcm-orch-options" id="mcm-orch-options" hidden>
             <label><input type="checkbox" id="mcm-orch-confirm" checked> 计划先给我确认</label>
             <label>迭代上限 <input type="number" id="mcm-orch-rounds" min="2" max="30" value="8"> 轮</label>
@@ -505,13 +505,13 @@ function _setOrchestration(on) {
   if (caption) {
     if (!caption.dataset.plainText) caption.dataset.plainText = caption.textContent;
     caption.textContent = _orchestrationOn
-      ? '编排模式下，初始成员可留可删；编排员开工前会在计划里写明它要的队伍，你确认后才建。'
+      ? '成员 1 为编排员，其余为工作成员。成员与模型由你选，分工和参与阶段由编排员安排；额度可在任务中用自然语言指定。'
       : caption.dataset.plainText;
   }
   const hint = _modalEl.querySelector('#mcm-orch-hint');
   if (hint) hint.textContent = _orchestrationOn
-    ? '已开启：成员 1 当编排员。你只和它对话，它按任务增减成员（最多 3 位）、设计工作流并汇报进展；通过与否由审核位决定。初始成员可留可删。'
-    : '打开后成员 1 当编排员：你只和它对话，它按任务增减成员（最多 3 位）、设计工作流并汇报进展；通过与否由审核位决定。';
+    ? '已开启：成员 1 当编排员。你只和它对话，它使用你选好的成员，自主分工、设计工作流并汇报进展；通过与否由审核位决定。运行故障先给你处理建议。'
+    : '打开后成员 1 当编排员：你只和它对话，它使用你选好的成员，自主分工、设计工作流并汇报进展；通过与否由审核位决定。';
   _renderSlots();
 }
 
@@ -614,6 +614,7 @@ async function _onCreate() {
     const sceneInput = _modalEl.querySelector('input[name="mcm-scene"]:checked');
     const scene = sceneInput ? sceneInput.value : 'general';
     const orchestration = _orchestrationPayload();
+    if (orchestration && slots.length < 2) throw new Error('编排群至少需要编排员和一位工作成员；请先选择成员');
     if (orchestration && !ORCHESTRATOR_KINDS.includes(slots[0].kind)) throw new Error('编排员（成员 1）请选 Claude 或 Codex');
     if (!orchestration && scene === 'dev' && slots.length < 2) throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
     // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传

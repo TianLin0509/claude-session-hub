@@ -61,17 +61,39 @@ function fixture(t, { settings = {}, dataDir } = {}) {
     getDefaults: () => ({}), sendToRenderer: (channel, data) => sent.push([channel, data]), logger: { warn() {}, error() {} },
   });
   t.after(() => service.stop());
-  const call = (name, args = {}, caller = 's-orch') => service.invokeTool({ name, arguments: args, callerSessionId: caller });
-  return { dir, service, call, meetingObj, dispatches, engineCalls, busy, writeRun, sent, sessions,
+  const call = async (name, args = {}, caller = 's-orch') => {
+    if(name==='orch_start_workflow' && settings.requireConfirm===false && !service.ledgerFor('mt1').plan)
+      await service.invokeTool({name:'orch_propose_plan',arguments:{summary:args.name,segments:[args]},callerSessionId:'s-orch'});
+    return service.invokeTool({ name, arguments: args, callerSessionId: caller });
+  };
+  const addExisting = async (args) => {
+    const made = await addMeetingSubInternal('mt1', args.kind, {model:args.model});
+    meetingObj.participants=[0];
+    const memberId=meetingObj.slotSpecs.at(-1).memberId;
+    service.ledgerFor('mt1').roles[memberId]={role:args.role,kind:args.kind};
+    return {memberId,session:made.session};
+  };
+  return { dir, service, call, addExisting, meetingObj, dispatches, engineCalls, busy, writeRun, sent, sessions,
     advance: ms => { clock += ms; }, setDispatchResult: r => { dispatchResult = r; } };
 }
-const planArgs = { summary: '调研并实现', team: [{ role: '开发位', kind: 'codex' }, { role: '审核位', kind: 'claude' }],
+const planArgs = { summary: '调研并实现', team: [{ memberId:'m2', role: '开发位' }, { memberId:'m3', role: '审核位' }],
   segments: [{ name: 'PF 实现', preset: 'development', goal: '实现 PF', acceptance: '单测通过' }] };
+
+test('lightweight: a new task starts with defaults and archives the previous task evidence',async t=>{
+  const x=fixture(t,{settings:{roundCap:8,timeCapMin:180}});
+  const ledger=x.service.ledgerFor('mt1');
+  ledger.status='finished';ledger.budget.roundCap=10;ledger.budget.roundsUsed=10;ledger.budget.timeCapMs=30*60000;
+  ledger.plan={version:1,summary:'上一个任务'};ledger.segments=[{name:'旧任务',status:'passed'}];
+  x.service.userMessage('mt1',{text:'接下来帮我分析新需求'});
+  assert.equal(ledger.budget.roundCap,8);assert.equal(ledger.budget.roundsUsed,0);assert.equal(ledger.budget.timeCapMs,180*60000);
+  assert.equal(ledger.plan,null);assert.deepEqual(ledger.segments,[]);assert.equal(ledger.taskHistory[0].budget.roundCap,10);
+});
 
 test('only the orchestrator session may call tools; nothing is dispatched before the plan is confirmed', async t => {
   const x = fixture(t);
   await assert.rejects(x.call('orch_status', {}, 's-other'), /只有编排群里的编排员/);
-  await assert.rejects(x.call('orch_add_member', { role: '开发位', kind: 'codex' }), /确认/);
+  await assert.rejects(x.call('orch_add_member', { role: '开发位', kind: 'codex' }), /已有成员/);
+  await x.addExisting({role:'',kind:'codex'});await x.addExisting({role:'',kind:'claude'});
   const proposed = await x.call('orch_propose_plan', planArgs);
   assert.equal(proposed.status, 'awaiting_confirm');
   await assert.rejects(x.call('orch_start_workflow', { name: 'a', preset: 'research', goal: 'g', acceptance: 'a', members: ['m2'] }), /确认/);
@@ -84,12 +106,12 @@ test('only the orchestrator session may call tools; nothing is dispatched before
   assert.match(x.dispatches[0].userInput, /已确认计划 v1/);
 });
 
-test('members are capped at three, keep the orchestrator as the only recipient, and roles are recorded', async t => {
+test('existing members keep the orchestrator as the only recipient and plan roles are recorded', async t => {
   const x = fixture(t, { settings: { requireConfirm: false } });
-  const a = await x.call('orch_add_member', { role: '开发位', kind: 'codex', tier: 'fast' });
-  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
-  await x.call('orch_add_member', { role: '复核', kind: 'claude', tier: 'fast' });
-  await assert.rejects(x.call('orch_add_member', { role: '多余', kind: 'codex' }), /成员已满/);
+  const a = await x.addExisting({ role: '开发位', kind: 'codex', tier: 'fast' });
+  await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '复核', kind: 'claude', tier: 'fast' });
+  await assert.rejects(x.call('orch_add_member', { role: '多余', kind: 'codex' }), /已有成员/);
   assert.equal(a.memberId, 'm2');
   assert.deepEqual(x.meetingObj.participants, [0]);
   const status = await x.call('orch_status');
@@ -98,12 +120,12 @@ test('members are capped at three, keep the orchestrator as the only recipient, 
   assert.match(Rules.rulesFor(x.dir, x.meetingObj, 'm2'), /开发位/);
 });
 
-test('development workflows need different backends unless justified, and start with acceptance and no-merge terms', async t => {
+test('development uses distinct existing members even with the same backend', async t => {
   const x = fixture(t, { settings: { requireConfirm: false } });
-  await x.call('orch_add_member', { role: '开发位', kind: 'claude', tier: 'fast' });
-  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '开发位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
   const args = { name: 'PF', preset: 'development', goal: '实现 PF 调度', acceptance: '单测覆盖零速率', members: ['m2', 'm3'] };
-  await assert.rejects(x.call('orch_start_workflow', args), /不同后端/);
+  await x.call('orch_propose_plan',{summary:'开发',segments:[args]});
   await assert.rejects(x.call('orch_start_workflow', { ...args, members: ['m1', 'm3'] }), /编排员不参与/);
   const started = await x.call('orch_start_workflow', { ...args, sameKindReason: '实测只有 Claude 可用' });
   assert.equal(started.runId, 'run-1');
@@ -116,8 +138,8 @@ test('development workflows need different backends unless justified, and start 
 
 test('review verdicts reach the orchestrator, budget exhaustion pauses the workflow, and a grant resumes dispatch', async t => {
   const x = fixture(t, { settings: { requireConfirm: false, roundCap: 2 } });
-  await x.call('orch_add_member', { role: '开发位', kind: 'codex', tier: 'fast' });
-  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '开发位', kind: 'codex', tier: 'fast' });
+  await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
   await x.call('orch_start_workflow', { name: 'PF', preset: 'development', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
   const stages = x.meetingObj.serialWorkflow.deliveryStages;
   const d = (m, outcome, n) => ({ [m]: { memberId: m, outcome, path: `/runs/step-${n}/${m}/${outcome === 'rework' ? '需返工' : '已交付'}.md` } });
@@ -172,10 +194,10 @@ test('notices wait while the orchestrator is busy or the user just spoke, and tw
 test('final report is refused until every segment has a reviewer conclusion', async t => {
   const x = fixture(t, { settings: { requireConfirm: false } });
   await assert.rejects(x.call('orch_report', { kind: 'final', summary: '都好了' }), /不能结项/);
-  await x.call('orch_add_member', { role: '调研', kind: 'codex', tier: 'fast' });
-  await x.call('orch_add_member', { role: '收口', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '调研', kind: 'codex', tier: 'fast' });
+  await x.addExisting({ role: '收口', kind: 'claude', tier: 'fast' });
   await x.call('orch_start_workflow', { name: '调研', preset: 'research', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
-  await assert.rejects(x.call('orch_report', { kind: 'final', summary: '都好了' }), /没结束/);
+  await assert.rejects(x.call('orch_report', { kind: 'final', summary: '都好了' }), /未完成|审核/);
   const stages = x.meetingObj.serialWorkflow.deliveryStages;
   x.writeRun({ id: 'run-1', kind: 'serial', status: 'done', stages, steps: stages.map((s, i) => ({ id: 's' + i, index: i, members: s.members, deliveries: Object.fromEntries(s.members.map(m => [m, { memberId: m, outcome: 'ready', path: `/r/${i}/${m}/已交付.md` }])) })) });
   x.service.reconcile('mt1');
@@ -185,8 +207,8 @@ test('final report is refused until every segment has a reviewer conclusion', as
 
 test('asking a member is blocked while it works in the workflow and the answer file is announced', async t => {
   const x = fixture(t, { settings: { requireConfirm: false } });
-  await x.call('orch_add_member', { role: '开发位', kind: 'codex', tier: 'fast' });
-  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '开发位', kind: 'codex', tier: 'fast' });
+  await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
   await x.call('orch_start_workflow', { name: 'PF', preset: 'development', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
   await assert.rejects(x.call('orch_ask_member', { memberId: 'm2', question: '进度？' }), /正在工作流里干活/);
   const ask = await x.call('orch_ask_member', { memberId: 'm3', question: '审查重点？' });
@@ -206,6 +228,7 @@ test('asking a member is blocked while it works in the workflow and the answer f
 
 test('user words confirm a pending plan; naming a member copies the orchestrator', async t => {
   const x = fixture(t);
+  await x.addExisting({role:'',kind:'codex'});await x.addExisting({role:'',kind:'claude'});
   await x.call('orch_propose_plan', planArgs);
   x.service.userMessage('mt1', { text: '确认' });
   assert.equal((await x.call('orch_status')).status, 'running');
@@ -215,8 +238,8 @@ test('user words confirm a pending plan; naming a member copies the orchestrator
 
 test('a restarted Hub marks unconfirmed notices and tells the orchestrator about the active segment', async t => {
   const first = fixture(t, { settings: { requireConfirm: false } });
-  await first.call('orch_add_member', { role: '开发位', kind: 'codex', tier: 'fast' });
-  await first.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await first.addExisting({ role: '开发位', kind: 'codex', tier: 'fast' });
+  await first.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
   await first.call('orch_start_workflow', { name: 'PF', preset: 'development', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
   const ledger = first.service.ledgerFor('mt1');
   const L = require('../core/orchestration/ledger');
@@ -234,8 +257,8 @@ test('a restarted Hub marks unconfirmed notices and tells the orchestrator about
 
 test('ending orchestration pauses the workflow and stops notices; resuming restores the room', async t => {
   const x = fixture(t, { settings: { requireConfirm: false } });
-  await x.call('orch_add_member', { role: '开发位', kind: 'codex', tier: 'fast' });
-  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '开发位', kind: 'codex', tier: 'fast' });
+  await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
   await x.call('orch_start_workflow', { name: 'PF', preset: 'development', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
   const view = await x.service.userAction('mt1', 'end');
   assert.equal(view.status, 'ended');
@@ -250,8 +273,8 @@ test('ending orchestration pauses the workflow and stops notices; resuming resto
 
 test('a member whose turn ended without a delivery is reported to the orchestrator after a short grace', async t => {
   const x = fixture(t, { settings: { requireConfirm: false } });
-  await x.call('orch_add_member', { role: '调研位', kind: 'claude', tier: 'fast' });
-  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '调研位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
   await x.call('orch_start_workflow', { name: '调研', preset: 'research', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
   const stages = x.meetingObj.serialWorkflow.deliveryStages;
   x.writeRun({ id: 'run-1', kind: 'serial', status: 'running', stages, steps: [{ id: 'st1', index: 0, members: ['m2', 'm3'], createdAt: 1,
@@ -273,8 +296,8 @@ test('a member whose turn ended without a delivery is reported to the orchestrat
 
 test('review fixes: failed asks are released, finished rooms reopen, repeated pauses still notify, ending restores plain routing', async t => {
   const x = fixture(t, { settings: { requireConfirm: false } });
-  await x.call('orch_add_member', { role: '开发位', kind: 'codex', tier: 'fast' });
-  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.addExisting({ role: '开发位', kind: 'codex', tier: 'fast' });
+  await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
   // 1. 发送失败的单独提问不留挂起记录
   x.setDispatchResult({ status: 'no_sent', reason: '会话不可用' });
   await x.call('orch_ask_member', { memberId: 'm3', question: '在吗？' });
@@ -305,7 +328,7 @@ test('review fixes: failed asks are released, finished rooms reopen, repeated pa
   assert.equal(ledger.status, 'running');
   ledger.status = 'finished';
   const plan = await x.call('orch_propose_plan', { summary: '补一张对比图', segments: [{ name: '对比图', preset: 'custom', acceptance: '图里有两条曲线' }] });
-  assert.equal(plan.version, 1);
+  assert.equal(plan.version, 1,'new task uses a fresh plan; prior evidence is archived');
   assert.equal(L.canDispatch(ledger).ok, true);
 });
 
@@ -313,4 +336,92 @@ test('the tool endpoint path is known before the bridge starts', t => {
   const x = fixture(t);
   const opts = x.service.launchOptions('codex', 'sid-early');
   assert.match(opts.codexMcpEntries[0].env.HUB_ORCH_ENDPOINT_FILE, /orchestration[\\/]bridge-endpoint\.json$/);
+});
+
+test('lightweight: existing roster is fixed and plan roles bind to member IDs', async t => {
+  const x=fixture(t,{settings:{requireConfirm:false}});
+  await x.addExisting({role:'',kind:'codex'});
+  await x.addExisting({role:'',kind:'claude'});
+  await assert.rejects(x.call('orch_add_member',{kind:'codex',role:'实现'}),/已有成员|固定/);
+  await x.call('orch_propose_plan',{...planArgs,team:[{memberId:'m2',role:'实现位'},{memberId:'m3',role:'审核位'}]});
+  assert.equal((await x.call('orch_status')).members.find(m=>m.memberId==='m2').role,'实现位');
+  assert.equal(x.meetingObj.subSessions.length,3);
+});
+
+test('lightweight: natural budget overrides defaults only after plan confirmation', async t => {
+  const x=fixture(t);
+  x.service.userMessage('mt1',{text:'做一个小功能，允许10轮以内迭代，最多半小时。'});
+  await x.call('orch_propose_plan',{summary:'实现小功能',segments:[{name:'功能',preset:'custom',goal:'功能',acceptance:'通过'}]});
+  const before=await x.call('orch_status');
+  assert.equal(before.plan.budget.roundCap,10);
+  assert.equal(before.plan.budget.timeCapMin,30);
+  assert.equal(before.budget.roundCap,3);
+  await x.service.userAction('mt1','confirm');
+  const after=await x.call('orch_status');
+  assert.equal(after.budget.roundCap,10);assert.equal(after.budget.minutesCap,30);
+});
+
+test('lightweight: ordinary questions never resume a user pause', async t => {
+  const x=fixture(t,{settings:{requireConfirm:false}});
+  const L=require('../core/orchestration/ledger');L.halt(x.service.ledgerFor('mt1'),'user_pause');
+  x.service.userMessage('mt1',{text:'先不要继续，解释一下为什么卡住'});
+  assert.equal(x.service.ledgerFor('mt1').status,'halted');
+  x.service.userMessage('mt1',{text:'继续'});
+  assert.equal(x.service.ledgerFor('mt1').status,'running');
+});
+
+test('lightweight: changed acceptance cannot bypass a confirmed plan', async t => {
+  const x=fixture(t,{settings:{requireConfirm:false}});
+  await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
+  await x.call('orch_propose_plan',{...planArgs,team:[]});
+  await assert.rejects(x.call('orch_start_workflow',{...planArgs.segments[0],acceptance:'有文件就行',members:['m2','m3']}),/确认计划|验收标准|计划工作段/);
+  assert.equal(x.engineCalls.length,0);
+});
+
+test('lightweight: full plan coverage is required for final report', async t => {
+  const x=fixture(t,{settings:{requireConfirm:false}});
+  const L=require('../core/orchestration/ledger');
+  await x.call('orch_propose_plan',{summary:'两段',segments:[{name:'A',preset:'custom',goal:'a',acceptance:'a'},{name:'B',preset:'custom',goal:'b',acceptance:'b'}]});
+  const l=x.service.ledgerFor('mt1');const s=L.startSegment(l,{...l.plan.segments[0],planSegmentId:l.plan.segments[0].id});
+  s.status='completed';s.verdictPath='/a/已交付.md';
+  await assert.rejects(x.call('orch_report',{kind:'final',summary:'全部完成'}),/B|计划/);
+});
+
+test('lightweight: runtime failure pauses dispatch and exposes preserved context', async t => {
+  const x=fixture(t,{settings:{requireConfirm:false}});
+  await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
+  const args={name:'PF',preset:'development',goal:'实现 PF',acceptance:'通过',members:['m2','m3']};
+  await x.call('orch_propose_plan',{summary:'PF',segments:[args]});await x.call('orch_start_workflow',args);
+  x.writeRun({id:'run-1',kind:'file',status:'paused',error:'CLI 登录失效',stages:x.meetingObj.serialWorkflow.deliveryStages,steps:[{id:'s',index:1,members:['m2'],deliveries:{},dispatches:[{state:'settled',chatStatus:'error',receipts:{}}]}]});
+  x.service.reconcile('mt1');
+  const status=await x.call('orch_status');assert.equal(status.halt.reason,'runtime_error');
+  assert.match(status.currentRun.error,/登录/);assert.ok(status.currentRun.dispatches);
+  assert.equal(status.currentRun.recovery.resumeAllowed,true);
+  await assert.rejects(x.call('orch_control_workflow',{action:'continue'}),/暂停/);
+  x.writeRun({id:'run-1',kind:'file',status:'paused',error:'成员报告阻塞',stages:x.meetingObj.serialWorkflow.deliveryStages,steps:[{id:'s',index:1,members:['m2'],deliveries:{m2:{memberId:'m2',outcome:'blocked',path:'/step/m2/阻塞.md'}}}]});
+  const blocked=await x.call('orch_status');
+  assert.equal(blocked.currentRun.recovery.resumeAllowed,false);
+  assert.match(blocked.currentRun.recovery.advice,/新建任务/);
+});
+
+test('review: changing natural-language budget invalidates confirmation of the old plan',async t=>{
+  const x=fixture(t);
+  await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
+  x.service.userMessage('mt1',{text:'允许10轮以内迭代'});
+  await x.call('orch_propose_plan',planArgs);
+  x.service.userMessage('mt1',{text:'现在允许12轮以内迭代'});
+  await assert.rejects(x.service.userAction('mt1','confirm'),/额度.*变化|更新.*计划/);
+  assert.equal(x.service.ledgerFor('mt1').plan.confirmedVersion,0);
+  await x.call('orch_propose_plan',planArgs);
+  await x.service.userAction('mt1','confirm');
+  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,12);
+});
+
+test('review: an unsupported user budget prevents old plan confirmation',async t=>{
+  const x=fixture(t);
+  await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
+  await x.call('orch_propose_plan',planArgs);
+  x.service.userMessage('mt1',{text:'允许40轮以内迭代'});
+  await assert.rejects(x.service.userAction('mt1','confirm'),/不会静默截断/);
+  assert.equal(x.service.ledgerFor('mt1').plan.confirmedVersion,0);
 });

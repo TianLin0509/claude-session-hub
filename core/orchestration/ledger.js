@@ -13,7 +13,7 @@ const SEGMENT_LABELS = {
 };
 const HALT_LABELS = {
   budget_rounds: '迭代额度用满', budget_time: '时长额度用满', no_progress: '连续两次没有新进展',
-  need_decision: '编排员请你决定', user_pause: '你已暂停',
+  need_decision: '编排员请你决定', user_pause: '你已暂停', runtime_error: '运行故障，等待你处理',
 };
 const MAX_EVENTS = 80, MAX_SEEN = 400;
 
@@ -25,7 +25,7 @@ function normalizeSettings(input = {}) {
   const s = input && typeof input === 'object' ? input : {};
   return {
     requireConfirm: s.requireConfirm !== false,
-    roundCap: clampInt(s.roundCap, 2, 30, DEFAULT_SETTINGS.roundCap),
+    roundCap: clampInt(s.roundCap, 1, 30, DEFAULT_SETTINGS.roundCap),
     timeCapMin: clampInt(s.timeCapMin, 15, 24 * 60, DEFAULT_SETTINGS.timeCapMin),
     maxMembers: clampInt(s.maxMembers, 1, 3, DEFAULT_SETTINGS.maxMembers),
     stuckMin: clampInt(s.stuckMin, 5, 240, DEFAULT_SETTINGS.stuckMin),
@@ -57,6 +57,7 @@ function proposePlan(ledger, input = {}, now = Date.now()) {
   const summary = text(input.summary, 4000);
   if (!summary) throw new Error('计划需要 summary：一段白话说明目标、队伍和步骤');
   const team = (Array.isArray(input.team) ? input.team : []).map(t => ({
+    memberId: text(t && t.memberId, 40),
     role: text(t && t.role, 40), kind: text(t && t.kind, 20), model: text(t && t.model, 80),
     effort: text(t && t.effort, 20), tier: text(t && t.tier, 20), reason: text(t && t.reason, 300),
   })).filter(t => t.role);
@@ -69,8 +70,10 @@ function proposePlan(ledger, input = {}, now = Date.now()) {
   if (segments.length > 8) throw new Error('计划最多 8 段工作');
   const missing = segments.filter(seg => !seg.acceptance).map(seg => seg.name);
   if (missing.length) throw new Error('每段工作都要写验收标准（acceptance）：' + missing.join('、'));
+  if(new Set(segments.map(s=>s.name)).size!==segments.length)throw Error('计划工作段名称必须唯一');
+  for(const seg of segments)seg.id=crypto.createHash('sha256').update(JSON.stringify([seg.name,seg.preset,seg.goal,seg.acceptance])).digest('hex').slice(0,16);
   const version = (ledger.plan?.version || 0) + 1;
-  ledger.plan = { version, summary, team, segments, estimateRounds: clampInt(input.estimateRounds, 0, 99, 0),
+  ledger.plan = { version, summary, team, segments, budget: input.budget || null, estimateRounds: clampInt(input.estimateRounds, 0, 99, 0),
     proposedAt: now, confirmedAt: ledger.plan?.confirmedAt || null, confirmedVersion: ledger.plan?.confirmedVersion || 0 };
   if (ledger.settings.requireConfirm) {
     if (ledger.status !== 'halted') ledger.status = 'awaiting_confirm';
@@ -81,9 +84,16 @@ function proposePlan(ledger, input = {}, now = Date.now()) {
 }
 function confirmPlan(ledger, now = Date.now()) {
   if (!ledger.plan) throw new Error('还没有计划可以确认');
+  if (ledger.budgetError) throw new Error(ledger.budgetError);
+  const plannedBudget=ledger.plan.budget || {roundCap:ledger.budget.roundCap,timeCapMin:ledger.budget.timeCapMs/60000};
+  if (['roundCap','timeCapMin'].some(key=>ledger.budgetIntent?.[key]!=null && ledger.budgetIntent[key]!==plannedBudget[key])) {
+    throw new Error('田哥指定的额度已变化，请编排员更新计划后再确认');
+  }
   if (ledger.plan.confirmedVersion === ledger.plan.version && ledger.status !== 'awaiting_confirm') return false;
   ledger.plan.confirmedVersion = ledger.plan.version;
   ledger.plan.confirmedAt = now;
+  if(ledger.plan.budget){ledger.budget.roundCap=ledger.plan.budget.roundCap;ledger.budget.timeCapMs=ledger.plan.budget.timeCapMin*60000;}
+  for(const member of ledger.plan.team)if(member.memberId)ledger.roles[member.memberId]={role:member.role,kind:member.kind};
   if (ledger.status === 'awaiting_confirm' || ledger.status === 'planning') ledger.status = 'running';
   ledger.budget.lastTickAt = now;
   event(ledger, `田哥确认计划 v${ledger.plan.version}`, now);
@@ -96,7 +106,7 @@ function canDispatch(ledger) {
   if (ledger.status === 'ended') return { ok: false, reason: '编排已结束；田哥恢复编排前不能派活' };
   if (ledger.status === 'finished') return { ok: false, reason: '任务已结项；田哥提出新要求后再提交新计划' };
   if (ledger.status === 'halted') return { ok: false, reason: `已暂停（${HALT_LABELS[ledger.halt?.reason] || '等待田哥'}）：先用 orch_report 汇报，等田哥决定` };
-  if (ledger.settings.requireConfirm && (!ledger.plan || ledger.plan.confirmedVersion < 1)) {
+  if (ledger.settings.requireConfirm && (!ledger.plan || ledger.plan.confirmedVersion !== ledger.plan.version)) {
     return { ok: false, reason: '计划还没被田哥确认：先用 orch_propose_plan 提交计划，等田哥确认后再组队派活' };
   }
   if (ledger.status === 'awaiting_confirm') return { ok: false, reason: `计划 v${ledger.plan.version} 等待田哥确认，确认前不能派活` };
@@ -110,6 +120,7 @@ function startSegment(ledger, seg, now = Date.now()) {
     id: newId('seg'), runId: null, name: text(seg.name, 80) || PRESET_LABELS[seg.preset] || '工作段',
     preset: seg.preset, goal: text(seg.goal, 4000), acceptance: text(seg.acceptance, 2000),
     members: seg.members || [], status: 'starting', rounds: 0, steps: 0, verdict: null, verdictPath: '',
+    planSegmentId: seg.planSegmentId || '',
     error: '', missing: [], stuckNotified: '', startedAt: now, endedAt: null,
   };
   ledger.segments.push(record);
@@ -260,6 +271,9 @@ function noteUserMessage(ledger) { ledger.wakesWithoutProgress = 0; ledger.lastW
 
 // ---- 汇报与结项 ----
 function finalGate(ledger) {
+  if(!ledger.plan?.segments?.length)return {ok:false,reason:'缺少完整计划，不能结项'};
+  const missing=ledger.plan.segments.filter(p=>!ledger.segments.some(s=>(s.planSegmentId===p.id || (!s.planSegmentId && s.name===p.name && s.preset===p.preset && s.goal===p.goal && s.acceptance===p.acceptance)) && ['passed','completed'].includes(s.status) && s.verdictPath));
+  if(missing.length)return {ok:false,reason:'计划工作段未完成或缺审核证据：'+missing.map(s=>s.name).join('、')};
   if (!ledger.segments.length) return { ok: false, reason: '还没有任何工作段，不能结项' };
   const open = ledger.segments.filter(s => !['passed', 'completed', 'cancelled', 'skipped', 'failed'].includes(s.status));
   if (open.length) return { ok: false, reason: '还有工作段没结束：' + open.map(s => `「${s.name}」${SEGMENT_LABELS[s.status] || s.status}`).join('、') };
@@ -298,7 +312,7 @@ function view(ledger) {
     budget: { roundsUsed: ledger.budget.roundsUsed, roundCap: ledger.budget.roundCap,
       minutesUsed: fmtMin(ledger.budget.activeMs), minutesCap: fmtMin(ledger.budget.timeCapMs) },
     plan: ledger.plan ? { version: ledger.plan.version, confirmedVersion: ledger.plan.confirmedVersion, summary: ledger.plan.summary,
-      segments: ledger.plan.segments, team: ledger.plan.team } : null,
+      segments: ledger.plan.segments, team: ledger.plan.team, budget: ledger.plan.budget } : null,
     roles: ledger.roles, segments: progressRows(ledger),
     asks: ledger.asks.slice(-10).map(a => ({ id: a.id, memberId: a.memberId, status: a.status, answerPath: a.answerPath || '' })),
     pendingAsks: pendingAsks.length,

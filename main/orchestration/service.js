@@ -9,6 +9,7 @@ const { randomUUID } = require('node:crypto');
 const Ledger = require('../../core/orchestration/ledger');
 const Store = require('../../core/orchestration/store');
 const Prompt = require('../../core/orchestration/prompt');
+const BudgetIntent = require('../../core/orchestration/budget-intent');
 const Settings = require('../../core/workflow-settings');
 const Delivery = require('../../core/delivery-workflow');
 const profiles = require('../../core/hub-assistant/profiles');
@@ -16,7 +17,7 @@ const { AssistantBridge } = require('../../core/hub-assistant/bridge');
 
 const PURPOSE = 'hub-orchestrator';
 const MCP_NAME = 'hub_orchestrator';
-const TOOL_NAMES = ['orch_status', 'orch_propose_plan', 'orch_add_member', 'orch_start_workflow', 'orch_control_workflow', 'orch_ask_member', 'orch_report'];
+const TOOL_NAMES = ['orch_status', 'orch_propose_plan', 'orch_start_workflow', 'orch_control_workflow', 'orch_ask_member', 'orch_report'];
 const MEMBER_KINDS = ['claude', 'codex'];
 const TICK_MS = 3000;
 const SAVE_TIME_EVERY_MS = 30000;
@@ -29,7 +30,7 @@ const terminalRun = run => !run || ['done', 'cancelled'].includes(run.status);
 function createOrchestrationService(deps) {
   const {
     meetingManager, sessionManager, getHubDataDir, getDispatcher, getDeliveryEngine,
-    addMeetingSubInternal, ensureMemberReady = async () => {}, getDefaults = () => ({}),
+    ensureMemberReady = async () => {},
     getMembers = m => getDispatcher().groupMembersForMeeting(m, { includeDormant: true }),
     sendToRenderer = () => {}, logger = console, now = () => Date.now(), nodeExecutable = 'node',
   } = deps;
@@ -180,6 +181,8 @@ function createOrchestrationService(deps) {
     if (!ledger || !orch || ledger.status === 'ended') return false;
     if (!Ledger.pendingNotices(ledger).length || orchestratorBusy(meetingId)) return false;
     if (now() - (lastUserAt.get(meetingId) || 0) < QUIET_AFTER_USER_MS) return false;
+    try{await ensureMemberReady(meeting(meetingId), orch.memberId);}
+    catch(error){logger.warn?.('[orchestration] cannot wake orchestrator:',error.message);return false;}
     const session = sessionManager.getSession(orch.sessionId);
     if (!session) return false;
     let items = Ledger.pendingNotices(ledger);
@@ -197,7 +200,6 @@ function createOrchestrationService(deps) {
     inflight.set(meetingId, { ids, at: now() });
     persist(meetingId, ledger);
     try {
-      await ensureMemberReady(meeting(meetingId), orch.memberId);
       const result = await dispatcher().dispatchGroupChatTurn(meetingId, {
         userInput: text, targetMemberIds: [orch.memberId], appendUserMessage: false,
         workflowRun: { kind: 'orch-notice', runId: 'notice-' + ids[0], stepIndex: 0, attempt: 1 },
@@ -237,6 +239,10 @@ function createOrchestrationService(deps) {
     if (run) bindStartingSegment(ledger, run);
     const notices = run ? Ledger.applyRun(ledger, run, now()) : [];
     for (const n of notices) Ledger.enqueue(ledger, n.key, n.text, now());
+    if(run?.status==='paused' && ledger.status==='running' && !/已完成 \d+ 轮审查仍需返工|用户已暂停|额度/.test(run.error||'')){
+      Ledger.halt(ledger,'runtime_error',run.error||'工作流运行暂停，需核对现场',now());
+      Ledger.enqueue(ledger,`runtime:${run.id}:${run.steps?.at(-1)?.id}`,`运行故障：${run.error||'原因未知'}。请用 orch_status 核对失败步骤、派工回执和保留交付，仅向田哥提供处理建议，等待明确恢复。`,now());
+    }
     checkBudget(meetingId, ledger, run);
     persist(meetingId, ledger);
     if (notices.length) setImmediate(() => deliver(meetingId));
@@ -359,39 +365,22 @@ function createOrchestrationService(deps) {
     return {
       meeting: { title: m.title, scene: m.scene, workspace: m.workspace },
       status: v.status, halt: v.halt, budget: v.budget, settings: v.settings,
+      requestedBudget: ledger.budgetIntent || null, budgetError: ledger.budgetError || null,
       plan: ledger.plan, members: members(meetingId), segments: v.segments,
       currentRun: run && !terminalRun(run) ? {
         status: run.status, error: run.error || '', stage: run.stages?.[step?.index]?.name || '',
         stepMembers: step?.members || [], missing: (step?.members || []).filter(id => !step?.deliveries?.[id]),
         deliveries: Object.values(step?.deliveries || {}).map(d => ({ memberId: d.memberId, outcome: d.outcome, path: d.path })),
+        dispatches: step?.dispatches || [],
+        recovery: Object.values(step?.deliveries || {}).some(d=>d.outcome==='blocked')
+          ? { resumeAllowed:false, advice:'本轮已有阻塞交付，结果不可覆盖或原地续跑。请田哥处理阻塞后保留记录，结束本次任务并新建任务。' }
+          : { resumeAllowed:true, advice:'先请田哥处理并核对故障现场，得到明确恢复授权后才能续跑。' },
         runDir: path.join(Delivery.directory(dataDir(), meetingId), run.id),
       } : null,
       asks: ledger.asks.slice(-8), lastReport: ledger.reports.at(-1) || null,
       ledgerFile: Store.files(dataDir(), meetingId).md,
       canDispatch: Ledger.canDispatch(ledger),
     };
-  }
-  async function addMember(meetingId, ledger, args) {
-    requireDispatch(ledger);
-    const kind = String(args.kind || '');
-    if (!MEMBER_KINDS.includes(kind)) throw new Error('成员目前支持 claude 或 codex');
-    const current = members(meetingId).filter(x => !x.orchestrator);
-    if (current.length >= ledger.settings.maxMembers) throw new Error(`成员已满 ${ledger.settings.maxMembers} 位（不含编排员）`);
-    const resolved = profiles.resolveTask({ tier: args.tier || 'deep', kind, model: args.model, effort: args.effort }, getDefaults(kind) || {});
-    const before = new Set(meeting(meetingId).subSessions || []);
-    const created = await addMeetingSubInternal(meetingId, kind, { ...resolved.opts });
-    if (!created || !created.session) throw new Error('成员会话创建失败');
-    const m = meeting(meetingId);
-    const index = (m.subSessions || []).findIndex(sid => !before.has(sid));
-    const memberId = m.slotSpecs?.[index]?.memberId || `m${index + 1}`;
-    const orchIndex = (m.subSessions || []).indexOf(m.orchestration.sessionId);
-    if (orchIndex >= 0) meetingManager.setParticipants?.(meetingId, [orchIndex]);
-    ledger.roles[memberId] = { role: String(args.role || '').slice(0, 40), kind, label: resolved.label };
-    Ledger.event(ledger, `新成员 ${memberId}：${ledger.roles[memberId].role}（${resolved.label}）`, now());
-    ledger.progressSeq += 1;
-    persist(meetingId, ledger);
-    sendToRenderer('meeting-updated', { meeting: meeting(meetingId) });
-    return { memberId, name: created.session.title || memberId, label: resolved.label };
   }
   function draftFor(meetingId, args, memberList) {
     const preset = args.preset;
@@ -409,6 +398,8 @@ function createOrchestrationService(deps) {
   }
   async function startWorkflow(meetingId, ledger, args) {
     requireDispatch(ledger);
+    const planned=ledger.plan?.segments.find(s=>s.name===String(args.name||'').trim());
+    if(!planned || ['preset','goal','acceptance'].some(k=>String(planned[k]||'').trim()!==String(args[k]||'').trim()))throw Error('派工必须匹配当前确认计划工作段的名称、模板、目标和验收标准');
     if (Ledger.overBudget(ledger)) { checkBudget(meetingId, ledger); persist(meetingId, ledger); throw new Error('额度已用满，已暂停；请用 orch_report(need_decision) 汇报'); }
     if (ledger.budget.roundsUsed >= ledger.budget.roundCap) throw new Error('迭代额度已用满；请用 orch_report(need_decision) 汇报');
     if (!Ledger.PRESETS.includes(args.preset)) throw new Error('preset 只能是 development / research / roundtable / custom');
@@ -419,15 +410,11 @@ function createOrchestrationService(deps) {
     if (!ids.length || new Set(ids).size !== ids.length) throw new Error('members 要列出参与成员编号，不能重复');
     for (const id of ids) {
       const member = list.find(x => x.memberId === id);
-      if (!member) throw new Error(`没有成员 ${id}；先用 orch_add_member 建成员`);
+      if (!member) throw new Error(`没有已有成员 ${id}；请田哥调整成员配置`);
       if (member.orchestrator) throw new Error('编排员不参与工作流，members 里不能有自己');
     }
     if (args.preset === 'development') {
       if (ids.length !== 2) throw new Error('development 需要 members=[开发位, 审核位] 两位');
-      const [dev, rev] = ids.map(id => list.find(x => x.memberId === id));
-      if (dev.kind === rev.kind && !String(args.sameKindReason || '').trim()) {
-        throw new Error('开发位与审核位默认用不同后端（如 Claude 开发、Codex 审核）；确需同一后端请在 sameKindReason 写明理由');
-      }
     }
     const draft = draftFor(meetingId, args, list);
     const workerIds = list.filter(x => !x.orchestrator).map(x => x.memberId);
@@ -436,14 +423,14 @@ function createOrchestrationService(deps) {
     config.taskArmed = false;
     meetingManager.updateMeeting(meetingId, { serialWorkflow: config });
     sendToRenderer('meeting-updated', { meeting: meeting(meetingId) });
-    const seg = Ledger.startSegment(ledger, { name: args.name, preset: args.preset, goal: args.goal, acceptance: args.acceptance, members: ids }, now());
+    const seg = Ledger.startSegment(ledger, { name: args.name, preset: args.preset, goal: args.goal, acceptance: args.acceptance, members: ids, planSegmentId:planned.id }, now());
     persist(meetingId, ledger);
     const started = engine().start(meetingId, Prompt.goalText({ goal: args.goal, acceptance: args.acceptance, preset: args.preset }));
     started.then(() => onDeliveryStatus(meetingId), error => {
       const l = ledgerFor(meetingId);
       const s = l?.segments.find(x => x.id === seg.id);
       if (s && s.status === 'starting') { s.status = 'failed'; s.error = String(error.message || error).slice(0, 600); s.endedAt = now(); }
-      if (l) { Ledger.enqueue(l, `start-failed:${seg.id}`, `工作段「${seg.name}」启动失败：${error.message}`, now()); persist(meetingId, l); }
+      if (l) { haltRun(meetingId,l,'runtime_error',String(error.message||error)); Ledger.enqueue(l, `start-failed:${seg.id}`, `工作段「${seg.name}」启动失败：${error.message}。仅提供处理建议，等待田哥恢复。`, now()); persist(meetingId, l); }
     });
     // 首次派工可能要唤醒成员，较慢；最多等几秒拿到运行编号，不阻塞工具调用。
     await Promise.race([started.catch(() => {}), new Promise(resolve => { const t = setTimeout(resolve, 8000); t.unref?.(); })]);
@@ -517,7 +504,7 @@ function createOrchestrationService(deps) {
     Ledger.addReport(ledger, kind, summary, now());
     if (kind === 'final') { ledger.status = 'finished'; Ledger.event(ledger, '编排员结项', now()); }
     if (kind === 'need_decision' && ledger.status === 'running') {
-      Ledger.halt(ledger, 'need_decision', summary.slice(0, 300), now());
+      haltRun(meetingId, ledger, 'need_decision', summary.slice(0, 300));
       ledger.halt.reported = true;
     }
     ledger.progressSeq += 1;
@@ -532,11 +519,15 @@ function createOrchestrationService(deps) {
     switch (request.name) {
       case 'orch_status': return statusResult(m.id);
       case 'orch_propose_plan': {
-        const plan = Ledger.proposePlan(ledger, args, now());
+        const workers=members(m.id).filter(x=>!x.orchestrator);
+        const team=Array.isArray(args.team)?args.team:[];
+        if(new Set(team.map(x=>x.memberId)).size!==team.length || team.some(x=>!workers.some(w=>w.memberId===x.memberId)))throw Error('team 只能指定不同的已有成员 memberId 与角色');
+        const plan = Ledger.proposePlan(ledger, {...args,budget:BudgetIntent.forPlan(ledger,args.budget)}, now());
+        if(!ledger.settings.requireConfirm)Ledger.confirmPlan(ledger,now());
         persist(m.id, ledger);
-        return { version: plan.version, status: ledger.status, note: ledger.status === 'awaiting_confirm' ? '计划已交给田哥确认；在回答里用白话讲清计划，等他确认后再组队派活。' : '计划已记录，可以开始组队。' };
+        return { version: plan.version, status: ledger.status, budget:plan.budget, segments:plan.segments, note: ledger.status === 'awaiting_confirm' ? '计划与额度已交给田哥确认；确认后使用已有成员派工。' : '计划已记录，可以使用已有成员派工。' };
       }
-      case 'orch_add_member': return addMember(m.id, ledger, args);
+      case 'orch_add_member': throw Error('编排员只使用固定的已有成员；新建成员由田哥操作');
       case 'orch_start_workflow': return startWorkflow(m.id, ledger, args);
       case 'orch_control_workflow': return controlWorkflow(m.id, ledger, args);
       case 'orch_ask_member': return askMember(m.id, ledger, args);
@@ -607,10 +598,24 @@ function createOrchestrationService(deps) {
     if (!ledger) return null;
     lastUserAt.set(meetingId, now());
     Ledger.noteUserMessage(ledger);
+    if(!direct.length){
+      if(ledger.status==='finished'){
+        ledger.taskHistory=[...(ledger.taskHistory||[]),{plan:ledger.plan,segments:ledger.segments,budget:ledger.budget,asks:ledger.asks,reports:ledger.reports,endedAt:now()}];
+        ledger.budget=Ledger.create(meetingId,ledger.settings,now()).budget;
+        ledger.plan=null;ledger.segments=[];ledger.asks=[];ledger.reports=[];
+        ledger.budgetIntent=null;ledger.budgetError=null;
+      }
+      ledger.userMessages=[...(ledger.userMessages||[]),String(text)].slice(-8);
+      try{
+        if(/按默认额度|使用默认额度|恢复默认额度/.test(String(text))){ledger.budgetIntent={roundCap:ledger.settings.roundCap,timeCapMin:ledger.settings.timeCapMin};ledger.budgetError=null;}
+        else{const intent=BudgetIntent.extract(text);if(intent){ledger.budgetIntent={...ledger.budgetIntent,...intent};ledger.budgetError=null;}}
+      }
+      catch(error){ledger.budgetError=error.message;Ledger.enqueue(ledger,`budget-invalid:${now()}`,error.message,now());}
+    }
     if (ledger.status === 'awaiting_confirm' && CONFIRM_WORDS.test(String(text))) Ledger.confirmPlan(ledger, now());
     // 结项后田哥提出新要求：重新开放编排（新计划仍需确认）。
     if (ledger.status === 'finished' && !direct.length) { ledger.status = 'running'; Ledger.event(ledger, '田哥在结项后提出新要求，重新开放编排', now()); }
-    if (ledger.status === 'halted' && ['need_decision', 'no_progress', 'user_pause'].includes(ledger.halt?.reason) && !direct.length) {
+    if (ledger.status === 'halted' && !/^budget_/.test(ledger.halt?.reason||'') && !direct.length && /^\s*(继续|恢复编排|按建议继续|按计划继续|同意继续)[\s。！!]*$/.test(String(text))) {
       Ledger.resume(ledger, now());
     }
     if (Array.isArray(direct) && direct.length) {
