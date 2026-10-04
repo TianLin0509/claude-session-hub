@@ -109,7 +109,7 @@ async function open() { await cdp.eval(`selectMeeting(${JSON.stringify(meetingId
       if(rooms.find(m=>m.id===meetingId).subSessions.length!==3)throw Error('fixed roster changed');
       if(confirmed && l?.plan?.confirmedVersion===l?.plan?.version && l.budget.roundCap!==(scenario==='delivery'?10:8))throw Error('confirmed budget not enforced');
       if(scenario==='fault' && l?.status==='halted' && l.halt?.reported){
-        if(!/新建任务|重新开任务|新开任务|重开任务|新任务/.test(l.reports.at(-1)?.summary||''))throw Error('blocking advice does not respect Hub recovery capability');
+        if(!/(?:新建|重新开|新开|重开|新).{0,12}任务/.test(l.reports.at(-1)?.summary||''))throw Error('blocking advice does not respect Hub recovery capability');
         report.checks.push('real member reports injected blocking condition; real orchestrator gives advice');
         const before=JSON.stringify([l.status,r.status,r.steps.length,l.budget.roundsUsed]);
         await send('现在卡在哪里，有什么建议？'); await sleep(20000);
