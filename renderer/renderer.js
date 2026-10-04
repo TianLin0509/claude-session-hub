@@ -1019,10 +1019,26 @@ require('./resource-process-tooltip').attachResourceProcessTooltip({
   document, escapeHtml,
   request: () => ipcRenderer.invoke('get-resource-top-processes'),
 });
-require('./memory-release-panel').attachMemoryReleasePanel({
+let diskReleasePanel = null;
+const memoryReleasePanel = require('./memory-release-panel').attachMemoryReleasePanel({
   document, escapeHtml,
+  onOpen: () => diskReleasePanel?.close(),
   request: () => ipcRenderer.invoke('get-memory-release-plan'),
   execute: keys => ipcRenderer.invoke('execute-memory-release', { keys }),
+});
+diskReleasePanel = require('./disk-release-panel').attachDiskReleasePanel({
+  document, escapeHtml,
+  onOpen: () => memoryReleasePanel?.close(),
+  onComplete: () => { void refreshSystemResourceUsage(true); },
+  request: () => ipcRenderer.invoke('get-disk-release-plan'),
+  execute: options => ipcRenderer.invoke('execute-disk-release', options),
+  getStatus: () => ipcRenderer.invoke('get-disk-release-status'),
+  cancelScan: () => ipcRenderer.invoke('cancel-disk-release-scan'),
+  subscribeProgress: callback => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('disk-release-progress', listener);
+    return () => ipcRenderer.removeListener('disk-release-progress', listener);
+  },
 });
 require('./vpn-traffic-panel').attachVpnTrafficPanel({
   document, escapeHtml,

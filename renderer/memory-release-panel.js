@@ -16,7 +16,7 @@ const SECTIONS = [
   { tier: 'info', title: '正在使用 · 只显示', hint: '正在工作的会话、Hub 窗口本身和其他程序，不提供一键操作' },
 ];
 
-function attachMemoryReleasePanel({ document: doc, request, execute, escapeHtml }) {
+function attachMemoryReleasePanel({ document: doc, request, execute, escapeHtml, onOpen }) {
   const strip = doc.getElementById('sidebar-strip');
   if (!strip) return null;
   const esc = escapeHtml;
@@ -157,6 +157,7 @@ function attachMemoryReleasePanel({ document: doc, request, execute, escapeHtml 
   }
 
   function open() {
+    onOpen?.();
     panel.hidden = false;
     doc.body.classList.add('memory-release-open');
     void scan();
@@ -169,6 +170,7 @@ function attachMemoryReleasePanel({ document: doc, request, execute, escapeHtml 
   }
 
   strip.addEventListener('click', event => {
+    if (event.target.closest?.('.strip-disk')) return;
     if (!event.target.closest?.('.strip-resources')) return;
     event.preventDefault();
     if (panel.hidden) open(); else close();

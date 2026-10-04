@@ -98,6 +98,7 @@ const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { createDesktopNotificationController } = require('./main/desktop-notification-controller.js');
 const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handlers.js');
 const { registerMemoryReleaseIpc } = require('./main/ipc/memory-release-handlers.js');
+const { registerDiskReleaseIpc } = require('./main/ipc/disk-release-handlers.js');
 const { registerAutoSuspendIpc } = require('./main/ipc/auto-suspend-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
@@ -2312,6 +2313,10 @@ registerMemoryReleaseIpc(ipcMain, {
   dataDir: getHubDataDir(),
   getSessionManager: () => sessionManager,
   logger: console,
+});
+registerDiskReleaseIpc(ipcMain, {
+  app,
+  dataDir: getHubDataDir(),
 });
 
 // 驾驶舱 UI 删了，但这个服务还留着：工作台「最近文件」卡的 Git 变更来自它的 overview。

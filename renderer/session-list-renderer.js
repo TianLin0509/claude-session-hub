@@ -334,7 +334,7 @@ function _sessionWarningText(session) {
 
     const routeClass = (route, warning) => !egress ? 'pending' : warning || !route?.ok ? 'warning' : 'ok';
     const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" tabindex="0" data-resource-kind="${label === 'CPU' ? 'cpu' : 'memory'}" aria-label="${label} ${value == null ? '检测中' : value + '%'}，悬停查看占用 Top 3" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<b>${value == null ? '—' : value + '%'}</b><span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
-    const diskMetric = `<span class="strip-resource strip-disk${metricClass(diskPct)}" title="${escapeHtml(`${diskRoot} 已用 ${diskPct == null ? '检测中' : diskPct + '%'}${Number.isFinite(usage.disk?.totalBytes) ? ` · 总容量 ${(usage.disk.totalBytes / 1024 ** 3).toFixed(0)} GB` : ''}`)}" aria-label="${escapeHtml(`${diskRoot} 已用 ${diskPct == null ? '检测中' : diskPct + '%'}`)}">硬盘<b>${diskPct == null ? '—' : diskPct + '%'}</b><span class="strip-mini-track"><i style="width:${diskPct == null ? 0 : Math.max(0, Math.min(100, diskPct))}%"></i></span></span>`;
+    const diskMetric = `<span class="strip-resource strip-disk${metricClass(diskPct)}" role="button" tabindex="0" aria-haspopup="dialog" title="${escapeHtml(`${diskRoot} 已用 ${diskPct == null ? '检测中' : diskPct + '%'}${Number.isFinite(usage.disk?.totalBytes) ? ` · 总容量 ${(usage.disk.totalBytes / 1024 ** 3).toFixed(0)} GB` : ''} · 点击释放硬盘空间`)}" aria-label="${escapeHtml(`${diskRoot} 已用 ${diskPct == null ? '检测中' : diskPct + '%'}，点击打开硬盘释放`)}">硬盘<b>${diskPct == null ? '—' : diskPct + '%'}</b><span class="strip-mini-track"><i style="width:${diskPct == null ? 0 : Math.max(0, Math.min(100, diskPct))}%"></i></span></span>`;
     const network = usage.network;
     const rate = value => {
       if (network?.status !== 'ok' || !Number.isFinite(value)) return '—';
@@ -351,7 +351,7 @@ function _sessionWarningText(session) {
       : '出口未知';
     const domesticLabel = !egress ? '国内检测中' : domestic?.ok ? '国内正常' : '国内异常';
     const markup =
-      '<div class="strip-resources" title="点击查看内存与进程，一键释放残留和空闲会话">' + metric('CPU', cpuPct) + metric('内存', memoryPct) + diskMetric + '</div>' +
+      '<div class="strip-resources" title="点击 CPU / 内存查看进程，点击硬盘释放空间">' + metric('CPU', cpuPct) + metric('内存', memoryPct) + diskMetric + '</div>' +
       `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${proxyShort ? 'VPN' : '直连'}</span><span class="strip-location">${escapeHtml(location)}</span>${clashDelay ? `<span class="strip-delay">节点 ${clashDelay.delayMs} ms</span>` : ''}</button>` +
       transfer + `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
     if (stripEl._resourceMarkup === markup) return;
