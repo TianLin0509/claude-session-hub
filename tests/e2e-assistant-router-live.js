@@ -225,6 +225,13 @@ async function main(){
      if(!await cdp.eval('!!document.querySelector(".assistant-page:not([hidden])")'))await click('#btn-assistant');
      await until('assistant page open',()=>cdp.eval('!!document.querySelector(".assistant-page:not([hidden]) .ap-list")'),20000);await wait(800);await shot('ap-markdown');
      fs.writeFileSync(path.join(dir,'hub-page-shot.json'),j(await cdp.eval('({tables:document.querySelectorAll(".assistant-page .ap-md table").length,strong:document.querySelectorAll(".assistant-page .ap-md strong").length,stars:[...document.querySelectorAll(".assistant-page .ap-md")].filter(e=>/\\*\\*/.test(e.innerText)).length})'),null,1));}
+    // hub-say：在助理页输入框按真人操作说一句话（文件内容即这句话）；hub-targets：列出当前窗口（核对通知卡片是否弹出）。
+    const saySignal=path.join(dir,'hub-say');
+    if(fs.existsSync(saySignal)){const text=fs.readFileSync(saySignal,'utf8').trim();fs.unlinkSync(saySignal);
+     if(!await cdp.eval('!!document.querySelector(".assistant-page:not([hidden])")'))await click('#btn-assistant');
+     await click('.ap-composer textarea');await cdp.send('Input.insertText',{text});for(const type of ['keyDown','keyUp'])await cdp.send('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13});fs.writeFileSync(path.join(dir,'hub-say-done'),text);}
+    const targetsSignal=path.join(dir,'hub-targets');
+    if(fs.existsSync(targetsSignal)){fs.unlinkSync(targetsSignal);const t=await cdp.send('Target.getTargets');fs.writeFileSync(path.join(dir,'hub-targets.json'),j((t.targetInfos||[]).map(x=>({type:x.type,url:String(x.url).slice(0,120),title:x.title})),null,1));}
     // hub-page-live：助理页开着时，手机发来的消息与回复实时出现在同一条对话里。
     const liveSignal=path.join(dir,'hub-page-live');
     if(fs.existsSync(liveSignal)){fs.unlinkSync(liveSignal);
