@@ -156,7 +156,12 @@ const TASKS = {
         report.ui.push(`在输入框回复「按你的建议继续」（${ledger.halt?.reason}）`);
         log('answered decision', { reason: ledger.halt?.reason });
         await delay(8000);
-      } else if (ledger.status === 'finished') { log('finished'); break; }
+      } else if (ledger.status === 'finished') {
+        log('finished');
+        // 编排员先调结项工具、再写这一轮回答：等它写完，最后的汇报卡片也进截图。
+        await wait('final answer', async () => !(await cdp.eval("!!document.querySelector('.mr-gc-msg.answer-missing')")), 240000, 5000).catch(() => report.problems.push('结项后 4 分钟内编排员最后一轮回答仍未写入文件'));
+        break;
+      }
 
       // 场景：打断正在实现的成员 → 点卡片「重新发送」救回
       if (SCENARIO === 'main' && !interrupted && run && run.status === 'running') {
