@@ -41,14 +41,16 @@ test('bottom state is sampled before the fit, not after', () => {
   assert.ok(fitAt > sampleAt, 'the sample must be taken before fit() reflows the buffer');
 });
 
-function resize(session, { atBottom = true, follow = true } = {}) {
+function resize(session, { atBottom = true, follow = true, view = 'pty', primary = true } = {}) {
   const frames = [], calls = [];
-  const cached = { opened: true, container: { offsetWidth: 800, getBoundingClientRect: () => ({width:800,height:600}) },
+  const terminalPanelEl = {};
+  const cached = { opened: true, container: { closest: () => primary ? terminalPanelEl : null,
+    offsetWidth: 800, getBoundingClientRect: () => ({width:800,height:600}) },
     terminal: { cols: 80, rows: 24, options: {fontSize:14} }, fitAddon: { fit() { calls.push('fit'); atBottom = false; } } };
   const native = s => ['codex-app-server','claude-stream-json','acp'].includes(s?.runtimeBackend);
   const codex = kind => /^codex(?:-resume)?$/.test(kind || '');
   vm.runInNewContext(fitBody() + '\nfitAndResizeTerminal("session", cached, {force:true});', {
-    cached, sessions:new Map([['session',session]]), currentFontSize:14, currentZoom:1,
+    cached, terminalPanelEl, currentView:view, sessions:new Map([['session',session]]), currentFontSize:14, currentZoom:1,
     isNativeAgent:native, isCodexKind:codex,
     isTerminalViewportAtBottom:()=>atBottom,
     shouldAutoPinCodexTerminal:()=>follow && (native(session) || codex(session.kind)),
@@ -83,6 +85,16 @@ test('upward native intent wins even while the DOM still reports the old bottom'
 test('a plain terminal scrolled away from the bottom is left alone', () => {
   const {calls,frames}=resize({kind:'claude'},{atBottom:false});
   assert.deepEqual(calls,['fit','resize']);assert.equal(frames.length,0);
+});
+
+test('card chrome changes cannot resize the CLI hidden underneath', () => {
+  const {calls,frames}=resize({kind:'codex'},{view:'card'});
+  assert.deepEqual(calls,[]);assert.equal(frames.length,0);
+});
+
+test('embedded terminals still resize while the primary session uses cards', () => {
+  const {calls}=resize({kind:'claude'},{view:'card',primary:false});
+  assert.deepEqual(calls,['fit','resize','pin']);
 });
 
 if (!process.exitCode) console.log('All terminal fit bottom-pin tests passed.');

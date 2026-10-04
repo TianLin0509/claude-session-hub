@@ -686,6 +686,9 @@ function setupCodexViewportScrollTracker(sessionId, cached) {
 
 function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   if (!sessionId || !cached || !cached.opened || !cached.container) return false;
+  // The primary terminal can have nonzero geometry behind the opaque card
+  // overlay. Geometry alone is not evidence that the user opened backstage.
+  if (cached.container.closest('.terminal-panel') === terminalPanelEl && currentView !== 'pty') return false;
   const rect = cached.container.getBoundingClientRect();
   if (rect.width < 4 || rect.height < 4 || !cached.container.offsetWidth) return false;
   // 之前只有 Codex 会话在 fit 之后回到底部（shouldAutoPinCodexTerminal 里就写死了
@@ -787,13 +790,15 @@ function scheduleVisibleTerminalRecovery(sessionId, cached, opts = {}) {
     cached._surfaceRecoveryRaf = 0;
     if (terminalCache.get(sessionId) !== cached || !cached.opened || !cached.container) return;
     if (!cached.container.isConnected) return;
+    if (cached.container.closest('.terminal-panel') === terminalPanelEl && currentView !== 'pty') return;
     if (!cached.container.offsetWidth || !cached.container.offsetHeight) {
       if (!secondPass) {
         cached._surfaceRecoveryRaf = requestAnimationFrame(() => recover(true));
       }
       return;
     }
-    fitAndResizeTerminal(sessionId, cached, { force: true });
+    const forcePtyResize = cached._hydrated && cached._needsPtyRedraw;
+    if (fitAndResizeTerminal(sessionId, cached, { force: true, forcePtyResize }) && forcePtyResize) cached._needsPtyRedraw = false;
     refreshTerminalRendererSurface(cached);
     if (opts.pinBottom) {
       try { cached.terminal.scrollToBottom(); } catch {}
@@ -2124,6 +2129,11 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (!embedded) terminalPanelEl.classList.remove('home-active');
   if (!embedded) cardFollowScroll.activate(sessionId, { force: !!opts.forceScrollBottom });
+  // Save the outgoing cards before rebuilding the composer. Keeping thousands
+  // of old Markdown nodes attached makes every chrome measurement lay out the
+  // old conversation again. The history cache retains their DOM/disclosures;
+  // the normal history load restores the selected view after chrome is ready.
+  if (!embedded && !cardHistoryViews.ready(session)) cardHistoryViews.suspend();
 
   // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
   // before innerHTML clear obliterates them; re-attach after.
@@ -2192,6 +2202,10 @@ function showTerminal(sessionId, opts = { focus: true }) {
   }
 
   requestAnimationFrame(() => {
+    // Card navigation must not fit/redraw an invisible CLI, or resize a
+    // session which a later click has already unmounted. Entering backstage
+    // runs scheduleVisibleTerminalRecovery with the final visible geometry.
+    if (!termContainer.isConnected || (!embedded && (activeSessionId !== sessionId || currentView !== 'pty'))) return;
     const dbg = window.__scrollDebug;
     if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
     const forcePtyResize = cached._hydrated && cached._needsPtyRedraw;
@@ -3880,9 +3894,11 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   if (remember) rememberViewModeForSession(activeSessionId, mode);
   if (terminalPanelEl) terminalPanelEl.classList.toggle('card-view-active', mode === 'card');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
-  cardQuestionNavigator.refresh();
+  // Selection mounts a new history view next. Measuring the outgoing cards
+  // under the new session identity forces an unnecessary synchronous layout.
+  if (!skipPreviousCardCapture) cardQuestionNavigator.refresh();
   cardMultiSelectController.setVisible(mode === 'card' && !!activeSessionId);
-  syncBackstageButton();
+  syncBackstageButton(skipPreviousCardCapture ? !!activeSessionId : undefined);
   // 切到 PTY 时 refit xterm
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
@@ -3913,7 +3929,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   if (activeSessionId && typeof _updateStreamingIndicator === 'function') {
     _updateStreamingIndicator(activeSessionId);
   }
-  updateFloatingBarState();
+  if (!skipPreviousCardCapture) updateFloatingBarState();
   if (overlay && mode === 'card' && previousView !== 'card'
       && _cardOverlayFollowBottomBySession.get(activeSessionId) === true) {
     // updateFloatingBarState re-enables the 31px card footer. That shrinks the
@@ -6846,7 +6862,8 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
   // fitAndResizeTerminal —— 也就是说那次 fit 作用在一个空终端上，而真正的内容是之后
   // 才写进来的，此后再没有任何一次 fit/pin。内容量一变（尤其带绝对定位的 TUI 帧），
   // 布局就可能停在按空终端算出来的状态。回灌完成后补一次 fit + 置底。
-  if (sessionId === activeSessionId) {
+  if (sessionId === activeSessionId
+      && (currentView === 'pty' || cached.container.closest('.terminal-panel') !== terminalPanelEl)) {
     fitAndResizeTerminal(sessionId, cached, { force: true, forcePtyResize: true });
     cached._needsPtyRedraw = false;
     refreshTerminalRendererSurface(cached);

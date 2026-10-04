@@ -14,7 +14,7 @@ fs.writeFileSync(store,JSON.stringify(threads));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 (async()=>{let hub,cdp;try{
  const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
- hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'hidden',extraEnv:{CODEX_HOME:path.join(root,'codex'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve(__dirname,'../tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:store}});
+ hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'background',extraEnv:{CODEX_HOME:path.join(root,'codex'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve(__dirname,'../tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:store}});
  cdp=await connectFirstPage(hub);await cdp.send('Page.bringToFront');await cdp.send('Emulation.setDeviceMetricsOverride',{width:1450,height:950,deviceScaleFactor:1,mobile:false});
  await cdp.send('Performance.enable');
  const metric=async()=>Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(x=>[x.name,x.value]));

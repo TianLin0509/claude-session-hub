@@ -38,7 +38,7 @@ fs.writeFileSync(path.join(dir, claude.id + '.jsonl'), Array.from({ length: 80 }
       entryPath=path.join(root,'foreground-scheduling.cjs');
       fs.writeFileSync(entryPath,`const {app}=require('electron');app.on('browser-window-created',(_event,window)=>window.webContents.setBackgroundThrottling(false));require(${JSON.stringify(path.resolve('main-bootstrap.js'))});`);
     }
-    hub = await launchIsolatedHub({ dataDir: data, port, windowMode: 'hidden', ...(entryPath?{entryPath}:{}), extraEnv: {
+    hub = await launchIsolatedHub({ dataDir: data, port, windowMode: 'background', ...(entryPath?{entryPath}:{}), extraEnv: {
       CODEX_HOME: path.join(root, 'codex'), CLAUDE_CONFIG_DIR: claudeHome,
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.resolve('tests/fixtures/codex-app-server.js'), CLAUDE_HUB_NATIVE_FIXTURE_STORE: store,
       CLAUDE_HUB_CLAUDE_STREAM_FIXTURE: path.resolve('tests/fixtures/claude-stream.js'), CLAUDE_HUB_CLAUDE_FIXTURE_MODE: 'hold',
@@ -52,10 +52,16 @@ fs.writeFileSync(path.join(dir, claude.id + '.jsonl'), Array.from({ length: 80 }
       fs.writeFileSync(path.join(out,'timeout.json'),JSON.stringify(state,null,2)); console.error(JSON.stringify(state));
       throw Error('Timed out: ' + expr);
     } await sleep(60); } }
+    let lastClickAt = 0;
     async function click(selector) {
+      // These are separate navigations, not a physical double-click on a row
+      // which just reordered. Fast background rendering no longer implicitly
+      // waits out the sidebar's double-click intent window.
+      await sleep(Math.max(0, 550 - (Date.now() - lastClickAt)));
       const point = await cdp.eval(`(async()=>{let e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing click target');e.scrollIntoView({block:'nearest',behavior:'instant'});await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));e=document.querySelector(${JSON.stringify(selector)});const r=e.getBoundingClientRect(),x=r.x+Math.min(80,r.width/2),y=r.y+r.height/2;if(!r.height || !e.contains(document.elementFromPoint(x,y)))throw Error('obscured click target '+${JSON.stringify(selector)});return{x,y};})()`);
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
       for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+      lastClickAt = Date.now();
     }
     await until('typeof sessions !== "undefined" && typeof cardHistoryPager !== "undefined"');
     await cdp.eval(`window.__errors=[];for(const name of ['warn','error']){const original=console[name].bind(console);console[name]=(...args)=>{window.__errors.push(args.map(x=>String(x)));original(...args);};}`);
@@ -79,8 +85,12 @@ fs.writeFileSync(path.join(dir, claude.id + '.jsonl'), Array.from({ length: 80 }
     }
     for (const c of [...cases, cases[0]]) {
       await cdp.eval('window.__long=[];window.__loadDurations=[]'); const before = await metrics();
+      const surfaceBefore = await cdp.eval(`terminalCache.get(${JSON.stringify(c.sid)})._surfaceRefreshCount || 0`);
       await click(`.session-item[data-session-id="${c.sid}"]`);
       await until(`activeSessionId===${JSON.stringify(c.sid)} && cardHistoryViews.ready(sessions.get(${JSON.stringify(c.sid)})) && __loads===0`);
+      await cdp.eval('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      assert.equal(await cdp.eval(`terminalCache.get(${JSON.stringify(c.sid)})._surfaceRefreshCount || 0`), surfaceBefore,
+        'cached card switches do not redraw an invisible CLI');
       const after = await metrics();
       results.push({ case: c.name, rendererTaskMs: (after.TaskDuration - before.TaskDuration) * 1000,
         ...await cdp.eval('({cards:document.querySelectorAll("#msg-overlay>.turn-card").length,nodes:document.querySelectorAll("#msg-overlay *").length,longTasks:window.__long,loads:window.__loadDurations})') });
