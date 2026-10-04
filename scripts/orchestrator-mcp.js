@@ -20,7 +20,7 @@ const tools = [
       estimateRounds: { type: 'number' },
     }, ['summary', 'segments']) },
   { name: 'orch_start_workflow',
-    description: '启动当前计划中的工作段，name、preset、goal、acceptance 必须匹配计划；成员仅从已有队伍选取，同一时间一段。development：members=[实现位,独立审核位]，开题→实现与自测→审核，正常返工自动迭代；research / roundtable 为 2–3 位，最后一位收口；custom 用 rounds 自定义 1–6 轮，可逐轮安排不同已有成员。',
+    description: '启动当前计划中的工作段，name、preset、goal、acceptance 必须匹配计划；成员仅从已有队伍选取，同一时间一段。development：members=[实现位,独立审核位]，开题→实现与自测→审核，正常返工自动迭代；research / roundtable 为 2–3 位，members 第 2 位负责收口，可用顺序选择收口成员；custom 用 rounds 自定义 1–6 轮，各轮安排 1–3 位已有成员并行，轮间按 next/end 串行接续。',
     inputSchema: schema({
       name: string, preset: presets, goal: string, acceptance: string,
       members: { type: 'array', items: string },
