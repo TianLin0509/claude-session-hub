@@ -35,10 +35,11 @@ class AssistantMemory {
     const { user, memory } = this.read();
     return ['# 助理的成长记忆', '',
       '下面是你（田哥的 AI Hub 助理）跨会话积累的记忆，由 Hub 保管，换班、换模型都会保留。回答和办事时遵守这里的偏好。',
-      '田哥说「记住……」，或你在交流中发现稳定的偏好、长期约定、常用资料入口时，用 update_memory 记下来：一句话一条，具体可执行；偏好写进 user，事实与约定写进 memory。一次性任务、实时进展和任何密钥不记。发现旧条目过时或重复时，用 remove 或 rewrite 整理。',
+      '田哥说「记住……」时一定记；他没说时，你也要主动判断：明确表态或反复体现的偏好、长期约定、常用资料入口，用 update_memory 记下来。一句话一条，具体可执行；偏好写进 user，事实与约定写进 memory。只出现一次的推测、一次性任务、实时进展和任何密钥不记。发现旧条目过时或重复时，用 remove 或 rewrite 整理。',
+      '这两份文件是所有模型共用的正本（Claude、Codex、千问等当助理时都读它）。关于田哥本人的偏好与约定，只记在这里；你自带的记忆目录不会被其他模型自动读到。',
       '', user.trim(), '', memory.trim(), ''].join('\n');
   }
-  writePrompt() { const tmp = this.promptPath + '.tmp'; fs.writeFileSync(tmp, this.promptText(), 'utf8'); fs.renameSync(tmp, this.promptPath); return this.promptPath; }
+  writePrompt() { const tmp = `${this.promptPath}.${process.pid}.tmp`; fs.writeFileSync(tmp, this.promptText(), 'utf8'); fs.renameSync(tmp, this.promptPath); return this.promptPath; }
   packet() {
     const { user, memory } = this.read();
     return { userPath: this.file('user'), memoryPath: this.file('memory'), user, memory,
@@ -49,7 +50,8 @@ class AssistantMemory {
     const clean = String(text).replace(/\r/g, '').trim();
     if (!['add', 'remove', 'rewrite'].includes(action)) throw new Error('action 只能是 add、remove 或 rewrite');
     if (!clean) throw new Error('内容不能为空');
-    if (SECRET_RE.test(clean)) throw new Error('内容疑似包含密钥或密码，未写入；记忆里不保存任何凭据');
+    reason = String(reason || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
+    if (SECRET_RE.test(clean) || SECRET_RE.test(reason)) throw new Error('内容疑似包含密钥或密码，未写入；记忆里不保存任何凭据');
     const before = fs.readFileSync(target, 'utf8');
     let after;
     if (action === 'add') {
@@ -71,7 +73,7 @@ class AssistantMemory {
     fs.writeFileSync(path.join(this.historyDir, `${stamp}-${Math.random().toString(36).slice(2, 7)}-${spec.name}`), before, 'utf8');
     const backups = fs.readdirSync(this.historyDir).sort();
     for (const old of backups.slice(0, Math.max(0, backups.length - 60))) { try { fs.unlinkSync(path.join(this.historyDir, old)); } catch {} }
-    const tmp = target + '.tmp'; fs.writeFileSync(tmp, after, 'utf8'); fs.renameSync(tmp, target);
+    const tmp = `${target}.${process.pid}.tmp`; fs.writeFileSync(tmp, after, 'utf8'); fs.renameSync(tmp, target);
     fs.appendFileSync(path.join(this.directory, 'CHANGES.md'), `- ${new Date(now).toISOString()} · ${spec.name} · ${action} · ${clean.split('\n')[0].slice(0, 80)}${reason ? ' · ' + String(reason).slice(0, 60) : ''}\n`, 'utf8');
     this.writePrompt();
     return { ok: true, file: target, chars: after.length, cap: spec.cap, appliesTo: '当前会话已知；新会话（换班、换模型后）自动读入' };

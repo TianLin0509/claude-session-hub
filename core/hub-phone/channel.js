@@ -48,7 +48,7 @@ class PhoneChannel{
     }
    }}
   if(this.supports('profile')&&this.assistant.phoneProfile&&!this.assistant.switching){const current=JSON.stringify(this.assistant.currentProfile?.());if(current!==s.profileSignature)await this.sendProfile();}
-  for(const n of this.assistant.notifications({limit:200}).notifications){if(s.notices.includes(n.id)||n.createdAt<s.created)continue;await this.reply('notice-'+crypto.createHash('sha256').update(n.id).digest('hex').slice(0,32),'关注任务「'+n.title+'」有新进展：\n'+n.text,{notice:true});this.journal.change(x=>x.notices.push(n.id));}
+  for(const n of this.assistant.notifications({limit:200}).notifications){if(s.notices.includes(n.id)||n.createdAt<s.created)continue;await this.reply('notice-'+crypto.createHash('sha256').update(n.id).digest('hex').slice(0,32),n.kind==='memory-update'?n.text:'关注任务「'+n.title+'」有新进展：\n'+n.text,{notice:true});this.journal.change(x=>x.notices.push(n.id));}
   await this.flush(4);
  }catch(e){this.online=false;this.issue=e.message;}finally{this.working=false;}}
  async flush(limit=8){for(const row of this.journal.state.outbox.filter(r=>!r.sent).slice(0,limit)){await this.request('/send',{method:'POST',body:{id:row.id,payload:row.payload}});this.journal.change(()=>{row.sent=true;});}}

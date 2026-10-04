@@ -18,6 +18,13 @@ class AssistantWatches{
     const rows=this.store.db.prepare(`SELECT value,read_at FROM assistant_notifications ${unreadOnly?'WHERE read_at IS NULL':''} ORDER BY created_at DESC LIMIT ?`).all(Math.max(1,Math.min(200,Number(limit)||50)));
     return{ok:true,notifications:rows.map(r=>({...JSON.parse(r.value),readAt:r.read_at})),unreadCount:this.store.db.prepare('SELECT count(*) n FROM assistant_notifications WHERE read_at IS NULL').get().n};
   }
+  // Hub 自己发出的提醒（例如「我记下了：……」），和关注回复走同一条提醒通道（助理页 + 手机）。
+  addNotice({id,title,text,kind='assistant-notice',label='助理提醒'}){
+    const notice={id,sessionId:'assistant',title,text,createdAt:Date.now(),readAt:null,kind,label};
+    const changed=this.store.db.prepare('INSERT OR IGNORE INTO assistant_notifications VALUES(?,?,?,?,NULL)').run(id,'assistant',JSON.stringify(notice),notice.createdAt).changes;
+    if(changed){try{this.onNotification(notice);}catch{}}
+    return changed?notice:null;
+  }
   markRead(id){this.store.db.prepare('UPDATE assistant_notifications SET read_at=COALESCE(read_at,?) WHERE id=?').run(Date.now(),id);return{ok:true};}
   poll(){
     for(const watch of this.list()){
