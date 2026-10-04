@@ -2,6 +2,25 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { captureClaudeMessage: capture, claudeTranscriptTurns: cards } = require('../core/claude-native-transcript');
+const { displayChatTurns } = require('../renderer/simple-chat-display');
+
+test('later work keeps every delivered native reply visible in the same compact message', () => {
+  const record = { userMessageId: 'u', text: 'question', status: 'completed',
+    createdAt: 1, completedAt: 10, finalText: 'Additional answer' };
+  for (const [id, text, reason] of [['p1', 'Inspecting', 'tool_use'],
+    ['f1', 'Initial answer', 'end_turn'], ['p2', 'Continuing work', 'tool_use'],
+    ['f2', 'Additional answer', 'end_turn']]) {
+    capture(record, { type: 'assistant', uuid: id,
+      message: { id, stop_reason: reason, content: [{ type: 'text', text }] } });
+  }
+  const turns = cards([record]), displayed = displayChatTurns(turns);
+  assert.equal(turns[1].text, 'Additional answer', 'authoritative latest-result extraction remains separate');
+  assert.deepEqual(turns[1].displayMessages.map(m => m.phase),
+    ['commentary', 'final_answer', 'commentary', 'final_answer']);
+  assert.equal(displayed.length, 2, 'one user message and one AI message');
+  assert.equal(displayed[1].text, 'Initial answer\n\nAdditional answer');
+  assert.deepEqual(displayed[1].chatProcessMessages.map(m => m.text), ['Inspecting', 'Continuing work']);
+});
 
 test('stream and final message replace the same card without duplicate text', () => {
   const record = { submissionId: 'submission', userMessageId: 'user', text: 'question', status: 'accepted', createdAt: 1 };

@@ -1,6 +1,6 @@
 {
   "name": "ai-group-chat-hub",
-  "version": "1.6.335",
+  "version": "1.6.336",
   "description": "多模型 AI 群聊 Hub",
   "main": "main-bootstrap.js",
   "scripts": {

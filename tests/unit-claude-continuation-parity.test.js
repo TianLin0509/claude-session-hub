@@ -1,6 +1,6 @@
 'use strict';
-// Claude task-notification turns read like Codex progress rows: one card per
-// human turn, continuations appended, no duplicate against the disk history,
+// Claude task-notification continuations preserve delivered answers in one card
+// per human turn, with no duplicate against the disk history,
 // and no whole-transcript rewrite per late frame.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -53,7 +53,7 @@ test('assistant frames that arrive before the replayed injected input are kept a
   assert.equal(assistant.length, 1, 'one card for the human turn and its continuation');
   assert.deepEqual(assistant[0].continuations, [activities[0].userMessageId]);
   assert.deepEqual(assistant[0].displayMessages.map(m => [m.text, m.phase]),
-    [['A answer', 'commentary'], ['进展一', 'commentary'], ['最终结论', 'final_answer']]);
+    [['A answer', 'final_answer'], ['进展一', 'final_answer'], ['最终结论', 'final_answer']]);
   assert.equal(assistant[0].text, '最终结论');
   assert.equal(assistant[0].nativeOutcome, 'completed');
   assert.equal(s.runtime.state, 'completed');
@@ -80,7 +80,7 @@ test('continuations attach only to a human turn that had settled before they beg
   const cards = claudeTranscriptTurns(settled).filter(c => c.role === 'assistant');
   assert.equal(cards.length, 1);
   assert.deepEqual(cards[0].continuations, ['N1', 'N2']);
-  assert.deepEqual(cards[0].displayMessages.map(m => m.phase), ['commentary', 'commentary', 'final_answer']);
+  assert.deepEqual(cards[0].displayMessages.map(m => m.phase), ['final_answer', 'final_answer', 'final_answer']);
   assert.equal(tailClaudeRecords(settled, 1).length, 3, 'the live tail never separates a continuation from its human turn');
   const running = claudeTranscriptTurns([human('H2', 'accepted', 1, 0), activity('N3', 'task-notification', 6)]).filter(c => c.role === 'assistant');
   assert.equal(running.length, 1, 'an injected turn beside a running human turn stays its own card');

@@ -114,9 +114,10 @@ function projectClaudeRecord(record) {
   const answer = terminal ? record.finalText || '' : text.join('\n\n');
   const displayMessages = [...displayByMessage.values()];
   const finalMessage = terminal && displayMessages.findLast(m => m.text === answer);
-  // Only the settled answer is the result; any earlier end_turn text of the
-  // same run is a progress row, as in Codex's commentary/final_answer split.
-  if (finalMessage) for (const m of displayMessages) m.phase = m === finalMessage ? 'final_answer' : 'commentary';
+  // Each native end_turn reply remains a visible answer, including when the
+  // engine later resumes work. Mark a fallback settled answer without
+  // demoting already delivered replies into the process drawer.
+  if (finalMessage) finalMessage.phase = 'final_answer';
   if (terminal && answer && !displayMessages.some(m => m.text === answer)
       && displayMessages.map(m => m.text).join('\n\n') !== answer) {
     displayMessages.push({ id: `${id}:result`, text: answer, phase: 'final_answer',
@@ -133,8 +134,8 @@ function projectClaudeRecord(record) {
   return { user, assistant };
 }
 
-// Progress rows keep their own ids, so a card that grows by one continuation
-// patches in place; only the newest settled answer carries the result phase.
+// All delivered replies keep their phases and ids as background work resumes.
+// The compact chat renderer combines these answers in one stable message.
 function mergeContinuations(head, continuations) {
   if (!continuations.length) return head;
   const merged = { ...head, displayMessages: [...head.displayMessages], toolCalls: [...head.toolCalls],
@@ -142,7 +143,6 @@ function mergeContinuations(head, continuations) {
   const thinking = [head.thinking];
   for (const { assistant, record } of continuations) {
     if (!assistant) continue;
-    for (const message of merged.displayMessages) if (message.phase === 'final_answer') message.phase = 'commentary';
     merged.displayMessages.push(...assistant.displayMessages);
     merged.toolCalls.push(...assistant.toolCalls);
     if (assistant.thinking) thinking.push(assistant.thinking);
