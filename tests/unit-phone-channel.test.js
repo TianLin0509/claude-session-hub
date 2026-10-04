@@ -62,3 +62,36 @@ test('an assistant that cannot start does not block the phone queue forever',asy
  h.assistant.ensureSession=async()=>({ok:true,sessionId:'fixed-assistant'});const second=crypto.randomUUID();h.incoming(second,{type:'text',text:'再查'});await h.channel.tick();
  assert.equal(h.calls.length,1);assert.equal(h.calls[0].requestId,second);
 });
+
+function sseFetch(chunks,{status=200}={}){const calls=[];const impl=async(url,init)=>{calls.push(JSON.parse(init.body));const enc=new TextEncoder();let i=0;return{ok:status===200,status,body:{getReader:()=>({read:async()=>i<chunks.length?{done:false,value:enc.encode('data: '+JSON.stringify({choices:[{delta:{content:chunks[i++]}}]})+'\n')}:{done:true}})}};};impl.calls=calls;return impl;}
+test('fast lane answers simple questions in place, hands work back, and falls back on errors',async()=>{
+ const {FastLane}=require('../core/hub-assistant/fast-lane');
+ const fetchImpl=sseFetch(['田哥，','今天南通小雨，18～22℃。']);const lane=new FastLane({credentials:()=>({key:'k',base:'https://x'}),fetchImpl});
+ const r=await lane.answer('今天南通天气怎么样？',{userPrefs:'- 回答不用表格'});assert.equal(r.text,'田哥，今天南通小雨，18～22℃。');
+ const body=fetchImpl.calls[0];assert.equal(body.search_options.forced_search,true);assert.match(body.messages[0].content,/回答不用表格/);
+ assert.equal((await new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['【交给','助理】'])}).answer('明天提醒我开会')).handoff,true);
+ assert.equal(lane.eligible('仿真那个会话跑完没'),false);assert.equal(lane.eligible('一加一等于几'),true);
+ // 通道：简单问题不进完整助理；助理忙时也照答
+ const h=harness();h.channel.fastLane=lane;h.assistant.overview=()=>({status:'running'});const recorded=[];h.assistant.recordFastLane=x=>recorded.push(x);
+ const lane2=new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['田哥，2。'])});h.channel.fastLane=lane2;
+ const id=crypto.randomUUID();h.incoming(id,{type:'text',text:'一加一等于几'});await h.channel.tick();
+ assert.equal(h.calls.length,0);assert.equal(h.s.inbox[0].state,'answered');const ans=packets(h,'answer-')[0];assert.equal(ans.text,'田哥，2。');assert.equal(ans.lane,'fast');
+ assert.equal(packets(h,'answer-'+id+'-image').length,0,'fast answers skip the result card');assert.equal(recorded[0].question,'一加一等于几');
+ // 交还：进入完整助理
+ h.assistant.overview=()=>({status:'idle'});h.channel.fastLane=new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['【交给助理】'])});
+ let seq=10;const push=(i,v)=>h.remote.push({seq:++seq,id:i,payload:seal(h.c.key,h.c.channel,i,'phone',v)});h.incoming=push;
+ const id2=crypto.randomUUID();push(id2,{type:'text',text:'帮我看看明天日程有没有冲突'});await h.channel.tick();assert.equal(h.calls.length,1);
+ // 出错：回退到完整助理，不丢消息
+ h.assistant.readLiveFinal=()=>({records:[{clientSubmissionId:id2,text:'好的'}]});await h.channel.tick();
+ h.channel.fastLane=new FastLane({credentials:()=>{throw new Error('没有 Key');}});const id3=crypto.randomUUID();push(id3,{type:'text',text:'讲个笑话'});await h.channel.tick();
+ assert.equal(h.calls.at(-1).requestId,id3);
+});
+test('long-poll receive loop processes a message as soon as it arrives; kicks during work re-run once',async()=>{
+ const h=harness();let polls=0;const waits=[];
+ h.channel.request=async(route,args={})=>{if(route==='/poll'){polls++;waits.push(args.wait||0);if(!h.remote.length)await new Promise(r=>setTimeout(r,30));return{messages:h.remote.splice(0)};}return{ok:true};};
+ const loop=h.channel.receiveLoop();const id=crypto.randomUUID();h.incoming(id,{type:'text',text:'查进展'});
+ for(let i=0;i<50&&!h.calls.length;i++)await new Promise(r=>setTimeout(r,20));
+ assert.equal(h.calls.length,1,'dispatched without waiting for the timer');assert.ok(waits.every(w=>w===15),'asks the relay to hold the request');
+ h.channel.working=true;h.channel.kick();assert.equal(h.channel.rekick,true);h.channel.working=false;
+ h.channel.close();await loop;
+});

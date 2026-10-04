@@ -12,16 +12,17 @@ const j=JSON.stringify,wait=ms=>new Promise(r=>setTimeout(r,ms));
 const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 function wavPcm(file){const b=fs.readFileSync(file);let at=12;while(at+8<=b.length){const n=b.readUInt32LE(at+4);if(b.toString('latin1',at,at+4)==='data')return b.subarray(at+8,at+8+n);at+=8+n+(n%2);}throw Error('wav 缺少 data');}
 // 按 App 1.1 协议模拟手机：同一份连接码、同样的 AES-GCM 信封和中继接口。
-function phoneClient(code){
+function phoneClient(code,minPollMs=1500,waitSeconds=0){
  const c=JSON.parse(Buffer.from(code.replace(/^AIH1\./,''),'base64url').toString('utf8'));let cursor=0,lastPoll=0;const inbox=[];
- const call=async(route,body)=>{const r=await fetch(c.url+route,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+c.token,'Content-Type':'application/json'},body:body&&j(body),signal:AbortSignal.timeout(25000)});if(!r.ok)throw Error('relay '+route+' '+r.status);return r.json();};
+ const call=async(route,body)=>{const r=await fetch(c.url+route,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+c.token,'Content-Type':'application/json'},body:body&&j(body),signal:AbortSignal.timeout(40000)});if(!r.ok)throw Error('relay '+route+' '+r.status);return r.json();};
  return{
   async send(value){const id=crypto.randomUUID();await call('/send',{channel:c.channel,role:'phone',id,payload:seal(c.key,c.channel,id,'phone',value)});return id;},
   // 与 App 相近的取件频率；中继按 IP 限每分钟 180 次，Hub 与本脚本共用出口。
-  async poll(){if(Date.now()-lastPoll<1500)return inbox;lastPoll=Date.now();const r=await call('/poll?channel='+c.channel+'&role=phone&after='+cursor);for(const p of r.messages){if(p.seq<=cursor)continue;cursor=p.seq;inbox.push({...open(c.key,c.channel,p.id,'hub',p.payload),packetId:p.id,receivedAt:Date.now()});}return inbox;},
+  async poll(){if(Date.now()-lastPoll<minPollMs)return inbox;lastPoll=Date.now();const r=await call('/poll?channel='+c.channel+'&role=phone&after='+cursor+(waitSeconds?'&wait='+waitSeconds:''));for(const p of r.messages){if(p.seq<=cursor)continue;cursor=p.seq;inbox.push({...open(c.key,c.channel,p.id,'hub',p.payload),packetId:p.id,receivedAt:Date.now()});}return inbox;},
   inbox,
  };
 }
+function inbox3Text(phone,id){return (phone.inbox.find(p=>p.type==='transcript'&&p.requestId===id)||{}).text||null;}
 async function main(){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-router-live-')),data=path.join(root,'data'),home=path.join(root,'home'),codexHome=path.join(root,'codex'),claudeHome=path.join(root,'claude'),workspace=path.join(root,'workspaces');
  const out=path.resolve('artifacts/assistant-router-live',new Date().toISOString().replace(/[:.]/g,'-'));
@@ -70,6 +71,24 @@ async function main(){
   await until('claude ready',async()=>/❯|Try|Claude Code/.test(await screen(assistant)));
   result.checks.push('默认助理为 Claude Sonnet 5.5 · 低思考');
 
+  // 时延：手机按 App 1.1 协议发短语音，分段计时（手机侧：发出→转写→收到→答复；Hub 侧见 hub.log 的 [phone] timing）。
+  if(process.env.ROUTER_LATENCY==='1'){
+   await click('.assistant-phone');await click('[data-phone="pair"]');
+   const code3=await until('relay code',()=>cdp.eval('document.querySelector(".phone-code")?.value||null'));await click('[data-phone="close"]');
+   const phone3=phoneClient(code3,0,15);const hello3=await phone3.send({type:'hello',app:'latency',caps:['profile','voice_message']});
+   await until('hello',async()=>(await phone3.poll()).find(p=>p.type==='profile'&&p.requestId===hello3),60000);
+   result.latency=[];
+   for(const name of (process.env.ROUTER_LATENCY_SAMPLES||'voice-hello.wav,voice-weather.wav,voice-hello.wav').split(',')){
+    const pcm=wavPcm(path.join(samples,name)),t0=Date.now();
+    const id=await phone3.send({type:'voice_message',pcm:pcm.toString('base64'),durationMs:Math.round(pcm.length/32)});const sent=Date.now();
+    const seen={};const ans=await until('answer '+name,async()=>{const inbox=await phone3.poll();for(const p of inbox){if(p.requestId!==id)continue;const k=p.type==='status'?'status-'+p.state:p.type;if(!seen[k])seen[k]=Date.now();}return inbox.find(p=>p.type==='answer'&&p.requestId===id);},180000);
+    result.latency.push({sample:name,seconds:+(pcm.length/32000).toFixed(1),upload:sent-t0,transcriptAt:(seen.transcript||0)-t0,receivedAt:(seen['status-received']||0)-t0,answerAt:(seen.answer||Date.now())-t0,transcript:inbox3Text(phone3,id),answer:ans.text.slice(0,160)});
+    await settled((await invoke('assistant:get-overview',{})).sessionId);
+   }
+   const metrics=path.join(data,'assistant','turn-metrics.jsonl');result.turnMetrics=fs.existsSync(metrics)?fs.readFileSync(metrics,'utf8').trim().split('\n').map(JSON.parse):[];
+   result.hubTimings=hub.log().filter(l=>l.includes('[phone] timing'));
+   result.checks.push('时延实测完成');result.passed=true;return;
+  }
   // 工作账本与自主记忆：业务会话答完即记账；会话关掉后再问也能答；不说「记住」的明确偏好助理也会记；当天首次换班做复盘。
   if(process.env.ROUTER_LEDGER==='1'){
    const ledgerFile=path.join(data,'assistant','ledger','ledger.jsonl'),userMd=path.join(data,'assistant','memory','USER.md');

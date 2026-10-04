@@ -1980,7 +1980,7 @@ try {
       return saved ? { ...saved, id: saved.hubId || id } : null;
     },
     listKnownSessions: () => lastPersistedSessions.map(meta => ({ ...meta, id: meta.hubId || meta.id })),
-    onAssistantNotification: notification => sendToRenderer('assistant:notification', notification),
+    onAssistantNotification: notification => { sendToRenderer('assistant:notification', notification); phoneService?.kick?.(); },
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
@@ -1999,6 +1999,7 @@ try {
       return sessionManager.closeSessionRecoverably(id, { reason: 'assistant-rotated' });
     },
     onAssistantRotated: event => sendToRenderer('assistant:rotated', event),
+    onAssistantTurnComplete: () => { phoneService?.kick?.(); setTimeout(() => phoneService?.kick?.(), 1200); },
   });
   assistantService.startWatching();
   phoneService = require('./main/ipc/phone-handlers').registerPhoneIpc(ipcMain, assistantService, {dataDir:getHubDataDir(),electron:require('electron')});

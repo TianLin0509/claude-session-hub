@@ -7,6 +7,13 @@ function mergedProfile(cfg){
  for(const profile of Object.values(cfg.profiles||{}))for(const term of String(profile?.terms||'').split(/[,，;；\n]/).map(t=>t.trim()))if(term&&term.length<=60&&terms.size<80)terms.add(term);
  return{terms:[...terms].join('\n'),context:''};
 }
+// 百炼凭据：语音识别与快速通道共用电脑上已配置的 Key。
+function dashscopeCredentials({dataDir,safeStorage}){
+ let cfg={region:'beijing'},key=process.env.DASHSCOPE_API_KEY||'';
+ const file=path.join(dataDir,'voice-input.json');if(fs.existsSync(file)){cfg=JSON.parse(fs.readFileSync(file,'utf8'));if(cfg.encryptedKey)key=safeStorage.decryptString(Buffer.from(cfg.encryptedKey,'base64'));}
+ if(!key)throw Error('电脑尚未设置百炼 Key，请在 Hub 输入框的语音设置中配置');
+ return{key,cfg,base:cfg.region==='singapore'?'https://dashscope-intl.aliyuncs.com':'https://dashscope.aliyuncs.com'};
+}
 async function transcribe(data,{dataDir,safeStorage,chunkDelayMs=0}){
  const pcm=Buffer.from(data,'base64');if(!pcm.length||pcm.length%2||pcm.length>16000*2*MAX_SECONDS)throw Error(`录音需为 16kHz 单声道，且不超过 ${MAX_SECONDS} 秒`);
  let cfg={region:'beijing'},key=process.env.DASHSCOPE_API_KEY||'';
@@ -18,4 +25,4 @@ async function transcribe(data,{dataDir,safeStorage,chunkDelayMs=0}){
  // 录音已完整到手，不再按说话节奏回放（旧做法让 30 秒语音多等约 27 秒）；按 0.1 秒一块连续推送。
  try{await stream.ready;for(let at=0;at<pcm.length;at+=3200){await stream.audio(pcm.subarray(at,at+3200));if(chunkDelayMs)await new Promise(r=>setTimeout(r,chunkDelayMs));}await stream.finish();return await result;}finally{if(!stream.ended)stream.cancel();}
 }
-module.exports={transcribe,mergedProfile,MAX_SECONDS};
+module.exports={transcribe,mergedProfile,dashscopeCredentials,MAX_SECONDS};
