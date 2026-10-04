@@ -15,8 +15,9 @@ const {isAssistantSession,requireManagerCaller}=require('./permissions');
 const {projectSessionStates}=require('./session-state');
 const backends=require('./backends');
 const profiles=require('./profiles');
-// 助理是长寿会话，每轮读入的资料会越积越多、回答随之变慢。上下文超过这个量就在下次空闲时换班。
-const ROTATE_AT_TOKENS=Number(process.env.HUB_ASSISTANT_ROTATE_TOKENS)||150000; // 环境变量仅供实测压低阈值
+// 助理是长寿会话，每轮读入的资料会越积越多、回答随之变慢；何时换班见 rotation.js。
+const rotation=require('./rotation');
+const HANDOFF_PROMPT='【换班交接】你即将换班，接班的是同一位助理的新会话，它只能看到你写的交接和 Hub 记录。请用不超过 300 字写交接，只写对接班有用的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
 class AssistantService {
   constructor(deps) {
     this.deps=deps; this.sessionViews=new Map(); this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
@@ -42,7 +43,9 @@ class AssistantService {
   captureContinuity(){for(const id of this.assistantIds()){const meta=this.sessionMetadata(id);if(!meta)continue;for(const row of this.liveHistory.read(meta).records)this.continuity.add({...row,provider:meta.kind,timestamp:row.timestamp||Date.now()});}}
   liveInventory(){return this.sessions().map(s=>{const result=s.isOpen?this.liveHistory.read(s):null;return{...s,nativeSessionId:nativeId(s),latestFinal:result?.records.at(-1)||null,liveIssue:result?.issue||null};});}
   readLiveFinal(sessionId){const meta=this.sessionMetadata(sessionId);if(!meta)throw new Error('找不到原会话');const result=this.liveHistory.read(meta);return{sessionId,title:meta.title,...result};}
-  startWatching({intervalMs=2000}={}){if(this.watchTimer)return;this.watchTimer=setInterval(()=>{try{const id=this.store.get('sessionId');if(id&&this.deps.getSession(id))this.pollWatches();}catch{}},Math.max(500,intervalMs));this.watchTimer.unref?.();}
+  startWatching({intervalMs=2000,rotationCheckMs=60000}={}){if(this.watchTimer)return;this.watchTimer=setInterval(()=>{try{const id=this.store.get('sessionId');if(id&&this.deps.getSession(id))this.pollWatches();}catch{}},Math.max(500,intervalMs));this.watchTimer.unref?.();
+    // 后台换班：你不在用时到点就写交接、换新会话，回来直接用干净的助理，不用等。
+    this.rotationTimer=setInterval(()=>{void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));},Math.max(1000,rotationCheckMs));this.rotationTimer.unref?.();}
   pollWatches(){const result=this.watches.poll();if(this.store.get('sessionId'))this.refreshDossier?.();return result;}
   notifications(request){return this.watches.notifications(request);}
   followedTasks(){return this.watches.list().map(({cursor,seen,...watch})=>watch);}
@@ -59,7 +62,7 @@ class AssistantService {
   overview() {
     const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');
     const runtime=session?.cliRuntime||session?.nativeRuntime,issue=runtime?.connection==='disconnected'?runtime.reason||'原生后端连接中断':null;
-    return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',profile:this.currentProfile(),backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,submissionPending:!!this.deps.hasPendingPrompt?.(sessionId),status:session?.status||'not-created',summary:'',connectionSummary:issue?'助理后端未连接：'+issue:session?'助理会话已打开；账号可用性和执行结果以原生回执为准。':'首次启用后，助理作为独立会话运行，可选择 Hub 支持的后端并连接专属工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:issue?[issue]:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};
+    return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',profile:this.currentProfile(),context:this.contextStatus(),backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,submissionPending:!!this.deps.hasPendingPrompt?.(sessionId),status:session?.status||'not-created',summary:'',connectionSummary:issue?'助理后端未连接：'+issue:session?'助理会话已打开；账号可用性和执行结果以原生回执为准。':'首次启用后，助理作为独立会话运行，可选择 Hub 支持的后端并连接专属工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:issue?[issue]:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};
   }
   async ensureSession() {
     if(this.creating)return this.creating;
@@ -67,34 +70,84 @@ class AssistantService {
     // 迁移与创建放在同一个 creating 里串行，并发的就绪请求只会得到同一个助理。
     this.creating=(async()=>{
       if(this.store.get('assistantDefaultsVersion')!==2){const migrated=await this.migrateDefaults();if(migrated)return migrated;}
-      const kind=this.activeKind(),due=this.store.get('rotateDue:'+kind);
-      if(due&&due===backends.bindings(this.store)[kind]){const rotated=await this.rotate(kind,due);if(rotated)return rotated;}
+      const kind=this.activeKind(),current=backends.bindings(this.store)[kind],reason=current&&this.rotationReasonFor(kind,current);
+      // 就绪时到点就直接换班（不写交接，免得让这条消息多等）；交接由后台换班或手动新开负责。
+      if(reason){const rotated=await this.rotate(kind,current,{reason});if(rotated)return rotated;}
       return this._ensureSession(kind);
     })();
     try{return await this.creating;}finally{this.creating=null;}
   }
   activeKind(){return this.store.get('backendKind')||profiles.ASSISTANT_DEFAULT_KIND;}
-  // 每轮结束时记下助理上下文用量（来自 CLI 原生记录的 usage）；超过阈值标记待换班。
-  observeUsage(sessionId,usage){
+  // 每轮结束时记下助理上下文用量（来自 CLI 原生记录的 usage）、最后活动时间，并记一行速度日志供校准阈值。
+  observeUsage(sessionId,usage,completedAt=Date.now()){
     if(!usage||!this.assistantIds().includes(sessionId))return null;
-    const kind=this.sessionMetadata(sessionId)?.kind;
+    const meta=this.sessionMetadata(sessionId),kind=meta?.kind;
     const tokens=require('../ai-kinds').isCodexCliKind(kind)?Number(usage.input_tokens)||0
       :(Number(usage.input_tokens)||0)+(Number(usage.cache_read_input_tokens)||0)+(Number(usage.cache_creation_input_tokens)||0);
-    this.store.set('contextTokens:'+sessionId,tokens);
-    if(tokens>=ROTATE_AT_TOKENS&&backends.bindings(this.store)[kind]===sessionId)this.store.set('rotateDue:'+kind,sessionId);
+    this.store.set('contextTokens:'+sessionId,tokens);this.store.set('lastActiveAt:'+sessionId,completedAt);
+    const request=this.currentRequest,ms=request&&request.sessionId===sessionId?Math.max(0,completedAt-request.createdAt):null;
+    this.recordMetric({at:completedAt,sessionId,kind,model:require('../session-capabilities').sessionModelId(meta),effort:meta?.effort||null,tokens,ms});
     return tokens;
   }
+  recordMetric(row){
+    try{const file=path.join(this.deps.dataDir,'assistant','turn-metrics.jsonl');
+      if(fs.existsSync(file)&&fs.statSync(file).size>2*1024*1024)fs.renameSync(file,file.replace(/\.jsonl$/,'.1.jsonl'));
+      fs.appendFileSync(file,JSON.stringify(row)+'\n');}catch(error){console.warn('[assistant] metrics',error.message);}
+  }
+  rotationReasonFor(kind,id){
+    const meta=this.sessionMetadata(id);
+    return rotation.rotationReason({tokens:this.store.get('contextTokens:'+id),lastActiveAt:this.store.get('lastActiveAt:'+id),kind,contextMax:meta?.contextMax});
+  }
+  contextStatus(){
+    const kind=this.activeKind(),id=backends.bindings(this.store)[kind],meta=id?this.sessionMetadata(id):null;
+    return{tokens:id?this.store.get('contextTokens:'+id):null,cap:rotation.capFor(kind,meta?.contextMax),lastActiveAt:id?this.store.get('lastActiveAt:'+id):null,
+      dueReason:id?this.rotationReasonFor(kind,id):null,lastRotation:this.store.get('lastRotation')};
+  }
+  // 后台换班：只对已打开且空闲的助理进行，先让旧助理写交接再换新会话；与就绪请求共用 creating，互不打架。
+  async maybeRotateInBackground({reason:forced}={}){
+    if(this.creating||this.switching||this.store.get('assistantDefaultsVersion')!==2)return null;
+    const kind=this.activeKind(),id=backends.bindings(this.store)[kind];
+    if(!id||!this.deps.getSession(id))return null;
+    const reason=forced||this.rotationReasonFor(kind,id);if(!reason)return null;
+    this.creating=(async()=>{const rotated=await this.rotate(kind,id,{reason,handoff:true});return rotated||this._ensureSession(kind);})();
+    try{return await this.creating;}finally{this.creating=null;}
+  }
+  rotateNow(){
+    if(this.creating||this.switching)throw new Error('助理正在连接或切换，请稍候');
+    const id=backends.bindings(this.store)[this.activeKind()],session=id&&this.deps.getSession(id);
+    if(!session)throw new Error('助理尚未打开，下次打开时会直接用新会话');
+    if(require('../session-runtime-truth').sessionRuntimeIsActive(session)||['running','waiting'].includes(session.status)||this.deps.hasPendingPrompt?.(id))throw new Error('助理正在回答，请等本轮结束后再新开');
+    return this.maybeRotateInBackground({reason:'manual'});
+  }
+  // 让旧助理写一段交接，写进交接记录（最长等 3 分钟；拿不到就只靠原始记录接续）。
+  async writeHandoff(kind,oldId){
+    const requestId='handoff-'+randomUUID();
+    try{const receipt=await this.deps.sendPrompt(oldId,HANDOFF_PROMPT,requestId);if(receipt?.ok===false)return null;}catch(error){console.warn('[assistant] handoff not sent',error.message);return null;}
+    for(const end=Date.now()+180000;Date.now()<end;await new Promise(r=>setTimeout(r,1500))){
+      const meta=this.sessionMetadata(oldId);if(!meta)return null;
+      const hit=this.liveHistory.read(meta).records.find(row=>row.clientSubmissionId===requestId);
+      if(hit?.text){
+        this.continuity.add({id:'handoff:'+requestId,sessionId:oldId,provider:kind,role:'assistant',timestamp:Date.now(),text:'【上一班交接】'+hit.text.trim()});
+        // 等这轮在 CLI 里收尾，再休眠旧会话。
+        for(const settle=Date.now()+15000;Date.now()<settle;await new Promise(r=>setTimeout(r,500))){const s=this.deps.getSession(oldId);if(!s||!(require('../session-runtime-truth').sessionRuntimeIsActive(s)||['running','waiting'].includes(s.status)))break;}
+        return hit.text;
+      }
+    }
+    return null;
+  }
   // 换班：同一后端、同一档位新开助理会话，靠交接记录（assistantContinuity 与工作档案）接续；旧会话休眠保留可查。
-  async rotate(kind,oldId){
+  async rotate(kind,oldId,{reason='size',handoff=false}={}){
     const old=this.deps.getSession(oldId);
     if(old&&(require('../session-runtime-truth').sessionRuntimeIsActive(old)||['running','waiting'].includes(old.status)||this.deps.hasPendingPrompt?.(oldId)))return null;
+    const handoffText=handoff&&old?await this.writeHandoff(kind,oldId):null;
     this.captureContinuity();
     backends.retire(this.store,kind,oldId);this.store.set('rotateDue:'+kind,null);
     let result;
     try{result=await this._ensureSession(kind);}catch(error){backends.unretire(this.store,kind,oldId);throw error;}
     if(!result.ok){backends.unretire(this.store,kind,oldId);return null;}
     this.currentRequest=null;this.store.set('lastContext',null);
-    console.log('[assistant] rotated',kind,oldId,'->',result.sessionId,'context',this.store.get('contextTokens:'+oldId));
+    this.store.set('lastRotation',{at:Date.now(),kind,reason,reasonLabel:rotation.REASON_LABELS[reason]||reason,oldId,sessionId:result.sessionId,tokens:this.store.get('contextTokens:'+oldId),handoff:!!handoffText});
+    console.log('[assistant] rotated',kind,reason,oldId,'->',result.sessionId,'context',this.store.get('contextTokens:'+oldId),'handoff',!!handoffText);
     try{await this.deps.retireSession?.(oldId);}catch(error){console.warn('[assistant] retire old session',error.message);}
     this.deps.onAssistantRotated?.({kind,oldId,sessionId:result.sessionId});
     return result;
@@ -347,6 +400,6 @@ class AssistantService {
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};
     } catch(error) {this.store.finish(requestId,'unknown',{sessionId,error:error.message});return{ok:false,state:'unknown',sessionId,error:error.message};}
   }
-  close(){clearInterval(this.watchTimer);this.bridge.close();this.store.close();}
+  close(){clearInterval(this.watchTimer);clearInterval(this.rotationTimer);this.bridge.close();this.store.close();}
 }
 module.exports={AssistantService};

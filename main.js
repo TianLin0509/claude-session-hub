@@ -591,7 +591,7 @@ sessionManager.on('native-agent-lifecycle', event => {
 // meeting's timeline (if the sub-session belongs to a meeting).
 transcriptTap.on('turn-complete', (ev) => {
   const { hubSessionId, text, completedAt } = ev || {};
-  try { assistantService?.observeUsage?.(hubSessionId, ev && ev.usage); } catch (error) { console.warn('[assistant] usage', error.message); }
+  try { assistantService?.observeUsage?.(hubSessionId, ev && ev.usage, normalizeEventTime(completedAt, Date.now())); } catch (error) { console.warn('[assistant] usage', error.message); }
   sessionManager.noteAgentTurnFinished(hubSessionId, ev || {});
   const completionAt = normalizeEventTime(completedAt, Date.now());
   let session = sessionManager.getSession(hubSessionId);
