@@ -84,6 +84,11 @@ function proposePlan(ledger, input = {}, now = Date.now()) {
 }
 function confirmPlan(ledger, now = Date.now()) {
   if (!ledger.plan) throw new Error('还没有计划可以确认');
+  if (ledger.budgetError) throw new Error(ledger.budgetError);
+  const plannedBudget=ledger.plan.budget || {roundCap:ledger.budget.roundCap,timeCapMin:ledger.budget.timeCapMs/60000};
+  if (['roundCap','timeCapMin'].some(key=>ledger.budgetIntent?.[key]!=null && ledger.budgetIntent[key]!==plannedBudget[key])) {
+    throw new Error('田哥指定的额度已变化，请编排员更新计划后再确认');
+  }
   if (ledger.plan.confirmedVersion === ledger.plan.version && ledger.status !== 'awaiting_confirm') return false;
   ledger.plan.confirmedVersion = ledger.plan.version;
   ledger.plan.confirmedAt = now;

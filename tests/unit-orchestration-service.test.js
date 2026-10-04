@@ -403,3 +403,25 @@ test('lightweight: runtime failure pauses dispatch and exposes preserved context
   assert.equal(blocked.currentRun.recovery.resumeAllowed,false);
   assert.match(blocked.currentRun.recovery.advice,/新建任务/);
 });
+
+test('review: changing natural-language budget invalidates confirmation of the old plan',async t=>{
+  const x=fixture(t);
+  await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
+  x.service.userMessage('mt1',{text:'允许10轮以内迭代'});
+  await x.call('orch_propose_plan',planArgs);
+  x.service.userMessage('mt1',{text:'现在允许12轮以内迭代'});
+  await assert.rejects(x.service.userAction('mt1','confirm'),/额度.*变化|更新.*计划/);
+  assert.equal(x.service.ledgerFor('mt1').plan.confirmedVersion,0);
+  await x.call('orch_propose_plan',planArgs);
+  await x.service.userAction('mt1','confirm');
+  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,12);
+});
+
+test('review: an unsupported user budget prevents old plan confirmation',async t=>{
+  const x=fixture(t);
+  await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
+  await x.call('orch_propose_plan',planArgs);
+  x.service.userMessage('mt1',{text:'允许40轮以内迭代'});
+  await assert.rejects(x.service.userAction('mt1','confirm'),/不会静默截断/);
+  assert.equal(x.service.ledgerFor('mt1').plan.confirmedVersion,0);
+});
