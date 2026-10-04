@@ -74,7 +74,9 @@ class AssistantService {
   // 任一会话答完一轮：助理自己 → 记上下文用量并排好空闲换班；其他会话 → 立即记账，被关注则立即提醒。
   onTurnComplete(sessionId,event={}){
     const at=Number(event.completedAt)||Date.now();
-    if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleRotation(at);return;}
+    if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleRotation(at);
+      // 助理答完立刻让手机通道取答案推送，不等下一次定时处理。
+      try{this.deps.onAssistantTurnComplete?.(sessionId);}catch{}return;}
     const meta=this.sessionMetadata(sessionId);if(!meta||meta.purpose==='hub-assistant')return;
     try{this.ledger.record({...meta,id:sessionId});}catch(error){console.warn('[assistant] ledger',error.message);}
     if(this.ownsAssistant()&&this.watches.list().some(w=>w.sessionId===sessionId))this.pollWatches();
@@ -263,6 +265,14 @@ class AssistantService {
     if(this.profileError){const error=this.profileError;this.profileError=null;return{ok:false,error,profile:this.currentProfile()};}
     return{ok:true,profile:this.currentProfile()};
   }
+  // 快速通道用：最近几轮对话（给追问用上下文），以及把快速通道的问答记进交接记录，完整助理也知道。
+  recentHistory(){return this.continuity.records.slice(-6).map(row=>({role:row.role,text:row.text}));}
+  recordFastLane({id,question,answer,model}){
+    const at=Date.now();
+    this.continuity.add({id:'user:'+id,sessionId:'fast-lane',provider:'fast-lane',role:'user',deliveryState:'confirmed',timestamp:at-1,text:question});
+    this.continuity.add({id:'fast:'+id,sessionId:'fast-lane',provider:'fast-lane:'+(model||''),role:'assistant',timestamp:at,text:answer});
+  }
+  fastLaneDisabled(){return this.store.get('fastLaneDisabled')===true;}
   // 手机端选择面板的数据：当前助理设置 + 各后端可选型号与深度（手机不内置型号表）。
   async phoneProfile(){
     const defaults={};for(const kind of backends.BACKENDS)defaults[kind]=await this.deps.getDefaults?.(kind)||{};
