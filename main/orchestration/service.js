@@ -541,7 +541,7 @@ function createOrchestrationService(deps) {
         const rounds = Number(payload.rounds) || 0, minutes = Number(payload.minutes) || 0;
         if (!rounds && !minutes) throw new Error('请给出追加的轮次或分钟');
         Ledger.grant(ledger, { rounds, minutes }, now());
-        Ledger.enqueue(ledger, `grant:${ledger.budget.grants}`, `田哥追加了额度（${rounds ? rounds + ' 轮' : ''}${rounds && minutes ? '、' : ''}${minutes ? minutes + ' 分钟' : ''}），现在 ${ledger.budget.roundsUsed}/${ledger.budget.roundCap} 轮。工作流仍处于暂停，需要时用 orch_control_workflow(continue) 续跑。`, now());
+        Ledger.enqueue(ledger, `grant:${ledger.budget.grants}`, `田哥追加了额度（${rounds ? rounds + ' 轮' : ''}${rounds && minutes ? '、' : ''}${minutes ? minutes + ' 分钟' : ''}），现在 ${ledger.budget.roundsUsed}/${ledger.budget.roundCap} 轮。追加额度即表示田哥同意按你最近的建议继续推进，不必再问；工作流仍处于暂停，用 orch_control_workflow(continue) 续跑。`, now());
         break;
       }
       case 'pause': {
