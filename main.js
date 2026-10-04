@@ -1989,7 +1989,13 @@ try {
       return saved ? { ...saved, id: saved.hubId || id } : null;
     },
     listKnownSessions: () => lastPersistedSessions.map(meta => ({ ...meta, id: meta.hubId || meta.id })),
-    onAssistantNotification: notification => { sendToRenderer('assistant:notification', notification); phoneService?.kick?.(); },
+    onAssistantNotification: notification => {
+      sendToRenderer('assistant:notification', notification); phoneService?.kick?.();
+      // 到点提醒在电脑上也弹出通知（田哥可能没在看 Hub）。
+      // 用 Hub 自绘的桌面通知卡片（项目约定不用 Windows 原生通知）；点击回到助理会话。
+      if (notification?.kind === 'reminder') { try { void desktopNotificationController?.show({ sessionId: assistantService?.store?.get('sessionId') || 'hub-assistant', title: 'AI Hub 提醒', body: String(notification.text || ''), kind: 'reminder' }); } catch (error) { console.warn('[assistant] reminder notification', error.message); } }
+    },
+    onReminderChanged: event => phoneService?.reminder?.(event),
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),

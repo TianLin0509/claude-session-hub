@@ -8,14 +8,18 @@
 // deepseek-v4-flash-0731 1.8 秒但把「以后回答简短点」当闲聊没交还（偏好没记下）。答案质量三者相当，故默认 qwen3.8-flash。
 const HANDOFF = '【交给助理】';
 // 明显涉及 Hub 与工作的说法直接走完整助理，不多花一次模型调用。
-const WORK_RE = /会话|进展|派工|派给|新建|新开|任务|session|仿真|报告|代码|文件|项目|助理|记住|记下|关注|继续|跑完|结果|codex|claude|千问|模型|切换|合并|部署|html|ppt|群聊|工作台|账本|提醒我|交给|安排/i;
+// 只拦「要动手」的说法；问进展、问结果交给快答看状态摘要判断（2026-10-04 起快答可读 Hub 状态）。
+const WORK_RE = /派工|派给|新建|新开|记住|记下|记一下|提醒|叫我|交给|安排|合并|部署|切换|切到|关注|盯着|继续|代码|html|ppt|群聊|codex|claude/i;
 
-function systemPrompt({ userPrefs = '', now = new Date() } = {}) {
-  const day = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+function systemPrompt({ userPrefs = '', now = new Date(), hubStatus = '' } = {}) {
+  // 一律按北京时间（电脑系统时区可能不是北京时间）。
+  const day = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  const clock = now.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false });
   return [
-    `你是田哥的 AI Hub 助理的快速通道，负责当场答复简单问题。现在是${day} ${now.toTimeString().slice(0, 5)}，田哥常在江苏南通。`,
+    `你是田哥的 AI Hub 助理的快速通道，负责当场答复简单问题。现在是北京时间${day} ${clock}，田哥常在江苏南通。`,
     '你能直接回答：闲聊、常识、计算、翻译，以及天气、汇率、新闻、时间这类实时信息（已开启联网搜索，数字和事实以搜索结果为准，并说明是何时何地的数据）。',
-    `凡是涉及田哥的工作和 AI Hub 里的事——会话、任务进展、派工、新建或继续任务、文件、项目、代码、报告、之前让助理做的事、要记住的偏好（包括田哥说「以后……」这类要长期照做的要求）——只输出「${HANDOFF}」，不加别的，由完整助理处理。`,
+    ...(hubStatus ? ['田哥问进展、哪些会话在跑、某个任务完成没、最近有什么结果、有什么提醒时，先看下面的 AI Hub 状态摘要：能据此回答就直接答，说明是几点的情况；摘要里没有，或要看原文细节、分析判断时，交给完整助理。', '【AI Hub 状态摘要】', String(hubStatus).slice(0, 1800), '【摘要结束】'] : []),
+    `凡是要动手办的事——派工、新建或继续任务、改文件、写代码或报告、设提醒、要记住的偏好（包括田哥说「以后……」这类要长期照做的要求）——以及之前让助理办的事、要回忆以往对话的问题、摘要回答不了的工作问题，只输出「${HANDOFF}」，不加别的，由完整助理处理。`,
     '判断只看田哥最新这一句本身要做什么；前面的对话只用来理解「那个」「刚才」这类指代。最新这句是闲聊、常识、计算、翻译或实时信息时，直接回答。',
     '回答用中文口语，一到三句，先给结论，开头称呼「田哥」。需要强调时用标准 Markdown 加粗：**短语**，标点放在星号外面；不用标题和表格。遵守田哥的偏好：',
     String(userPrefs || '').replace(/^#.*$/gm, '').replace(/^>.*$/gm, '').trim().slice(0, 1500) || '（暂无）',
@@ -29,10 +33,10 @@ class FastLane {
   eligible(text) { const t = String(text || '').trim(); return !!t && t.length <= 300 && !WORK_RE.test(t); }
   // 返回 {handoff:true}（交还完整助理）或 {text, model, via, ms, firstMs}；出错由调用方回退到完整助理。
   // credentials() 返回一个或按优先级排列的多个调用凭据 {key, base, via}，前一个请求失败（如套餐额度用完）就换下一个。
-  async answer(question, { history = [], userPrefs = '', now = new Date(), model = this.model } = {}) {
+  async answer(question, { history = [], userPrefs = '', now = new Date(), model = this.model, hubStatus = '' } = {}) {
     const sources = [].concat(this.credentials()).filter(Boolean);
     if (!sources.length) throw new Error('快速通道没有可用的百炼 Key');
-    const messages = [{ role: 'system', content: systemPrompt({ userPrefs, now }) }];
+    const messages = [{ role: 'system', content: systemPrompt({ userPrefs, now, hubStatus }) }];
     for (const row of history.slice(-6)) if (row?.text) messages.push({ role: row.role === 'user' ? 'user' : 'assistant', content: String(row.text).slice(0, 400) });
     messages.push({ role: 'user', content: String(question) });
     const started = Date.now(), controller = new AbortController(), timer = setTimeout(() => controller.abort(), this.timeoutMs);

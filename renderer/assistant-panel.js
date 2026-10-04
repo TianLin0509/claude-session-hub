@@ -178,7 +178,8 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
   ipcRenderer.on('assistant:rotated', () => { if (isOpen()) void open(); else void refresh(); });
   ipcRenderer.on('assistant:notification', (_event, notice) => {
     nav.classList.add('assistant-has-unread'); nav.title = '助理 · 关注任务有新回复';
-    if (notice?.text) showMessage?.(`${notice.title || '关注任务'}有新回复，可在助理的“关注回复”查看。`);
+    if (notice?.kind === 'reminder') showMessage?.(notice.text);
+    else if (notice?.text) showMessage?.(`${notice.title || '关注任务'}有新回复，可在助理页查看。`);
     if (isOpen()) void refresh();
   });
   return { open, close, refresh, syncSession, isOpen, switchBackend, openPage: () => page.open(), isPageOpen: () => page.isOpen() };
