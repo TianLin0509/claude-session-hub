@@ -4,7 +4,7 @@ function registerPhoneIpc(ipcMain,assistant,{dataDir,electron}){
  const dir=path.join(dataDir,'assistant','phone');let channel;
  const ensure=()=>{if(channel)return channel;if(!electron.safeStorage.isEncryptionAvailable())throw Error('系统安全存储不可用，手机连接信息未保存');
   const {PhoneJournal}=require('../../core/hub-phone/journal'),{PhoneChannel}=require('../../core/hub-phone/channel');
-  channel=new PhoneChannel({assistant,journal:new PhoneJournal(dir,electron.safeStorage),imageRoots:[dataDir,process.env.AI_HUB_WORKSPACE_ROOT||'C:/AIWork',path.join(require('node:os').homedir(),'Desktop','claude-artifacts')],renderCards:text=>require('../../core/hub-phone/cards').renderCards(electron,text),transcribe:pcm=>require('../../core/hub-phone/voice').transcribe(pcm,{dataDir,safeStorage:electron.safeStorage}),
+  channel=new PhoneChannel({assistant,journal:new PhoneJournal(dir,electron.safeStorage),imageRoots:[dataDir,process.env.AI_HUB_WORKSPACE_ROOT||'C:/AIWork',path.join(require('node:os').homedir(),'Desktop','claude-artifacts')],renderHtml:file=>require('../../core/hub-phone/html-snapshot').renderHtml(electron,file),transcribe:pcm=>require('../../core/hub-phone/voice').transcribe(pcm,{dataDir,safeStorage:electron.safeStorage}),
     fastLane:process.env.HUB_ASSISTANT_FAST_LANE==='0'?null:new (require('../../core/hub-assistant/fast-lane').FastLane)({...(process.env.HUB_ASSISTANT_FAST_LANE_MODEL?{model:process.env.HUB_ASSISTANT_FAST_LANE_MODEL}:{}),credentials:()=>require('../../core/hub-assistant/fast-lane').fastLaneSources({dataDir,safeStorage:electron.safeStorage})})});
   if(channel.journal.state.enabled)channel.start();return channel;
  };

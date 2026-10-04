@@ -12,6 +12,13 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     const d = ymd(at), t = ymd(Date.now()), diff = Math.round((Date.UTC(t.year, t.month - 1, t.day) - Date.UTC(d.year, d.month - 1, d.day)) / 86400000);
     return diff === 0 ? '今天' : diff === 1 ? '昨天' : `${d.month}月${d.day}日`;
   };
+  // 助理的回答按 Markdown 渲染（与会话卡片同一套 marked + DOMPurify），中文加粗先宽容处理。
+  let md = null;
+  const markdown = text => {
+    // 与 Hub 全局同一套 marked（原始 HTML 一律转义）+ DOMPurify；中文宽容加粗经占位符渲染后换回 <strong>。
+    if (!md) { const { marked } = require('marked'), purify = require('dompurify'), { tidyMarkdown, restoreBold } = require('../core/hub-assistant/markdown-tidy'); md = t => purify.sanitize(restoreBold(marked.parse(tidyMarkdown(t), { breaks: true, gfm: true }))); }
+    try { return md(text); } catch { return esc(text); }
+  };
   const seconds = ms => ms == null ? '' : ms < 10000 ? (ms / 1000).toFixed(1) + ' 秒' : Math.round(ms / 1000) + ' 秒';
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke(channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
 
@@ -32,6 +39,8 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
       </div><aside class="ap-status" hidden aria-label="助理状态"></aside></div>`;
     document.body.append(page);
     page.addEventListener('click', event => {
+      const link = event.target.closest('.ap-md a[href]');
+      if (link) { event.preventDefault(); const href = link.getAttribute('href') || ''; if (/^https?:\/\//i.test(href)) void ipcRenderer.invoke('open-external-url', href); else { const file = decodeURI(href.replace(/^file:\/\/\/?/i, '')); if (/^[A-Za-z]:[\\/]/.test(file)) void ipcRenderer.invoke('open-path', file); } return; }
       const again = event.target.closest('[data-again]');
       if (again) { const q = entries.find(x => x.id === again.dataset.again && x.role === 'user'); if (q) { again.disabled = true; void call('assistant:ask', { text: q.text, to: 'assistant', again: q.id }).catch(e => showMessage?.(e.message)); } return; }
       const b = event.target.closest('[data-ap]'); if (b) void action(b.dataset.ap, b).catch(e => showMessage?.(e.message));
@@ -95,7 +104,7 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
         const who = e.lane === 'notice' ? '提醒 · ' + (e.by || '') : (e.by || '') + (e.ms != null ? ' · ' + seconds(e.ms) : '');
         // 快答不满意：一键让助理会话再答（带上原问题）。
         const again = e.lane === 'fast' && entries.some(x => x.id === e.id && x.role === 'user') && !entries.some(x => x.again === e.id) ? ` · <button type="button" class="ap-again" data-again="${esc(e.id)}">让助理会话再答</button>` : '';
-        html += `<div class="ap-msg ai ${e.lane === 'fast' ? 'fast' : e.lane === 'notice' ? 'notice' : 'session'}"><div class="ap-bubble">${esc(e.text)}</div><div class="ap-cap">${esc(who)} · ${time(e.at)}${again}</div></div>`;
+        html += `<div class="ap-msg ai ${e.lane === 'fast' ? 'fast' : e.lane === 'notice' ? 'notice' : 'session'}"><div class="ap-bubble ap-md">${markdown(e.text)}</div><div class="ap-cap">${esc(who)} · ${time(e.at)}${again}</div></div>`;
       } else if (e.role === 'system') html += `<div class="ap-note">${esc(e.text)}</div>`;
     }
     const waiting = entries.filter(e => e.role === 'user' && !answered.has(e.id) && Date.now() - e.at < 1800000);

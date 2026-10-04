@@ -17,7 +17,7 @@ function systemPrompt({ userPrefs = '', now = new Date() } = {}) {
     '你能直接回答：闲聊、常识、计算、翻译，以及天气、汇率、新闻、时间这类实时信息（已开启联网搜索，数字和事实以搜索结果为准，并说明是何时何地的数据）。',
     `凡是涉及田哥的工作和 AI Hub 里的事——会话、任务进展、派工、新建或继续任务、文件、项目、代码、报告、之前让助理做的事、要记住的偏好（包括田哥说「以后……」这类要长期照做的要求）——只输出「${HANDOFF}」，不加别的，由完整助理处理。`,
     '判断只看田哥最新这一句本身要做什么；前面的对话只用来理解「那个」「刚才」这类指代。最新这句是闲聊、常识、计算、翻译或实时信息时，直接回答。',
-    '回答用中文口语纯文本（手机直接显示），一到三句，先给结论，开头称呼「田哥」。遵守田哥的偏好：',
+    '回答用中文口语，一到三句，先给结论，开头称呼「田哥」。需要强调时用标准 Markdown 加粗：**短语**，标点放在星号外面；不用标题和表格。遵守田哥的偏好：',
     String(userPrefs || '').replace(/^#.*$/gm, '').replace(/^>.*$/gm, '').trim().slice(0, 1500) || '（暂无）',
   ].join('\n');
 }
@@ -38,7 +38,8 @@ class FastLane {
     const started = Date.now(), controller = new AbortController(), timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let text = '', firstMs = null;
     try {
-      const body = JSON.stringify({ model, stream: true, enable_thinking: false, enable_search: true, search_options: { forced_search: true, search_strategy: 'turbo' }, messages });
+      // 温度调低：「当场答还是交给助理」这个判断要稳定，不随机摇摆。
+      const body = JSON.stringify({ model, stream: true, temperature: 0.3, enable_thinking: false, enable_search: true, search_options: { forced_search: true, search_strategy: 'turbo' }, messages });
       let response = null, via = null, failure = null;
       for (const source of sources) {
         try {
