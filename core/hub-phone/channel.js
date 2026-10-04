@@ -63,7 +63,8 @@ class PhoneChannel{
  assistantLabel(){const p=this.assistant.currentProfile?.();if(!p)return'助理会话';let kind=p.kind;try{kind=require('../ai-kinds').getKindLabel(p.kind);}catch{}return[kind,p.label].filter(Boolean).join(' · ');}
  // 助理设置与回答方式任一变化（电脑面板改的也算）都重发 profile，手机两边保持一致。
  profileSignature(){return JSON.stringify([this.assistant.currentProfile?.(),this.assistant.frontDesk?.(),this.watchingCount()]);}
- watchingCount(){try{return(this.assistant.followedTasks?.()||[]).filter(w=>w.state!=='paused').length;}catch{return 0;}}
+ // 关注中且正在运行的任务数：手机据此在后台继续等结果，任务停下就不再常驻后台。
+ watchingCount(){try{const running=new Set((this.assistant.sessions?.()||[]).filter(s=>s.status==='running').map(s=>s.id));return(this.assistant.followedTasks?.()||[]).filter(w=>w.state==='watching'&&running.has(w.sessionId)).length;}catch{return 0;}}
  async sendProfile(requestId){
   if(!this.supports('profile')||!this.assistant.phoneProfile)return;
   const profile=await this.assistant.phoneProfile();
