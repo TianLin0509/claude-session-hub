@@ -86,6 +86,19 @@ test('fast lane answers simple questions in place, hands work back, and falls ba
  h.channel.fastLane=new FastLane({credentials:()=>{throw new Error('没有 Key');}});const id3=crypto.randomUUID();push(id3,{type:'text',text:'讲个笑话'});await h.channel.tick();
  assert.equal(h.calls.at(-1).requestId,id3);
 });
+test('fast lane prefers the Token Plan key and falls back to the pay-as-you-go key when the plan refuses',async()=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');const {FastLane,fastLaneSources}=require('../core/hub-assistant/fast-lane');
+ const tried=[];const ok=sseFetch(['田哥，晴。']);
+ const fetchImpl=async(url,init)=>{tried.push(url);if(url.startsWith('https://plan'))return{ok:false,status:429};return ok(url,init);};
+ const r=await new FastLane({credentials:()=>[{key:'p',base:'https://plan',via:'token-plan'},{key:'d',base:'https://ds',via:'dashscope'}],fetchImpl}).answer('天气');
+ assert.equal(r.text,'田哥，晴。');assert.equal(r.via,'dashscope');assert.deepEqual(tried.map(u=>u.split('/')[2]),['plan','ds']);
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'fast-lane-src-'));
+ fs.writeFileSync(path.join(dir,'config.json'),'﻿'+JSON.stringify({acp:{apiKey:'plan-key',baseURL:'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'}}));
+ assert.deepEqual(fastLaneSources({dataDir:dir}).map(s=>[s.via,s.base]),[['token-plan','https://token-plan.cn-beijing.maas.aliyuncs.com']]);
+ fs.writeFileSync(path.join(dir,'config.json'),JSON.stringify({acp:{apiKey:'k',baseURL:'https://elsewhere.example/v1'}}));
+ assert.equal(fastLaneSources({dataDir:dir}).length,0,'only the verified Token Plan endpoint is used');
+ fs.rmSync(dir,{recursive:true,force:true});
+});
 test('long-poll receive loop processes a message as soon as it arrives; kicks during work re-run once',async()=>{
  const h=harness();let polls=0;const waits=[];
  h.channel.request=async(route,args={})=>{if(route==='/poll'){polls++;waits.push(args.wait||0);if(!h.remote.length)await new Promise(r=>setTimeout(r,30));return{messages:h.remote.splice(0)};}return{ok:true};};
