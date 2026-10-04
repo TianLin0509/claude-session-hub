@@ -2,8 +2,8 @@
 :root { --hub-rail-slot:44px; --hub-rail-open:44px; }
 :root:has(.app-container:not(.rail-pinned)) { --hub-rail-slot:44px; }
 :root body #scene-rail .rail-drawer-head { height:40px; padding:0 8px; }
-:root body #scene-rail .rail-navigation { padding:0 2px; gap:3px; scrollbar-width:auto; }
-:root body #scene-rail .rail-navigation::-webkit-scrollbar { width:3px; }
+:root body #scene-rail .rail-navigation { padding:0 2px; gap:3px; scrollbar-width:none; }
+:root body #scene-rail .rail-navigation::-webkit-scrollbar { width:0; height:0; display:none; }
 :root body #scene-rail .btn-shell-nav,
 :root body .app-container:not(.rail-pinned) #scene-rail .btn-shell-nav {
   flex-direction:column; align-items:center; justify-content:center;

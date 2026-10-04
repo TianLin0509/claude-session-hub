@@ -1213,7 +1213,7 @@ function paintSidebarResumePending(sessionId, pending) {
   }
 }
 
-function showDormantResumePlaceholder(session, error = null) {
+function showDormantResumePlaceholder(session, error = null, { checking = false } = {}) {
   if (!terminalPanelEl || !session) return;
   suspendInactiveTerminalRenderers(null);
   terminalPanelEl.classList.remove('home-active');
@@ -1228,11 +1228,11 @@ function showDormantResumePlaceholder(session, error = null) {
   spinner.setAttribute('aria-hidden', 'true');
   const copy = document.createElement('div');
   const title = document.createElement('strong');
-  title.textContent = error ? '会话唤醒失败' : '正在唤醒会话…';
+  title.textContent = error ? '会话唤醒失败' : checking ? '正在检查会话…' : '正在唤醒会话…';
   const detail = document.createElement('span');
   detail.textContent = error
     ? `${String(error && error.message || error)}。再次点击左侧会话可重试。`
-    : `${session.title || 'Session'} · 正在恢复原生 CLI 与历史上下文`;
+    : `${session.title || 'Session'} · ${checking ? '正在确认会话可用' : '正在恢复原生 CLI 与历史上下文'}`;
   copy.append(title, detail);
   panel.append(spinner, copy);
   terminalPanelEl.appendChild(panel);
@@ -2158,7 +2158,10 @@ function showTerminal(sessionId, opts = { focus: true }) {
     setupImageHover(cached.terminal, cached.container);
     void hydrateTerminalFromSnapshot(sessionId, cached);
   }
-  loadGpuRenderer(cached);
+  // Card navigation does not display xterm. Recreating its Canvas/WebGL
+  // surface here costs a frame and can stall Windows compositor commits.
+  if (embedded || currentView === 'pty') loadGpuRenderer(cached);
+  else unloadGpuRenderer(cached);
   if (isCodexKind(session.kind) && !isNativeAgent(session)) {
     cached._codexAnswerAccent ||= require('./codex-answer-accent').mountCodexAnswerAccent(cached.terminal, document);
     cached._codexAnswerAccent.refresh();
@@ -2176,7 +2179,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
       cached._codexBackstage ||= createCodexBackstage({ document, ipcRenderer, sessionId,
         getSession:() => sessions.get(sessionId),
         renderProse:text => DOMPurify.sanitize(marked.parse(text, {async:false}), {FORBID_TAGS:['img','video','audio','iframe']}),
-        onModeChange:mode => { cached._backstageReadable=mode!=='legacy';if(cached._backstageReadable)unloadGpuRenderer(cached);else loadGpuRenderer(cached); },
+        onModeChange:mode => { cached._backstageReadable=mode!=='legacy';if(cached._backstageReadable || currentView !== 'pty')unloadGpuRenderer(cached);else loadGpuRenderer(cached); },
         focusComposer:() => mountTarget.querySelector('.floating-input-box')?.focus() });
       cached._codexBackstage.mount(termContainer);
       cached._codexBackstage.setVisible(currentView === 'pty', {force:!!opts.forceScrollBottom});
@@ -3879,8 +3882,12 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.fitAddon) {
+      loadGpuRenderer(cached);
       scheduleVisibleTerminalRecovery(activeSessionId, cached, { pinBottom: false });
     }
+  }
+  if (mode === 'card' && typeof terminalCache !== 'undefined') {
+    unloadGpuRenderer(terminalCache.get(activeSessionId));
   }
   // Spec 3 · W3 resume bug fix (b)：切到卡片时若历史从未全量加载过，
   // 主动 trigger load — 用 _cardHistoryHydratedSid 状态标记而非 DOM 检测，
@@ -5486,14 +5493,6 @@ async function selectSession(id, opts = {}) {
   if (!opts.splitBypass && sessionSplit?.routesSelection()) return sessionSplit.route(id, undefined, opts);
   sessionSplit?.usePrimary();
   const intent = ++sessionOpenIntent;
-  if (sessions.get(id)?.status === 'dormant') {
-    const opening = await ipcRenderer.invoke('session:open-status', id);
-    if (intent !== sessionOpenIntent) return;
-    if (!opening.available) {
-      require('./ui-feedback').showHubAlert(opening.message);
-      return;
-    }
-  }
   const reuseCardHistory = activeSessionId === id && !activeMeetingId && currentView === 'card'
     && terminalPanelEl.style.display !== 'none' && !terminalPanelEl.classList.contains('home-active');
   void savePreviewState({ nonBlocking: true });
@@ -5552,6 +5551,41 @@ async function selectSession(id, opts = {}) {
   // Still switch selection and paint a pending surface immediately so a real
   // CLI restart never looks like a dropped click.
   if (session.status === 'dormant') {
+    // Paint navigation before the main process checks ownership. No CLI or
+    // transcript is opened until that check succeeds; an occupied session
+    // stays on the placeholder, and a newer selection cancels this intent.
+    session._resumePending = true;
+    session._openStatusIntent = intent;
+    paintSidebarResumePending(id, true);
+    ipcRenderer.send('focus-session', { sessionId: null });
+    showDormantResumePlaceholder(session, null, { checking: true });
+    scheduleSessionListRender();
+    const clearChecking = () => {
+      if (session._openStatusIntent !== intent) return;
+      delete session._openStatusIntent;
+      if (!_pendingDormantResumes.has(id)) session._resumePending = false;
+      const current = sessions.get(id);
+      if (current?._openStatusIntent === intent) {
+        delete current._openStatusIntent;
+        if (!_pendingDormantResumes.has(id)) current._resumePending = false;
+      }
+      paintSidebarResumePending(id, !!current?._resumePending);
+      scheduleSessionListRender();
+    };
+    let opening;
+    try { opening = await ipcRenderer.invoke('session:open-status', id); }
+    catch (error) { opening = { available: false, message: error.message || String(error) }; }
+    if (intent !== sessionOpenIntent || activeSessionId !== id) { clearChecking(); return; }
+    if (!opening?.available) {
+      clearChecking();
+      showDormantResumePlaceholder(session, new Error(opening?.message || '会话占用状态暂时无法确认'));
+      return;
+    }
+    // session-created may have completed an existing wake while this check
+    // was in flight. Render that live session instead of leaving a placeholder
+    // waiting for an event which has already arrived.
+    if (sessions.get(id)?.status !== 'dormant') { clearChecking(); return selectSession(id, opts); }
+    delete session._openStatusIntent;
     // A dormant row can still carry the last run's disconnect alert. Record it
     // as read before resume replaces the dormant object; otherwise the first
     // full-screen repaint can replay the old error without an acknowledgement

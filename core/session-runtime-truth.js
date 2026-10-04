@@ -1,6 +1,7 @@
 'use strict';
 
 const { isNativeSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
+const claudeRuntime = require('./claude-native-runtime');
 
 const {
   ATTENTION_NEEDS_INPUT,
@@ -324,8 +325,8 @@ function getSessionRuntimeTruth(session, options = {}) {
       evidence:r.reason||null,requests:r.requests||[] };
   }
   if (isNativeSession(session)) return nativeRuntimeTruth(session);
-  if (require('./claude-native-runtime').isNativeClaude(session)) {
-    return require('./claude-native-runtime').claudeRuntimeTruth(session);
+  if (claudeRuntime.isNativeClaude(session)) {
+    return claudeRuntime.claudeRuntimeTruth(session);
   }
   const now = Number(options.now) || Date.now();
   if (!session || typeof session !== 'object') {

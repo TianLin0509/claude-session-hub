@@ -243,11 +243,11 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     assert.strictEqual(result.initial.max, null, 'live xterms must not have an arbitrary count limit');
     assert.strictEqual(result.afterShells.size, 8, 'every explicitly opened live session must retain its xterm');
     assert.deepStrictEqual(result.afterShells.ids, Array.from({ length: 8 }, (_, i) => `perf-shell-${i}`));
-    assert.strictEqual(result.afterShells.rendererSurfaces, 1, 'only the visible xterm may retain a Canvas/WebGL surface');
+    assert.strictEqual(result.afterShells.rendererSurfaces, 0, 'card views must not retain an invisible Canvas/WebGL surface');
     assert.strictEqual(result.hiddenBufferHasMarker, true, 'hidden xterm must keep parsing live PTY output');
     assert.strictEqual(result.restoredBufferHasMarker, true, 'reloading the renderer surface must preserve xterm history');
     assert.strictEqual(result.afterRestore.size, 8, 'restoring a surface must not recreate or evict the xterm');
-    assert.strictEqual(result.afterRestore.rendererSurfaces, 1, 'restored visible xterm should own the sole renderer surface');
+    assert.strictEqual(result.afterRestore.rendererSurfaces, 0, 'restored card view must not recreate an invisible terminal renderer');
     assert.strictEqual(result.afterMeeting.size, 8, 'opening a serial room must not create or evict hidden xterms');
     assert.strictEqual(result.afterMeeting.rendererSurfaces, 0, 'meeting/home views should release every hidden terminal surface');
     assert.deepStrictEqual(result.memberStatuses, ['dormant', 'dormant', 'dormant']);
@@ -264,8 +264,8 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     assert.deepStrictEqual(result.staleProtectedState, {
       status: 'running', attentionState: 'none', isWaiting: false, unreadCount: 0,
     });
-    assert.strictEqual(result.completedSection, '✓ 已完成未读');
-    assert.strictEqual(result.staleProtectedSection, '运行中');
+    assert.strictEqual(result.completedSection, '今天');
+    assert.strictEqual(result.staleProtectedSection, '活跃');
     assert.strictEqual(result.bulkSidebar.count, 900, JSON.stringify(result.bulkSidebar));
     assert.ok(result.bulkSidebar.renderMs < 250, `900-session sidebar render took ${result.bulkSidebar.renderMs}ms`);
     assert.ok(result.sidebarRenderStats.maxMs < 250, JSON.stringify(result.sidebarRenderStats));

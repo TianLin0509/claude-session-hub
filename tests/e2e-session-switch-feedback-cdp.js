@@ -1,0 +1,54 @@
+'use strict';
+const fs=require('fs'),os=require('os'),path=require('path'),assert=require('node:assert/strict');
+const {launchIsolatedHub,gracefulQuit}=require('../tests/helpers/hub-launcher');
+const {connectFirstPage}=require('../tests/helpers/cdp-client');
+const {getFreePort,waitFor,click}=require('../tests/helpers/usage-refresh-fixture');
+const baseline=process.argv.includes('--baseline'),out=path.resolve('artifacts','20261003-session-switch-probe-codex1-'+Date.now());
+fs.mkdirSync(out,{recursive:true});let hub,c;
+(async()=>{const result={baseline,boundary:'隔离 Electron，1501 条受控会话；真实鼠标和滚轮，占用检查延迟为受控样例，不启动模型'};try{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-switch-probe-'));
+ hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await getFreePort(),extraEnv:{CLAUDE_HUB_E2E:'1'}});
+ c=await connectFirstPage(hub);await waitFor(c,'!!window.__hubE2E');
+ if(await c.eval(`document.querySelector('#new-session-close').getBoundingClientRect().height>0`))await click(c,'#new-session-close');
+ await c.eval(`window.__hubE2E.addFakeSessions(Array.from({length:1501},(_,i)=>({id:'switch-'+i,title:'会话 '+i,kind:i%2?'claude':'codex',status:i<11?'idle':'dormant',lastMessageTime:Date.now()-(i<11?i*1000:(4+i)*86400000),createdAt:Date.now()-(i<11?i*1000:(4+i)*86400000)})));`);
+ await c.send('Profiler.enable');await c.send('Profiler.start');
+ result.sidebar=await c.eval(`(()=>{const samples=[];for(let i=0;i<5;i++){const t=performance.now();renderSessionList();samples.push(performance.now()-t);}return samples;})()`);
+ fs.writeFileSync(path.join(out,'profile.json'),JSON.stringify((await c.send('Profiler.stop')).profile));
+ await c.eval(`sessions.get('switch-12').pinned=true;renderSessionList();`);
+ await click(c,'[data-session-days="pinned"]');
+ await c.eval(`window.__checksResolved=0;window.__resumes=[];window.__allowOpen=true;const originalInvoke=ipcRenderer.invoke.bind(ipcRenderer);ipcRenderer.invoke=(channel,...args)=>{if(channel==='session:open-status'){const allowed=window.__allowOpen;return new Promise(resolve=>setTimeout(()=>{window.__checksResolved++;resolve({available:allowed,message:'会话在另一个 Hub 打开'})},1200));}if(channel==='resume-session'){window.__resumes.push(args[0].hubSessionId);return new Promise(()=>{});}return originalInvoke(channel,...args);};`);
+ const t=Date.now();await click(c,'.session-item[data-session-id="switch-12"]');
+ result.pending=await c.eval(`({active:activeSessionId,checking:!!document.querySelector('.session-resume-pending'),resolved:window.__checksResolved,resumes:window.__resumes.length})`);result.pending.sampleMs=Date.now()-t;
+ if(!baseline){assert.equal(result.pending.active,'switch-12');assert(result.pending.checking);assert.equal(result.pending.resolved,0);assert.equal(result.pending.resumes,0);}
+ await waitFor(c,'window.__checksResolved===1');
+ result.afterCheck=await c.eval(`({active:activeSessionId,resumes:window.__resumes.length})`);assert.equal(result.afterCheck.resumes,1);
+ if(!baseline){
+  await c.eval(`sessions.get('switch-13').pinned=true;sessions.get('switch-14').pinned=true;window.__allowOpen=false;renderSessionList();`);
+  await click(c,'.session-item[data-session-id="switch-13"]');
+  await waitFor(c,'window.__checksResolved===2');
+  result.occupied=await c.eval(`({text:document.querySelector('.session-resume-pending')?.textContent,resumes:window.__resumes.length,pending:sessions.get('switch-13')._resumePending})`);
+  assert(result.occupied.text.includes('另一个 Hub'));assert.equal(result.occupied.resumes,1);assert.equal(result.occupied.pending,false);
+  await c.eval(`window.__allowOpen=true;meetings['switch-group']={id:'switch-group',title:'快速切换目标',groupChat:true,mode:'free',status:'idle',subSessions:[],participants:[],slotSpecs:[],pinned:true};renderSessionList();`);
+  await click(c,'.session-item[data-session-id="switch-14"]');
+  await click(c,'.session-item[data-meeting-id="switch-group"]');
+  await waitFor(c,'window.__checksResolved===3');
+  result.latest=await c.eval(`({active:activeSessionId,meeting:activeMeetingId,resumes:window.__resumes.length,pending:sessions.get('switch-14')._resumePending})`);
+  assert.equal(result.latest.active,null);assert.equal(result.latest.meeting,'switch-group');assert.equal(result.latest.resumes,1);assert.equal(result.latest.pending,false);
+  await c.eval(`sessions.get('switch-15').pinned=true;renderSessionList();`);
+  await click(c,'.session-item[data-session-id="switch-15"]');
+  await c.eval(`sessions.set('switch-15',{...sessions.get('switch-15'),status:'idle'});`);
+  await waitFor(c,`window.__checksResolved===4 && document.querySelector('.floating-input-bar')?.dataset.sessionId==='switch-15'`);
+  result.alreadyWoken=await c.eval(`({placeholder:!!document.querySelector('.session-resume-pending'),pending:sessions.get('switch-15')._resumePending,view:currentView,gpu:terminalCache.get('switch-15')._gpuLoaded})`);
+  assert.equal(result.alreadyWoken.placeholder,false);assert.equal(result.alreadyWoken.pending,false);assert.equal(result.alreadyWoken.view,'card');assert.equal(result.alreadyWoken.gpu,false);
+  await click(c,'#btn-backstage');await waitFor(c,'currentView==="pty"');assert(await c.eval(`terminalCache.get('switch-15')._gpuLoaded`));
+  await click(c,'#btn-backstage');await waitFor(c,'currentView==="card"');assert.equal(await c.eval(`terminalCache.get('switch-15')._gpuLoaded`),false);
+  result.backstageToggle=true;
+ }
+ await c.send('Emulation.setDeviceMetricsOverride',{width:900,height:450,deviceScaleFactor:1,mobile:false});
+ const rail=await c.eval(`(()=>{const e=document.querySelector('.rail-navigation'),r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,scrollHeight:e.scrollHeight,clientHeight:e.clientHeight,scrollbar:getComputedStyle(e).scrollbarWidth,before:e.scrollTop};})()`);
+ await c.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:rail.x,y:rail.y,deltaX:0,deltaY:330});
+ await waitFor(c,'document.querySelector(".rail-navigation").scrollTop>0');
+ result.rail={...rail,after:await c.eval('document.querySelector(".rail-navigation").scrollTop')};if(!baseline)assert.equal(rail.scrollbar,'none');
+ const shot=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'compact.png'),Buffer.from(shot.data,'base64'));
+ result.passed=true;
+}catch(e){result.error=e.stack;process.exitCode=1;}finally{if(c)await c.close();if(hub)await gracefulQuit(hub);fs.writeFileSync(path.join(out,'evidence.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify({out,...result},null,2));}})();
