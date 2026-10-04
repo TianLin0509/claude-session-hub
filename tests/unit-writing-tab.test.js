@@ -16,6 +16,7 @@ const { withWritingMemberOpts } = require('../core/writing/member-opts.js');
 const { buildWritingScenePrompt } = require('../core/writing/scene-prompt.js');
 const evolve = require('../core/writing/voice-evolve.js');
 const runner = require('../core/writing/draft-runner.js');
+const wb = require('../core/writing/workbench.js');
 
 let pass = 0;
 const pending = [];
@@ -168,16 +169,19 @@ test('群聊：新增 writing 场景（房名留给自动命名），分支也�
   assert.ok(fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'groupchat-fork-handlers.js'), 'utf8').includes("'writing'].includes(meeting.scene)"));
 });
 
-test('群规则：写作场景换成写作规则——回答即稿件，末尾附 hub-writing 卡片；文风给文件路径', () => {
+test('群规则：写作场景换成写作规则——文章放在两行标记之间，给田哥的话与问题放后面；文风常驻、路径作后备', () => {
   const p = fixturePaths();
   const env = { CLAUDE_HUB_WRITING_ROOT: p.root, CLAUDE_HUB_VOICE_DIR: p.voiceDir, CLAUDE_HUB_WRITING_SKILLS_DIR: path.dirname(p.voiceDir) };
   const text = buildWritingScenePrompt('Claude 1', { workspace: 'C:\\x\\文章1' }, env);
   assert.ok(text.includes('这是写作群聊'));
-  assert.ok(text.includes('hub-writing'), '讲清卡片格式');
-  for (const type of ['"type":"draft"', '"type":"final"', '"type":"questions"']) assert.ok(text.includes(type), type);
-  assert.ok(text.includes('稿里先按推荐答案写，不等他回答'), '有问题也先写一版（田哥 2026-10-01 拍板）');
-  assert.ok(text.includes(path.join(p.voiceDir, 'SKILL.md')), '文风给文件路径让 AI 自己读');
+  for (const mark of ['<!-- 文章开始 -->', '<!-- 文章结束 -->', '<!-- 定稿开始 -->', '<!-- 定稿结束 -->', '## 给田哥', '## 想问田哥', '推荐：']) assert.ok(text.includes(mark), mark);
+  assert.ok(text.includes('稿里先按推荐答案写'), '有问题也先写一版（田哥 2026-10-01 拍板）');
+  assert.ok(text.includes('AGENTS.md') && text.includes(path.join(p.voiceDir, 'SKILL.md')), '文风作为常驻指令；没装上时给文件路径');
   assert.ok(text.length < 1600, `群规则要短，首条消息才不容易卡在 Codex 长文本通道（现在 ${text.length} 字）`);
+  // 群规则里的示例本身就要能被工作台读对
+  const sample = text.slice(text.indexOf('<!-- 文章开始 -->'), text.indexOf('- 两行标记之间'));
+  const a = wb.extractAnswer(sample);
+  assert.deepStrictEqual([a.kind, a.title, a.questions.length], ['draft', '文章标题', 1]);
   assert.ok(!/HTML 三段式|artifacts\\/.test(text), '不再要求写 HTML 产物');
   const { buildSystemPromptText } = require('../core/group-chat-orchestrator.js');
   if (typeof buildSystemPromptText === 'function') {
@@ -197,6 +201,52 @@ test('成员参数：写作群成员标 purpose=writing；Claude 不加载 CLAUD
   assert.strictEqual(withWritingMemberOpts('claude-resume', {}).extraEnv.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'hub-memory-service.js'), 'utf8');
   assert.ok(src.includes("s.purpose==='writing'"), '写作成员不追加共享工作区规则');
+  assert.ok(!('appendSystemPromptFile' in c), '不给文章目录就不接文风包');
+});
+
+test('文风常驻：启动写作成员时把文风写成文章目录的 AGENTS.md；Claude 追加进系统提示，Codex 自动加载', () => {
+  const p = fixturePaths();
+  fs.writeFileSync(p.draftGuide, '# 起草\n\n从读者的处境起笔。\n');
+  fs.appendFileSync(path.join(p.voiceDir, 'SKILL.md'), '\n| 选案例 | [案例索引](references/case-index.md) |\n');
+  fs.writeFileSync(path.join(p.voiceDir, 'SKILL.md'), `---\nname: tiange-voice\n---\n${fs.readFileSync(path.join(p.voiceDir, 'SKILL.md'), 'utf8')}`);
+  const saved = { ...process.env };
+  Object.assign(process.env, { CLAUDE_HUB_WRITING_ROOT: p.root, CLAUDE_HUB_VOICE_DIR: p.voiceDir, CLAUDE_HUB_WRITING_SKILLS_DIR: tmp('skills') });
+  try {
+    const pack = require('../core/writing/voice-pack.js');
+    const text = pack.buildVoicePack({ ...p, draftGuide: p.draftGuide });
+    assert.ok(text.includes('一个工科博士在跟聪明的朋友聊天'), '文风正文整段装进去');
+    assert.ok(!text.includes('name: tiange-voice'), '去掉 skill 的 frontmatter');
+    assert.ok(text.includes(`](${path.join(p.voiceDir, 'references', 'case-index.md')})`), '相对链接换成绝对路径：AI 的工作目录是文章目录');
+    assert.ok(text.includes('从读者的处境起笔') && text.includes('# 起草指南'), '起草指南一起装');
+    assert.ok(text.includes('<!-- 文章开始 -->'), '提醒交稿格式以群规则为准');
+    assert.ok(Buffer.byteLength(text) <= pack.MAX_BYTES + 200, 'Codex 项目指令上限 32 KiB');
+    const long = pack.buildVoicePack({ ...p, draftGuide: p.draftGuide, voiceDir: (() => { const d = tmp('bigvoice'); fs.writeFileSync(path.join(d, 'SKILL.md'), '长'.repeat(20000)); return d; })() });
+    assert.ok(Buffer.byteLength(long) < 32 * 1024 && long.includes('完整内容见'), '超长时截断并写明原文件位置');
+
+    const dir = new PieceStore(p).create();
+    // writeVoicePack 默认读环境变量里的写作路径；起草指南按环境变量推出的位置写一份
+    const { writingPaths } = require('../core/writing/config.js');
+    fs.mkdirSync(path.dirname(writingPaths().draftGuide), { recursive: true });
+    fs.writeFileSync(writingPaths().draftGuide, '# 起草\n\n朗读一遍。\n');
+    const c = withWritingMemberOpts('claude', { model: 'opus' }, { dir });
+    assert.strictEqual(c.appendSystemPromptFile, path.join(dir, 'AGENTS.md'));
+    const written = fs.readFileSync(c.appendSystemPromptFile, 'utf8');
+    assert.ok(written.includes('一个工科博士') && written.includes('朗读一遍'));
+    const x = withWritingMemberOpts('codex', {}, { dir });
+    assert.ok(!('appendSystemPromptFile' in x), 'Codex 靠项目根（.vibe-root）自动加载 AGENTS.md，不另传参数');
+    assert.ok(fs.existsSync(path.join(dir, '.vibe-root')));
+    // 文风改了，下次启动成员时刷新
+    fs.appendFileSync(path.join(p.voiceDir, 'SKILL.md'), '\n11. **新加的一条。**\n');
+    withWritingMemberOpts('claude-resume', {}, { dir });
+    assert.ok(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8').includes('新加的一条'));
+    assert.strictEqual(withWritingMemberOpts('claude', {}, { dir: path.join(dir, '不存在') }).appendSystemPromptFile, undefined, '目录不在就照常启动');
+    assert.strictEqual(new PieceStore(p).drafts(dir).length, 0, 'AGENTS.md 不算稿件');
+  } finally {
+    for (const k of ['CLAUDE_HUB_WRITING_ROOT', 'CLAUDE_HUB_VOICE_DIR', 'CLAUDE_HUB_WRITING_SKILLS_DIR']) { if (saved[k] == null) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
+  const create = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'meeting-create-handlers.js'), 'utf8');
+  const resume = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'resume-session-handlers.js'), 'utf8');
+  assert.ok(create.includes('{ dir: meeting.workspace }') && resume.includes('{ dir: meeting.workspace }'), '新建与唤醒两条路径都接上文风包');
 });
 
 /* ── 文风自动优化 ── */
@@ -322,7 +372,6 @@ test('自动优化：同一篇定稿再改，群里没有新点评就不再跑�
 
 /* ── 文章工作台：群聊记录 → 稿件、问题、成员状态 ── */
 
-const wb = require('../core/writing/workbench.js');
 const FENCE = '```';
 const card = (...objs) => `\n\n${FENCE}hub-writing\n${objs.map((o) => JSON.stringify(o)).join('\n')}\n${FENCE}\n`;
 const DRAFT_BODY = `# 分身不是分集\n\n正文第一段。\n\n${FENCE}python\nprint("稿里的代码块不能把卡片解析截断")\n${FENCE}\n\n结尾。`;
@@ -336,6 +385,39 @@ test('卡片：交稿与问题写在同一个代码块里也认；稿里的代�
   const bad = wb.parseCards(`# 稿\n\n正文${card('x').replace('"x"', '{坏的')}`);
   assert.strictEqual(bad.cards.length, 0);
   assert.ok(bad.errors.length && bad.body.includes('正文'));
+});
+
+const MARKED = (body, { final = false, note = '', qs = [] } = {}) => [
+  `<!-- ${final ? '定稿' : '文章'}开始 -->`, body, `<!-- ${final ? '定稿' : '文章'}结束 -->`, '',
+  ...(note ? ['## 给田哥', note, ''] : []),
+  ...(qs.length ? ['## 想问田哥', ...qs.flatMap((q, i) => [`${i + 1}. ${q[0]}`, `   推荐：${q[1]}`])] : []),
+].join('\n');
+
+test('交稿格式：两行标记之间是文章，「给田哥」「想问田哥」各归各位；标记前的寒暄也挪进给田哥', () => {
+  const a = wb.extractAnswer(`好的，下面是初稿。\n\n${MARKED(DRAFT_BODY, { note: '先讲反例。', qs: [['写给谁？', '算法工程师'], ['要不要公式？', '放一个']] })}`);
+  assert.strictEqual(a.kind, 'draft');
+  assert.strictEqual(a.article, DRAFT_BODY, '文章原样，代码块保留');
+  assert.strictEqual(a.title, '分身不是分集');
+  assert.ok(a.note.includes('先讲反例') && a.note.includes('好的，下面是初稿'));
+  assert.deepStrictEqual(a.questions, [{ q: '写给谁？', recommend: '算法工程师' }, { q: '要不要公式？', recommend: '放一个' }]);
+  assert.strictEqual(wb.extractAnswer(MARKED('# 定稿\n\n正文', { final: true })).kind, 'final');
+  // 只有开始标记：文章到「## 给田哥」为止
+  const open = wb.extractAnswer('<!-- 文章开始 -->\n# 题\n\n正文\n\n## 给田哥\n说明');
+  assert.deepStrictEqual([open.article, open.note], ['# 题\n\n正文', '说明']);
+  // 问题的几种写法
+  assert.deepStrictEqual(wb.parseQuestionList('1. 写给谁？（推荐：同行）\n- 放公式吗\n  **推荐**：放一个\n2、标题要几个\n   要有设问的\n   推荐：十二个'),
+    [{ q: '写给谁？', recommend: '同行' }, { q: '放公式吗', recommend: '放一个' }, { q: '标题要几个 要有设问的', recommend: '十二个' }]);
+  assert.deepStrictEqual(wb.parseQuestionList('1. **从什么场景出发？** \n   推荐：**假设一个**'), [{ q: '从什么场景出发？', recommend: '假设一个' }], '10-03 实测 haiku 把问题加粗，问题卡里不显示星号');
+});
+
+test('交稿格式：没加标记时从「# 标题」起算，稿末的写作说明挪进给田哥；在跟田哥商量的不当稿', () => {
+  const body = '# 三张圆桌，同时开张\n\n' + '国庆假期第一天，把三样东西一起端出来。'.repeat(12) + '\n\n**多一家 AI，是多一根天线。**';
+  const a = wb.extractAnswer(`${body}\n\n---\n\n本稿前半按发布会节奏写。待田哥确认：安卓版下载页地址。`);
+  assert.strictEqual(a.article, body, '10-01 实测：Claude 把写作说明接在正文末尾');
+  assert.ok(a.note.startsWith('本稿前半') && a.hint.includes('没加文章标记'));
+  const talk = wb.extractAnswer('# 给 AI 开个群\n\n田哥，我建议这篇按“新品亮相”来写。' + '我先问三个问题。'.repeat(30));
+  assert.strictEqual(talk.article, '', '10-01 实测：Codex 先回了一段商量，不是稿');
+  assert.ok(talk.rest.includes('田哥，我建议'));
 });
 
 function groupState() {
@@ -360,7 +442,7 @@ function groupState() {
 }
 const MEMBERS = [{ sid: 'sid-a', memberId: 'm1', name: 'Claude 1', kind: 'claude' }, { sid: 'sid-b', memberId: 'm2', name: 'Codex 2', kind: 'codex' }, { sid: 'sid-c', memberId: 'm3', name: 'DeepSeek 3', kind: 'deepseek' }];
 
-test('工作台：每位一栏、版本递增；没卡片的回答原样显示；出错与在写看得见；问题只留最新一轮', () => {
+test('工作台：每位一个标签页、版本递增；不像稿的回答原样显示；出错与在写看得见；问题只留最新一轮', () => {
   const v = wb.buildView({ state: groupState(), members: MEMBERS, files: [] });
   assert.strictEqual(v.idea, '中心思想：多模型互审不等于分集增益', 'Hub 派工卡片不算田哥的话');
   assert.deepStrictEqual(v.columns.map((c) => c.name), ['Claude 1', 'Codex 2', 'DeepSeek 3']);
@@ -384,7 +466,7 @@ test('工作台：忘了附卡片但明显是一份稿（# 标题开头、有篇
   ], attempts: {} };
   const it = wb.buildView({ state: st, members: MEMBERS.slice(0, 1) }).columns[0].items[0];
   assert.deepStrictEqual([it.kind, it.version, it.title, it.implicit], ['draft', 1, '多分身不等于分集', true]);
-  assert.ok(it.note.includes('没附交稿卡'));
+  assert.ok(it.hint.includes('没加文章标记'));
 });
 
 test('工作台：Tab 点名「请 X 汇总定稿」的那一轮，X 交的稿忘了附定稿卡也按定稿收下', () => {
@@ -396,6 +478,22 @@ test('工作台：Tab 点名「请 X 汇总定稿」的那一轮，X 交的稿�
   assert.strictEqual(v.final && v.final.title, '汇总后的定稿');
   assert.strictEqual(v.steps.final, true);
   assert.ok(v.columns[0].items.pop().implicit);
+});
+
+test('工作台：新格式的交稿、问题、定稿与旧的 JSON 卡片混在一个群里也都认', () => {
+  const st = groupState();
+  st.messages.push({ id: 'u3', role: 'user', origin: 'user', turnNum: 3, content: '回答你们的问题' });
+  st.messages.push({ id: 'a3-m2', role: 'assistant', sid: 'sid-b', speaker: 'Codex 2', turnNum: 3, status: 'completed', content: MARKED('# Codex 的稿\n\n' + '正文。'.repeat(80), { note: '从读者的选择切入', qs: [['写多长？', '三千字']] }) });
+  st.messages.push({ id: 'u4', role: 'user', origin: 'user', turnNum: 4, content: '请 Codex 2 汇总定稿' });
+  st.messages.push({ id: 'a4-m2', role: 'assistant', sid: 'sid-b', speaker: 'Codex 2', turnNum: 4, status: 'completed', content: MARKED('# 定稿题目\n\n定稿正文。', { final: true, note: '合了两稿' }) });
+  st.currentTurn = 4;
+  const v = wb.buildView({ state: st, members: MEMBERS });
+  const b = v.columns[1];
+  assert.deepStrictEqual(b.items.map((it) => [it.kind, it.version || 0]), [['reply', 0], ['draft', 1], ['final', 2]]);
+  assert.strictEqual(b.items[1].note, '从读者的选择切入');
+  assert.ok(!b.items[1].text.includes('文章开始') && !b.items[1].text.includes('给田哥'), '文章里不带标记和给田哥的话');
+  assert.deepStrictEqual([v.final.title, v.final.from, v.final.note], ['定稿题目', 'Codex 2', '合了两稿']);
+  assert.strictEqual(v.columns[0].items.length, 2, '旧卡片的两版还在');
 });
 
 test('工作台：定稿卡置顶；文章目录里 Hub 没写过的稿件文件按名字归到成员，内容重复的不列', () => {
