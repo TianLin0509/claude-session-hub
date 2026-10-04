@@ -108,3 +108,30 @@ test('long-poll receive loop processes a message as soon as it arrives; kicks du
  h.channel.working=true;h.channel.kick();assert.equal(h.channel.rekick,true);h.channel.working=false;
  h.channel.close();await loop;
 });
+test('front desk: api by default, legacy off switch means cli, invalid choices rejected',()=>{
+ const fd=require('../core/hub-assistant/front-desk');
+ assert.deepEqual(fd.describe(undefined,{env:{}}),{mode:'api',model:'qwen3.8-flash',label:'千问快答',modelLabel:'千问 3.8 Flash'});
+ assert.equal(fd.describe(undefined,{legacyDisabled:true,env:{}}).mode,'cli');
+ assert.equal(fd.describe({mode:'api',model:'deepseek-v4.1-flash'},{env:{}}).label,'DeepSeek快答');
+ assert.equal(fd.describe({mode:'cli',model:'deepseek-v4.1-flash'},{env:{}}).label,'助理会话直答');
+ assert.throws(()=>fd.validate({mode:'fast'}));assert.throws(()=>fd.validate({mode:'api',model:'gpt-x'}));
+ assert.deepEqual(fd.catalog(fd.describe()).models.map(m=>m.id),['qwen3.8-flash','deepseek-v4.1-flash']);
+});
+test('phone set_front_desk applies immediately even while the assistant is busy; cli skips the fast lane; api uses the chosen model',async()=>{
+ const {FastLane}=require('../core/hub-assistant/fast-lane'),fd=require('../core/hub-assistant/front-desk');
+ const h=harness();let saved;h.assistant.overview=()=>({status:'running'});h.assistant.switching=false;
+ h.assistant.frontDesk=()=>fd.describe(saved,{env:{}});h.assistant.setFrontDesk=r=>{saved={...saved,...fd.validate(r)};return{ok:true,frontDesk:h.assistant.frontDesk()};};
+ h.assistant.fastLaneDisabled=()=>h.assistant.frontDesk().mode==='cli';h.assistant.currentProfile=()=>({kind:'claude'});
+ h.s.phoneCaps=['profile'];h.assistant.phoneProfile=async()=>({current:{kind:'claude'},kinds:[],frontDesk:fd.catalog(h.assistant.frontDesk())});
+ const fetchImpl=sseFetch(['田哥，2。']);h.channel.fastLane=new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl});
+ const id=crypto.randomUUID();h.incoming(id,{type:'set_front_desk',mode:'cli'});await h.channel.tick();
+ assert.equal(h.assistant.frontDesk().mode,'cli');const p=packets(h,'profile-').find(x=>x.requestId===id);assert.equal(p.frontDesk.current.mode,'cli');
+ let seq=10;const push=(i,v)=>h.remote.push({seq:++seq,id:i,payload:seal(h.c.key,h.c.channel,i,'phone',v)});h.incoming=push;
+ push(crypto.randomUUID(),{type:'text',text:'一加一等于几'});h.assistant.overview=()=>({status:'idle'});await h.channel.tick();
+ assert.equal(fetchImpl.calls.length,0,'cli mode never calls the API front desk');assert.equal(h.calls.length,1);
+ h.assistant.readLiveFinal=()=>({records:[{clientSubmissionId:h.calls[0].requestId,text:'2'}]});await h.channel.tick();
+ push(crypto.randomUUID(),{type:'set_front_desk',mode:'api',model:'deepseek-v4.1-flash'});push(crypto.randomUUID(),{type:'text',text:'二加二等于几'});await h.channel.tick();
+ assert.equal(fetchImpl.calls.at(-1).model,'deepseek-v4.1-flash');assert.equal(h.calls.length,1,'answered by the API front desk');
+ const bad=crypto.randomUUID();push(bad,{type:'set_front_desk',mode:'api',model:'unknown-model'});await h.channel.tick();
+ assert.match(packets(h,'profileerror-'+bad)[0].text,/回答方式未切换/);assert.equal(h.assistant.frontDesk().model,'deepseek-v4.1-flash');
+});

@@ -22,13 +22,13 @@ function systemPrompt({ userPrefs = '', now = new Date() } = {}) {
 }
 
 class FastLane {
-  constructor({ credentials, fetchImpl = fetch, model = 'qwen3.8-flash', timeoutMs = 6000 } = {}) {
+  constructor({ credentials, fetchImpl = fetch, model = require('./front-desk').defaultModel(), timeoutMs = 6000 } = {}) {
     this.credentials = credentials; this.fetch = fetchImpl; this.model = model; this.timeoutMs = timeoutMs;
   }
   eligible(text) { const t = String(text || '').trim(); return !!t && t.length <= 300 && !WORK_RE.test(t); }
   // 返回 {handoff:true}（交还完整助理）或 {text, model, via, ms, firstMs}；出错由调用方回退到完整助理。
   // credentials() 返回一个或按优先级排列的多个调用凭据 {key, base, via}，前一个请求失败（如套餐额度用完）就换下一个。
-  async answer(question, { history = [], userPrefs = '', now = new Date() } = {}) {
+  async answer(question, { history = [], userPrefs = '', now = new Date(), model = this.model } = {}) {
     const sources = [].concat(this.credentials()).filter(Boolean);
     if (!sources.length) throw new Error('快速通道没有可用的百炼 Key');
     const messages = [{ role: 'system', content: systemPrompt({ userPrefs, now }) }];
@@ -37,7 +37,7 @@ class FastLane {
     const started = Date.now(), controller = new AbortController(), timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let text = '', firstMs = null;
     try {
-      const body = JSON.stringify({ model: this.model, stream: true, enable_thinking: false, enable_search: true, search_options: { forced_search: true, search_strategy: 'turbo' }, messages });
+      const body = JSON.stringify({ model, stream: true, enable_thinking: false, enable_search: true, search_options: { forced_search: true, search_strategy: 'turbo' }, messages });
       let response = null, via = null, failure = null;
       for (const source of sources) {
         try {
@@ -70,7 +70,7 @@ class FastLane {
     } finally { clearTimeout(timer); }
     const clean = text.trim();
     if (!clean || clean.includes(HANDOFF)) return { handoff: true, ms: Date.now() - started };
-    return { text: clean, model: this.model, via: this.lastVia, ms: Date.now() - started, firstMs };
+    return { text: clean, model, via: this.lastVia, ms: Date.now() - started, firstMs };
   }
 }
 

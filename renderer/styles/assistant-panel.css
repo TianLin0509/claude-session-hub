@@ -14,8 +14,8 @@
 #terminal-panel.assistant-session .session-welcome{color:#1b2942;background:transparent}
 #terminal-panel.assistant-session .session-welcome-mark{background:transparent;border:0;box-shadow:none}
 #terminal-panel.assistant-session .session-welcome-mark img{width:72px;height:84px;object-fit:contain}
-.assistant-workbench.btn-zoom,.assistant-phone.btn-zoom{width:auto;flex-shrink:0;white-space:nowrap;padding:0 8px}
-.app-toolbar .terminal-header-actions .assistant-phone.btn-zoom{width:auto;min-width:72px;flex-shrink:0;white-space:nowrap;padding:0 8px}
+.assistant-workbench.btn-zoom,.assistant-phone.btn-zoom,.assistant-memory.btn-zoom,.assistant-rotate.btn-zoom{width:auto;flex-shrink:0;white-space:nowrap;padding:0 8px}
+.app-toolbar .terminal-header-actions .assistant-phone.btn-zoom,.app-toolbar .terminal-header-actions .assistant-workbench.btn-zoom,.app-toolbar .terminal-header-actions .assistant-memory.btn-zoom,.app-toolbar .terminal-header-actions .assistant-rotate.btn-zoom{width:auto;min-width:72px;flex-shrink:0;white-space:nowrap;padding:0 8px}
 dialog.assistant-phone-dialog{margin:auto;font:14px/1.7 var(--font-ui,system-ui,sans-serif);box-shadow:0 20px 70px #172f5126;-webkit-app-region:no-drag}
 .assistant-phone-dialog::backdrop{background:#15233a45}
 .assistant-phone-dialog h2{font-size:22px;line-height:1.4;margin-bottom:14px}
@@ -49,3 +49,9 @@ body.assistant-session-active .assistant-backend{display:block}
 .assistant-notice-list p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
 .assistant-notice-list small{color:#77859b;overflow-wrap:anywhere}.assistant-notice-list button{margin-left:12px}
 .assistant-turn-context{font-size:11px;color:#77859b}.assistant-turn-context pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto}
+/* 手机回答方式：与后端选择同一套样式，分组标题与说明保持轻量 */
+.assistant-frontdesk{max-width:150px;color:#1b2942;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.assistant-frontdesk-menu{min-width:220px;max-width:280px}
+.assistant-menu-caption{padding:8px 16px 4px;color:#7a8699;font-size:11px}
+.assistant-menu-hint{margin:6px 10px 4px;padding-top:8px;border-top:1px solid #edf1f7;color:#7a8699;font-size:11px;line-height:1.6}
+.assistant-menu-title{padding:8px 16px 2px;color:#1b2942;font-size:12px;font-weight:600}

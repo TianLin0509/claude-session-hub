@@ -3,7 +3,7 @@ const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:pat
 const {seal,open,credentials,invite}=require('./crypto');
 // 手机协议 v2（App 1.1）：voice_message 识别后直接交给助理，转写只回传显示；hello 声明能力后才下发 profile；set_profile 切换助理模型。
 // 旧 App 只认 text/voice/status/answer/image/transcript，未声明能力前不向它发送新类型。
-const TYPES=['text','voice','voice_message','hello','set_profile'];
+const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk'];
 const MAX_VOICE_BYTES=16000*2*120;
 const ACTIVE=['dispatching','waiting','unknown'];
 const LONG_POLL_SECONDS=15; // 中继支持长等待时，新消息一到即返回；旧中继忽略该参数、立即返回
@@ -40,12 +40,15 @@ class PhoneChannel{
   if(m.type==='voice_message'&&(typeof m.pcm!=='string'||!m.pcm||m.pcm.length>Math.ceil(MAX_VOICE_BYTES/3)*4+4))throw Error('语音无效');
   if(m.type==='set_profile'&&!['kind','model'].every(k=>typeof m[k]==='string'&&m[k]&&m[k].length<=160))throw Error('助理设置无效');
   if(m.type==='hello'&&(!Array.isArray(m.caps)||m.caps.length>20))throw Error('手机能力声明无效');
+  if(m.type==='set_front_desk'&&(!['api','cli'].includes(m.mode)||m.model!==undefined&&(typeof m.model!=='string'||m.model.length>80)))throw Error('回答方式设置无效');
  }
  supports(cap){return(this.journal.state.phoneCaps||[]).includes(cap);}
+ // 助理设置与回答方式任一变化（电脑面板改的也算）都重发 profile，手机两边保持一致。
+ profileSignature(){return JSON.stringify([this.assistant.currentProfile?.(),this.assistant.frontDesk?.()]);}
  async sendProfile(requestId){
   if(!this.supports('profile')||!this.assistant.phoneProfile)return;
   const profile=await this.assistant.phoneProfile();
-  this.journal.change(x=>{x.profileSignature=JSON.stringify(profile.current);});
+  this.journal.change(x=>{x.profileSignature=this.profileSignature();});
   this.emit('profile-'+crypto.randomUUID(),{type:'profile',...(requestId?{requestId}:{}),...profile,switching:!!this.assistant.switching});
  }
  async tick(){const s=this.journal.state;if(this.working||this.closed||!s.enabled||!s.credentials)return;this.working=true;this.lastPoll=Date.now();
@@ -53,6 +56,8 @@ class PhoneChannel{
   // 长等待循环在跑时由它收消息；单独调用 tick（测试、旧路径）时自己取一次。
   if(!this.receiving){const polled=await this.request('/poll');if(this.closed||!s.enabled)return;this.online=true;this.issue=null;await this.ingest(polled.messages||[]);}
   if(this.closed||!s.enabled)return;
+  // 回答方式设置不排队：助理忙时也立即生效。
+  for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='set_front_desk')){try{this.assistant.setFrontDesk({mode:row.mode,...(row.model?{model:row.model}:{})});this.journal.change(()=>{row.state='done';});await this.sendProfile(row.id).catch(e=>console.warn('[phone] profile',e.message));}catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;});this.emit('profileerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'回答方式未切换：'+e.message});}}
   // 语音先识别（不受助理忙碌影响），可直接答的简单问题走快速通道，其余照旧排队交给完整助理。
   for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='voice_message'))await this.transcribeRow(row);
   if(this.fastLane&&!this.assistant.fastLaneDisabled?.())for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='text'&&!r.fastTried))await this.tryFastLane(row);
@@ -70,7 +75,7 @@ class PhoneChannel{
      }
     }
    }}
-  if(this.supports('profile')&&this.assistant.phoneProfile&&!this.assistant.switching){const current=JSON.stringify(this.assistant.currentProfile?.());if(current!==s.profileSignature)await this.sendProfile();}
+  if(this.supports('profile')&&this.assistant.phoneProfile&&!this.assistant.switching){if(this.profileSignature()!==s.profileSignature)await this.sendProfile();}
   for(const n of this.assistant.notifications({limit:200}).notifications){if(s.notices.includes(n.id)||n.createdAt<s.created)continue;await this.reply('notice-'+crypto.createHash('sha256').update(n.id).digest('hex').slice(0,32),n.kind==='memory-update'?n.text:'关注任务「'+n.title+'」有新进展：\n'+n.text,{notice:true});this.journal.change(x=>x.notices.push(n.id));}
   await this.flush(4);
  }catch(e){this.online=false;this.issue=e.message;}finally{this.working=false;if(this.rekick&&!this.closed){this.rekick=false;setTimeout(()=>void this.tick(),0);}}}
@@ -86,7 +91,7 @@ class PhoneChannel{
    this.journal.change(()=>{row.fastTried=true;});
    if(!this.fastLane.eligible(row.text))return false;
    try{
-    const started=Date.now(),result=await this.fastLane.answer(row.text,{history:this.assistant.recentHistory?.()||[],userPrefs:this.assistant.memory?.read?.().user||''});
+    const started=Date.now(),result=await this.fastLane.answer(row.text,{history:this.assistant.recentHistory?.()||[],userPrefs:this.assistant.memory?.read?.().user||'',...(this.assistant.frontDesk?{model:this.assistant.frontDesk().model}:{})});
     if(result.handoff){console.log('[phone] fast lane handoff',row.id.slice(0,8),Date.now()-started+'ms');return false;}
     this.journal.change(()=>{row.state='answered';row.lane='fast';row.t={...row.t,answerFound:Date.now()};});
     await this.reply('answer-'+row.id,result.text,{requestId:row.id,lane:'fast'},{cards:false});
