@@ -11,6 +11,7 @@ const data = path.join(root, 'data'), home = path.join(root, 'codex'), work = pa
 const art = path.resolve(__dirname, '../artifacts/orchestration-lightweight', scenario + '-' + Date.now());
 for (const p of [data, home, work, art]) fs.mkdirSync(p, { recursive: true });
 const report = { scenario, root, art, start: new Date().toISOString(), realModel: true, inputRoute: process.env.HUB_CODEX_EDITOR_INPUT==='0'?'pty-paste-fallback':'default-editor', timeline: [], checks: [], problems: [] };
+report.sourceHead=execFileSync('git',['rev-parse','HEAD'],{cwd:path.resolve(__dirname,'..'),encoding:'utf8',windowsHide:true}).trim();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (event, value) => { report.timeline.push({ at: new Date().toISOString(), event, value }); console.log(event, value ? JSON.stringify(value).slice(0, 700) : ''); fs.writeFileSync(path.join(art, 'live.json'), JSON.stringify(report, null, 2)); };
 const git = (...args) => execFileSync('git', args, { cwd: work, encoding: 'utf8', windowsHide: true });
@@ -108,6 +109,7 @@ async function open() { await cdp.eval(`selectMeeting(${JSON.stringify(meetingId
       if(rooms.find(m=>m.id===meetingId).subSessions.length!==3)throw Error('fixed roster changed');
       if(confirmed && l?.plan?.confirmedVersion===l?.plan?.version && l.budget.roundCap!==(scenario==='delivery'?10:8))throw Error('confirmed budget not enforced');
       if(scenario==='fault' && l?.status==='halted' && l.halt?.reported){
+        if(!/新建任务|重新开任务|新开任务|重开任务|新任务/.test(l.reports.at(-1)?.summary||''))throw Error('blocking advice does not respect Hub recovery capability');
         report.checks.push('real member reports injected blocking condition; real orchestrator gives advice');
         const before=JSON.stringify([l.status,r.status,r.steps.length,l.budget.roundsUsed]);
         await send('现在卡在哪里，有什么建议？'); await sleep(20000);

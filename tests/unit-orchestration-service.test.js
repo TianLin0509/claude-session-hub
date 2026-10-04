@@ -396,5 +396,10 @@ test('lightweight: runtime failure pauses dispatch and exposes preserved context
   x.service.reconcile('mt1');
   const status=await x.call('orch_status');assert.equal(status.halt.reason,'runtime_error');
   assert.match(status.currentRun.error,/登录/);assert.ok(status.currentRun.dispatches);
+  assert.equal(status.currentRun.recovery.resumeAllowed,true);
   await assert.rejects(x.call('orch_control_workflow',{action:'continue'}),/暂停/);
+  x.writeRun({id:'run-1',kind:'file',status:'paused',error:'成员报告阻塞',stages:x.meetingObj.serialWorkflow.deliveryStages,steps:[{id:'s',index:1,members:['m2'],deliveries:{m2:{memberId:'m2',outcome:'blocked',path:'/step/m2/阻塞.md'}}}]});
+  const blocked=await x.call('orch_status');
+  assert.equal(blocked.currentRun.recovery.resumeAllowed,false);
+  assert.match(blocked.currentRun.recovery.advice,/新建任务/);
 });

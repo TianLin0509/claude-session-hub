@@ -8,7 +8,7 @@ const string = { type: 'string' };
 const presets = { type: 'string', enum: ['development', 'research', 'roundtable', 'custom'] };
 const tools = [
   { name: 'orch_status', annotations: { readOnlyHint: true },
-    description: '读取本群计划账本：状态、额度、计划、队伍（成员编号、后端、模型、角色、忙闲）、各工作段进度与审核结论文件路径、单独提问的回答路径。每次被唤醒先调用它。',
+    description: '读取本群计划账本：状态、额度、计划、已有成员、进度与交付证据。currentRun 含派工回执、失败步骤和 recovery（是否允许原地续跑与处理建议）。每次被唤醒先调用；遇到故障按 recovery 给田哥建议。',
     inputSchema: schema({}) },
   { name: 'orch_propose_plan',
     description: '提交或更新计划。team 给已有成员分配角色（memberId 来自 orch_status，不含编排员）；segments 写各段唯一名称、模板、目标和验收标准。自然语言额度由 Hub 识别并随计划确认；复杂表达可用 budget 引用田哥原话，未指定的维度保持当前额度。提交后向田哥简述计划与额度，按确认设置执行。',

@@ -372,6 +372,9 @@ function createOrchestrationService(deps) {
         stepMembers: step?.members || [], missing: (step?.members || []).filter(id => !step?.deliveries?.[id]),
         deliveries: Object.values(step?.deliveries || {}).map(d => ({ memberId: d.memberId, outcome: d.outcome, path: d.path })),
         dispatches: step?.dispatches || [],
+        recovery: Object.values(step?.deliveries || {}).some(d=>d.outcome==='blocked')
+          ? { resumeAllowed:false, advice:'本轮已有阻塞交付，结果不可覆盖或原地续跑。请田哥处理阻塞后保留记录，结束本次任务并新建任务。' }
+          : { resumeAllowed:true, advice:'先请田哥处理并核对故障现场，得到明确恢复授权后才能续跑。' },
         runDir: path.join(Delivery.directory(dataDir(), meetingId), run.id),
       } : null,
       asks: ledger.asks.slice(-8), lastReport: ledger.reports.at(-1) || null,
