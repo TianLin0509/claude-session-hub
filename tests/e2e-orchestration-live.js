@@ -183,9 +183,11 @@ const TASKS = {
         const st = r2?.steps?.find(s => s.id === interrupted.stepId);
         if (st && st.deliveries?.[interrupted.memberId]) { rescued = true; report.rescue = { note: '打断前后成员仍交付了，未用到救回入口' }; log('member delivered despite interrupt'); }
         else {
-          const ok = await click(`[data-gc-resend-member="${interrupted.sid}"]`);
+          // 卡片默认折叠且消息流会自动滚动：坐标点击偶尔落空时，退回对同一按钮触发点击。
+          const ok = await click(`[data-gc-resend-member="${interrupted.sid}"]`)
+            || await cdp.eval(`(()=>{const b=document.querySelector('[data-gc-resend-member="${interrupted.sid}"]'); if(!b) return false; b.click(); return true;})()`);
           if (ok) { rescued = true; report.rescue = { via: '卡片「重新发送」', at: Date.now() }; report.ui.push('点击成员卡片「重新发送」'); log('clicked resend on member card'); }
-          else if (Date.now() - interrupted.at > 120000) { const r = await invoke('delivery:continue', { meetingId }); rescued = true; report.rescue = { via: 'delivery:continue（卡片按钮未找到）', result: r }; report.problems.push('卡片上没找到「重新发送」按钮，改用提醒未交付成员'); log('rescued via delivery:continue'); }
+          else if (Date.now() - interrupted.at > 120000) { const r = await invoke('delivery:continue', { meetingId }); rescued = true; report.rescue = { via: 'delivery:continue（卡片按钮未找到）', result: r, at: Date.now() }; report.problems.push('卡片上没找到「重新发送」按钮，改用提醒未交付成员'); log('rescued via delivery:continue'); }
         }
       }
       // 场景：救回之后、工作流还在跑时重启 Hub
