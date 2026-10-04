@@ -70,7 +70,7 @@ test('fast lane answers simple questions in place, hands work back, and falls ba
  const r=await lane.answer('今天南通天气怎么样？',{userPrefs:'- 回答不用表格'});assert.equal(r.text,'田哥，今天南通小雨，18～22℃。');
  const body=fetchImpl.calls[0];assert.equal(body.search_options.forced_search,true);assert.equal(body.model,'qwen3.8-flash');assert.equal(body.enable_thinking,false);assert.match(body.messages[0].content,/回答不用表格/);
  assert.equal((await new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['【交给','助理】'])}).answer('明天提醒我开会')).handoff,true);
- assert.equal(lane.eligible('仿真那个会话跑完没'),false);assert.equal(lane.eligible('一加一等于几'),true);
+ assert.equal(lane.eligible('帮我新建一个会话跑仿真'),false,'要动手的话直接交给助理');assert.equal(lane.eligible('仿真那个会话跑完没'),true,'问进展先由快答看 Hub 状态摘要');assert.equal(lane.eligible('一加一等于几'),true);
  // 通道：简单问题不进完整助理；助理忙时也照答
  const h=harness();h.channel.fastLane=lane;h.assistant.overview=()=>({status:'running'});const recorded=[];h.assistant.recordFastLane=x=>recorded.push(x);
  const lane2=new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['田哥，2。'])});h.channel.fastLane=lane2;
@@ -160,7 +160,7 @@ test('desk: desktop messages share the front desk — fast answers in place, wor
   overview:()=>({status}),send:async r=>{sent.push(r);return{ok:true,sessionId:'asst'};},readLiveFinal:()=>({records:finals}),assistantLabel:()=>'Claude · Sonnet 5.5 · 低'};
  const desk=new AssistantDesk({assistant:a,fastLane:new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['田哥，2。'])}),pollMs:10});
  const r1=await desk.ask('一加一等于几');assert.equal(r1.lane,'fast');assert.deepEqual(log.map(e=>[e.role,e.source||e.lane]),[['user','hub'],['assistant','fast']]);assert.equal(sent.length,0);
- status='running';const r2=await desk.ask('帮我看看仿真跑完没');assert.equal(r2.lane,'assistant');assert.equal(sent.length,0,'busy assistant: queued, not sent');
+ status='running';const r2=await desk.ask('帮我新建一个会话跑仿真');assert.equal(r2.lane,'assistant');assert.equal(sent.length,0,'busy assistant: queued, not sent');
  status='idle';desk.check();await new Promise(r=>setTimeout(r,30));assert.equal(sent.length,1);assert.equal(sent[0].requestId,r2.id);
  finals=[{clientSubmissionId:r2.id,text:'田哥，还在跑。'}];desk.check();
  const last=log.at(-1);assert.equal(last.role,'assistant');assert.equal(last.lane,'assistant');assert.equal(last.text,'田哥，还在跑。');assert.equal(last.by,'Claude · Sonnet 5.5 · 低');
@@ -176,5 +176,31 @@ test('replies are Markdown text only; an image is sent only for a referenced loc
  await h.channel.reply('answer-b',`报告做好了：[周报](${file})，也可以直接打开 ${file}`);await h.channel.htmlWork;
  const imgs=packets(h,'answer-b-html-');assert.equal(imgs.length,1,'same file referenced twice renders once');assert.match(imgs[0].caption,/网页：周报/);
  await h.channel.reply('answer-c','外部文件 [x](C:/Windows/win.ini.html)');assert.equal(packets(h,'answer-c-').length,0,'outside allowed roots is ignored');
+ fs.rmSync(root,{recursive:true,force:true});
+});
+test('status digest gives the fast lane a compact read-only Hub view; reminders fire once, late ones say so',()=>{
+ const {buildStatusDigest}=require('../core/hub-assistant/status-digest'),{AssistantReminders,parseWhen}=require('../core/hub-assistant/reminders');
+ const now=Date.parse('2026-10-04T14:00:00Z');
+ const d=buildStatusDigest({now,sessions:[{id:'a',title:'信道仿真',kind:'codex',status:'running'},{id:'b',title:'AI Hub 助理',purpose:'hub-assistant',status:'running'}],
+  ledger:[{sessionId:'c',title:'周报',kind:'claude',at:now-3600000,text:'周报写好了'},{sessionId:'c',title:'周报',kind:'claude',at:now-7200000,text:'旧的'},{sessionId:'d',title:'很久以前',at:now-3*86400000,text:'x'}],
+  reminders:[{id:'r',at:now+3600000,text:'开会'}]});
+ assert.match(d,/北京时间 今天 22:00/);assert.match(d,/「信道仿真」codex·运行中/);assert.doesNotMatch(d,/AI Hub 助理/);assert.match(d,/周报写好了/);assert.doesNotMatch(d,/旧的|很久以前/);assert.match(d,/待提醒：今天 23:00 开会/);
+ assert.equal(parseWhen('2026-10-04 23:00',now),Date.parse('2026-10-04T15:00:00Z'),'按北京时间理解');assert.throws(()=>parseWhen('2026-10-04 20:00',now),/已经过去/);
+ const kv=new Map(),store={get:k=>kv.get(k),set:(k,v)=>kv.set(k,v)};let t=now;const fired=[];
+ const rem=new AssistantReminders({store,now:()=>t,onFire:r=>fired.push(r)});
+ const a=rem.add({when:'2026-10-04 22:30',text:'喝水'});rem.add({when:'2026-10-04 23:00',text:'开会'});
+ t=now+31*60000;rem.fireDue();assert.deepEqual(fired.map(r=>[r.text,r.late]),[['喝水',false]]);rem.fireDue();assert.equal(fired.length,1,'不重复提醒');
+ t=now+5*3600000;rem.fireDue();assert.deepEqual(fired.map(r=>r.text),['喝水','开会']);assert.equal(fired[1].late,true,'Hub 关着时错过的提醒补发并标明');
+ assert.throws(()=>rem.cancel(a.id),/没有找到/);clearTimeout(rem.timer);
+});
+test('phone can ask to read a reply aloud; reminders and interactive pages are pushed to the phone',async()=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+ const h=harness();let spoken=null;h.channel.speak=async t=>{spoken=t;return{url:'https://oss.example/a.mp3',expiresAt:9,chars:t.length,tokens:20,ms:5};};
+ const id=crypto.randomUUID();h.incoming(id,{type:'speak',answerId:'answer-x',text:'田哥，**结论**：正常。'});h.assistant.overview=()=>({status:'running'});await h.channel.tick();
+ assert.equal(spoken,'田哥，**结论**：正常。');const audio=packets(h,'audio-'+id)[0];assert.equal(audio.url,'https://oss.example/a.mp3');assert.equal(audio.answerId,'answer-x','朗读不排在助理任务后面');
+ h.channel.syncReminder({action:'set',reminder:{id:'r1',at:123,text:'开会'}});assert.deepEqual((({type,action,at,text})=>({type,action,at,text}))(packets(h,'reminder-set-r1')[0]),{type:'reminder',action:'set',at:123,text:'开会'});
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'html-page-')),file=path.join(root,'20261004-交互-claude1.html');fs.writeFileSync(file,'<button onclick="1">点我</button>');
+ h.channel.imageRoots=[root];await h.channel.reply('answer-p',`做好了：[交互页](${file})`);await h.channel.htmlWork;
+ const page=packets(h,'answer-p-page-')[0];assert.equal(page.type,'html');assert.match(page.html,/点我/);assert.equal(page.name,'交互页');
  fs.rmSync(root,{recursive:true,force:true});
 });

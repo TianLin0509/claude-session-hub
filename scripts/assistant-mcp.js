@@ -7,6 +7,9 @@ const schema=(properties,required=[])=>({type:'object',properties,required,addit
 const string={type:'string'};
 const tools=[
   {name:'update_memory',description:'维护助理的成长记忆（Hub 保管，换班、换模型都保留，是所有当助理的模型共用的正本；关于田哥的偏好与约定只记在这里）。file=user 写田哥的偏好与习惯（USER.md），file=memory 写长期事实、约定与常用资料入口（MEMORY.md）。田哥说「记住……」时，或他明确表态、反复体现某种偏好时（不必等他说记住），用 add 写一句具体可执行的话（不用写日期，Hub 会自动加日期和 reason）；过时条目用 remove（给出原文片段）；整理合并用 rewrite（给出整份正文）。一次性任务、实时进展和密钥不记。使用本轮 requestToken。',inputSchema:schema({file:{type:'string',enum:['user','memory']},action:{type:'string',enum:['add','remove','rewrite']},text:string,reason:string,requestToken:string},['file','action','text','requestToken'])},
+  {name:'set_reminder',description:'到点提醒田哥（手机通知、电脑提示和助理页都会提醒）。田哥说「几点提醒我/叫我……」时使用。when 写北京时间「2026-10-05 15:00」；text 写到点时要对他说的一句话。',annotations:{readOnlyHint:false,openWorldHint:false},inputSchema:schema({when:string,text:string,requestToken:string},['when','text','requestToken'])},
+  {name:'list_reminders',description:'列出还没到点的提醒（id、时间、内容）。',annotations:{readOnlyHint:true,openWorldHint:false},inputSchema:schema({})},
+  {name:'cancel_reminder',description:'按 id 取消一条还没到点的提醒（先用 list_reminders 找 id）。',annotations:{readOnlyHint:false,openWorldHint:false},inputSchema:schema({id:string,requestToken:string},['id','requestToken'])},
   {name:'list_sessions',description:'读取当前 Hub 的会话身份与状态。关闭的历史会话不自动恢复。',annotations:{readOnlyHint:true,openWorldHint:false},inputSchema:schema({})},
   {name:'history_context',description:'提供 requestToken 时读取本轮冻结完整资料及哈希回执，省略全部参数默认读取当前助理用户回合的冻结资料。核对 packetHash 与短请求目录一致。query/hours 用于额外动态检索，不替代本轮冻结资料。没有命中不等于不存在。',annotations:{readOnlyHint:true,openWorldHint:false},inputSchema:schema({requestToken:string,query:string,hours:{type:'number'}})},
   {name:'session_evidence',description:'读取精确原会话绑定记录中的最新最终答复原文，优先用于当前进展；原文属于目标助手自述，是否业务验收另行核实。',annotations:{readOnlyHint:true},inputSchema:schema({sessionId:string},['sessionId'])},

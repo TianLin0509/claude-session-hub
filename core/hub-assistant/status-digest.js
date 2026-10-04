@@ -1,0 +1,30 @@
+'use strict';
+// 给快答的 Hub 只读状态摘要：哪些会话在跑或等田哥、最近 24 小时各会话的最新结果、关注的任务、待提醒。
+// 快答据此当场回答「仿真跑完没」「今天有啥进展」这类问题；要读原文、分析或动手仍交给助理会话。
+// 只放摘录（每条最多约 140 字），总长控制在约 1500 字，保证快答仍在 2～3 秒内。
+const TZ = 'Asia/Shanghai';
+const hm = at => new Date(at).toLocaleTimeString('zh-CN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
+const md = at => new Date(at).toLocaleDateString('zh-CN', { timeZone: TZ, month: 'numeric', day: 'numeric' });
+const when = (at, now) => (md(at) === md(now) ? '今天' : md(at)) + ' ' + hm(at);
+const clip = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; };
+const STATUS = { running: '运行中', waiting: '等你回复', idle: '空闲', closed: '已关闭' };
+
+function buildStatusDigest({ sessions = [], ledger = [], followed = [], reminders = [], now = Date.now(), maxChars = 1500 } = {}) {
+  const lines = [`现在是北京时间 ${when(now, now)}。以下是 AI Hub 的只读状态摘要。`];
+  const work = sessions.filter(s => s.purpose !== 'hub-assistant');
+  const active = work.filter(s => ['running', 'waiting'].includes(s.status));
+  lines.push(active.length ? '正在运行或等你回复的会话：' + active.slice(0, 8).map(s => `「${clip(s.title || s.name, 24)}」${s.kind || ''}·${STATUS[s.status]}`).join('；') : '当前没有正在运行的会话。');
+  // 最近 24 小时：每个会话只取最新一条最终答复。
+  const latest = new Map();
+  for (const e of ledger) if (now - e.at < 86400000 && (!latest.has(e.sessionId) || latest.get(e.sessionId).at < e.at)) latest.set(e.sessionId, e);
+  const recent = [...latest.values()].sort((a, b) => b.at - a.at).slice(0, 8);
+  if (recent.length) { lines.push('最近 24 小时各会话的最新结果（摘录，全文以原会话为准）：'); for (const e of recent) lines.push(`- ${when(e.at, now)}「${clip(e.title, 24)}」（${e.kind || '会话'}）：${clip(e.text, 140)}`); }
+  else lines.push('最近 24 小时没有会话产出新结果。');
+  if (followed.length) lines.push('关注中的任务：' + followed.slice(0, 6).map(w => `「${clip(w.title, 24)}」`).join('、'));
+  const upcoming = reminders.filter(r => !r.firedAt && r.at > now).sort((a, b) => a.at - b.at).slice(0, 5);
+  if (upcoming.length) lines.push('待提醒：' + upcoming.map(r => `${when(r.at, now)} ${clip(r.text, 30)}`).join('；'));
+  let text = lines.join('\n');
+  if (text.length > maxChars) text = text.slice(0, maxChars) + '…';
+  return text;
+}
+module.exports = { buildStatusDigest };

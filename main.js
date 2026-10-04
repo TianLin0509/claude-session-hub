@@ -1989,7 +1989,12 @@ try {
       return saved ? { ...saved, id: saved.hubId || id } : null;
     },
     listKnownSessions: () => lastPersistedSessions.map(meta => ({ ...meta, id: meta.hubId || meta.id })),
-    onAssistantNotification: notification => { sendToRenderer('assistant:notification', notification); phoneService?.kick?.(); },
+    onAssistantNotification: notification => {
+      sendToRenderer('assistant:notification', notification); phoneService?.kick?.();
+      // 到点提醒在电脑上也弹系统通知（田哥可能没在看 Hub）。
+      if (notification?.kind === 'reminder') { try { const { Notification } = require('electron'); if (Notification.isSupported()) new Notification({ title: 'AI Hub 提醒', body: String(notification.text || '').slice(0, 200) }).show(); } catch (error) { console.warn('[assistant] reminder notification', error.message); } }
+    },
+    onReminderChanged: event => phoneService?.reminder?.(event),
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
