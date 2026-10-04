@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { claudeDiskRecords, parseClaudeTranscriptToNativeTurns } = require('../core/claude-disk-transcript');
+const { displayChatTurns } = require('../renderer/simple-chat-display');
 
 let seq = 0;
 const at = s => new Date(Date.UTC(2026, 8, 25, 1, 0, s)).toISOString();
@@ -86,7 +87,7 @@ test('a background task notification continues the previous card instead of open
   const turns = parseClaudeTranscriptToNativeTurns(file);
   assert.deepEqual(turns.map(t => t.role), ['user', 'assistant']);
   assert.equal(turns[1].text, '测试全部通过。');
-  assert.deepEqual(turns[1].displayMessages.map(m => m.phase), ['commentary', 'final_answer']);
+  assert.deepEqual(turns[1].displayMessages.map(m => m.phase), ['final_answer', 'final_answer']);
 });
 
 test('tail limit keeps whole question/answer pairs', () => {
@@ -94,6 +95,32 @@ test('tail limit keeps whole question/answer pairs', () => {
   for (let i = 0; i < 5; i += 1) entries.push(user('q' + i, i * 2), assistant('m' + i, [{ type: 'text', text: 'a' + i }], 'end_turn', i * 2 + 1));
   const turns = parseClaudeTranscriptToNativeTurns(transcript(entries), { limit: 2, fromTail: true });
   assert.deepEqual(turns.map(t => t.text), ['q4', 'a4']);
+});
+
+test('task continuations never hide delivered answers, while running or after later results arrive', () => {
+  const original = user('解释账号和额度', 0);
+  const entries = [original,
+    assistant('answer', [{ type: 'text', text: '完整的账号与额度说明' }], 'end_turn', 1),
+    user('<task-notification>test finished</task-notification>', 2, { origin: { kind: 'task-notification' } }),
+    assistant('progress', [{ type: 'text', text: '继续检查下一项' },
+      { type: 'tool_use', id: 'tool', name: 'Bash', input: { command: 'check' } }], 'tool_use', 3),
+  ];
+  const file = transcript(entries);
+  const live = displayChatTurns(parseClaudeTranscriptToNativeTurns(file));
+  assert.equal(live.length, 2);
+  assert.equal(live[1].text, '完整的账号与额度说明');
+  assert.equal(live[1].nativeOutcome, null, 'a displayed answer does not settle the resumed work');
+  assert.deepEqual(live[1].chatProcessMessages.map(m => m.text), ['继续检查下一项']);
+  assert.equal(live[1].toolCalls[0].status, 'running');
+
+  fs.appendFileSync(file, JSON.stringify(assistant('later', [{ type: 'text', text: '后续检查结论' }], 'end_turn', 4)) + '\n');
+  const done = displayChatTurns(parseClaudeTranscriptToNativeTurns(file));
+  assert.equal(done[1].id, live[1].id);
+  assert.equal(done.length, 2);
+  assert.equal(done[1].text, '完整的账号与额度说明\n\n后续检查结论');
+  assert.equal(done[1].deliveryContext.nativeOutcome, 'completed');
+  assert.deepEqual(done[1].chatProcessMessages.map(m => m.text), ['继续检查下一项']);
+  assert.deepEqual(displayChatTurns(parseClaudeTranscriptToNativeTurns(file, { fromTail: true, limit: 2 })), done);
 });
 
 test('Claude scheduled wakeups retain the human result and have separate activity cards', () => {
