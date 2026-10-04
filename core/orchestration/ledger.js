@@ -307,7 +307,7 @@ function view(ledger) {
     budget: { roundsUsed: ledger.budget.roundsUsed, roundCap: ledger.budget.roundCap,
       minutesUsed: fmtMin(ledger.budget.activeMs), minutesCap: fmtMin(ledger.budget.timeCapMs) },
     plan: ledger.plan ? { version: ledger.plan.version, confirmedVersion: ledger.plan.confirmedVersion, summary: ledger.plan.summary,
-      segments: ledger.plan.segments, team: ledger.plan.team } : null,
+      segments: ledger.plan.segments, team: ledger.plan.team, budget: ledger.plan.budget } : null,
     roles: ledger.roles, segments: progressRows(ledger),
     asks: ledger.asks.slice(-10).map(a => ({ id: a.id, memberId: a.memberId, status: a.status, answerPath: a.answerPath || '' })),
     pendingAsks: pendingAsks.length,

@@ -94,9 +94,10 @@ async function run() {
     await wait(() => cdp.eval("!!document.querySelector('.mr-orch-ledger')"), 'ledger panel');
     ok('计划账本展开显示计划与待确认', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('一位 Codex 调研') && document.querySelector('.mr-orch-ledger').textContent.includes('待确认')"));
     await shot('03-plan-awaiting');
+    ok('确认前显示自然语言额度与生效时机', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('10 轮') && document.querySelector('.mr-orch-ledger').textContent.includes('30 分钟') && document.querySelector('.mr-orch-ledger').textContent.includes('确认后生效')"));
     await click('.mr-orch-strip [data-orch-action="confirm"]');
     await wait(async () => (await invoke('orchestration:view', { meetingId: meeting.id })).view.status === 'running', 'confirmed');
-    const budget=(await invoke('orchestration:view',{meetingId:meeting.id})).view.budget; ok('自然语言额度确认后实际生效',budget.roundCap===10 && budget.timeCapMs===30*60000);
+    const budget=(await invoke('orchestration:view',{meetingId:meeting.id})).view.budget; ok('自然语言额度确认后实际生效',budget.roundCap===10 && budget.minutesCap===30);
     ok('点「确认计划」后进入编排中', await cdp.eval("document.querySelector('.mr-orch-strip').textContent.includes('编排中')"));
 
     // 4. 组队：成员加入后收件人仍只有编排员；@成员 直接点名
