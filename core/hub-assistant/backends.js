@@ -77,6 +77,7 @@ function providerLaunchOptions(service, kind, id) {
   fs.renameSync(file + '.tmp', file);
   // Dedicated assistant only. Hub still checks host identity and the current
   // user-request token on every management operation.
-  return {mcpProfile:'lean', mcpConfigFile:file, autonomous:true};
+  // Claude 助理把成长记忆（USER.md / MEMORY.md）放进系统提示，每轮生效、不占每轮附带的 2048 字。
+  return {mcpProfile:'lean', mcpConfigFile:file, autonomous:true, ...(service.memory ? {appendSystemPromptFile:service.memory.writePrompt()} : {})};
 }
 module.exports = {BACKENDS, backendKind, bindings, reserve, activate, retire, unretire, launchOptions, getKindLabel};
