@@ -11,6 +11,7 @@ const { KIND_LABELS } = require('../core/ai-kinds.js');
 const {compareSidebarPlacement,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView}=require('../core/session-sidebar-state');
 const {sidebarRelativeTime}=require('./sidebar-relative-time');
 const {createSessionViewPublisher}=require('../core/hub-assistant/session-state');
+const {reconcileSidebarDom}=require('./sidebar-dom-reconciler');
 const {
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
@@ -198,6 +199,7 @@ function createSessionListRenderer(options = {}) {
   // 2026-07-19 方案C：列表渲染完成后的回调（renderer 用来刷新 ctx chip/中断钮/等你响应浮动条）
   const afterRender = typeof options.afterRender === 'function' ? options.afterRender : null;
   const renderStats = { renders: 0, slowRenders: 0, lastMs: 0, maxMs: 0 };
+  let sidebarPhaseInitialized=false;
   const nowMs = typeof options.nowMs === 'function'
     ? options.nowMs
     : () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -665,7 +667,10 @@ sessionListEl.addEventListener('keydown', event => {
     const renderStartedAt = nowMs();
     // Rebuilt rows join the same clock instead of restarting their pulse on
     // every runtime delta (which can otherwise make a busy logo look static).
-    sessionListEl.style?.setProperty('--sidebar-work-phase', `${-(Date.now() % 24000)}ms`);
+    if(!sidebarPhaseInitialized){
+      sessionListEl.style?.setProperty('--sidebar-work-phase', `${-(Date.now() % 24000)}ms`);
+      sidebarPhaseInitialized=true;
+    }
     const sessionMap = getSessions();
   const visible = filteredSidebarItems(sessionMap);
   const sections = sidebarView(visible, sessionMap);
@@ -705,6 +710,8 @@ sessionListEl.addEventListener('keydown', event => {
           + (s._meeting.subSessions?.includes(getActiveSessionId()) ? ' has-active-member' : '')
           + (hoveredMeetingId === s.id ? ' hover-open' : '');
         groupContainer.dataset.sidebarGroup = s.id;
+        groupContainer.dataset.sidebarRenderKey='group:'+s.id;
+        groupContainer.dataset.sidebarRenderTree='true';
         target.appendChild(groupContainer);
       }
       const div = doc.createElement('div');
@@ -726,6 +733,7 @@ sessionListEl.addEventListener('keydown', event => {
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')
         + (hasUnread ? ' need-unread' : '');
       div.dataset.meetingId = s.id;
+      div.dataset.sidebarRenderKey='meeting:'+s.id;
       div.tabIndex = 0;
       const SLOT_LABELS_M = ['一号位', '二号位', '三号位'];
       const miniSids = isGroupChat ? (s._meeting.subSessions || []) : (s._meeting.subSessions || []).slice(0, 3);
@@ -824,6 +832,8 @@ sessionListEl.addEventListener('keydown', event => {
         if (!detailsEnabled || isExpanded) {
           const children = doc.createElement('div');
           children.className = 'sidebar-group-children';
+          children.dataset.sidebarRenderKey='members:'+s.id;
+          children.dataset.sidebarRenderTree='true';
           groupContainer.appendChild(children);
           for (const id of s._meeting.subSessions || []) {
             const member = sessionMap.get(id);
@@ -852,6 +862,7 @@ sessionListEl.addEventListener('keydown', event => {
     const div = doc.createElement('div');
     div.tabIndex = 0;
     div.dataset.sessionId = s.id;
+    div.dataset.sidebarRenderKey='session:'+s.id;
     div.dataset.runtimeState = runtimeTruth.state;
     div.dataset.runtimeSource = runtimeTruth.source || '';
     div.dataset.runtimeConfidence = runtimeTruth.confidence || '';
@@ -911,6 +922,7 @@ sessionListEl.addEventListener('keydown', event => {
     const collapsed = collapsedSections.has(cls);
     const h = doc.createElement('div');
     h.className = 'session-sec-header ' + cls;
+    h.dataset.sidebarRenderKey='section:'+cls;
     h.innerHTML = '<button type="button" class="sec-collapse" data-sidebar-control="' + cls + '" aria-label="' + (collapsed ? '展开' : '折叠') + label + '" aria-expanded="' + !collapsed + '">' + (collapsed ? '▸' : '▾') + '</button><span>' + label + '</span><span class="sec-count">' + items.length + '</span><span class="sec-rule"></span>'
       + (action ? '<button type="button" class="sec-action ' + (cls === 'sec-unread' ? 'sec-mark-all-read' : '') + '">' + action + '</button>' : '');
     h.addEventListener('click', event => {
@@ -934,16 +946,18 @@ sessionListEl.addEventListener('keydown', event => {
   if (markAllSessionsRead && visible.some(item => sidebarItemHasUnread(item, sessionMap))) {
     const read = doc.createElement('button'); read.type = 'button'; read.className = 'sidebar-mark-read';
     read.textContent = '全部已读'; read.addEventListener('click', markAllSessionsRead); renderTarget.appendChild(read);
+    read.dataset.sidebarRenderKey='mark-all-read';
   }
   const archive = doc.createElement('button');
   archive.type = 'button';
   archive.className = 'session-archive-entry';
+  archive.dataset.sidebarRenderKey='archive';
   archive.innerHTML = '<span>归档</span><span class="archive-count">' + sections.archiveCount + '</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
   archive.addEventListener('click', () => openSearch({ scope: 'dormant' }));
   renderTarget.appendChild(archive);
 
   if (fragment) {
-    if (typeof sessionListEl.replaceChildren === 'function') sessionListEl.replaceChildren(fragment);
+    if (typeof sessionListEl.replaceChildren === 'function') reconcileSidebarDom(sessionListEl,fragment);
     else {
       sessionListEl.innerHTML = '';
       sessionListEl.appendChild(fragment);

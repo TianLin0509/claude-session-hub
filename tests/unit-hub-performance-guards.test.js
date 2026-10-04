@@ -403,8 +403,8 @@ test('sidebar status transitions are coalesced and committed atomically', () => 
   const sidebar = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'session-list-renderer.js'), 'utf8');
   const home = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'home-workbench.js'), 'utf8');
   assert.match(sidebar, /createDocumentFragment/);
-  assert.match(sidebar, /sessionListEl\.replaceChildren\(fragment\)/,
-    'a category jump should produce one live DOM commit');
+  assert.match(sidebar, /reconcileSidebarDom\(sessionListEl,fragment\)/,
+    'a category jump should synchronously reconcile retained sidebar nodes');
   const completeStart = renderer.indexOf('function onReplyCompleteFromTranscriptEvent');
   const completeEnd = renderer.indexOf('\nfunction onPromptSubmittedFromTranscriptEvent', completeStart);
   const promptEnd = renderer.indexOf('\n// Hook-server health indicator', completeEnd);

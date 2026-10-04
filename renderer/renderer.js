@@ -4801,12 +4801,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   // composer 上所有随会话状态变化的东西都在这里画完一遍：状态行、快捷答复、
   // 底栏三个 chip、预算环、发送/停止。updateFloatingBarState 与每秒一次的
   // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
-  function paintComposer(session, now = Date.now()) {
+  let composerClockSignature=null;
+  function paintComposer(session, now = Date.now(), clockOnly = false) {
     if (!session) return;
-    paintNativePromptReceipts(sessionId);
-    attachNativeDraft(sessionId, inputBox);
-    codexControls.update(session);
-    nativeControls.update(session);
 
     const runtime = deriveSessionRuntimeStatus(session, {
       now,
@@ -4817,7 +4814,6 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       runtime,
       liveQuestion: detectComposerLiveQuestion(session, runtime),
     });
-    ptyAttention.update(session, runtime);
     if (composer.dataset.state !== status.state) composer.dataset.state = status.state;
     if (statusText.textContent !== status.text) statusText.textContent = status.text;
     const localHealth = ['codex-app-server','claude-stream-json'].includes(session.runtimeBackend)
@@ -4838,6 +4834,20 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       statusAction.dataset.actionKind = '';
     }
     if (statusRow.title !== status.runtime.title) statusRow.title = status.runtime.title;
+    ptyAttention.update(session, runtime);
+
+    // Keep the exact second-level status/question/connection checks. A clock
+    // tick does not need to repaint model/effort/speed/draft controls. Any
+    // structural status change falls through to the complete existing paint.
+    const signature=JSON.stringify([status.state,status.canStop,status.stopIntent,status.action,status.quickReplies,
+      runtime.state,runtime.source,runtime.confidence,runtime.connection,runtime.turnId,runtime.epoch,
+      session.nativeRuntime?.cancellation?.status]);
+    if(clockOnly&&signature===composerClockSignature)return;
+    composerClockSignature=signature;
+    paintNativePromptReceipts(sessionId);
+    attachNativeDraft(sessionId, inputBox);
+    codexControls.update(session);
+    nativeControls.update(session);
 
     const replySignature = status.quickReplies.join('');
     if (quickReplyRow.dataset.signature !== replySignature) {
@@ -4919,6 +4929,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     sendHint.hidden = canStop || !contenteditableHasText(inputBox);
   }
   bar._paintComposer = paintComposer;
+  bar._paintComposerClock = (session,now) => paintComposer(session,now,true);
   paintComposer(sessions.get(sessionId));
   inputBox.addEventListener('input', () => {
     sendHint.hidden = bar.dataset.sharedRole === 'viewer' || stopBtn.classList.contains('visible')
@@ -5289,8 +5300,8 @@ function syncTerminalRuntimeStatusTicker(session) {
     }
     const now = Date.now();
     if (target) paintTerminalRuntimeStatus(target, sessions.get(sessionSplit?.focusedId()) || active, now);
-    if (bar) bar._paintComposer(active, now);
-    sessionSplit?.secondary()?.updateStatus();
+    if (bar) bar._paintComposerClock(active, now);
+    sessionSplit?.secondary()?.updateStatus({clockOnly:true,now});
   }, 1000);
 }
 
@@ -9259,12 +9270,15 @@ function createSecondarySessionView(sessionId, panel, options = {}) {
             if (visible && mode === 'pty' && !cached._backstageReadable) loadGpuRenderer(cached); else unloadGpuRenderer(cached);
             resize();
           },
-          updateStatus() {
+          updateStatus({clockOnly=false,now=Date.now()}={}) {
             const current = sessions.get(sessionId);
             if (current) memberControls?.update(current);
             if (current) memberClaudeControls?.update(current);
             const bar = host.querySelector('.floating-input-bar');
-            if (current) bar?._paintComposer?.(current);
+            if (current) {
+              if(clockOnly)bar?._paintComposerClock?.(current,now);
+              else bar?._paintComposer?.(current,now);
+            }
             if (viewMode === 'pty') cached._codexBackstage?.updateStatus();
           },
           dispose() {

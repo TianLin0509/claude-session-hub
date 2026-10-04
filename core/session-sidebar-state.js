@@ -34,20 +34,27 @@ function isSidebarMemberWorking(session, now = Date.now()) {
     && (sessionRuntimeIsActive(session, { now }) || isGroupChatMemberRunning(session, now));
 }
 
+// Classification is also used by assistant snapshots, which do not need
+// sorted age buckets. Keep one rule while avoiding a whole-list sort there.
+function sidebarItemClassification(s, {now=Date.now(),sessionMap=new Map(),groupMemberIds=new Set()}={}) {
+  const truth=s._isMeeting?null:getSessionRuntimeTruth(s,{now});
+  const meeting=s._isMeeting?_meetingRuntimeAggregate(s._meeting,sessionMap,now):null;
+  const dormant=meeting?s.status==='dormant':truth.state===RUNTIME_DORMANT;
+  const waiting=meeting?meeting.waiting:truth.state===RUNTIME_WAITING;
+  const error=meeting?meeting.failed:!!sessionRuntimeIssue(s,truth);
+  const working=s._resumePending||(meeting?meeting.running:(s.meetingId||groupMemberIds.has(s.id))?isSidebarMemberWorking(s,now):sessionRuntimeIsActive(s,{now}));
+  const unread=sidebarItemHasUnread(s,sessionMap);
+  const state=error?'error':meeting&&working?'run':waiting?'wait':working?'run':unread?'unread':dormant?'dorm':truth?.state === RUNTIME_UNKNOWN?'unknown':'idle';
+  return {state,dormant,waiting,error,working,unread};
+}
+
 function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
   const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
   const states = new Map();
   for (const s of [...(items || [])].sort(compareSidebarPlacement)) {
-    const truth = s._isMeeting ? null : getSessionRuntimeTruth(s, { now });
-    const meeting = s._isMeeting ? _meetingRuntimeAggregate(s._meeting, sessionMap, now) : null;
-    const dormant = s._isMeeting ? s.status === 'dormant' : truth.state === RUNTIME_DORMANT;
+    const {state,dormant,waiting,error,working,unread}=sidebarItemClassification(s,{now,sessionMap,groupMemberIds});
     const fresh = now - latestActivityTime(s, now) < 86400000;
-    const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
-    const error = meeting ? meeting.failed : !!sessionRuntimeIssue(s, truth);
-    const working = s._resumePending || (meeting ? meeting.running
-      : (s.meetingId || groupMemberIds.has(s.id)) ? isSidebarMemberWorking(s, now) : sessionRuntimeIsActive(s, { now }));
-    const unread = sidebarItemHasUnread(s, sessionMap);
-    states.set(s.id, error ? 'error' : meeting && working ? 'run' : waiting ? 'wait' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
+    states.set(s.id,state);
     if (error) failed.push(s);
     else if (s.pinned && (waiting || working)) (waiting ? respond : running).push(s);
     else if (unread) completed.push(s);
@@ -108,4 +115,4 @@ function buildSidebarView(parts, { now = Date.now(), days = 1, pinnedOnly = fals
 }
 
 
-module.exports={getMeetingUnreadMemberIds,compareSidebarPlacement,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView};
+module.exports={getMeetingUnreadMemberIds,compareSidebarPlacement,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,sidebarItemClassification,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView};
