@@ -52,3 +52,16 @@
 .dr-spinner { width: 14px; height: 14px; border: 2px solid var(--border-subtle); border-top-color: var(--brand); border-radius: 50%; flex: none; animation: dr-spin .8s linear infinite; }
 @keyframes dr-spin { to { transform: rotate(360deg); } }
 #sidebar-strip .strip-disk { cursor: pointer; }
+.dr-tabs { display: flex; gap: 8px; padding: 0 16px 12px; }
+.dr-tabs button { flex: 1; padding: 8px; border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--surface-overlay); color: var(--fg-muted); font: inherit; cursor: pointer; }
+.dr-tabs button[aria-pressed="true"] { background: var(--brand-tint); color: var(--brand-text, var(--brand)); border-color: var(--brand); }
+.dr-tabs button:disabled { cursor: default; opacity: .6; }
+.dr-usage-item { padding: 12px 0; border-top: 1px solid var(--border-subtle); }
+.dr-usage-title { display: flex; justify-content: space-between; gap: 12px; }
+.dr-usage-title b { flex: none; font-variant-numeric: tabular-nums; }
+.dr-usage-item p { margin: 6px 0; color: var(--fg-muted); font-size: 12px; line-height: 1.6; }
+.dr-usage-item .dr-location { margin-left: 0; }
+.dr-usage-item .dr-usage-partial { color: var(--brand-text, var(--brand)); }
+.dr-usage-child { display: flex; justify-content: space-between; gap: 12px; margin: 7px 0; }
+.dr-usage-child span { overflow-wrap: anywhere; }
+.dr-usage-child b { flex: none; }

@@ -29,6 +29,11 @@ function registerDiskReleaseIpc(ipcMain, deps = {}) {
     owner = event.sender;
     return service.execute({ scanId: options.scanId, keys: options.keys, confirmed: options.confirmed === true });
   }));
+  ipcMain.handle('get-disk-usage-analysis', guard(async event => {
+    if (service.status().busy) return { ok: false, error: '已有扫描或清理正在进行' };
+    owner = event.sender;
+    return service.analyzeUsage();
+  }));
   ipcMain.handle('get-disk-release-status', () => service.status());
   ipcMain.handle('cancel-disk-release-scan', () => { service.cancelScan(); return { ok: true }; });
   deps.app?.on?.('will-quit', () => service.stop());

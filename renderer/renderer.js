@@ -1031,6 +1031,7 @@ diskReleasePanel = require('./disk-release-panel').attachDiskReleasePanel({
   onOpen: () => memoryReleasePanel?.close(),
   onComplete: () => { void refreshSystemResourceUsage(true); },
   request: () => ipcRenderer.invoke('get-disk-release-plan'),
+  analyzeUsage: () => ipcRenderer.invoke('get-disk-usage-analysis'),
   execute: options => ipcRenderer.invoke('execute-disk-release', options),
   getStatus: () => ipcRenderer.invoke('get-disk-release-status'),
   cancelScan: () => ipcRenderer.invoke('cancel-disk-release-scan'),

@@ -19,11 +19,23 @@ function defaultScopes({ dataDir, testRoot } = {}) {
     return [{ root: path.resolve(testRoot), mode: 'tests', label: '隔离测试目录' }];
   }
   const local = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const vibeTemp = path.join(process.env.SystemDrive || 'C:', 'VibeData', 'Temp');
   return [
     { root: temporary, mode: 'tests', label: '临时测试数据' },
-    { root: path.join(process.env.SystemDrive || 'C:', 'VibeData', 'Temp'), mode: 'emulators', label: 'Android 临时测试设备' },
+    { root: vibeTemp, mode: 'tests', label: 'VibeData 临时测试数据' },
+    { root: vibeTemp, mode: 'emulators', label: 'Android 临时测试设备' },
     { root: path.join(local, 'npm-cache', '_cacache'), mode: 'cache', label: 'npm 下载缓存', note: '保留已安装的程序；以后安装相同依赖时会重新下载。' },
     { root: path.join(local, 'pip', 'cache'), mode: 'cache', label: 'pip 下载缓存', note: '保留 Python 环境；以后安装相同依赖时会重新下载。' },
+    { root: path.join(local, 'uv', 'cache'), mode: 'cache', label: 'uv 下载缓存', note: '以后安装依赖时可能需要重新下载。' },
+    { root: path.join(local, 'Yarn', 'Cache'), mode: 'cache', label: 'Yarn 下载缓存', note: '以后安装依赖时需要重新下载。' },
+    { root: path.join(home, '.gradle', 'caches'), mode: 'cache', label: 'Gradle 构建缓存',
+      activeNames: ['java.exe', 'javaw.exe', 'gradle.exe'], note: '以后 Android 构建会重新下载或生成缓存；运行 Java 或构建时保留。' },
+    ...[
+      path.join(local, 'Google', 'Chrome', 'User Data'),
+      path.join(local, 'Microsoft', 'Edge', 'User Data'),
+      path.join(process.env.SystemDrive || 'C:', 'VibeData', 'BrowserProfiles'),
+    ].map(root => ({ root, mode: 'browserCaches', label: '浏览器缓存',
+      activeNames: ['chrome.exe', 'msedge.exe'], note: '只清理页面缓存，保留登录、Cookie、书签和浏览记录；浏览器运行时保留。' })),
   ];
 }
 
