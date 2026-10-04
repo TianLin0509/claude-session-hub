@@ -50,12 +50,14 @@ class AssistantReminders {
     for (const r of fired) { try { this.onFire(r); } catch (e) { console.warn('[assistant] reminder', e.message); } }
     return fired;
   }
+  // 无论本次检查是否出错，都排好下一次，避免一次异常让之后的提醒全部失效；stop 后不再续排。
   schedule() {
-    clearTimeout(this.timer); this.fireDue();
-    const next = this.upcoming()[0];
-    const wait = next ? Math.max(1000, Math.min(CHECK_MS, next.at - this.now())) : CHECK_MS;
+    clearTimeout(this.timer); if (this.stopped) return;
+    let wait = CHECK_MS;
+    try { this.fireDue(); const next = this.upcoming()[0]; if (next) wait = Math.max(1000, Math.min(CHECK_MS, next.at - this.now())); }
+    catch (e) { console.warn('[assistant] reminders', e.message); }
     this.timer = setTimeout(() => this.schedule(), wait); this.timer.unref?.();
   }
-  stop() { clearTimeout(this.timer); }
+  stop() { this.stopped = true; clearTimeout(this.timer); }
 }
 module.exports = { AssistantReminders, parseWhen };

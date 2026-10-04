@@ -31,7 +31,8 @@ class AssistantService {
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
     this.dialog=new (require('./dialog-log').DialogLog)(path.join(deps.dataDir,'assistant'));
     this.reminders=new (require('./reminders').AssistantReminders)({store:this.store,isOwner:()=>this.ownsAssistant(),onFire:r=>this.fireReminder(r)});
-    if(!deps.noReminderTimer)setTimeout(()=>this.reminders.schedule(),3000).unref?.();
+    // 提醒检查不能因数据库已关闭等异常把进程带崩（测试结束、Hub 退出时）。
+    if(!deps.noReminderTimer)setTimeout(()=>{try{this.reminders.schedule();}catch(e){console.warn('[assistant] reminders',e.message);}},3000).unref?.();
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
     this.ledger=new (require('./ledger').AssistantLedger)(path.join(deps.dataDir,'assistant','ledger'),{read:(meta,options)=>this.liveHistory.read(meta,options)});
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>{try{this.logDialog({id:'notice:'+notice.id,role:'assistant',lane:'notice',by:notice.title||'提醒',text:notice.text||''});}catch{}this.deps.onAssistantNotification?.(notice);}});
