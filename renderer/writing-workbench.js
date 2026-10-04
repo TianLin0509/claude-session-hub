@@ -221,9 +221,9 @@ function createWorkbench(ctx) {
       h('div', { class: 'wb-titlebar' },
         h('h2', { class: 'wb-title', text: v.title || '新文章' }),
         h('div', { class: 'wb-steps' }, ...STEPS.map(([k, label], i) => h('span', { class: 'wb-step' + (v.steps[k] ? ' done' : i === firstOpen ? ' now' : ''), text: label }))),
-        h('span', { class: 'wr-spacer' }),
-        h('button', { class: 'wr-btn small', text: '在群聊里看过程', title: '群聊是这篇文章的后台：完整过程、排查问题时看', onclick: () => openMeeting(v.meetingId) }),
-        h('button', { class: 'wr-btn small', text: '文件夹', onclick: () => call('writing:article-open-dir', { dir: v.dir }) })),
+        h('span', { class: 'wb-actions' },
+          h('button', { class: 'wr-btn small', text: '在群聊里看过程', title: '群聊是这篇文章的后台：完整过程、排查问题时看', onclick: () => openMeeting(v.meetingId) }),
+          h('button', { class: 'wr-btn small', text: '文件夹', onclick: () => call('writing:article-open-dir', { dir: v.dir }) }))),
       v.idea ? h('details', { class: 'wb-idea' }, h('summary', { text: `${/^中心思想[:：]/.test(v.idea) ? '' : '中心思想：'}${v.idea.length > 90 ? v.idea.slice(0, 90) + '…' : v.idea}` }), h('div', { class: 'wb-idea-full', text: v.idea })) : null);
   }
 
@@ -323,7 +323,13 @@ function createWorkbench(ctx) {
   // AI 写给田哥的话（切入、取舍、拿不准的事实）与 Hub 自己的说明，放在正文上方，和文章分开
   function asideOf(it) {
     return [
-      it.note ? h('div', { class: 'wb-aside' }, h('div', { class: 'wb-aside-label', text: '写给你的话' }), h('div', { class: 'wb-aside-text', text: it.note })) : null,
+      it.note ? (() => {
+        const long = it.note.length > 120 || it.note.split(/\n/).filter(Boolean).length > 2;
+        const box = h('div', { class: 'wb-aside' + (long ? ' clamp' : ''), title: long ? '点一下展开 / 收起' : '' },
+          h('div', { class: 'wb-aside-label', text: '写给你的话' }), h('div', { class: 'wb-aside-text', text: it.note }));
+        if (long) box.addEventListener('click', () => { if (!String(window.getSelection() || '')) box.classList.toggle('open'); });
+        return box;
+      })() : null,
       it.hint ? h('div', { class: 'wb-hint', text: it.hint }) : null,
       it.kind === 'reply' ? h('div', { class: 'wb-hint warn', text: '这条回答里没有找到文章，原样显示' }) : null,
     ];
@@ -359,10 +365,10 @@ function createWorkbench(ctx) {
   function renderPanel(col) {
     const { items, idx, it } = currentItem(col);
     const key = keyOf(col);
-    const status = STATUS_LABEL[col.status] ? h('span', { class: `wb-status ${col.status}`, text: col.status === 'working' && items.length ? '正在改…' : STATUS_LABEL[col.status] }) : null;
+    const status = it && STATUS_LABEL[col.status] ? h('span', { class: `wb-status ${col.status}`, text: col.status === 'working' ? '正在改…' : STATUS_LABEL[col.status] }) : null;
     const bar = h('div', { class: 'wb-panel-bar' },
       versionPills(col, items, idx, () => renderArticles(true)),
-      it ? h('span', { class: 'wr-muted', text: `${kindWord(it)} · ${it.chars} 字${it.turn ? ` · 第 ${it.turn} 轮` : ''}` }) : null,
+      it ? h('span', { class: 'wr-muted', text: it.kind === 'draft' ? `${it.chars} 字` : `${kindWord(it)} · ${it.chars} 字` }) : null,
       status,
       h('span', { class: 'wr-spacer' }),
       it && col.sid ? h('button', { class: 'wr-btn small', text: '总评', title: '对这份稿写一句总体意见，放进点评篮', onclick: (e) => askComment({ x: e.clientX - 160, y: e.clientY + 12, col }) }) : null,
@@ -470,22 +476,21 @@ function createWorkbench(ctx) {
     const sig = [b.items, S.sending, cols.map((c) => [c.sid, c.name])];
     if (!force && !changed('basket', sig)) return;
     if (force) S.sigs.basket = JSON.stringify(sig);
-    const free = h('textarea', { class: 'wr-input wb-free', rows: '2', placeholder: '再说点什么……（总体意见、想补充的例子、语气上的要求）', oninput: (e) => { const nb = basket(); nb.free = e.target.value; saveBasket(nb); } });
+    const free = h('textarea', { class: 'wr-input wb-free', rows: '1', placeholder: '写点评……也可以在稿里选中一段，点「点评这段」', oninput: (e) => { const nb = basket(); nb.free = e.target.value; saveBasket(nb); } });
     free.value = b.free || '';
     const pick = h('select', { class: 'wr-select', title: '选一位 AI 汇总定稿' }, ...cols.map((c) => h('option', { value: c.sid, text: c.name })));
     const lastDone = cols.filter((c) => c.items.length).pop();
     if (lastDone) pick.value = lastDone.sid;
     put(el,
-      h('div', { class: 'wb-basket-head' }, h('b', { text: '我的点评' }), h('span', { class: 'wr-muted', text: b.items.length ? `${b.items.length} 条，还没发出` : '在稿里选中一段文字，点「点评这段」；或点每栏的「总评」' })),
+      b.items.length ? h('div', { class: 'wb-basket-head' }, h('b', { text: '待发点评' }), h('span', { class: 'wr-muted', text: `${b.items.length} 条，和下面的话一起发出` })) : null,
       b.items.length ? h('div', { class: 'wb-chips' }, ...b.items.map((it, i) => h('div', { class: 'wb-chip' },
         h('span', { class: 'wr-muted', text: it.quote ? `${it.name} ·「${it.quote.length > 40 ? it.quote.slice(0, 40) + '…' : it.quote}」` : `${it.name} · 总评` }),
         h('span', { text: it.comment }),
         h('button', { class: 'wb-x', text: '×', title: '删掉这条', onclick: () => { const nb = basket(); nb.items.splice(i, 1); saveBasket(nb); renderBasket(true); } })))) : null,
-      free,
-      h('div', { class: 'wb-row' },
+      h('div', { class: 'wb-compose-row' },
+        free,
         h('button', { class: 'wr-btn', disabled: S.sending, text: S.sending ? '正在发…' : '发出点评，各自改一版', onclick: sendComments }),
-        h('span', { class: 'wr-spacer' }),
-        cols.length ? h('span', { class: 'wb-row tight' }, h('span', { class: 'wr-muted', text: '请' }), pick,
+        cols.length ? h('span', { class: 'wb-row tight wb-finalize' }, h('span', { class: 'wr-muted', text: '请' }), pick,
           h('button', { class: 'wr-btn primary', disabled: S.sending, text: '汇总定稿', onclick: () => { const col = cols.find((c) => c.sid === pick.value); if (col) sendFinalize(col); } })) : null));
   }
 
