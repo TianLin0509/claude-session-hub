@@ -189,7 +189,9 @@ async function main(){
     while(!fs.existsSync(path.join(dir,'restart-hub'))&&!fs.existsSync(path.join(dir,'stop-hub')))await wait(1000);
     cdp.close();cdp=null;fs.writeFileSync(path.join(out,'hub-before-restart.log'),hub.log().join('\n'));await gracefulQuit(hub);hub=null;
     console.log(j({event:'device-hub-stopped'}));fs.writeFileSync(path.join(dir,'hub-stopped'),String(Date.now()));
-    await wait(50000);
+    // 离线期间由设备驱动在手机上发消息、确认「没在线」提示；出现 start-hub 文件（或等满 50 秒）再重开。
+    const offlineUntil=Date.now()+(process.env.ROUTER_RESTART_ON_SIGNAL==='1'?900000:50000);
+    while(Date.now()<offlineUntil&&!(process.env.ROUTER_RESTART_ON_SIGNAL==='1'&&fs.existsSync(path.join(dir,'start-hub'))))await wait(1000);
     hub=await launchIsolatedHub({...launchArgs,port:await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});})});
     cdp=await connectFirstPage(hub);await until('renderer after restart',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
     result.restartedPid=hub.pid;console.log(j({event:'device-hub-restarted',pid:hub.pid}));fs.writeFileSync(path.join(dir,'hub-restarted'),String(Date.now()));
