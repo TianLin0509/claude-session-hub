@@ -46,3 +46,15 @@ test('switching focused session during entry restores the native window', async 
   f.requests[1].resolve({ ok: true }); await f.tick();
   assert.equal(f.button.disabled, false);
 });
+
+test('exit remains visibly busy until the native window has restored', async () => {
+  const f = fixture(); f.button.listeners.click();
+  f.requests[0].resolve({ ok: true }); await f.tick();
+  const exiting = f.controller.exit();
+  assert.equal(f.body.classList.contains('session-immersive-active'), false);
+  assert.equal(f.button.disabled, true, 'navigation cannot advertise another entry before native exit acknowledges');
+  f.button.listeners.click();
+  assert.equal(f.requests.length, 2, 'a second entry does not race the pending exit');
+  f.requests[1].resolve({ ok: true }); await exiting;
+  assert.equal(f.button.disabled, false);
+});

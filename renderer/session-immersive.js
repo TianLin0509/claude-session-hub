@@ -28,6 +28,7 @@ function createSessionImmersiveController({ document, ipcRenderer, getSurface, g
     exiting = true;
     const request = ++revision;
     pending = true;
+    button.disabled = true;
     clear();
     try {
       const result = await ipcRenderer.invoke('preview:set-immersive', false);
