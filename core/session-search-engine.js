@@ -6,6 +6,7 @@ const zlib = require('node:zlib');
 const { Worker } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
 const { SqliteSessionSearchIndex } = require('./session-search-sqlite-index.js');
+const { SearchSourceMetaCache } = require('./search-source-meta-cache.js');
 const {
   collectSourceDescriptors,
   isMetadataOnlySignature,
@@ -76,6 +77,7 @@ class SessionSearchEngine {
     this.writerLeaseToken = options.writerLeaseToken || null;
     this.writerRequest = null;
     this.retryState = new Map();
+    this._sourceMetaCache = new SearchSourceMetaCache();
     const databasePath = options.databasePath || sqlitePathForLegacyCache(options.cachePath);
     if (!databasePath) throw new Error('session search databasePath is required');
     this.options = {
@@ -302,7 +304,8 @@ class SessionSearchEngine {
       this._emit(silentRescan
         ? { phase: 'rescanning', lastError: null, sourceErrors: [] }
         : { phase: 'discovering', refreshing: true, lastError: null, sourceErrors: [] });
-      const collected = collectSourceDescriptors(this._dynamicOptions(snapshot), snapshot);
+      if (force) this._sourceMetaCache.clear();
+      const collected = collectSourceDescriptors(this._dynamicOptions(snapshot), snapshot, this._sourceMetaCache);
       const descriptors = [...(collected.descriptors || [])]
         .sort((left, right) => Number(right && right.mtime || 0) - Number(left && left.mtime || 0))
         .slice(0, this.options.maxSources);
@@ -543,8 +546,9 @@ class SessionSearchEngine {
         writer.once('error',reject);
         writer.postMessage({type:'close'});
         });
-      }).finally(() => this.index.close());
+      }).finally(() => { this._sourceMetaCache.clear(); this.index.close(); });
     }
+    this._sourceMetaCache.clear();
     this.index.close();
   }
 }

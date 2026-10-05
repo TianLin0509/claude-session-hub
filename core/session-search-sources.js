@@ -278,7 +278,7 @@ function walkCodexRollouts(root, diagnostics = []) {
   return out;
 }
 
-function listCodexDescriptors(roots, maps, diagnostics = []) {
+function listCodexDescriptors(roots, maps, diagnostics = [], metaCache = null) {
   const groups = new Map();
   for (const root of roots || []) {
     for (const filePath of walkCodexRollouts(root, diagnostics)) {
@@ -288,7 +288,12 @@ function listCodexDescriptors(roots, maps, diagnostics = []) {
       // Codex can leave a zero-byte rollout placeholder after an interrupted
       // startup. It contains no searchable record and is not an index error.
       if (!stat.size) continue;
-      const meta = readCodexRolloutMeta(filePath);
+      const cacheKey = normalizePath(filePath);
+      let meta = metaCache?.get(cacheKey, stat);
+      if (!meta) {
+        meta = readCodexRolloutMeta(filePath);
+        metaCache?.set(cacheKey, stat, meta);
+      }
       if (!meta) {
         diagnostics.push(`Codex rollout metadata unreadable: ${filePath}`);
         continue;
@@ -507,12 +512,12 @@ function addExplicitTranscriptDescriptors(descriptors, maps, diagnostics = []) {
   }
 }
 
-function collectSourceDescriptors(options = {}, snapshot = {}) {
+function collectSourceDescriptors(options = {}, snapshot = {}, metaCache = null) {
   const maps = createMetadataMaps(snapshot);
   const diagnostics = [];
   const descriptors = [
     ...listClaudeDescriptors(options.claudeRoots || [], maps, diagnostics),
-    ...listCodexDescriptors(options.codexRoots || [], maps, diagnostics),
+    ...listCodexDescriptors(options.codexRoots || [], maps, diagnostics, metaCache),
     ...listKimiDescriptors(options.kimiRoots || [], maps, diagnostics),
     ...listGeminiDescriptors(options.geminiRoots || [], maps, diagnostics),
     ...listMeetingDescriptors(options.meetingDir, maps, diagnostics),
