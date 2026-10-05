@@ -223,3 +223,19 @@ test('repeating reminders move to the next day / workday after firing; shared fi
  busy=new Set();assert.equal(h.channel.watchingCount(),0,'任务跑完手机就不必常驻后台');
  fs.rmSync(root,{recursive:true,force:true});
 });
+test('the memo list syncs to a phone that supports it; taps on the phone change memos directly; the evening digest is sent as written',async()=>{
+ const {AssistantMemos}=require('../core/hub-assistant/memos');const kv=new Map(),store={get:k=>kv.get(k),set:(k,v)=>kv.set(k,v)};
+ const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});h.s.phoneCaps=['profile','memo'];const memos=new AssistantMemos({store});h.assistant.memos=memos;
+ h.assistant.memoAction=(ref,change)=>memos.update(ref,change);
+ const a=memos.add({title:'问基站 license',raw:'记一下，明天问问基站 license'});memos.add({title:'给张工回评审意见',raw:'周五前给张工回意见'});
+ await h.channel.tick();
+ let list=packets(h,'memos-');assert.equal(list.length,1);assert.deepEqual(list[0].open.map(m=>[m.no,m.title]),[[1,'问基站 license'],[2,'给张工回评审意见']]);
+ assert.equal(list[0].open[0].raw,'记一下，明天问问基站 license');
+ await h.channel.tick();assert.equal(packets(h,'memos-').length,1,'没变化不重发');
+ h.incoming(crypto.randomUUID(),{type:'memo_update',ref:a.id,action:'done'});await h.channel.tick();
+ assert.equal(memos.openList().length,1);list=packets(h,'memos-');assert.equal(list.length,2);assert.equal(list.at(-1).closed[0].status,'done');
+ const bad=crypto.randomUUID();h.incoming(bad,{type:'memo_update',ref:'nope',action:'done'});await h.channel.tick();
+ assert.match(packets(h,'memoerror-'+bad)[0].text,/没有找到/);
+ h.assistant.notifications=()=>({notifications:[{id:'memo-digest:20366',kind:'memo-digest',createdAt:2,title:'备忘清单',text:'田哥，今天的备忘清单（1 条待办）：\n1. 给张工回评审意见'}]});
+ await h.channel.tick();const digest=packets(h,'notice-')[0];assert.equal(digest.text,'田哥，今天的备忘清单（1 条待办）：\n1. 给张工回评审意见');assert.equal(digest.notice,true);
+});

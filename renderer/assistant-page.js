@@ -3,7 +3,7 @@
 // 助理会话（Claude 等）的回答、提醒——都在这一条对话里。助理会话内部过程留在工作台的会话里，这里只放结论。
 // 2026-10-04 田哥确认：助理 Tab 是虚拟的「助理」，不是某个 CLI 会话的另一个视图。
 function createAssistantPage({ document, window, ipcRenderer, openSession, closeOtherPanels = () => {}, showMessage, onOpenChange = () => {} }) {
-  let page = null, entries = [], desk = null, frontDesk = null, profile = null, sending = false, forceAssistant = false, statusOpen = false;
+  let page = null, entries = [], desk = null, frontDesk = null, profile = null, sending = false, forceAssistant = false, statusOpen = false, memoView = null, view = 'chat';
   const TZ = 'Asia/Shanghai';
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const time = at => new Date(at).toLocaleTimeString('zh-CN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
@@ -28,6 +28,7 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     page.innerHTML = `<header class="ap-head">
         <img class="ap-avatar" src="assets/assistant/penguin.png" alt="">
         <div class="ap-title"><h1>助理</h1><p class="ap-sub"></p></div>
+        <nav class="ap-tabs" aria-label="助理页视图"><button type="button" data-ap="view-chat" aria-pressed="true">对话</button><button type="button" data-ap="view-memos" aria-pressed="false">备忘<b class="ap-memo-count"></b></button></nav>
         <button type="button" class="ap-chip" data-ap="front" aria-label="回答方式"></button>
         <button type="button" class="ap-chip" data-ap="engine" aria-label="助理会话设置"></button>
         <button type="button" class="ap-chip ap-status-toggle" data-ap="status" aria-label="助理状态" aria-pressed="false">状态</button>
@@ -38,6 +39,10 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
         <form class="ap-composer"><button type="button" class="ap-route" data-ap="route" aria-pressed="false" title="这条交给谁：自动（简单的快答，难的交给助理会话），或直接交给助理会话">自动</button><textarea rows="1" placeholder="和助理说…（Enter 发送，Shift+Enter 换行）" aria-label="和助理说"></textarea><button type="submit" class="ap-send" aria-label="发送">发送</button></form>
       </div><aside class="ap-status" hidden aria-label="助理状态"></aside></div>`;
     document.body.append(page);
+    // 备忘视图与对话共用底部输入框：看着清单也能直接说「记一下……」「第 2 条办完了」。
+    memoView = require('./assistant-memos').createMemoView({ document, ipcRenderer, showMessage: m => showMessage?.(m),
+      onCount: n => { const b = page.querySelector('.ap-memo-count'); b.textContent = n ? String(n) : ''; } });
+    page.querySelector('.ap-main').prepend(memoView.el);
     require('./composer-collapse').mountComposerCollapse({ document, host: page.querySelector('.ap-composer'),
       before: page.querySelector('.ap-send'), input: page.querySelector('textarea') });
     page.addEventListener('click', event => {
@@ -122,7 +127,7 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     const c = st.context, pct = c.tokens && c.cap ? Math.min(100, Math.round(c.tokens / c.cap * 100)) : null;
     const memName = { user: '偏好（USER.md）', memory: '长期记忆（MEMORY.md）' };
     box.innerHTML = `<section><h3>助理会话</h3><p class="ap-kv"><b>${esc(st.session.label)}</b><span>${esc(STATES[st.session.status] || st.session.status || '')}</span></p>
-        <p class="ap-dim">${c.tokens ? '上下文 ' + Math.round(c.tokens / 1000) + 'k' + (c.cap ? ' / 换班线 ' + Math.round(c.cap / 1000) + 'k' : '') : '上下文用量在第一轮对话后显示'}</p>
+        <p class="ap-dim">${c.tokens ? '上下文 ' + Math.round(c.tokens / 1000) + 'k' + (c.cap ? ' / ' + Math.round(c.cap / 1000) + 'k' : '') + '，满了由 CLI 自动压缩' : '上下文用量在第一轮对话后显示'}</p>
         ${pct != null ? `<div class="ap-bar"><i style="width:${pct}%"></i></div>` : ''}
         <p class="ap-dim">${c.lastRotation ? '上次换班 ' + ago(c.lastRotation.at) + (c.lastRotation.reason ? '（' + esc(c.lastRotation.reason) + '）' : '') : '还没换过班'}</p>
         <div class="ap-row"><button type="button" data-ap="session">打开会话</button><button type="button" data-ap="rotate">新开助理</button></div></section>
@@ -152,7 +157,16 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     m.addEventListener('click', e => { const b = e.target.closest('[data-pick]'); if (b) { e.stopPropagation(); void onPick(b.dataset.pick, m).catch(err => showMessage?.(err.message)); } });
     document.body.append(m); return m;
   }
+  function setView(next) {
+    view = next === 'memos' ? 'memos' : 'chat';
+    try { localStorage.setItem('hub.assistant.view', view); } catch {}
+    page.querySelector('[data-ap="view-chat"]').setAttribute('aria-pressed', String(view === 'chat'));
+    page.querySelector('[data-ap="view-memos"]').setAttribute('aria-pressed', String(view === 'memos'));
+    page.querySelector('.ap-scroll').hidden = view === 'memos';
+    if (view === 'memos') memoView.show(); else { memoView.hide(); render(); }
+  }
   async function action(name, button) {
+    if (name === 'view-chat' || name === 'view-memos') { setView(name.slice(5)); return; }
     if (name === 'route') { forceAssistant = !forceAssistant; paintRoute(); page.querySelector('textarea').focus(); return; }
     if (name === 'status') { statusOpen = !statusOpen; page.querySelector('.ap-status').hidden = !statusOpen; button.setAttribute('aria-pressed', String(statusOpen)); try { localStorage.setItem('hub.assistant.statusOpen', statusOpen ? '1' : '0'); } catch {} if (statusOpen) await paintStatus(); return; }
     if (name === 'session') return openSession();
@@ -211,6 +225,8 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     page.hidden = false; document.body.classList.add('assistant-page-open'); onOpenChange(true); place();
     try { statusOpen = localStorage.getItem('hub.assistant.statusOpen') === '1'; } catch {}
     page.querySelector('.ap-status').hidden = !statusOpen; page.querySelector('[data-ap="status"]').setAttribute('aria-pressed', String(statusOpen));
+    try { view = localStorage.getItem('hub.assistant.view') === 'memos' ? 'memos' : 'chat'; } catch {}
+    setView(view); void memoView.refresh();
     document.getElementById('btn-assistant')?.classList.remove('assistant-has-unread');
     window.addEventListener('resize', onResize);
     // 后台预热助理会话：第一条难题交过去时不用再等它冷启动。不切换当前画面。
@@ -231,6 +247,6 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     else if (entry.role === 'assistant') document.getElementById('btn-assistant')?.classList.add('assistant-has-unread');
   });
   ipcRenderer.on('assistant:front-desk', (_e, current) => { frontDesk = current; paintHead(); });
-  return { open, close, isOpen: () => !!page && !page.hidden };
+  return { open, close, isOpen: () => !!page && !page.hidden, showMemos: () => { void open().then(() => setView('memos')); } };
 }
 module.exports = { createAssistantPage };

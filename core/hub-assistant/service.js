@@ -15,9 +15,10 @@ const {isAssistantSession,requireManagerCaller}=require('./permissions');
 const {projectSessionStates}=require('./session-state');
 const backends=require('./backends');
 const profiles=require('./profiles');
-// 助理是长寿会话，每轮读入的资料会越积越多、回答随之变慢；何时换班见 rotation.js。
+// 助理始终是同一个长寿会话（上下文由 CLI 自带压缩），每天在同一会话里写一次交接记录，见 rotation.js。
 const rotation=require('./rotation');
 const EVENT_KINDS=new Set(['claude','codex','deepseek','kimi']); // 这些后端答完一轮会发完成事件
+const CHECKPOINT_PROMPT='【交接记录】这是每天一次的交接记录：你继续担任助理（还是这个会话），这份记录用于上下文压缩后或以后新开会话时接续。先把最近发现的田哥稳定偏好或长期约定用 update_memory 记下来（已记过的不重复）。然后用不超过 300 字写交接，只写接续需要的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
 const HANDOFF_PROMPT='【换班交接】你即将换班，接班的是同一位助理的新会话，它只能看到你写的交接、成长记忆和 Hub 记录。先把这一班里发现的田哥稳定偏好或长期约定用 update_memory 记下来（已记过的不重复）。然后用不超过 300 字写交接，只写对接班有用的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
 class AssistantService {
   constructor(deps) {
@@ -32,7 +33,9 @@ class AssistantService {
     this.dialog=new (require('./dialog-log').DialogLog)(path.join(deps.dataDir,'assistant'));
     this.reminders=new (require('./reminders').AssistantReminders)({store:this.store,isOwner:()=>this.ownsAssistant(),onFire:r=>this.fireReminder(r),onReschedule:r=>{try{this.deps.onReminderChanged?.({action:'set',reminder:r});}catch{}}});
     // 提醒检查不能因数据库已关闭等异常把进程带崩（测试结束、Hub 退出时）。
-    if(!deps.noReminderTimer)setTimeout(()=>{try{this.reminders.schedule();}catch(e){console.warn('[assistant] reminders',e.message);}},3000).unref?.();
+    // 备忘清单：助理写入、田哥在助理页和手机上看与改；有时间的联动到点提醒，每晚 21:00 推一次清单。
+    this.memos=new (require('./memos').AssistantMemos)({store:this.store,reminders:this.reminders,isOwner:()=>this.ownsAssistant(),onChange:memo=>{try{this.deps.onMemosChanged?.(memo);}catch{}},onDigest:d=>this.watches.addNotice({id:d.id,title:'备忘清单',kind:'memo-digest',label:'晚间备忘',text:d.text})});
+    if(!deps.noReminderTimer)setTimeout(()=>{try{this.reminders.schedule();this.memos.schedule();}catch(e){console.warn('[assistant] reminders',e.message);}},3000).unref?.();
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
     this.ledger=new (require('./ledger').AssistantLedger)(path.join(deps.dataDir,'assistant','ledger'),{read:(meta,options)=>this.liveHistory.read(meta,options)});
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>{try{this.logDialog({id:'notice:'+notice.id,role:'assistant',lane:'notice',by:notice.title||'提醒',text:notice.text||''});}catch{}this.deps.onAssistantNotification?.(notice);}});
@@ -65,20 +68,20 @@ class AssistantService {
   scheduledReconcile(){
     if(!this.ownsAssistant())return;
     try{this.reconcileLedger();this.pollWatches();this.ledger.prune();}catch(error){console.warn('[assistant] reconcile',error.message);}
-    void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));
+    void this.maybeCheckpointInBackground().catch(error=>console.warn('[assistant] checkpoint',error.message));
   }
   scheduleDaily(){
     clearTimeout(this.dailyTimer);const next=rotation.dailyBoundary(Date.now())+86400000+30000;
-    this.dailyTimer=setTimeout(()=>{void this.maybeRotateInBackground().catch(()=>{});this.scheduleDaily();},Math.max(1000,next-Date.now()));this.dailyTimer.unref?.();
+    this.dailyTimer=setTimeout(()=>{void this.maybeCheckpointInBackground().catch(()=>{});this.scheduleDaily();},Math.max(1000,next-Date.now()));this.dailyTimer.unref?.();
   }
-  scheduleIdleRotation(lastActiveAt){
+  scheduleIdleCheckpoint(lastActiveAt){
     clearTimeout(this.idleTimer);
-    this.idleTimer=setTimeout(()=>{void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));},Math.max(1000,lastActiveAt+rotation.IDLE_MS+60000-Date.now()));this.idleTimer.unref?.();
+    this.idleTimer=setTimeout(()=>{void this.maybeCheckpointInBackground().catch(error=>console.warn('[assistant] checkpoint',error.message));},Math.max(1000,lastActiveAt+rotation.IDLE_MS+60000-Date.now()));this.idleTimer.unref?.();
   }
   // 任一会话答完一轮：助理自己 → 记上下文用量并排好空闲换班；其他会话 → 立即记账，被关注则立即提醒。
   onTurnComplete(sessionId,event={}){
     const at=Number(event.completedAt)||Date.now();
-    if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleRotation(at);
+    if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleCheckpoint(at);
       // 助理答完立刻让手机通道取答案推送，不等下一次定时处理。
       try{this.deps.onAssistantTurnComplete?.(sessionId);}catch{}
       if(this._desk){setTimeout(()=>this._desk.check(),300).unref?.();}return;}
@@ -116,10 +119,7 @@ class AssistantService {
     // 迁移与创建放在同一个 creating 里串行，并发的就绪请求只会得到同一个助理。
     this.creating=(async()=>{
       if(this.store.get('assistantDefaultsVersion')!==2){const migrated=await this.migrateDefaults();if(migrated)return migrated;}
-      const kind=this.activeKind(),current=backends.bindings(this.store)[kind],reason=current&&this.rotationReasonFor(kind,current);
-      // 就绪时到点就直接换班（不写交接，免得让这条消息多等）；交接由后台换班或手动新开负责。
-      if(reason){const rotated=await this.rotate(kind,current,{reason});if(rotated)return rotated;}
-      return this._ensureSession(kind);
+      return this._ensureSession(this.activeKind());
     })();
     try{return await this.creating;}finally{this.creating=null;}
   }
@@ -140,21 +140,37 @@ class AssistantService {
       if(fs.existsSync(file)&&fs.statSync(file).size>2*1024*1024)fs.renameSync(file,file.replace(/\.jsonl$/,'.1.jsonl'));
       fs.appendFileSync(file,JSON.stringify(row)+'\n');}catch(error){console.warn('[assistant] metrics',error.message);}
   }
-  rotationReasonFor(kind,id){
-    const meta=this.sessionMetadata(id);
-    return rotation.rotationReason({tokens:this.store.get('contextTokens:'+id),lastActiveAt:this.store.get('lastActiveAt:'+id),kind,contextMax:meta?.contextMax});
+  checkpointReasonFor(id){
+    return rotation.checkpointReason({tokens:this.store.get('contextTokens:'+id),lastActiveAt:this.store.get('lastActiveAt:'+id),lastCheckpointAt:this.store.get('lastCheckpointAt:'+id)||0});
   }
   contextStatus(){
     const kind=this.activeKind(),id=backends.bindings(this.store)[kind],meta=id?this.sessionMetadata(id):null;
-    return{tokens:id?this.store.get('contextTokens:'+id):null,cap:rotation.capFor(kind,meta?.contextMax),lastActiveAt:id?this.store.get('lastActiveAt:'+id):null,
-      dueReason:id?this.rotationReasonFor(kind,id):null,lastRotation:this.store.get('lastRotation')};
+    return{tokens:id?this.store.get('contextTokens:'+id):null,cap:meta?.contextMax||null,lastActiveAt:id?this.store.get('lastActiveAt:'+id):null,
+      checkpointDue:id?this.checkpointReasonFor(id):null,lastCheckpoint:this.store.get('lastCheckpoint'),lastRotation:this.store.get('lastRotation')};
   }
-  // 后台换班：只对已打开且空闲的助理进行，先让旧助理写交接再换新会话；与就绪请求共用 creating，互不打架。
+  // 每天一次交接记录：只对已打开且空闲的助理进行，在同一会话里复盘并写交接，不换会话。
+  async maybeCheckpointInBackground(){
+    if(this.creating||this.switching||this.checkpointing||this.store.get('assistantDefaultsVersion')!==2)return null;
+    const kind=this.activeKind(),id=backends.bindings(this.store)[kind],session=id&&this.deps.getSession(id);
+    if(!session)return null;
+    if(require('../session-runtime-truth').sessionRuntimeIsActive(session)||['running','waiting'].includes(session.status)||this.deps.hasPendingPrompt?.(id))return null;
+    const reason=this.checkpointReasonFor(id);if(!reason)return null;
+    this.checkpointing=true;
+    try{
+      const since=this.store.get('lastReviewAt')||Date.now()-86400000;
+      const text=await this.writeHandoff(kind,id,this.reviewPrompt(since,CHECKPOINT_PROMPT),420000,'【交接记录】');
+      const now=Date.now();this.store.set('lastCheckpointAt:'+id,now);
+      if(text){this.store.set('lastReviewDay',require('./ledger').localDay(now));this.store.set('lastReviewAt',now);}
+      this.store.set('lastCheckpoint',{at:now,kind,reason,reasonLabel:rotation.REASON_LABELS[reason]||reason,sessionId:id,ok:!!text});
+      return{ok:!!text,sessionId:id,reason};
+    }finally{this.checkpointing=false;}
+  }
+  // 手动新开助理（田哥在「···」里点）：先让旧助理写交接再换新会话；与就绪请求共用 creating，互不打架。
   async maybeRotateInBackground({reason:forced}={}){
     if(this.creating||this.switching||this.store.get('assistantDefaultsVersion')!==2)return null;
     const kind=this.activeKind(),id=backends.bindings(this.store)[kind];
     if(!id||!this.deps.getSession(id))return null;
-    const reason=forced||this.rotationReasonFor(kind,id);if(!reason)return null;
+    const reason=forced;if(!reason)return null;
     this.creating=(async()=>{const rotated=await this.rotate(kind,id,{reason,handoff:true});return rotated||this._ensureSession(kind);})();
     try{return await this.creating;}finally{this.creating=null;}
   }
@@ -166,9 +182,9 @@ class AssistantService {
     return this.maybeRotateInBackground({reason:'manual'});
   }
   // 当天第一次换班时顺带复盘：主动记住田哥没明说的稳定偏好，并参考两家 CLI 自带记忆当天的更新。
-  reviewPrompt(sinceMs){
+  reviewPrompt(sinceMs,base=HANDOFF_PROMPT){
     const files=this.nativeMemoryUpdates(sinceMs);
-    return HANDOFF_PROMPT+'在写交接之前先做今天的复盘：① 回顾今天和田哥的交流，他没说「记住」但已明确表态或反复体现的偏好与约定，用 update_memory 记下；与旧条目矛盾的更新，重复的合并，只出现一次的推测不记。'
+    return base+'在写交接之前先做今天的复盘：① 回顾今天和田哥的交流，他没说「记住」但已明确表态或反复体现的偏好与约定，用 update_memory 记下；与旧条目矛盾的更新，重复的合并，只出现一次的推测不记。'
       +(files.length?'② 下面是今天更新过的 CLI 自带记忆（只在各自的 CLI 里自动生效），读一下，把与田哥合作方式相关、稳定有价值的内容同步进 USER.md / MEMORY.md：'+files.join('；')+'。':'② 今天两家 CLI 自带记忆没有相关更新。');
   }
   // Claude Code 自动记忆目录里 user/feedback 类条目、Codex 记忆摘要，取 since 之后改过的。
@@ -195,14 +211,14 @@ class AssistantService {
     return files.slice(0,12);
   }
   // 让旧助理写一段交接，写进交接记录（最长等 3 分钟；拿不到就只靠原始记录接续）。
-  async writeHandoff(kind,oldId,prompt=HANDOFF_PROMPT,timeoutMs=180000){
+  async writeHandoff(kind,oldId,prompt=HANDOFF_PROMPT,timeoutMs=180000,label='【上一班交接】'){
     const requestId='handoff-'+randomUUID();
     try{const receipt=await this.deps.sendPrompt(oldId,prompt,requestId);if(receipt?.ok===false)return null;}catch(error){console.warn('[assistant] handoff not sent',error.message);return null;}
     for(const end=Date.now()+timeoutMs;Date.now()<end;await new Promise(r=>setTimeout(r,1500))){
       const meta=this.sessionMetadata(oldId);if(!meta)return null;
       const hit=this.liveHistory.read(meta).records.find(row=>row.clientSubmissionId===requestId);
       if(hit?.text){
-        this.continuity.add({id:'handoff:'+requestId,sessionId:oldId,provider:kind,role:'assistant',timestamp:Date.now(),text:'【上一班交接】'+hit.text.trim()});
+        this.continuity.add({id:'handoff:'+requestId,sessionId:oldId,provider:kind,role:'assistant',timestamp:Date.now(),text:label+hit.text.trim()});
         // 等这轮在 CLI 里收尾，再休眠旧会话。
         for(const settle=Date.now()+15000;Date.now()<settle;await new Promise(r=>setTimeout(r,500))){const s=this.deps.getSession(oldId);if(!s||!(require('../session-runtime-truth').sessionRuntimeIsActive(s)||['running','waiting'].includes(s.status)))break;}
         return hit.text;
@@ -295,9 +311,16 @@ class AssistantService {
   }
   // 到点提醒：走与关注提醒相同的通道（手机、电脑提示、助理页对话），并标明是否补发。
   fireReminder(r){
+    try{this.memos?.reminderFired(r);}catch{}
     const late=r.late?'（原定 '+new Date(r.at).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hour12:false})+'，Hub 当时没开，现在补上）':'';
     this.watches.addNotice({id:'reminder:'+r.id,title:'提醒',kind:'reminder',label:'到点提醒',text:'田哥，到点了：'+r.text+late});
   }
+  // 备忘：写入与改动都在这里同步手机闹钟（联动的到点提醒）。原话取田哥本轮消息原文，来源看对话记录。
+  addMemo(input){const memo=this.memos.add(input);if(memo.reminderId)this.syncReminder('set',memo.reminderId);return memo;}
+  memoAction(ref,change){const before=this.memos.find(ref).reminderId;const r=this.memos.update(ref,change);if(r.reminderCancelled)try{this.deps.onReminderChanged?.({action:'cancel',reminder:r.reminderCancelled});}catch{}if(r.reminderSet)this.syncReminder('set',r.reminderSet);void before;return r;}
+  memoView(){return{ok:true,...this.memos.view()};}
+  syncReminder(action,id){const reminder=this.reminders.list().find(x=>x.id===id);if(reminder)try{this.deps.onReminderChanged?.({action,reminder});}catch{}}
+  requestSource(id){try{const row=this.dialog.recent({limit:80}).reverse().find(e=>e.role==='user'&&e.id===id);if(row)return(row.source==='hub'?'电脑':'手机')+(row.input==='voice'?'语音':'');}catch{}return this.inputModes?.get(id)==='voice'?'语音':'';}
   // 手机对话记录：写入后推给助理 Tab 实时显示。
   logDialog(entry){const row=this.dialog.append(entry);try{this.deps.onDialogEntry?.(row);}catch{}return row;}
   dialogLog({limit}={}){return{ok:true,entries:this.dialog.recent({limit}),desk:this.desk?.busy()||null};}
@@ -309,7 +332,7 @@ class AssistantService {
     const ctx=this.contextStatus(),o=this.overview(),mem=this.memory,fs=require('node:fs');
     const files=['user','memory'].map(kind=>{let entries=[],updatedAt=null;try{entries=mem.entries(kind);updatedAt=fs.statSync(mem.file(kind)).mtimeMs;}catch{}return{kind,count:entries.length,updatedAt,recent:entries.slice(-3).reverse().map(e=>e.replace(/^- /,'').slice(0,80))};});
     return{ok:true,session:{label:this.assistantLabel(),status:o.status,available:o.available},context:{tokens:ctx.tokens||null,cap:ctx.cap||null,lastActiveAt:ctx.lastActiveAt||null,lastRotation:ctx.lastRotation?{at:ctx.lastRotation.at,reason:ctx.lastRotation.reasonLabel||ctx.lastRotation.reason}:null},
-      memory:files,reminders:this.reminders.upcoming().slice(0,5).map(r=>({id:r.id,at:r.at,text:r.text})),followed:this.followedTasks().map(w=>({title:w.title,state:w.state||null,updatedAt:w.updatedAt||null})).slice(0,8),frontDesk:this.frontDesk()};
+      memory:files,memos:this.memos.openList().length,reminders:this.reminders.upcoming().slice(0,5).map(r=>({id:r.id,at:r.at,text:r.text})),followed:this.followedTasks().map(w=>({title:w.title,state:w.state||null,updatedAt:w.updatedAt||null})).slice(0,8),frontDesk:this.frontDesk()};
   }
   assistantLabel(){const p=this.currentProfile();let kind=p.kind;try{kind=require('../ai-kinds').getKindLabel(p.kind);}catch{}return[kind,p.label].filter(Boolean).join(' · ');}
   // 手机端选择面板的数据：当前助理设置 + 各后端可选型号与深度（手机不内置型号表）。
@@ -457,6 +480,14 @@ class AssistantService {
       }
       return this.context(args);
     }
+    if(name==='list_memos'){const v=this.memos.view();return{ok:true,open:v.open.map(m=>({no:m.no,id:m.id,title:m.title,kind:m.kind,group:v.groups[m.group]||m.group,due:m.dueLabel||null,recordedAt:new Date(m.createdAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),raw:m.raw.slice(0,200)})),recentlyClosed:v.closed.slice(0,10).map(m=>({id:m.id,title:m.title,status:m.status}))};}
+    if(name==='add_memo'||name==='update_memo'){
+      const current=this.currentRequest;
+      if(!hasCaller||!current||args.requestToken!==current.token||Date.now()-current.createdAt>30*60000)throw new Error('备忘写入不属于当前用户回合');
+      requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
+      if(name==='add_memo'){const memo=this.addMemo({title:args.title,due:args.due||'',kind:args.kind||'todo',raw:current.text,source:this.requestSource(current.id)});return{ok:true,no:this.memos.openList().find(m=>m.id===memo.id)?.no,id:memo.id,title:memo.title,due:memo.due?require('./memos').whenLabel(memo.due,Date.now()):null,remind:!!memo.reminderId};}
+      const r=this.memoAction(String(args.ref??''),{action:args.action,until:args.until||'',title:args.title||''});return{ok:true,id:r.memo.id,title:r.memo.title,status:r.memo.status,due:r.memo.due?require('./memos').whenLabel(r.memo.due,Date.now()):null,later:!!r.memo.later};
+    }
     if(name==='list_reminders')return{ok:true,reminders:this.reminders.upcoming().map(r=>({id:r.id,when:new Date(r.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),text:r.text,...(r.repeat?{repeat:r.repeat}:{})}))};
     if(name==='set_reminder'||name==='cancel_reminder'){
       const current=this.currentRequest;
@@ -549,6 +580,6 @@ class AssistantService {
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};
     } catch(error) {this.store.finish(requestId,'unknown',{sessionId,error:error.message});return{ok:false,state:'unknown',sessionId,error:error.message};}
   }
-  close(){for(const timer of [this.startupTimer,this.dailyTimer,this.idleTimer])clearTimeout(timer);clearInterval(this.reconcileTimer);clearInterval(this.safetyTimer);this.bridge.close();this.store.close();}
+  close(){this.reminders?.stop();this.memos?.stop();for(const timer of [this.startupTimer,this.dailyTimer,this.idleTimer])clearTimeout(timer);clearInterval(this.reconcileTimer);clearInterval(this.safetyTimer);this.bridge.close();this.store.close();}
 }
 module.exports={AssistantService};

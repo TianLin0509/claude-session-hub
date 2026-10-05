@@ -3,7 +3,7 @@ const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:pat
 const {seal,open,credentials,invite}=require('./crypto');
 // 手机协议 v2（App 1.1）：voice_message 识别后直接交给助理，转写只回传显示；hello 声明能力后才下发 profile；set_profile 切换助理模型。
 // 旧 App 只认 text/voice/status/answer/image/transcript，未声明能力前不向它发送新类型。
-const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak'];
+const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak','memo_update'];
 const MAX_VOICE_BYTES=16000*2*120;
 const ACTIVE=['dispatching','waiting','unknown'];
 const LONG_POLL_SECONDS=15; // 中继支持长等待时，新消息一到即返回；旧中继忽略该参数、立即返回
@@ -31,7 +31,7 @@ class PhoneChannel{
  }
  async ingest(messages){const s=this.journal.state;
   for(const packet of messages){if(packet.seq<=s.cursor)continue;if(!s.inbox.some(r=>r.id===packet.id)){try{const m=open(s.credentials.key,s.credentials.channel,packet.id,'phone',packet.payload);this.validate(m);
-     if(m.type==='hello'){this.journal.change(x=>{x.cursor=packet.seq;x.lastInbound=Date.now();x.phoneCaps=m.caps.map(String).slice(0,20);x.phoneApp=String(m.app||'').slice(0,20);x.inbox.push({id:packet.id,type:'hello',state:'done'});});await this.sendProfile(packet.id).catch(e=>console.warn('[phone] profile',e.message));this.sendReminders();continue;}
+     if(m.type==='hello'){this.journal.change(x=>{x.cursor=packet.seq;x.lastInbound=Date.now();x.phoneCaps=m.caps.map(String).slice(0,20);x.phoneApp=String(m.app||'').slice(0,20);x.memoSignature=null;x.inbox.push({id:packet.id,type:'hello',state:'done'});});await this.sendProfile(packet.id).catch(e=>console.warn('[phone] profile',e.message));this.sendReminders();continue;}
      if(m.attachment){const saved=this.saveAttachment(m.attachment);m.text=m.text+'\n\n（我从手机分享了一个文件：'+saved+'）';m.noFast=true;m.shared=require('node:path').basename(saved);delete m.attachment;}
      this.journal.change(x=>{x.inbox.push({...m,id:packet.id,state:'queued',t:{received:Date.now()}});x.cursor=packet.seq;x.lastInbound=Date.now();});if(m.type==='text')this.log({id:packet.id,role:'user',input:'text',text:m.text});}catch{this.journal.change(x=>{x.cursor=packet.seq;});this.emit('invalid-'+packet.id,{type:'status',requestId:packet.id,state:'rejected',text:'消息校验未通过，未提交任务。'});}}else this.journal.change(x=>{x.cursor=packet.seq;});}
  }
@@ -43,6 +43,7 @@ class PhoneChannel{
   if(m.type==='set_profile'&&!['kind','model'].every(k=>typeof m[k]==='string'&&m[k]&&m[k].length<=160))throw Error('助理设置无效');
   if(m.type==='hello'&&(!Array.isArray(m.caps)||m.caps.length>20))throw Error('手机能力声明无效');
   if(m.type==='speak'&&(typeof m.text!=='string'||!m.text.trim()||m.text.length>20000||typeof m.answerId!=='string'||m.answerId.length>120))throw Error('朗读请求无效');
+  if(m.type==='memo_update'&&(typeof m.ref!=='string'||!m.ref||m.ref.length>64||!['done','drop','reopen','snooze'].includes(m.action)||m.until!==undefined&&(typeof m.until!=='string'||m.until.length>40)))throw Error('备忘操作无效');
   if(m.type==='set_front_desk'&&(!['api','cli'].includes(m.mode)||m.model!==undefined&&(typeof m.model!=='string'||m.model.length>80)))throw Error('回答方式设置无效');
  }
  supports(cap){return(this.journal.state.phoneCaps||[]).includes(cap);}
@@ -59,6 +60,8 @@ class PhoneChannel{
   fs.writeFileSync(file,data);return file;
  }
  // 手机对话记录（助理 Tab「对话记录」）：记失败不影响收发。
+ // 备忘清单变了（含跨天分组变化）就把整份精简清单发给手机；原话截到 600 字。
+ sendMemos(force=false){const memos=this.assistant.memos;if(!memos)return;const sig=memos.signature();if(!force&&sig===this.journal.state.memoSignature)return;const v=memos.view(),cut=m=>({...m,raw:String(m.raw||'').slice(0,600)});this.emit('memos-'+crypto.randomUUID(),{type:'memos',open:v.open.map(cut),closed:v.closed.map(cut),groups:v.groups});this.journal.change(x=>{x.memoSignature=sig;});}
  log(entry){try{this.assistant.logDialog?.(entry);}catch(e){console.warn('[phone] dialog log',e.message);}}
  assistantLabel(){const p=this.assistant.currentProfile?.();if(!p)return'助理会话';let kind=p.kind;try{kind=require('../ai-kinds').getKindLabel(p.kind);}catch{}return[kind,p.label].filter(Boolean).join(' · ');}
  // 助理设置与回答方式任一变化（电脑面板改的也算）都重发 profile，手机两边保持一致。
@@ -79,12 +82,17 @@ class PhoneChannel{
   // 朗读请求不排队：合成后把音频地址发给手机（手机直接从阿里云下载播放）。
   for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='speak')){this.journal.change(()=>{row.state='speaking';});try{if(!this.speak)throw Error('电脑未配置朗读');const a=await this.speak(row.text);this.emit('audio-'+row.id,{type:'audio',requestId:row.id,answerId:row.answerId,url:a.url,expiresAt:a.expiresAt});console.log('[phone] speak',row.id.slice(0,8),JSON.stringify({chars:a.chars,tokens:a.tokens,ms:a.ms}));this.journal.change(()=>{row.state='done';delete row.text;});}catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;delete row.text;});this.emit('speakerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'朗读暂不可用：'+e.message});}}
   // 回答方式设置不排队：助理忙时也立即生效。
+  // 手机上点「完成 / 明天 / 以后 / 不做了」：直接改备忘（不排在助理任务后面），改完重发清单。
+  for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='memo_update')){try{this.assistant.memoAction(row.ref,{action:row.action,until:row.until||''});this.journal.change(()=>{row.state='done';});}catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;});this.emit('memoerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'备忘没改成：'+e.message});}}
   for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='set_front_desk')){try{this.assistant.setFrontDesk({mode:row.mode,...(row.model?{model:row.model}:{})});this.journal.change(()=>{row.state='done';});await this.sendProfile(row.id).catch(e=>console.warn('[phone] profile',e.message));}catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;});this.emit('profileerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'回答方式未切换：'+e.message});}}
   // 语音先识别（不受助理忙碌影响），可直接答的简单问题走快速通道，其余照旧排队交给完整助理。
   for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='voice_message'))await this.transcribeRow(row);
   if(this.fastLane&&!this.assistant.fastLaneDisabled?.())for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='text'&&!r.fastTried))await this.tryFastLane(row);
   const active=s.inbox.find(r=>ACTIVE.includes(r.state));
-  if(active){let finals;try{finals=this.assistant.readLiveFinal(active.sessionId).records;}catch(e){finals=[];if(/找不到原会话/.test(e.message)){this.journal.change(()=>{active.state='lost';active.issue=e.message;});this.emit('lost-'+active.id,{type:'status',requestId:active.id,state:'unknown',text:'助理会话已不在本窗口，结果请在电脑上查看；不会自动重发。'});}}const answer=finals.find(r=>r.clientSubmissionId===active.id||active.turnId&&r.turnId===active.turnId);if(answer){const found=Date.now();await this.reply('answer-'+active.id,answer.text,{requestId:active.id,lane:'assistant',by:this.assistantLabel(),...(active.t?.received?{ms:found-active.t.received}:{})});this.journal.change(()=>{active.state='answered';active.t={...active.t,answerFound:found,answerQueued:Date.now()};});this.log({id:active.id,role:'assistant',lane:'assistant',by:this.assistantLabel(),text:answer.text,ms:active.t.received?active.t.answerQueued-active.t.received:null});
+  if(active){let finals;try{finals=this.assistant.readLiveFinal(active.sessionId).records;}catch(e){finals=[];if(/找不到原会话/.test(e.message)){this.journal.change(()=>{active.state='lost';active.issue=e.message;});this.emit('lost-'+active.id,{type:'status',requestId:active.id,state:'unknown',text:'助理会话已不在本窗口，结果请在电脑上查看；不会自动重发。'});}}const answer=finals.find(r=>r.clientSubmissionId===active.id||active.turnId&&r.turnId===active.turnId);if(answer){const found=Date.now();
+    // 先记进对话记录（助理页靠它显示），再发手机、改通道状态：后两步出错也不会出现「手机收到了、助理页没有」。
+    if(!active.logged){this.log({id:active.id,role:'assistant',lane:'assistant',by:this.assistantLabel(),text:answer.text,ms:active.t?.received?found-active.t.received:null});active.logged=true;}
+    await this.reply('answer-'+active.id,answer.text,{requestId:active.id,lane:'assistant',by:this.assistantLabel(),...(active.t?.received?{ms:found-active.t.received}:{})});this.journal.change(()=>{active.state='answered';active.t={...active.t,answerFound:found,answerQueued:Date.now()};});
    const t=active.t||{},span=(a,b)=>t[a]&&t[b]?t[b]-t[a]:null;console.log('[phone] timing',active.id.slice(0,8),JSON.stringify({asr:span('asrStart','asrDone'),toDispatch:span('received','dispatch'),submit:span('dispatch','confirmed'),turn:span('confirmed','answerFound'),total:span('received','answerQueued')}));}}
   if(!s.inbox.some(r=>ACTIVE.includes(r.state))&&!this.assistant.switching){const row=s.inbox.find(r=>r.state==='queued');if(row){
     if(row.type==='voice'){this.journal.change(()=>{row.state='transcribing';});try{const text=await this.transcribe(row.pcm);if(!text.trim())throw Error('没有听清，请重新录音');this.emit('transcript-'+row.id,{type:'transcript',requestId:row.id,text});this.journal.change(()=>{row.state='transcribed';delete row.pcm;});}catch(e){this.emit('voiceerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:e.message});this.journal.change(()=>{row.state='rejected';delete row.pcm;});}}
@@ -98,7 +106,8 @@ class PhoneChannel{
     }
    }}
   if(this.supports('profile')&&this.assistant.phoneProfile&&!this.assistant.switching){if(this.profileSignature()!==s.profileSignature)await this.sendProfile();}
-  for(const n of this.assistant.notifications({limit:200}).notifications){if(s.notices.includes(n.id)||n.createdAt<s.created)continue;await this.reply('notice-'+crypto.createHash('sha256').update(n.id).digest('hex').slice(0,32),n.kind==='memory-update'||n.kind==='reminder'?n.text:'关注任务「'+n.title+'」有新进展：\n'+n.text,{notice:true,...(n.kind==='reminder'?{reminder:true}:{})});this.journal.change(x=>x.notices.push(n.id));}
+  if(this.supports('memo'))this.sendMemos();
+  for(const n of this.assistant.notifications({limit:200}).notifications){if(s.notices.includes(n.id)||n.createdAt<s.created)continue;await this.reply('notice-'+crypto.createHash('sha256').update(n.id).digest('hex').slice(0,32),n.kind==='memory-update'||n.kind==='reminder'||n.kind==='memo-digest'?n.text:'关注任务「'+n.title+'」有新进展：\n'+n.text,{notice:true,...(n.kind==='reminder'?{reminder:true}:{})});this.journal.change(x=>x.notices.push(n.id));}
   await this.flush(4);
  }catch(e){this.online=false;this.issue=e.message;}finally{this.working=false;if(this.rekick&&!this.closed){this.rekick=false;setTimeout(()=>void this.tick(),0);}}}
  async flush(limit=8){for(const row of this.journal.state.outbox.filter(r=>!r.sent).slice(0,limit)){await this.request('/send',{method:'POST',body:{id:row.id,payload:row.payload}});this.journal.change(()=>{row.sent=true;});}}
@@ -118,8 +127,8 @@ class PhoneChannel{
     this.journal.change(()=>{row.state='answered';row.lane='fast';row.t={...row.t,answerFound:Date.now()};});
     await this.reply('answer-'+row.id,result.text,{requestId:row.id,lane:'fast',by:this.assistant.frontDesk?.().modelLabel||result.model,...(row.t?.received?{ms:Date.now()-row.t.received}:{})},{cards:false});
     await this.flush().catch(()=>{});
-    this.journal.change(()=>{row.t={...row.t,answerQueued:Date.now()};});
-    this.log({id:row.id,role:'assistant',lane:'fast',by:this.assistant.frontDesk?.().modelLabel||result.model,text:result.text,ms:row.t.answerQueued-row.t.received});
+    const queued=Date.now();this.log({id:row.id,role:'assistant',lane:'fast',by:this.assistant.frontDesk?.().modelLabel||result.model,text:result.text,ms:row.t?.received?queued-row.t.received:null});
+    this.journal.change(()=>{row.t={...row.t,answerQueued:queued};});
     try{this.assistant.recordFastLane?.({id:row.id,question:row.text,answer:result.text,model:result.model,inputMode:row.inputMode});}catch{}
     const t=row.t||{};console.log('[phone] fast lane',row.id.slice(0,8),JSON.stringify({via:result.via,asr:t.asrDone&&t.asrStart?t.asrDone-t.asrStart:null,model:result.ms,first:result.firstMs,total:t.answerQueued-t.received}));
     return true;

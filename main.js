@@ -1998,6 +1998,8 @@ try {
       if (notification?.kind === 'reminder') { try { void desktopNotificationController?.show({ sessionId: assistantService?.store?.get('sessionId') || 'hub-assistant', title: 'AI Hub 提醒', body: String(notification.text || ''), kind: 'reminder' }); } catch (error) { console.warn('[assistant] reminder notification', error.message); } }
     },
     onReminderChanged: event => phoneService?.reminder?.(event),
+    // 备忘变了：助理页实时刷新，手机通道下一轮把清单发过去。
+    onMemosChanged: () => { sendToRenderer('assistant:memos-changed', {}); phoneService?.kick?.(); },
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
