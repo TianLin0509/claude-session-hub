@@ -57,7 +57,6 @@
 }
 :root[data-theme='dark'] .app-toolbar .btn-expand-sidebar:hover { border-color: #ba9666; color: #f3d9b2; }
 :root[data-theme='dark'] .terminal-crumb { font-size: 13px; color: #cedbe8; }
-:root[data-theme='dark'] .app-toolbar .conversation-filter,
 :root[data-theme='dark'] .app-toolbar .backstage-toggle,
 :root[data-theme='dark'] .app-toolbar .session-layout-button {
   border-color: #38506a;

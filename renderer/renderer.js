@@ -4253,6 +4253,11 @@ function detectComposerLiveQuestion(session, runtime) {
     if (!tail.length) return null;
     const verdict = isWaitingForUser(tail);
     if (!verdict || !verdict.waiting) return null;
+    // An idle, unused CLI can display a suggested question in its welcome
+    // screen. Keep real startup confirmations/choices, but don't call that
+    // suggestion an assistant reply awaiting an answer.
+    if (verdict.reason === 'question'
+        && require('../core/session-history-state').isFreshSession(session)) return null;
     return {
       waiting: true,
       reason: verdict.reason || null,

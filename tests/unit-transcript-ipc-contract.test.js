@@ -132,6 +132,21 @@ async function main() {
   });
   console.log('Running transcript IPC contract tests...');
 
+  await test('a fresh Codex CLI has welcome content, not a missing resume history error', async () => {
+    const session = { id: 'fresh', kind: 'codex', status: 'idle', cwd: 'C:\\repo',
+      lastMessageTime: Date.now(), lastOutputPreview: 'What brings you here?' };
+    const deps = createDeps({ sessionManager: { getSession: () => session },
+      findCodexRolloutBySid: () => null, findCodexRolloutByCwd: () => null });
+    assert.deepStrictEqual(await parseSessionTranscript({ hubSessionId: 'fresh' }, deps),
+      { turns: [], transcriptPath: null, error: null });
+    for (const history of [{ kind: 'codex-resume' }, { codexSid: 'saved-sid' },
+      { codexAllowMtimeFallback: true }, { runStartedAt: Date.now() }, { lastRunStartedAt: Date.now() }]) {
+      const original = { ...session }; Object.assign(session, history);
+      assert.equal((await parseSessionTranscript({ hubSessionId: 'fresh' }, deps)).error, 'codex rollout not found');
+      for (const key of Object.keys(session)) delete session[key]; Object.assign(session, original);
+    }
+  });
+
   await test('registers transcript channels and delegates last assistant text', async () => {
     const ipc = createFakeIpc();
     const deps = createDeps();

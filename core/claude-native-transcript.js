@@ -84,6 +84,11 @@ function projectClaudeRecord(record) {
           clientSubmissionId: record.submissionId, userMessageId: id, providerTurnId: null,
           text: previous ? previous.text + '\n\n' + body : body,
           phase: frame.message.stop_reason === 'end_turn' ? 'final_answer' : 'commentary',
+          // stop_reason describes engine control, not the value of the prose.
+          // Foreground explanations remain readable even before a tool runs.
+          // Automatic background commentary still belongs in the process drawer.
+          displayVisibility: !record.nativeActivity || frame.message.stop_reason === 'end_turn'
+            ? 'body' : 'process',
           // A message is an instant, not an interval: without its own end the
           // row would inherit the turn's and show a meaningless sub-second
           // duration next to the answer.

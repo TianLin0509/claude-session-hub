@@ -5,6 +5,8 @@ const fs = require('node:fs'), path = require('node:path'), crypto = require('no
 const { displayChatTurns } = require('../renderer/simple-chat-display');
 const { nativeTranscriptTurns } = require('../core/codex-native-transcript');
 const { parseClaudeTranscriptText } = require('../core/claude-transcript-parser');
+const { claudeDiskRecords } = require('../core/claude-disk-transcript');
+const { claudeTranscriptTurns } = require('../core/claude-native-transcript');
 const { chatAvatarSrc, USER_AVATAR_SRC, ASSISTANT_AVATAR_SRC } = require('../renderer/chat-avatar');
 const { ALL_AI_KINDS } = require('../core/ai-kinds');
 const freeze = value => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
@@ -75,4 +77,34 @@ test('all supported AI runtimes and resume aliases use existing original artwork
   for (const asset of selected) {
     assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, asset.file))).digest('hex'), asset.sha256);
   }
+});
+
+test('Claude foreground explanations stay in one visible reply before and after tools finish', () => {
+  const at = '2026-10-05T10:00:00Z';
+  const records = [
+    { type: 'user', uuid: 'u', timestamp: at, message: { content: '请解释这个问题' } },
+    { type: 'assistant', uuid: 'p', timestamp: at, message: { id: 'p', stop_reason: 'tool_use', content: [
+      { type: 'text', text: '关键原因：新会话没有历史文件，不能当作恢复失败。' },
+      { type: 'tool_use', id: 't', name: 'Read', input: { file_path: 'source.js' } }] } },
+  ];
+  const project = entries => displayChatTurns(claudeTranscriptTurns(claudeDiskRecords(entries)));
+  const running = project(records)[1];
+  assert.equal(running.text, '关键原因：新会话没有历史文件，不能当作恢复失败。');
+  assert.equal(running.nativeOutcome, null, 'readable prose must not claim engine completion');
+  records.push({ type: 'user', uuid: 'tr', timestamp: at, message: { content: [
+    { type: 'tool_result', tool_use_id: 't', content: 'source contents' }] } },
+  { type: 'assistant', uuid: 'f', timestamp: at, message: { id: 'f', stop_reason: 'end_turn', content: [
+    { type: 'text', text: '已经修复，工具检查通过。' }] } });
+  const done = project(records)[1];
+  assert.equal(done.id, running.id);
+  assert.equal(done.text, running.text + '\n\n已经修复，工具检查通过。');
+  assert.deepEqual(done.chatProcessMessages, []);
+  assert.equal(done.toolCalls[0].status, 'completed');
+  records.push({ type: 'user', uuid: 'notify', timestamp: at, origin: { kind: 'task-notification' },
+    message: { content: '<task-notification>background</task-notification>' } },
+  { type: 'assistant', uuid: 'bg', timestamp: at, message: { id: 'bg', stop_reason: 'tool_use', content: [
+    { type: 'text', text: '自动后台回顾进度。' }] } });
+  const background = project(records)[1];
+  assert.equal(background.text, done.text);
+  assert.deepEqual(background.chatProcessMessages.map(m => m.text), ['自动后台回顾进度。']);
 });
