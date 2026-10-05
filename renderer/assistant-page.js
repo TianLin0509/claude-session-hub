@@ -122,7 +122,7 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     const c = st.context, pct = c.tokens && c.cap ? Math.min(100, Math.round(c.tokens / c.cap * 100)) : null;
     const memName = { user: '偏好（USER.md）', memory: '长期记忆（MEMORY.md）' };
     box.innerHTML = `<section><h3>助理会话</h3><p class="ap-kv"><b>${esc(st.session.label)}</b><span>${esc(STATES[st.session.status] || st.session.status || '')}</span></p>
-        <p class="ap-dim">${c.tokens ? '上下文 ' + Math.round(c.tokens / 1000) + 'k' + (c.cap ? ' / 换班线 ' + Math.round(c.cap / 1000) + 'k' : '') : '上下文用量在第一轮对话后显示'}</p>
+        <p class="ap-dim">${c.tokens ? '上下文 ' + Math.round(c.tokens / 1000) + 'k' + (c.cap ? ' / ' + Math.round(c.cap / 1000) + 'k' : '') + '，满了由 CLI 自动压缩' : '上下文用量在第一轮对话后显示'}</p>
         ${pct != null ? `<div class="ap-bar"><i style="width:${pct}%"></i></div>` : ''}
         <p class="ap-dim">${c.lastRotation ? '上次换班 ' + ago(c.lastRotation.at) + (c.lastRotation.reason ? '（' + esc(c.lastRotation.reason) + '）' : '') : '还没换过班'}</p>
         <div class="ap-row"><button type="button" data-ap="session">打开会话</button><button type="button" data-ap="rotate">新开助理</button></div></section>

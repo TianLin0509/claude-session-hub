@@ -100,62 +100,56 @@ test('an explicit phone choice made before migration is never overridden by the 
   const x=setup(t,{legacy:true});const r=await x.service.setProfile({kind:'codex',model:'gpt-6-luna',effort:'low'});
   assert.equal(r.ok,true);assert.equal((await x.service.ensureSession()).backendKind,'codex');
 });
-test('a long-lived assistant rotates to a fresh session at the next idle moment once its context is large',async t=>{
-  const x=setup(t),retired=[],rotated=[];x.deps.retireSession=async id=>retired.push(id);x.deps.onAssistantRotated=e=>rotated.push(e);
+test('the assistant stays one session however large its context grows (the CLI compacts it)',async t=>{
+  const x=setup(t),retired=[];x.deps.retireSession=async id=>retired.push(id);
   const a=await x.service.ensureSession();
   assert.equal(x.service.observeUsage(a.sessionId,{input_tokens:2000,cache_read_input_tokens:90000,cache_creation_input_tokens:1000}),93000);
-  assert.equal(x.service.store.get('rotateDue:claude'),null);
-  x.service.observeUsage(a.sessionId,{input_tokens:3000,cache_read_input_tokens:150000});
-  x.sessions.get(a.sessionId).status='running';
-  assert.equal((await x.service.ensureSession()).sessionId,a.sessionId,'busy: never rotate mid-turn');
-  x.sessions.get(a.sessionId).status='idle';
-  const b=await x.service.ensureSession();
-  assert.notEqual(b.sessionId,a.sessionId);assert.equal(b.session.model,'claude-sonnet-5-5');assert.equal(b.session.effort,'low');
-  assert.deepEqual(retired,[a.sessionId]);assert.equal(rotated[0].sessionId,b.sessionId);
-  assert.equal(x.service.isAssistantSession(a.sessionId),false);assert.equal(x.service.isAssistantSession(b.sessionId),true);
-  assert.doesNotThrow(()=>x.service.requireAssistantResume({hubId:a.sessionId,kind:'claude'}),'retired history can be opened');
-  assert.equal((await x.service.ensureSession()).sessionId,b.sessionId,'rotates once');
+  x.service.observeUsage(a.sessionId,{input_tokens:3000,cache_read_input_tokens:600000});
+  x.service.store.set('lastActiveAt:'+a.sessionId,Date.now()-30*3600000);
+  assert.equal((await x.service.ensureSession()).sessionId,a.sessionId,'no automatic new session: not for size, idle or a new day');
+  assert.deepEqual(retired,[]);
   assert.equal(x.service.observeUsage('not-an-assistant',{input_tokens:999999}),null);
 });
-test('codex usage counts cached tokens once; a failed rotation keeps the old assistant bound',async t=>{
+test('codex usage counts cached tokens once; a failed manual new session keeps the old assistant bound',async t=>{
   const x=setup(t);x.service.store.set('assistantDefaultsVersion',2);x.service.store.set('backendKind','codex');
   const a=await x.service.ensureSession();
   assert.equal(x.service.observeUsage(a.sessionId,{input_tokens:160000,cache_read_input_tokens:150000}),160000);
-  x.deps.createSession=async()=>{throw new Error('CLI 未登录');};
-  await assert.rejects(x.service.ensureSession(),/未登录/);
+  x.deps.sendPrompt=async()=>({ok:false});x.deps.createSession=async()=>{throw new Error('CLI 未登录');};
+  await assert.rejects(x.service.rotateNow(),/未登录/);
   assert.equal(x.service.store.get('sessionId'),a.sessionId);assert.equal(x.service.isAssistantSession(a.sessionId),true);
 });
-test('assistant instructions put fast self-answers first and keep bulky reading out of its context',()=>{
-  const frame=require('../core/hub-assistant/context').buildBootstrapPrompt('今天天气怎么样',{},0,'claude');
-  assert.match(frame,/尽快答复/);assert.match(frame,/直接完成/);assert.match(frame,/大量文件和长文/);assert.match(frame,/fast 只在田哥要求单独开会话/);assert.match(frame,/闲聊、常识/);
-});
-test('rotation policy: idle or a new day rotates a used assistant, size caps differ by backend',()=>{
+test('checkpoint policy: once a day after 2 idle hours or the 4 am boundary, only for a used assistant',()=>{
   const r=require('../core/hub-assistant/rotation'),now=new Date(2026,9,3,10,0,0).getTime(),h=3600000;
-  assert.equal(r.rotationReason({tokens:40000,lastActiveAt:now-1*h,now,kind:'claude'}),null);
-  assert.equal(r.rotationReason({tokens:40000,lastActiveAt:now-2.5*h,now,kind:'claude'}),'idle');
-  assert.equal(r.rotationReason({tokens:10000,lastActiveAt:now-5*h,now,kind:'claude'}),null,'nearly empty sessions are kept');
+  assert.equal(r.checkpointReason({tokens:40000,lastActiveAt:now-1*h,now}),null);
+  assert.equal(r.checkpointReason({tokens:40000,lastActiveAt:now-2.5*h,now}),'idle');
+  assert.equal(r.checkpointReason({tokens:10000,lastActiveAt:now-5*h,now}),null,'nearly empty sessions need no record');
   const early=new Date(2026,9,3,4,30,0).getTime();
-  assert.equal(r.rotationReason({tokens:40000,lastActiveAt:early-1*h,now:early,kind:'claude'}),'daily');
-  assert.equal(r.rotationReason({tokens:150000,lastActiveAt:now,now,kind:'claude'}),'size');
-  assert.equal(r.rotationReason({tokens:120000,lastActiveAt:now,now,kind:'claude'}),null);
-  assert.equal(r.rotationReason({tokens:120000,lastActiveAt:now,now,kind:'codex'}),'size');
-  assert.equal(r.capFor('claude',200000),100000,'never above half of a small window');
+  assert.equal(r.checkpointReason({tokens:40000,lastActiveAt:early-1*h,now:early}),'daily');
+  assert.equal(r.checkpointReason({tokens:40000,lastActiveAt:now-3*h,lastCheckpointAt:now-2*h,now}),null,'already written today');
+  assert.equal(r.checkpointReason({tokens:40000,lastActiveAt:now-3*h,lastCheckpointAt:now-26*h,now}),'idle');
+  assert.equal(r.checkpointReason({tokens:40000,lastActiveAt:now-27*h,lastCheckpointAt:now-26*h,now}),null,'not used since the last record');
 });
-test('background rotation lets the old assistant write a handoff first; manual rotation refuses while busy; turns are logged',async t=>{
+test('the daily checkpoint writes a handoff in the same session; manual new session still hands off; turns are logged',async t=>{
   const x=setup(t),retired=[];x.deps.retireSession=async id=>retired.push(id);
   const a=await x.service.ensureSession();
   x.service.preparePrompt({sessionId:a.sessionId,text:'查进展',clientSubmissionId:'metric-turn'});
   x.service.observeUsage(a.sessionId,{input_tokens:1000,cache_read_input_tokens:44000},Date.now());
   const metrics=fs.readFileSync(path.join(x.deps.dataDir,'assistant','turn-metrics.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(metrics.at(-1).tokens,45000);assert.equal(typeof metrics.at(-1).ms,'number');
-  assert.equal(await x.service.maybeRotateInBackground(),null,'recently active: no rotation');
+  assert.equal(await x.service.maybeCheckpointInBackground(),null,'recently active: nothing to record');
   x.service.store.set('lastActiveAt:'+a.sessionId,Date.now()-3*3600000);
-  let handoffId=null;x.deps.sendPrompt=async(id,text,requestId)=>{assert.equal(id,a.sessionId);assert.match(text,/换班交接/);handoffId=requestId;return{ok:true,receipt:{status:'confirmed'}};};
+  let handoffId=null,prompt='';x.deps.sendPrompt=async(id,text,requestId)=>{assert.equal(id,a.sessionId);prompt=text;handoffId=requestId;return{ok:true,receipt:{status:'confirmed'}};};
   x.service.liveHistory={read:()=>({records:handoffId?[{clientSubmissionId:handoffId,text:'还在等调度报告；田哥要求汇报只讲结果。'}]:[]})};
-  const b=await x.service.maybeRotateInBackground();
+  const c=await x.service.maybeCheckpointInBackground();
+  assert.equal(c.ok,true);assert.equal(c.sessionId,a.sessionId);assert.match(prompt,/交接记录/);assert.match(prompt,/还是这个会话/);
+  assert.equal((await x.service.ensureSession()).sessionId,a.sessionId,'same session after the record');assert.deepEqual(retired,[]);
+  assert.ok(x.service.continuity.packet().records.some(row=>row.text.startsWith('【交接记录】还在等调度报告')));
+  assert.equal(x.service.overview().context.lastCheckpoint.reason,'idle');
+  assert.equal(await x.service.maybeCheckpointInBackground(),null,'once a day');
+  handoffId=null;x.deps.sendPrompt=async(id,text,requestId)=>{assert.match(text,/换班交接/);handoffId=requestId;return{ok:true,receipt:{status:'confirmed'}};};
+  const b=await x.service.rotateNow();
   assert.notEqual(b.sessionId,a.sessionId);assert.deepEqual(retired,[a.sessionId]);
-  assert.ok(x.service.continuity.packet().records.some(row=>row.text.startsWith('【上一班交接】还在等调度报告')));
-  const last=x.service.overview().context.lastRotation;assert.equal(last.reason,'idle');assert.equal(last.handoff,true);
+  assert.equal(x.service.overview().context.lastRotation.reason,'manual');
   x.sessions.get(b.sessionId).status='running';assert.throws(()=>x.service.rotateNow(),/正在回答/);
 });
 test('the background timer only checks followed tasks; the workbench is rebuilt on demand and old archives are pruned',async t=>{

@@ -1,31 +1,25 @@
 'use strict';
-// 助理换班策略（纯函数，便于测试与调参）。
-// 业界做法：快满时压缩（Claude Code ~95%、Codex ≤90%）只防溢出；OpenClaw 按天/空闲重开，记忆放文件。
-// 助理追求速度，所以以「空闲换班」为主、按后端的大小上限兜底；上下文太小的会话不换，避免白白丢掉近况。
+// 助理会话的去留（纯函数，便于测试与调参）。
+// 2026-10-05 田哥：助理始终是同一个会话，不再自动换班新开会话——侧栏不该越积越多「助理」会话。
+// 上下文变长交给 CLI 自带的压缩（Claude Code、Codex 快满时都会自动 compact，Claude 窗口可到 1M）。
+// 保留每天一次的「交接记录」：同一会话空闲满 2 小时或跨过凌晨 4 点后，让它复盘并写交接，存进交接文件，
+// 供压缩后或田哥手动「新开助理」时接续。手动新开仍可用，旧会话保留可查。
 const IDLE_MS = 2 * 3600 * 1000;
 const DAILY_HOUR = 4;
 const MIN_TOKENS = 30000;
-const CAP_BY_KIND = { claude: 150000 };
-const DEFAULT_CAP = 100000;
 
-function capFor(kind, contextMax) {
-  const override = Number(process.env.HUB_ASSISTANT_ROTATE_TOKENS); // 仅供实测压低阈值
-  if (override > 0) return override;
-  const base = CAP_BY_KIND[kind] || DEFAULT_CAP;
-  return typeof contextMax === 'number' && contextMax > 0 ? Math.min(base, Math.floor(contextMax * 0.5)) : base;
-}
 function dailyBoundary(now, hour = DAILY_HOUR) {
   const d = new Date(now); d.setHours(hour, 0, 0, 0);
   if (d.getTime() > now) d.setDate(d.getDate() - 1);
   return d.getTime();
 }
-// 返回换班原因：size（上下文到上限）、idle（空闲超过 2 小时）、daily（跨过每天 4 点），不需要则为 null。
-function rotationReason({ tokens, lastActiveAt, now = Date.now(), kind, contextMax }) {
-  if (tokens >= capFor(kind, contextMax)) return 'size';
-  if (!tokens || tokens < Math.min(MIN_TOKENS, capFor(kind, contextMax)) || !lastActiveAt) return null;
+// 返回写交接记录的原因：idle（空闲满 2 小时）、daily（跨过每天 4 点）；对话太少、上次记录后没再用过、今天已写过则为 null。
+function checkpointReason({ tokens, lastActiveAt, lastCheckpointAt = 0, now = Date.now() }) {
+  if (!tokens || tokens < MIN_TOKENS || !lastActiveAt || lastActiveAt <= lastCheckpointAt) return null;
+  if (lastCheckpointAt >= dailyBoundary(now)) return null;
   if (now - lastActiveAt >= IDLE_MS) return 'idle';
   if (lastActiveAt < dailyBoundary(now)) return 'daily';
   return null;
 }
-const REASON_LABELS = { size: '上下文到上限', idle: '空闲超过 2 小时', daily: '跨过每天 4 点', manual: '手动新开' };
-module.exports = { IDLE_MS, DAILY_HOUR, MIN_TOKENS, capFor, dailyBoundary, rotationReason, REASON_LABELS };
+const REASON_LABELS = { idle: '空闲超过 2 小时', daily: '跨过每天 4 点', manual: '手动新开' };
+module.exports = { IDLE_MS, DAILY_HOUR, MIN_TOKENS, dailyBoundary, checkpointReason, REASON_LABELS };

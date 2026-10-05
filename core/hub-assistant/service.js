@@ -15,9 +15,10 @@ const {isAssistantSession,requireManagerCaller}=require('./permissions');
 const {projectSessionStates}=require('./session-state');
 const backends=require('./backends');
 const profiles=require('./profiles');
-// 助理是长寿会话，每轮读入的资料会越积越多、回答随之变慢；何时换班见 rotation.js。
+// 助理始终是同一个长寿会话（上下文由 CLI 自带压缩），每天在同一会话里写一次交接记录，见 rotation.js。
 const rotation=require('./rotation');
 const EVENT_KINDS=new Set(['claude','codex','deepseek','kimi']); // 这些后端答完一轮会发完成事件
+const CHECKPOINT_PROMPT='【交接记录】这是每天一次的交接记录：你继续担任助理（还是这个会话），这份记录用于上下文压缩后或以后新开会话时接续。先把最近发现的田哥稳定偏好或长期约定用 update_memory 记下来（已记过的不重复）。然后用不超过 300 字写交接，只写接续需要的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
 const HANDOFF_PROMPT='【换班交接】你即将换班，接班的是同一位助理的新会话，它只能看到你写的交接、成长记忆和 Hub 记录。先把这一班里发现的田哥稳定偏好或长期约定用 update_memory 记下来（已记过的不重复）。然后用不超过 300 字写交接，只写对接班有用的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
 class AssistantService {
   constructor(deps) {
@@ -65,20 +66,20 @@ class AssistantService {
   scheduledReconcile(){
     if(!this.ownsAssistant())return;
     try{this.reconcileLedger();this.pollWatches();this.ledger.prune();}catch(error){console.warn('[assistant] reconcile',error.message);}
-    void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));
+    void this.maybeCheckpointInBackground().catch(error=>console.warn('[assistant] checkpoint',error.message));
   }
   scheduleDaily(){
     clearTimeout(this.dailyTimer);const next=rotation.dailyBoundary(Date.now())+86400000+30000;
-    this.dailyTimer=setTimeout(()=>{void this.maybeRotateInBackground().catch(()=>{});this.scheduleDaily();},Math.max(1000,next-Date.now()));this.dailyTimer.unref?.();
+    this.dailyTimer=setTimeout(()=>{void this.maybeCheckpointInBackground().catch(()=>{});this.scheduleDaily();},Math.max(1000,next-Date.now()));this.dailyTimer.unref?.();
   }
-  scheduleIdleRotation(lastActiveAt){
+  scheduleIdleCheckpoint(lastActiveAt){
     clearTimeout(this.idleTimer);
-    this.idleTimer=setTimeout(()=>{void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));},Math.max(1000,lastActiveAt+rotation.IDLE_MS+60000-Date.now()));this.idleTimer.unref?.();
+    this.idleTimer=setTimeout(()=>{void this.maybeCheckpointInBackground().catch(error=>console.warn('[assistant] checkpoint',error.message));},Math.max(1000,lastActiveAt+rotation.IDLE_MS+60000-Date.now()));this.idleTimer.unref?.();
   }
   // 任一会话答完一轮：助理自己 → 记上下文用量并排好空闲换班；其他会话 → 立即记账，被关注则立即提醒。
   onTurnComplete(sessionId,event={}){
     const at=Number(event.completedAt)||Date.now();
-    if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleRotation(at);
+    if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleCheckpoint(at);
       // 助理答完立刻让手机通道取答案推送，不等下一次定时处理。
       try{this.deps.onAssistantTurnComplete?.(sessionId);}catch{}
       if(this._desk){setTimeout(()=>this._desk.check(),300).unref?.();}return;}
@@ -116,10 +117,7 @@ class AssistantService {
     // 迁移与创建放在同一个 creating 里串行，并发的就绪请求只会得到同一个助理。
     this.creating=(async()=>{
       if(this.store.get('assistantDefaultsVersion')!==2){const migrated=await this.migrateDefaults();if(migrated)return migrated;}
-      const kind=this.activeKind(),current=backends.bindings(this.store)[kind],reason=current&&this.rotationReasonFor(kind,current);
-      // 就绪时到点就直接换班（不写交接，免得让这条消息多等）；交接由后台换班或手动新开负责。
-      if(reason){const rotated=await this.rotate(kind,current,{reason});if(rotated)return rotated;}
-      return this._ensureSession(kind);
+      return this._ensureSession(this.activeKind());
     })();
     try{return await this.creating;}finally{this.creating=null;}
   }
@@ -140,21 +138,37 @@ class AssistantService {
       if(fs.existsSync(file)&&fs.statSync(file).size>2*1024*1024)fs.renameSync(file,file.replace(/\.jsonl$/,'.1.jsonl'));
       fs.appendFileSync(file,JSON.stringify(row)+'\n');}catch(error){console.warn('[assistant] metrics',error.message);}
   }
-  rotationReasonFor(kind,id){
-    const meta=this.sessionMetadata(id);
-    return rotation.rotationReason({tokens:this.store.get('contextTokens:'+id),lastActiveAt:this.store.get('lastActiveAt:'+id),kind,contextMax:meta?.contextMax});
+  checkpointReasonFor(id){
+    return rotation.checkpointReason({tokens:this.store.get('contextTokens:'+id),lastActiveAt:this.store.get('lastActiveAt:'+id),lastCheckpointAt:this.store.get('lastCheckpointAt:'+id)||0});
   }
   contextStatus(){
     const kind=this.activeKind(),id=backends.bindings(this.store)[kind],meta=id?this.sessionMetadata(id):null;
-    return{tokens:id?this.store.get('contextTokens:'+id):null,cap:rotation.capFor(kind,meta?.contextMax),lastActiveAt:id?this.store.get('lastActiveAt:'+id):null,
-      dueReason:id?this.rotationReasonFor(kind,id):null,lastRotation:this.store.get('lastRotation')};
+    return{tokens:id?this.store.get('contextTokens:'+id):null,cap:meta?.contextMax||null,lastActiveAt:id?this.store.get('lastActiveAt:'+id):null,
+      checkpointDue:id?this.checkpointReasonFor(id):null,lastCheckpoint:this.store.get('lastCheckpoint'),lastRotation:this.store.get('lastRotation')};
   }
-  // 后台换班：只对已打开且空闲的助理进行，先让旧助理写交接再换新会话；与就绪请求共用 creating，互不打架。
+  // 每天一次交接记录：只对已打开且空闲的助理进行，在同一会话里复盘并写交接，不换会话。
+  async maybeCheckpointInBackground(){
+    if(this.creating||this.switching||this.checkpointing||this.store.get('assistantDefaultsVersion')!==2)return null;
+    const kind=this.activeKind(),id=backends.bindings(this.store)[kind],session=id&&this.deps.getSession(id);
+    if(!session)return null;
+    if(require('../session-runtime-truth').sessionRuntimeIsActive(session)||['running','waiting'].includes(session.status)||this.deps.hasPendingPrompt?.(id))return null;
+    const reason=this.checkpointReasonFor(id);if(!reason)return null;
+    this.checkpointing=true;
+    try{
+      const since=this.store.get('lastReviewAt')||Date.now()-86400000;
+      const text=await this.writeHandoff(kind,id,this.reviewPrompt(since,CHECKPOINT_PROMPT),420000,'【交接记录】');
+      const now=Date.now();this.store.set('lastCheckpointAt:'+id,now);
+      if(text){this.store.set('lastReviewDay',require('./ledger').localDay(now));this.store.set('lastReviewAt',now);}
+      this.store.set('lastCheckpoint',{at:now,kind,reason,reasonLabel:rotation.REASON_LABELS[reason]||reason,sessionId:id,ok:!!text});
+      return{ok:!!text,sessionId:id,reason};
+    }finally{this.checkpointing=false;}
+  }
+  // 手动新开助理（田哥在「···」里点）：先让旧助理写交接再换新会话；与就绪请求共用 creating，互不打架。
   async maybeRotateInBackground({reason:forced}={}){
     if(this.creating||this.switching||this.store.get('assistantDefaultsVersion')!==2)return null;
     const kind=this.activeKind(),id=backends.bindings(this.store)[kind];
     if(!id||!this.deps.getSession(id))return null;
-    const reason=forced||this.rotationReasonFor(kind,id);if(!reason)return null;
+    const reason=forced;if(!reason)return null;
     this.creating=(async()=>{const rotated=await this.rotate(kind,id,{reason,handoff:true});return rotated||this._ensureSession(kind);})();
     try{return await this.creating;}finally{this.creating=null;}
   }
@@ -166,9 +180,9 @@ class AssistantService {
     return this.maybeRotateInBackground({reason:'manual'});
   }
   // 当天第一次换班时顺带复盘：主动记住田哥没明说的稳定偏好，并参考两家 CLI 自带记忆当天的更新。
-  reviewPrompt(sinceMs){
+  reviewPrompt(sinceMs,base=HANDOFF_PROMPT){
     const files=this.nativeMemoryUpdates(sinceMs);
-    return HANDOFF_PROMPT+'在写交接之前先做今天的复盘：① 回顾今天和田哥的交流，他没说「记住」但已明确表态或反复体现的偏好与约定，用 update_memory 记下；与旧条目矛盾的更新，重复的合并，只出现一次的推测不记。'
+    return base+'在写交接之前先做今天的复盘：① 回顾今天和田哥的交流，他没说「记住」但已明确表态或反复体现的偏好与约定，用 update_memory 记下；与旧条目矛盾的更新，重复的合并，只出现一次的推测不记。'
       +(files.length?'② 下面是今天更新过的 CLI 自带记忆（只在各自的 CLI 里自动生效），读一下，把与田哥合作方式相关、稳定有价值的内容同步进 USER.md / MEMORY.md：'+files.join('；')+'。':'② 今天两家 CLI 自带记忆没有相关更新。');
   }
   // Claude Code 自动记忆目录里 user/feedback 类条目、Codex 记忆摘要，取 since 之后改过的。
@@ -195,14 +209,14 @@ class AssistantService {
     return files.slice(0,12);
   }
   // 让旧助理写一段交接，写进交接记录（最长等 3 分钟；拿不到就只靠原始记录接续）。
-  async writeHandoff(kind,oldId,prompt=HANDOFF_PROMPT,timeoutMs=180000){
+  async writeHandoff(kind,oldId,prompt=HANDOFF_PROMPT,timeoutMs=180000,label='【上一班交接】'){
     const requestId='handoff-'+randomUUID();
     try{const receipt=await this.deps.sendPrompt(oldId,prompt,requestId);if(receipt?.ok===false)return null;}catch(error){console.warn('[assistant] handoff not sent',error.message);return null;}
     for(const end=Date.now()+timeoutMs;Date.now()<end;await new Promise(r=>setTimeout(r,1500))){
       const meta=this.sessionMetadata(oldId);if(!meta)return null;
       const hit=this.liveHistory.read(meta).records.find(row=>row.clientSubmissionId===requestId);
       if(hit?.text){
-        this.continuity.add({id:'handoff:'+requestId,sessionId:oldId,provider:kind,role:'assistant',timestamp:Date.now(),text:'【上一班交接】'+hit.text.trim()});
+        this.continuity.add({id:'handoff:'+requestId,sessionId:oldId,provider:kind,role:'assistant',timestamp:Date.now(),text:label+hit.text.trim()});
         // 等这轮在 CLI 里收尾，再休眠旧会话。
         for(const settle=Date.now()+15000;Date.now()<settle;await new Promise(r=>setTimeout(r,500))){const s=this.deps.getSession(oldId);if(!s||!(require('../session-runtime-truth').sessionRuntimeIsActive(s)||['running','waiting'].includes(s.status)))break;}
         return hit.text;
