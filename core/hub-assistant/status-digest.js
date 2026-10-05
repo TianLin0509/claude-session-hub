@@ -14,6 +14,8 @@ function buildStatusDigest({ sessions = [], ledger = [], followed = [], reminder
   const work = sessions.filter(s => s.purpose !== 'hub-assistant');
   const active = work.filter(s => ['running', 'waiting'].includes(s.status));
   lines.push(active.length ? '正在运行或等你回复的会话：' + active.slice(0, 8).map(s => `「${clip(s.title || s.name, 24)}」${s.kind || ''}·${STATUS[s.status]}`).join('；') : '当前没有正在运行的会话。');
+  // 备忘清单（编号与各端一致）：快答据此回答「还有几条」「明天要干啥」，改清单仍交给助理会话。
+  if (memos) lines.push(memos.length ? `备忘清单共 ${memos.length} 条待办（编号与手机和助理页一致）：\n` + memos.slice(0, 15).map(m => `${m.no}. ${clip(m.title, 24)}（${m.dueLabel || '没定时间'}）`).join('\n') + (memos.length > 15 ? `\n……另有 ${memos.length - 15} 条` : '') : '备忘清单是空的。');
   // 最近 24 小时：每个会话只取最新一条最终答复。
   const latest = new Map();
   for (const e of ledger) if (now - e.at < 86400000 && (!latest.has(e.sessionId) || latest.get(e.sessionId).at < e.at)) latest.set(e.sessionId, e);
@@ -24,8 +26,6 @@ function buildStatusDigest({ sessions = [], ledger = [], followed = [], reminder
   const upcoming = reminders.filter(r => !r.firedAt && r.at > now).sort((a, b) => a.at - b.at).slice(0, 5);
   const REP = { daily: '（每天）', weekdays: '（每个工作日）', weekly: '（每周）' };
   if (upcoming.length) lines.push('待提醒：' + upcoming.map(r => `${when(r.at, now)} ${clip(r.text, 30)}${REP[r.repeat] || ''}`).join('；'));
-  // 备忘清单（编号与各端一致）：快答据此回答「还有几条」「明天要干啥」，改清单仍交给助理会话。
-  if (memos) lines.push(memos.length ? `备忘清单（${memos.length} 条待办，编号与手机和助理页一致）：` + memos.slice(0, 12).map(m => `${m.no}. ${clip(m.title, 24)}${m.dueLabel ? '（' + m.dueLabel + '）' : ''}`).join('；') : '备忘清单是空的。');
   let text = lines.join('\n');
   if (text.length > maxChars) text = text.slice(0, maxChars) + '…';
   return text;
