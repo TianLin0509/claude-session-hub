@@ -51,6 +51,10 @@ fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ providers: { c
       assert(await client.eval(`document.querySelector('.floating-input-box').textContent==='保留这个草稿'`));
       assert(await client.eval(`terminalCache.get(${JSON.stringify(sid)})._codexFollowBottom===true`));
       await until(`document.querySelector('.pty-jump-latest').hidden`);
+      await _waitMs(300);
+      assert(await client.eval(`terminalCache.get(${JSON.stringify(sid)})._codexFollowBottom===true`), 'follow intent survives the prior wheel gesture');
+      await client.eval(`new Promise(resolve=>terminalCache.get(${JSON.stringify(sid)}).terminal.write('后续新输出\\r\\n',resolve))`);
+      await until(`(()=>{const b=terminalCache.get(${JSON.stringify(sid)}).terminal.buffer.active;return b.viewportY===b.baseY})()`);
       await click('#btn-backstage');
       assert.equal(await client.eval(`getComputedStyle(document.querySelector('.pty-jump-latest')).display`), 'none');
       assert.equal(await client.eval(`document.querySelectorAll('.pty-jump-latest').length`), 1);

@@ -276,6 +276,9 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
     event.stopPropagation();
     const cached = getTerminalCache(sessionId);
     if (!cached?.terminal) return;
+    // The explicit click supersedes delayed events from the previous wheel.
+    cached._codexUserScrollIntentUntil = 0;
+    cached._codexUserScrollCanAttach = true;
     cached._codexFollowBottom = true;
     if (!navigateTranscript(sessionId, cached.terminal, 'bottom')) {
       cached.terminal.scrollToBottom();
