@@ -126,7 +126,7 @@ class PhoneChannel{
    this.journal.change(()=>{row.fastTried=true;});
    if(row.noFast||!this.fastLane.eligible(row.text))return false;
    try{
-    const started=Date.now(),result=await this.fastLane.answer(row.text,{history:this.assistant.recentHistory?.()||[],userPrefs:this.assistant.memory?.read?.().user||'',...(this.assistant.frontDesk?{model:this.assistant.frontDesk().model}:{}),hubStatus:this.assistant.statusDigest?.()||''});
+    const started=Date.now(),result=await this.fastLane.answer(row.text,{history:this.assistant.recentHistory?.()||[],userPrefs:this.assistant.memory?.read?.().user||'',memory:this.assistant.memory?.read?.().memory||'',...(this.assistant.frontDesk?{model:this.assistant.frontDesk().model}:{}),hubStatus:this.assistant.statusDigest?.()||''});
     if(result.handoff){console.log('[phone] fast lane handoff',row.id.slice(0,8),Date.now()-started+'ms');return false;}
     this.journal.change(()=>{row.state='answered';row.lane='fast';row.t={...row.t,answerFound:Date.now()};});
     await this.reply('answer-'+row.id,result.text,{requestId:row.id,lane:'fast',by:this.assistant.frontDesk?.().modelLabel||result.model,...(row.t?.received?{ms:Date.now()-row.t.received}:{})},{cards:false});
