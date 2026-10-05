@@ -3,11 +3,13 @@
 const { displayTurns } = require('../core/conversation-display');
 const { createTurnCardRenderer } = require('./turn-card-renderer');
 const { createCardFollowScroll } = require('./card-follow-scroll');
+const STATUS_ONLY_EVENTS = new Set(['status-event', 'session-usage-updated', 'agent-usage']);
 
 function createSplitSessionView({ document: doc, window: win, sessionId, panel, services: s, rendererOptions }) {
   const state = { _sessionTurns: new Map() };
   let disposed = false, visible = true, busy = false, dirty = false, timer = null, statusTimer = null;
   let mode = s.initialMode(), limit = 8, hydrated = false;
+  let historyRetryNeeded = false;
   let savedReading = null;
   const overlay = doc.createElement('div'); overlay.className = 'msg-overlay';
   overlay.dataset.sessionId = sessionId;
@@ -40,15 +42,15 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
     isCard: () => mode === 'card',
     openTerminal: () => { mode = 'pty'; applyMode(); },
   });
-  function updateStatus() {
-    if (disposed) return;
-    terminal.updateStatus();
+  function updateStatus(options = {}) {
+    if (disposed || !visible || doc.hidden) return;
+    terminal.updateStatus(options);
     clearTimeout(statusTimer); statusTimer = null;
     if (visible && !doc.hidden && ['starting','running'].includes(s.session()?.nativeRuntime?.state)) {
-      statusTimer = setTimeout(updateStatus, 1000);
+      statusTimer = setTimeout(() => updateStatus({ clockOnly: true }), 1000);
     }
   }
-  function notice(message) { status.textContent = message; status.hidden = !message; }
+  function notice(message) { historyRetryNeeded = !!message; status.textContent = message; status.hidden = !message; }
   async function refresh(older = false) {
     if (disposed || !visible || doc.hidden || mode !== 'card') { dirty = true; return; }
     if (busy) { dirty = true; return; }
@@ -128,7 +130,13 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
   const listeners = events.map(channel => {
     const listener = (_event, payload) => {
       const id = payload?.sessionId || payload?.hubSessionId || payload?.session?.id;
-      if (id === sessionId) schedule();
+      if (id !== sessionId) return;
+      // Context/usage notifications update the composer, not conversation
+      // contents. Identity, transcript and lifecycle notifications still
+      // reconcile history through schedule().
+      // Metadata is also a retry opportunity after an incomplete/failed read.
+      if (STATUS_ONLY_EVENTS.has(channel) && !historyRetryNeeded) updateStatus();
+      else schedule();
     };
     s.ipc.on(channel, listener); return [channel, listener];
   });
