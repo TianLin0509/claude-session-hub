@@ -266,11 +266,32 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
   wrap.appendChild(btnDown);
   termContainer.appendChild(wrap);
 
+  const latest = doc.createElement('button');
+  latest.type = 'button';
+  latest.className = 'pty-jump-latest';
+  latest.textContent = '↓ 回到最新';
+  latest.setAttribute('aria-label', '回到最新输出并继续跟随');
+  termContainer.appendChild(latest);
+  latest.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const cached = getTerminalCache(sessionId);
+    if (!cached?.terminal) return;
+    cached._codexFollowBottom = true;
+    if (!navigateTranscript(sessionId, cached.terminal, 'bottom')) {
+      cached.terminal.scrollToBottom();
+    }
+    refreshState();
+  });
+
   function refreshState() {
     btnUp.title = minimap.ownsTranscript?.() ? '上翻一页 (PageUp)' : '上一个问题 (Ctrl+↑)';
     btnDown.title = minimap.ownsTranscript?.() ? '下翻一页 (PageDown)' : '下一个问题 (Ctrl+↓)';
     btnUp.disabled = !minimap.canNavPrev();
     btnDown.disabled = !minimap.canNavNext();
+    const buffer = getTerminalCache(sessionId)?.terminal?.buffer?.active;
+    // Full-screen Codex owns its history and exposes no xterm scroll offset;
+    // keep its escape-to-latest action available even when baseY is zero.
+    latest.hidden = !minimap.ownsTranscript?.() && !(buffer && buffer.viewportY < buffer.baseY);
   }
 
   btnUp.addEventListener('click', (e) => {
@@ -298,6 +319,7 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
     refreshState,
     dispose() {
       if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+      latest.remove();
     },
   };
 }

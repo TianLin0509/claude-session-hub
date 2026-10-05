@@ -29,7 +29,7 @@
   color: var(--turn-body-fg);
 }
 .msg-overlay.hidden { display: none; }
-#card-jump-latest {
+#card-jump-latest, .pty-jump-latest {
   position: absolute;
   bottom: calc(var(--fi-bar-h, 60px) + var(--card-session-status-h, 0px) + 14px);
   left: 50%; transform: translateX(-50%);
@@ -38,8 +38,11 @@
   background: var(--bg-secondary); color: var(--text-primary);
   box-shadow: 0 3px 14px #0003; cursor: pointer; font: 12px/1.4 system-ui, sans-serif;
 }
+.pty-jump-latest { bottom: 14px; }
+.pty-jump-latest[hidden], .terminal-panel.card-view-active .pty-jump-latest,
+.codex-backstage-enabled:not(.codex-backstage-legacy) > .pty-jump-latest { display: none; }
 #card-jump-latest[hidden], .terminal-panel:not(.card-view-active) #card-jump-latest { display: none; }
-#card-jump-latest:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 3px; }
+#card-jump-latest:focus-visible, .pty-jump-latest:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 3px; }
 .msg-overlay.question-nav-visible { padding-right: 48px; }
 
 /* Card question navigator: semantic progress rail. Inactive questions stay as
