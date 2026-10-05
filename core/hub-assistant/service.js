@@ -320,7 +320,7 @@ class AssistantService {
   memoAction(ref,change){const before=this.memos.find(ref).reminderId;const r=this.memos.update(ref,change);if(r.reminderCancelled)try{this.deps.onReminderChanged?.({action:'cancel',reminder:r.reminderCancelled});}catch{}if(r.reminderSet)this.syncReminder('set',r.reminderSet);void before;return r;}
   memoView(){return{ok:true,...this.memos.view()};}
   syncReminder(action,id){const reminder=this.reminders.list().find(x=>x.id===id);if(reminder)try{this.deps.onReminderChanged?.({action,reminder});}catch{}}
-  requestSource(id){try{const row=this.dialog.recent({limit:80}).reverse().find(e=>e.role==='user'&&e.id===id);if(row)return(row.source==='phone'?'手机':'电脑')+(row.input==='voice'?'语音':'');}catch{}return this.inputModes?.get(id)==='voice'?'语音':'';}
+  requestSource(id){try{const row=this.dialog.recent({limit:80}).reverse().find(e=>e.role==='user'&&e.id===id);if(row)return(row.source==='hub'?'电脑':'手机')+(row.input==='voice'?'语音':'');}catch{}return this.inputModes?.get(id)==='voice'?'语音':'';}
   // 手机对话记录：写入后推给助理 Tab 实时显示。
   logDialog(entry){const row=this.dialog.append(entry);try{this.deps.onDialogEntry?.(row);}catch{}return row;}
   dialogLog({limit}={}){return{ok:true,entries:this.dialog.recent({limit}),desk:this.desk?.busy()||null};}
