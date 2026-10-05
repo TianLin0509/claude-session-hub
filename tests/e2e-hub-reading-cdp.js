@@ -22,7 +22,7 @@ async function shot(name) {
   fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(result.data, 'base64'));
 }
 async function immersive(surface) {
-  await until(`!document.getElementById('btn-session-immersive').hidden`);
+  await until(`!document.getElementById('btn-session-immersive').hidden && !document.getElementById('btn-session-immersive').disabled`);
   await click(c, '#btn-session-immersive');
   await until(`document.querySelector(${JSON.stringify(surface)}).classList.contains('session-immersive')`);
   const box = await c.eval(`(()=>{const r=document.querySelector(${JSON.stringify(surface)}).getBoundingClientRect();return [r.x,r.y,r.width,r.height,innerWidth,innerHeight]})()`);
@@ -30,7 +30,7 @@ async function immersive(surface) {
 }
 async function exit() {
   await key(c, 'Escape', 'Escape', 27);
-  await until(`!document.body.classList.contains('session-immersive-active')`);
+  await until(`!document.body.classList.contains('session-immersive-active') && !document.getElementById('btn-session-immersive').disabled`);
 }
 async function fold(host, input) {
   const text = '保留未发送草稿：中文😀';
