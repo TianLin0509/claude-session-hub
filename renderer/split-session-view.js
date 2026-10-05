@@ -9,6 +9,7 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
   const state = { _sessionTurns: new Map() };
   let disposed = false, visible = true, busy = false, dirty = false, timer = null, statusTimer = null;
   let mode = s.initialMode(), limit = 8, hydrated = false;
+  let historyRetryNeeded = false;
   let savedReading = null;
   const overlay = doc.createElement('div'); overlay.className = 'msg-overlay';
   overlay.dataset.sessionId = sessionId;
@@ -49,7 +50,7 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
       statusTimer = setTimeout(() => updateStatus({ clockOnly: true }), 1000);
     }
   }
-  function notice(message) { status.textContent = message; status.hidden = !message; }
+  function notice(message) { historyRetryNeeded = !!message; status.textContent = message; status.hidden = !message; }
   async function refresh(older = false) {
     if (disposed || !visible || doc.hidden || mode !== 'card') { dirty = true; return; }
     if (busy) { dirty = true; return; }
@@ -133,7 +134,8 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
       // Context/usage notifications update the composer, not conversation
       // contents. Identity, transcript and lifecycle notifications still
       // reconcile history through schedule().
-      if (STATUS_ONLY_EVENTS.has(channel)) updateStatus();
+      // Metadata is also a retry opportunity after an incomplete/failed read.
+      if (STATUS_ONLY_EVENTS.has(channel) && !historyRetryNeeded) updateStatus();
       else schedule();
     };
     s.ipc.on(channel, listener); return [channel, listener];

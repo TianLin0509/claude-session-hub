@@ -41,8 +41,8 @@ async function click(c, selector) {
       const sid=${JSON.stringify(ids[1])}, view=sessionSplit.secondary();
       const bar=document.querySelector('.split-secondary .floating-input-bar');
       const oldInvoke=ipcRenderer.invoke, oldFull=bar._paintComposer, oldClock=bar._paintComposerClock;
-      let parseCalls=0, fullPaints=0, clockPaints=0;
-      ipcRenderer.invoke=function(channel,args,...rest){if(channel==='parse-session-transcript' && args?.hubSessionId===sid)parseCalls++;return oldInvoke.call(this,channel,args,...rest)};
+      let parseCalls=0, fullPaints=0, clockPaints=0, failNextRead=false;
+      ipcRenderer.invoke=function(channel,args,...rest){if(channel==='parse-session-transcript' && args?.hubSessionId===sid){parseCalls++;if(failNextRead){failNextRead=false;return Promise.reject(Error('controlled history read failure'))}}return oldInvoke.call(this,channel,args,...rest)};
       bar._paintComposer=function(...args){fullPaints++;return oldFull.apply(this,args)};
       bar._paintComposerClock=function(...args){clockPaints++;return oldClock.apply(this,args)};
       try {
@@ -69,7 +69,14 @@ async function click(c, selector) {
         view.setVisible(true);
         await new Promise(r=>setTimeout(r,350));
         const restoredHistoryReads=parseCalls;
-        return {metadata,clock,contentHistoryReads,hidden,restoredHistoryReads};
+        failNextRead=true;view.schedule();
+        await new Promise(r=>setTimeout(r,350));
+        const errorShown=!document.querySelector('.split-secondary .split-history-status').hidden;
+        parseCalls=0;
+        ipcRenderer.emit('status-event',{}, {sessionId:sid,contextPct:29});
+        await new Promise(r=>setTimeout(r,350));
+        const recovery={errorShown,retryReads:parseCalls,errorCleared:document.querySelector('.split-secondary .split-history-status').hidden};
+        return {metadata,clock,contentHistoryReads,hidden,restoredHistoryReads,recovery};
       } finally {ipcRenderer.invoke=oldInvoke;bar._paintComposer=oldFull;bar._paintComposerClock=oldClock;}
     })()`);
     assert.equal(result.metadata.contextPct,29);
@@ -81,6 +88,9 @@ async function click(c, selector) {
       assert.equal(result.clock.clockPaints,50);
       assert.deepEqual(result.hidden,{historyReads:0,fullPaints:0});
       assert.ok(result.restoredHistoryReads>0,'hidden content must reconcile when shown');
+      assert.equal(result.recovery.errorShown,true);
+      assert.ok(result.recovery.retryReads>0,'status updates must retry a failed history read');
+      assert.equal(result.recovery.errorCleared,true);
     }
     const output=path.resolve(process.argv[2] || 'artifacts/20261004-hub-secondary-status-codex1.json');
     fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output,JSON.stringify(result,null,2),'utf8');
