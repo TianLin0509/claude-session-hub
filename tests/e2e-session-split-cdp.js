@@ -22,7 +22,8 @@ async function main() {
     CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.resolve('tests/fixtures/codex-app-server.js'),
     CLAUDE_HUB_CLAUDE_STREAM_FIXTURE: path.resolve('tests/fixtures/claude-stream.js'), CLAUDE_HUB_CLAUDE_FIXTURE_MODE: 'normal',
     CLAUDE_HUB_FIXTURE_CONFIG_DIR: path.join(root, 'launch-config'), CLAUDE_HUB_NATIVE_FIXTURE_STORE: path.join(root, 'threads.json'),
-    CLAUDE_HUB_NATIVE_FIXTURE_TRACE: path.join(root, 'trace.jsonl') };
+    CLAUDE_HUB_NATIVE_FIXTURE_TRACE: path.join(root, 'trace.jsonl'),
+    CLAUDE_HUB_FIXTURE_SCROLL_RELEASE: path.join(root, 'scroll-release') };
   let hub, c, passed = false; const checks = [], ids = {};
   const shot = async name => { const image = await c.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(image.data, 'base64')); };
   try {
@@ -132,6 +133,7 @@ async function main() {
     await until('right following paused', () => c.eval("!sessionSplit.secondary().overlay._cardFollowController.isFollowing()"));
     const anchor = await c.eval('sessionSplit.secondary().overlay._cardFollowController.capture()');
     assert.notEqual(await c.eval(`sessions.get(${JSON.stringify(ids.codex)}).nativeRuntime.state`), 'completed', 'reading must be tested while output is still running');
+    fs.writeFileSync(env.CLAUDE_HUB_FIXTURE_SCROLL_RELEASE,'release','utf8');
     await until('stream final', () => c.eval("document.querySelector('.split-secondary .msg-overlay').innerText.includes('滚动验收结束')"));
     const finalAnchor = await c.eval('sessionSplit.secondary().overlay._cardFollowController.capture()');
     fs.writeFileSync(path.join(out, 'scroll-evidence.json'), JSON.stringify({ beforeWheel, anchor, finalAnchor }, null, 2));
