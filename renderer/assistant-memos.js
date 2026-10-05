@@ -27,11 +27,12 @@ function createMemoView({ document, ipcRenderer, showMessage = () => {}, onCount
       </button></li>`;
   }
   function timeline(m) {
-    const rows = [[m.createdAt, (m.source || '') + '记录', true]];
-    if (m.snoozes) rows.push([null, `推迟过 ${m.snoozes} 次`, true]);
-    if (m.status === 'open' && m.dueLabel) rows.push([null, (overdue(m) ? '原定 ' : '') + m.dueLabel + ' 提醒', false]);
-    if (m.status !== 'open' && m.closedAt) rows.push([m.closedAt, m.status === 'dropped' ? '不做了' : '办完了', true]);
-    return `<ol class="apm-line">${rows.map(([at, text, done]) => `<li class="${done ? 'done' : ''}"><b>${at ? esc(stamp(at)) : ''}</b><span>${esc(text)}</span></li>`).join('')}</ol>`;
+    // 每行：左列时间（已发生的写具体时刻，提醒写「周三 09:00」），右列发生了什么。
+    const rows = [[stamp(m.createdAt), (m.source || '') + '记录', true]];
+    if (m.snoozes) rows.push(['推迟', `推迟过 ${m.snoozes} 次`, true]);
+    if (m.status === 'open' && m.dueLabel) rows.push([(overdue(m) ? '原定 ' : '') + m.dueLabel, '提醒', false]);
+    if (m.status !== 'open' && m.closedAt) rows.push([stamp(m.closedAt), m.status === 'dropped' ? '不做了' : '办完了', true]);
+    return `<ol class="apm-line">${rows.map(([at, text, done]) => `<li class="${done ? 'done' : ''}"><b>${esc(at)}</b><span>${esc(text)}</span></li>`).join('')}</ol>`;
   }
   function detail(m) {
     if (!m) return `<div class="apm-none">选一条备忘，在这里看原话和处理。</div>`;
