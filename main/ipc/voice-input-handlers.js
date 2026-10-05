@@ -3,9 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('../../core/data-dir');
 const { VoiceStream, normalizeProfile, endpoint, MODEL } = require('../../core/voice-input');
+const planVoice = require('../../core/voice-tokenplan');
 
-function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = options => new VoiceStream(options) }) {
-  const filename = path.join(getHubDataDir(), 'voice-input.json');
+function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = options => new VoiceStream(options),
+  createRecorded = options => new planVoice.RecordedVoice(options) }) {
+  const dataDir = getHubDataDir();
+  const filename = path.join(dataDir, 'voice-input.json');
   const streams = new Map();
   const owners = new Set();
   function read() {
@@ -15,8 +18,11 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
   function profileKey(value) { return String(value || '').trim().toLowerCase().replace(/\\/g, '/'); }
   function view(project) {
     const c = read();
-    return { region: c.region, workspace: c.workspace || '', model: MODEL,
-      keySet: !!(c.encryptedKey || process.env.DASHSCOPE_API_KEY), envKey: !c.encryptedKey && !!process.env.DASHSCOPE_API_KEY,
+    const { engine, planKey } = planVoice.resolveEngine(c, dataDir);
+    const meteredKey = !!(c.encryptedKey || process.env.DASHSCOPE_API_KEY);
+    return { region: c.region, workspace: c.workspace || '', engine, planReady: !!planKey, meteredKeySet: meteredKey,
+      model: engine === 'tokenplan' ? planVoice.MODEL : MODEL,
+      keySet: engine === 'tokenplan' ? !!planKey : meteredKey, envKey: !c.encryptedKey && !!process.env.DASHSCOPE_API_KEY,
       profile: c.profiles?.[profileKey(project)] || { terms: '', context: '' } };
   }
   ipcMain.handle('voice:config', (_e, project) => view(project));
@@ -24,6 +30,10 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     if (streams.size) throw new Error('请先停止或取消录音，再修改配置');
     const c = read();
     c.region = patch.region; c.workspace = String(patch.workspace || '').trim(); endpoint(c);
+    if (patch.engine !== undefined) {
+      if (!['tokenplan', 'streaming'].includes(patch.engine)) throw new Error('识别方式无效');
+      c.engine = patch.engine;
+    }
     if (patch.clearKey) delete c.encryptedKey;
     if (patch.apiKey) {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('系统密钥加密不可用，无法保存 API Key');
@@ -53,12 +63,18 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     const sender = event.sender;
     if (streams.has(sender.id)) throw new Error('已有录音正在进行');
     const c = read();
+    const { engine, planKey } = planVoice.resolveEngine(c, dataDir);
     let apiKey = process.env.DASHSCOPE_API_KEY || '';
-    if (c.encryptedKey) {
-      try { apiKey = safeStorage.decryptString(Buffer.from(c.encryptedKey, 'base64')); }
-      catch { throw new Error('无法解密语音 API Key，请重新配置'); }
+    if (engine === 'tokenplan') {
+      apiKey = planKey;
+      if (!apiKey) throw new Error('未找到百炼 Token Plan 套餐 Key，请在语音设置里改用按量识别');
+    } else {
+      if (c.encryptedKey) {
+        try { apiKey = safeStorage.decryptString(Buffer.from(c.encryptedKey, 'base64')); }
+        catch { throw new Error('无法解密语音 API Key，请重新配置'); }
+      }
+      if (!apiKey) throw new Error('请先配置百炼语音 API Key');
     }
-    if (!apiKey) throw new Error('请先配置百炼语音 API Key');
     if (!owners.has(sender.id)) {
       owners.add(sender.id);
       sender.once('destroyed', () => { cancelOwner(sender.id); owners.delete(sender.id); });
@@ -66,7 +82,7 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
       sender.on('did-start-navigation', (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) cancelOwner(sender.id); });
     }
     const id = request.id;
-    const stream = createStream({ config: c, apiKey, sampleRate: request.sampleRate,
+    const stream = (engine === 'tokenplan' ? createRecorded : createStream)({ config: c, apiKey, sampleRate: request.sampleRate,
       profile: c.profiles?.[profileKey(request.project)] || {},
       onEvent: result => {
         if (streams.get(sender.id)?.id !== id) return;
