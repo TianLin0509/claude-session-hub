@@ -32,9 +32,37 @@ function fixture() {
     createView: id => ({ sessionId: id, focus() {}, resize() {}, setVisible() {}, updateStatus() {}, dispose() { calls.push(['dispose', id]); } }),
   };
   const primary = new Element();
-  const layout = createSessionSplit({ document: { createElement: () => new Element() }, window: { ResizeObserver: class { observe() {} }, queueMicrotask }, primary, buttons, services: s });
-  return { layout, calls, alerts, requests, rows, s, buttons, primary };
+  const elements = [];
+  const layout = createSessionSplit({ document: { createElement: tag => { const e = new Element(); e.tag = tag; elements.push(e); return e; } }, window: { ResizeObserver: class { observe() {} }, queueMicrotask }, primary, buttons, services: s });
+  return { layout, calls, alerts, requests, rows, s, buttons, primary, elements };
 }
+
+test('single and hidden split views do not enumerate session menus', async () => {
+  const f = fixture(); let scans = 0;
+  f.s.sessions = () => { scans++; return [...f.rows.values()]; };
+  for (let i = 0; i < 50; i++) f.layout.sync();
+  assert.equal(scans, 0);
+  await f.layout.setLayout('two');
+  assert.ok(scans > 0);
+  f.s.otherView = () => 'resources'; scans = 0;
+  f.layout.sync(); assert.equal(scans, 0);
+  f.rows.get('b').title = '新名称'; f.rows.get('b').status = 'dormant';
+  f.s.otherView = () => null; f.layout.sync();
+  const selects = f.elements.filter(e => e.tag === 'select');
+  assert.equal(selects[1].children[2].textContent, '新名称 · 休眠');
+});
+
+test('running and completion keep existing menu options; names and dormancy update', async () => {
+  const f = fixture(); await f.layout.setLayout('two');
+  const select = f.elements.find(e => e.tag === 'select');
+  const initialOptions = select.children;
+  for (const status of ['running', 'completed', 'waiting', 'idle']) { f.rows.get('b').status = status; f.layout.sync(); assert.equal(select.children, initialOptions); }
+  f.rows.get('b').title = '改名'; f.layout.sync();
+  assert.equal(select.children[2].textContent, '改名');
+  f.rows.get('b').status = 'dormant'; f.layout.sync();
+  assert.equal(select.children[2].textContent, '改名 · 休眠');
+  f.rows.delete('b'); f.layout.sync(); assert.equal(select.children.length, 3);
+});
 
 test('default is single and ordinary selection never creates a second view', async () => {
   const f = fixture();
