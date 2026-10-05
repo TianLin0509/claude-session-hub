@@ -1805,7 +1805,7 @@ const toolbarActionsEl = document.getElementById('toolbar-actions');
 const backstageButton = document.getElementById('btn-backstage');
 let sessionImmersive = null;
 function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId) {
-  sessionImmersive?.sync(visible);
+  sessionImmersive?.sync(!!getReadingSurface());
   if (!backstageButton) return;
   const mode = sessionSplit?.isSecondaryFocused() ? sessionSplit.secondary().mode() : currentView;
   backstageButton.hidden = !visible;
@@ -1824,6 +1824,21 @@ const APP_TOOLBAR_VIEWS = [
   { id: 'meeting-room-panel', label: '群聊' },
 ];
 
+function getReadingSurface() {
+  // Detached full-page tabs are above the session stage. Keep their mounted
+  // controls and content instead of copying them into a fullscreen shell.
+  for (const id of ['assistant-page', 'account-page', 'hub-workspace', 'memo-panel', ...APP_TOOLBAR_VIEWS.map(v => v.id)]) {
+    const panel = document.getElementById(id);
+    if (panelIsVisible(panel)) return panel;
+  }
+  return sessionSplit?.isSecondaryFocused() ? document.querySelector('.split-secondary') : terminalPanelEl;
+}
+function getReadingIdentity() {
+  const surface = getReadingSurface();
+  return surface === terminalPanelEl || surface?.classList.contains('split-secondary')
+    ? getFocusedSessionId() || 'home' : surface?.id;
+}
+
 function panelIsVisible(el) {
   if (!el) return false;
   if (el.hidden) return false;
@@ -1835,7 +1850,7 @@ function panelIsVisible(el) {
 // 非会话视图：面包屑只写视图名，动作区整块收起来 —— 文件 / 记忆 / ⋯ / 关闭会话
 // 这四个动作全都是对「某一个会话」做的，主页上没有会话可做。
 function paintAppToolbarForView(label) {
-  window.__assistantHide?.();
+  if (label !== '助理') window.__assistantHide?.();
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
   toolbarCrumbEl.dataset.mode = 'view';
   toolbarCrumbEl.title = '';
@@ -1990,6 +2005,9 @@ function paintAppToolbarForSession(sessionId, session, cached) {
 }
 
 function currentAppToolbarView() {
+  for (const [id, label] of [['assistant-page', '助理'], ['account-page', '账号'], ['hub-workspace', '资源与回顾'], ['memo-panel', '速记']]) {
+    if (panelIsVisible(document.getElementById(id))) return label;
+  }
   for (const view of APP_TOOLBAR_VIEWS) {
     if (panelIsVisible(document.getElementById(view.id))) return view.label;
   }
@@ -2029,6 +2047,17 @@ if (typeof MutationObserver === 'function') {
   for (const el of [terminalPanelEl, ...APP_TOOLBAR_VIEWS.map(v => document.getElementById(v.id))]) {
     if (el) _appToolbarObserver.observe(el, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
   }
+  // These tabs mount outside app-body. Watch only their own visibility, never
+  // streamed text or every descendant mutation.
+  const watchReadingTabs = () => {
+    for (const id of ['assistant-page', 'account-page', 'hub-workspace', 'memo-panel']) {
+      const el = document.getElementById(id);
+      if (el) _appToolbarObserver.observe(el, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+    }
+    scheduleAppToolbarRefresh();
+  };
+  new MutationObserver(watchReadingTabs).observe(document.body, { childList: true });
+  watchReadingTabs();
 }
 
 // Header logo opens another independent Hub process, like the taskbar task.
@@ -4057,7 +4086,7 @@ document.addEventListener('click', (e) => {
 // 卡片层要按 header / 输入栏的**实测**高度让位，不能写死常量。
 // 详见 styles/card-view.css 里 .msg-overlay 的注释。
 function measureFloatingBarVisualHeight(bar) {
-  if (!bar) return 0;
+  if (!bar || bar.classList.contains('composer-is-collapsed')) return 0;
   const barRect = bar.getBoundingClientRect();
   let top = barRect.top;
   let bottom = barRect.bottom;
@@ -4814,6 +4843,8 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   contentStack.append(nativeControls.element, ptyAttention.element, composer);
   bar.append(contentStack);
   bar.classList.add('visible');
+  require('./composer-collapse').mountComposerCollapse({ document, host: bar, before: sendBtn, input: inputBox,
+    onResize: () => { refitActiveTerminalFromPreview(); sessionSplit?.secondary()?.resize(); } });
 
   // composer 上所有随会话状态变化的东西都在这里画完一遍：状态行、快捷答复、
   // 底栏三个 chip、预算环、发送/停止。updateFloatingBarState 与每秒一次的
@@ -9341,8 +9372,8 @@ sessionSplit = require('./session-split').createSessionSplit({
 // --- Init ---
 sessionImmersive = require('./session-immersive').createSessionImmersiveController({
   document, ipcRenderer,
-  getSurface: () => sessionSplit.isSecondaryFocused() ? document.querySelector('.split-secondary') : terminalPanelEl,
-  getSessionId: getFocusedSessionId,
+  getSurface: getReadingSurface,
+  getSessionId: getReadingIdentity,
   refit: () => { refitActiveTerminalFromPreview(); sessionSplit.secondary()?.resize(); },
   onError: message => showToast(`沉浸模式切换失败：${message}`, 'error'),
 });

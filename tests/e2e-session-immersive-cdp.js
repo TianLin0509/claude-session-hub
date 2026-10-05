@@ -35,7 +35,7 @@ async function prompt(text) {
     } });
     c = await connectFirstPage(hub);
     await wait('!!window.LaunchCenter');
-    assert.equal(await c.eval(`document.getElementById('btn-session-immersive').hidden`), true);
+    assert.equal(await c.eval(`document.getElementById('btn-session-immersive').hidden`), false);
     const session = await c.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:{cwd:${JSON.stringify(root)},model:'gpt-6-astra',effort:'low',mcpProfile:'none'}})`);
     await wait(`activeSessionId===${JSON.stringify(session.id)} && !!document.querySelector('#terminal-panel .floating-input-box') && !document.getElementById('btn-session-immersive').hidden`);
     for (const width of [1500, 1000, 760]) {

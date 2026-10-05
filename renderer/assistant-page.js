@@ -38,6 +38,8 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
         <form class="ap-composer"><button type="button" class="ap-route" data-ap="route" aria-pressed="false" title="这条交给谁：自动（简单的快答，难的交给助理会话），或直接交给助理会话">自动</button><textarea rows="1" placeholder="和助理说…（Enter 发送，Shift+Enter 换行）" aria-label="和助理说"></textarea><button type="submit" class="ap-send" aria-label="发送">发送</button></form>
       </div><aside class="ap-status" hidden aria-label="助理状态"></aside></div>`;
     document.body.append(page);
+    require('./composer-collapse').mountComposerCollapse({ document, host: page.querySelector('.ap-composer'),
+      before: page.querySelector('.ap-send'), input: page.querySelector('textarea') });
     page.addEventListener('click', event => {
       const link = event.target.closest('.ap-md a[href]');
       if (link) { event.preventDefault(); const href = link.getAttribute('href') || ''; if (/^https?:\/\//i.test(href)) void ipcRenderer.invoke('open-external-url', href); else { const file = decodeURI(href.replace(/^file:\/\/\/?/i, '')); if (/^[A-Za-z]:[\\/]/.test(file)) void ipcRenderer.invoke('open-path', file); } return; }

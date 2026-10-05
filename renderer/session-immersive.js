@@ -11,7 +11,7 @@ function createSessionImmersiveController({ document, ipcRenderer, getSurface, g
   exitButton.type = 'button';
   exitButton.className = 'session-immersive-exit';
   exitButton.textContent = '退出沉浸 · Esc';
-  exitButton.setAttribute('aria-label', '退出会话沉浸模式');
+  exitButton.setAttribute('aria-label', '退出沉浸模式');
   zone.append(exitButton);
   function clear() {
     const previous = surface;
@@ -54,9 +54,7 @@ function createSessionImmersiveController({ document, ipcRenderer, getSurface, g
       target.append(zone);
       button.setAttribute('aria-pressed', 'true');
       refit();
-      const focusTarget = target.classList.contains('card-view-active')
-        ? target.querySelector('.floating-input-box') : target.querySelector('.xterm-helper-textarea');
-      focusTarget?.focus({ preventScroll: true });
+      // Reading never focuses the editor or summons the phone keyboard.
     } catch (error) { onError(error.message); }
     finally { if (request === revision) { pending = false; button.disabled = false; } }
   }
