@@ -19,7 +19,7 @@ class AssistantDesk {
     const fd = this.a.frontDesk();
     if (to !== 'assistant' && fd.mode === 'api' && this.fast?.eligible(text)) {
       try {
-        const r = await this.fast.answer(text, { history: this.a.recentHistory(), userPrefs: this.a.memory?.read?.().user || '', model: fd.model, hubStatus: this.a.statusDigest?.() || '' });
+        const r = await this.fast.answer(text, { history: this.a.recentHistory(), userPrefs: this.a.memory?.read?.().user || '', memory: this.a.memory?.read?.().memory || '', model: fd.model, hubStatus: this.a.statusDigest?.() || '' });
         if (r.handoff) console.log('[assistant] desk fast lane handoff', Math.round(r.ms || 0) + 'ms');
         if (!r.handoff) {
           this.a.logDialog({ id, role: 'assistant', lane: 'fast', by: fd.modelLabel, text: r.text, ms: Date.now() - at });
