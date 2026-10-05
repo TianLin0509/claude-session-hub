@@ -18,8 +18,8 @@ test('later work keeps every delivered native reply visible in the same compact 
   assert.deepEqual(turns[1].displayMessages.map(m => m.phase),
     ['commentary', 'final_answer', 'commentary', 'final_answer']);
   assert.equal(displayed.length, 2, 'one user message and one AI message');
-  assert.equal(displayed[1].text, 'Initial answer\n\nAdditional answer');
-  assert.deepEqual(displayed[1].chatProcessMessages.map(m => m.text), ['Inspecting', 'Continuing work']);
+  assert.equal(displayed[1].text, 'Inspecting\n\nInitial answer\n\nContinuing work\n\nAdditional answer');
+  assert.deepEqual(displayed[1].chatProcessMessages, []);
 });
 
 test('stream and final message replace the same card without duplicate text', () => {

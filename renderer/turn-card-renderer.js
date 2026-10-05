@@ -1150,15 +1150,6 @@ listen('click', (e) => {
       .catch(error=>{messageCopy.textContent='复制失败';console.warn('[conversation-copy]',error);});
     return;
   }
-  const filter = e.target.closest('[data-conversation-filter]');
-  if (filter) {
-    const results = filter.dataset.conversationFilter !== 'results';
-    filter.dataset.conversationFilter = results ? 'results' : 'all';
-    filter.setAttribute('aria-pressed', String(results));
-    filter.textContent = results ? '只看结果 · 进展已隐藏' : '全部消息';
-    doc.body.classList.toggle('conversation-results-only', results);
-    return;
-  }
   const copyBtn = e.target.closest('[data-action="code-copy"]');
   if (copyBtn) {
     const code = copyBtn.parentElement.querySelector('pre code');

@@ -86,6 +86,8 @@ async function main(){
   for(const dir of [DATA_DIR,WORKSPACE_ROOT,ARTIFACT_DIR])fs.mkdirSync(dir,{recursive:true});
   fs.writeFileSync(path.join(WORKSPACE_ROOT,'.aiwork-root'),'');
   const workspace=path.join(WORKSPACE_ROOT,'demo');fs.mkdirSync(workspace);
+  fs.writeFileSync(path.join(DATA_DIR,'config.json'),JSON.stringify({providers:{codex:{subscription_profiles:
+    ['default','second'].map(id=>({id,label:id,home:path.join(TEMP_ROOT,'codex-'+id)}))}}}));
   let hub,client;const result={checks:[],layouts:{}};
   const shot=name=>screenshot(client,path.join(ARTIFACT_DIR,name+'.png'));
   const invoke=(channel,payload)=>client.eval('ipcRenderer.invoke('+JSON.stringify(channel)+','+JSON.stringify(payload)+')');
@@ -108,8 +110,9 @@ async function main(){
     assert.equal(await view(),'card');
     for(const width of [1500,1000,760]){
       await size(width);
-      result.layouts[width]=await client.eval(`(()=>{const r=s=>{const b=document.querySelector(s).getBoundingClientRect();return {x:b.x,right:b.right,y:b.y,width:b.width}};return {brand:r('#hub-identity'),crumb:r('#toolbar-crumb'),actions:r('#toolbar-actions'),filter:r('.conversation-filter'),button:r('#btn-backstage'),controls:r('#toolbar-window-controls')}})()`);
-      const l=result.layouts[width];if(l.crumb.width){assert(l.brand.right<=l.crumb.x+1);assert(l.crumb.right<=l.actions.x+1);}assert(l.brand.right<=l.actions.x+1);assert(l.filter.right<=l.button.x+1);assert(l.button.right<=l.controls.x+1);assert(l.controls.right<=width+1);
+      result.layouts[width]=await client.eval(`(()=>{const r=s=>{const b=document.querySelector(s).getBoundingClientRect();return {x:b.x,right:b.right,y:b.y,width:b.width}};return {brand:r('#hub-identity'),crumb:r('#toolbar-crumb'),actions:r('#toolbar-actions'),button:r('#btn-backstage'),controls:r('#toolbar-window-controls')}})()`);
+      const l=result.layouts[width];if(l.crumb.width){assert(l.brand.right<=l.crumb.x+1);assert(l.crumb.right<=l.actions.x+1);}assert(l.brand.right<=l.actions.x+1);assert(l.button.right<=l.controls.x+1);assert(l.controls.right<=width+1);
+      assert.equal(await client.eval('document.querySelectorAll("[data-conversation-filter]").length'),0);
       await shot('header-'+width);
     }
     await size(1500);await clickPoint(client,'#btn-backstage');assert.equal(await view(),'pty');assert.equal(await client.eval('document.querySelector("#btn-backstage").getAttribute("aria-pressed")'),'true');

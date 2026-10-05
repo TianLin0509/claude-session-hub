@@ -61,13 +61,11 @@
 :root:is([data-theme='dark'],[data-theme='codex']) { --font-sans:'Segoe UI Variable','Segoe UI','Microsoft YaHei UI',sans-serif; }
 :root:is([data-theme='dark'],[data-theme='codex']) .app-toolbar { background:var(--surface-canvas); gap:8px; }
 :root:is([data-theme='dark'],[data-theme='codex']) .terminal-header-actions button,
-:root:is([data-theme='dark'],[data-theme='codex']) .app-toolbar .conversation-filter,
 :root:is([data-theme='dark'],[data-theme='codex']) .app-toolbar .backstage-toggle {
   min-height:30px; height:30px; padding:4px 9px; border:1px solid transparent; border-radius:var(--radius-sm);
   box-shadow:none; color:var(--fg-muted); font:500 12px/1.4 var(--font-sans); background:transparent;
 }
 :root:is([data-theme='dark'],[data-theme='codex']) .app-toolbar button:hover { color:var(--fg-strong); background:var(--surface-hover); }
-:root:is([data-theme='dark'],[data-theme='codex']) .app-toolbar .conversation-filter { background:var(--surface-raised); border-color:var(--border-subtle); color:var(--fg-default); }
 :root:is([data-theme='dark'],[data-theme='codex']) .app-toolbar button[aria-pressed='true'] { background:var(--brand-tint); color:var(--brand-text); }
 :root:is([data-theme='dark'],[data-theme='codex']) .terminal-header-actions svg { width:16px; height:16px; }
 :root:is([data-theme='dark'],[data-theme='codex']) .session-sidebar,

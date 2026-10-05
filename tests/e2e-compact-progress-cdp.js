@@ -60,8 +60,8 @@ async function main(){
     assert.equal(await c.eval('require("electron").clipboard.readText()'),'我先核对最新代码，确认普通会话和群聊的消息入口。');
     await click('#msg-overlay .conversation-response-copy');await until('require("electron").clipboard.readText().includes("分行记录布局已完成")','copy full response');
     assert.equal(await c.eval('(require("electron").clipboard.readText().match(/我先核对最新代码/g)||[]).length'),1);
-    await click('[data-conversation-filter]');assert.equal(await c.eval('getComputedStyle(document.querySelector("#msg-overlay [data-phase=final_answer]>.turn-avatar")).visibility'),'visible');await click('[data-conversation-filter]');
-    evidence.checks.push('ordinary: 12 complete grid rows, one avatar, no repeated elapsed pills, real copy, final-only filter');
+    assert.equal(await c.eval('document.querySelectorAll("[data-conversation-filter]").length'),0);
+    evidence.checks.push('ordinary: 12 complete grid rows, one avatar, no repeated elapsed pills, real copy, compact header');
     await size(1100,780);await send();
     await until('document.querySelectorAll("#msg-overlay .conversation-progress-row").length>=16','second turn live');
     await c.eval('document.getElementById("msg-overlay").focus()');await c.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Home',code:'Home',windowsVirtualKeyCode:36});await c.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Home',code:'Home',windowsVirtualKeyCode:36});await pause(250);

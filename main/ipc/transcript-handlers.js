@@ -228,6 +228,9 @@ async function parseProviderTranscript(args = {}, deps) {
         if (byCwd && validateCodexRolloutPath(byCwd)) transcriptPath = byCwd;
       }
       if (!transcriptPath) {
+        if (require('../../core/session-history-state').isFreshSession(session)) {
+          return { turns: [], transcriptPath: null, error: null };
+        }
         return { turns: [], transcriptPath: null, error: 'codex rollout not found' };
       }
       if (hubSessionId && transcriptPath && session && session.transcriptPath !== transcriptPath) {

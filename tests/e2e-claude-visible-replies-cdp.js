@@ -16,18 +16,24 @@ const file = path.join(dir, native + '.jsonl');
 const answer = '完整说明：账号、额度和后台流程。\n\n' +
   '这段说明是已经交付的正式答复，后续后台任务继续执行也应该保留在消息正文。工具调用与思考可以放在过程里，正式说明不应该随着新进展变成过程。\n\n'.repeat(18) + '说明结尾：原始回复完整保留。';
 const later = '后续结论：后台检查已经通过。';
+const explanation = '关键说明：这是工具执行前给用户的正文，不应该收进过程。';
 function row(type, id, text, second, extra = {}) {
   return { type, uuid: id, sessionId: native, timestamp: new Date(now - 60000 + second * 1000).toISOString(),
     message: { role: type, content: type === 'assistant' ? [{ type: 'text', text }] : text,
       ...(type === 'assistant' ? { id, model: 'claude-haiku-4-5-20251001', stop_reason: 'end_turn' } : {}) }, ...extra };
 }
 const first = [row('user', 'question', '请解释账号、额度和后台流程', 0),
+  row('assistant', 'explanation', explanation, 0.5, { message: { role: 'assistant', id: 'explanation',
+    stop_reason: 'tool_use', content: [{ type: 'text', text: explanation }] } }),
   row('assistant', 'initial-answer', answer, 1)];
 fs.writeFileSync(file, first.map(JSON.stringify).join('\n') + '\n');
 fs.writeFileSync(path.join(data, 'state.json'), JSON.stringify({ version: 1, cleanShutdown: true, meetings: [],
   immersiveByMeeting: {}, sessions: [{ hubId: sid, title: '完整答复与后续后台进度', kind: 'claude', cwd: work,
     ccSessionId: native, transcriptPath: file, currentModel: { id: 'claude-haiku-4-5-20251001' },
     lastMessageTime: now, savedAt: now, schemaVersion: 1 }] }));
+fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ providers: { codex: {
+  subscription_profiles: ['default', 'second'].map(id => ({ id, label: id, home: path.join(root, 'codex-' + id) }))
+} } }));
 const out = path.resolve('artifacts', '20261004-claude-visible-replies-codex1-' + Date.now());
 fs.mkdirSync(out, { recursive: true });
 (async () => {
@@ -67,6 +73,9 @@ fs.mkdirSync(out, { recursive: true });
       process:card.querySelector('.chat-process')?.textContent||'',
       processOpen:card.querySelector('.chat-process')?.open||false};})()`);
     const initial = await snapshot(); assert.equal(initial.count, 1); assert(initial.text.includes('说明结尾：'));
+    assert(initial.text.includes(explanation)); assert(!initial.process.includes(explanation));
+    assert.equal(await client.eval(`document.querySelectorAll('[data-conversation-filter]').length`), 0);
+    evidence.checks.push('foreground explanation preceding a tool stays in the main message; redundant header filter is removed');
     fs.appendFileSync(file, [row('user', 'notification', '<task-notification>finished</task-notification>', 2,
       { origin: { kind: 'task-notification' } }), row('assistant', 'progress', '继续检查工具回执。', 3,
       { message: { role: 'assistant', id: 'progress', stop_reason: 'tool_use', content: [
@@ -100,6 +109,7 @@ fs.mkdirSync(out, { recursive: true });
     await until(`document.querySelector('#msg-overlay>.turn-card.assistant .chat-message-bubble')?.textContent.includes(${JSON.stringify(later)})`, 'cold history');
     const cold = await snapshot(); assert.equal(cold.id, initial.id); assert.equal(cold.count, 1);
     assert(cold.text.includes('完整说明：')); assert(!cold.process.includes('完整说明：'));
+    assert(cold.text.includes(explanation)); assert(!cold.process.includes(explanation));
     evidence.checks.push('cold reload reprojects the disk history with both answers and no duplicate cards');
     const shot = await client.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, 'visible-replies.png'), Buffer.from(shot.data, 'base64'));

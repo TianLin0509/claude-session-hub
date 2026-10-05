@@ -15,7 +15,9 @@ function sameReply(a, b) {
 function mergeReply(group) {
   const first = group[0];
   const finals = group.filter(m => ['final', 'final_answer'].includes(m.phase) && m.text);
-  const progress = group.filter(m => m.phase === 'commentary' && m.text);
+  const body = group.filter(m => m.text &&
+    (m.displayVisibility === 'body' || ['final', 'final_answer'].includes(m.phase)));
+  const progress = group.filter(m => m.phase === 'commentary' && m.text && !body.includes(m));
   const result = finals.at(-1) || group.findLast(m => m.phase !== 'activity') || first;
   const activity = group.findLast(m => m.phase === 'activity');
   const owner = group.findLast(m => m.deliveryContext) || result;
@@ -28,10 +30,10 @@ function mergeReply(group) {
     ...first, ...result,
     // The same anchor survives a tools-only start, progress and the final reply.
     id: first.logicalTurnId,
-    text: finals.length ? finals.map(m => m.text).join('\n\n') : result.text || '',
+    text: body.length ? body.map(m => m.text).join('\n\n') : result.text || '',
     phase: finals.length ? 'final_answer' : result.phase,
     simpleChat: true,
-    chatProcessMessages: finals.length ? progress : progress.filter(m => m !== result),
+    chatProcessMessages: body.length ? progress : progress.filter(m => m !== result),
     deliveryContext: owner.deliveryContext,
     toolCalls: [...tools.values()],
     thinking: group.map(m => m.thinking).filter(Boolean).join('\n\n') || null,
