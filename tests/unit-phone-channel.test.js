@@ -239,3 +239,11 @@ test('the memo list syncs to a phone that supports it; taps on the phone change 
  h.assistant.notifications=()=>({notifications:[{id:'memo-digest:20366',kind:'memo-digest',createdAt:2,title:'备忘清单',text:'田哥，今天的备忘清单（1 条待办）：\n1. 给张工回评审意见'}]});
  await h.channel.tick();const digest=packets(h,'notice-')[0];assert.equal(digest.text,'田哥，今天的备忘清单（1 条待办）：\n1. 给张工回评审意见');assert.equal(digest.notice,true);
 });
+test('a voice note recorded on the memo page reaches the assistant as a memo request',async()=>{
+ const h=harness(),id=crypto.randomUUID();h.channel.transcribe=async()=>' 周三前把仿真报告发给王工 ';
+ h.incoming(id,{type:'voice_message',pcm:Buffer.alloc(32000).toString('base64'),durationMs:1000,memo:true});await h.channel.tick();await h.channel.tick();
+ assert.equal(h.calls[0].text,'记一下：周三前把仿真报告发给王工');
+ assert.equal(packets(h,'transcript-'+id)[0].text,'周三前把仿真报告发给王工','手机上显示的仍是原话');
+ const bad=crypto.randomUUID();h.incoming(bad,{type:'text',text:'x',memo:true});h.remote.at(-1).seq=99;await h.channel.tick();
+ assert.equal(h.calls.length,1,'只有语音能带备忘标记');
+});

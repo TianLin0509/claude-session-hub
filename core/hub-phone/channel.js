@@ -39,6 +39,7 @@ class PhoneChannel{
   if(!TYPES.includes(m.type))throw Error('消息类型不支持');
   if(m.type==='text'&&(typeof m.text!=='string'||!m.text.trim()||m.text.length>50000))throw Error('任务文字无效');
   if(m.attachment!==undefined&&(m.type!=='text'||typeof m.attachment!=='object'||typeof m.attachment.name!=='string'||m.attachment.name.length>160||typeof m.attachment.data!=='string'||m.attachment.data.length>7400000))throw Error('分享的文件无效（单个不超过 4MB）');
+  if(m.memo!==undefined&&(m.type!=='voice_message'||typeof m.memo!=='boolean'))throw Error('备忘标记无效');
   if(m.type==='voice_message'&&(typeof m.pcm!=='string'||!m.pcm||m.pcm.length>Math.ceil(MAX_VOICE_BYTES/3)*4+4))throw Error('语音无效');
   if(m.type==='set_profile'&&!['kind','model'].every(k=>typeof m[k]==='string'&&m[k]&&m[k].length<=160))throw Error('助理设置无效');
   if(m.type==='hello'&&(!Array.isArray(m.caps)||m.caps.length>20))throw Error('手机能力声明无效');
@@ -113,7 +114,10 @@ class PhoneChannel{
  async flush(limit=8){for(const row of this.journal.state.outbox.filter(r=>!r.sent).slice(0,limit)){await this.request('/send',{method:'POST',body:{id:row.id,payload:row.payload}});this.journal.change(()=>{row.sent=true;});}}
   async transcribeRow(row){
    this.journal.change(()=>{row.state='transcribing';row.t={...row.t,asrStart:Date.now()};});
-   try{const text=(await this.transcribe(row.pcm)).trim();if(!text)throw Error('没有听清，请再说一次');this.emit('transcript-'+row.id,{type:'transcript',requestId:row.id,text,auto:true});this.journal.change(()=>{row.type='text';row.text=text;row.inputMode='voice';row.state='queued';row.t={...row.t,asrDone:Date.now()};delete row.pcm;});this.log({id:row.id,role:'user',input:'voice',text,durationMs:row.durationMs});}
+   try{const heard=(await this.transcribe(row.pcm)).trim();if(!heard)throw Error('没有听清，请再说一次');this.emit('transcript-'+row.id,{type:'transcript',requestId:row.id,text:heard,auto:true});
+   // 备忘页「说一句记下来」录的话：明确告诉助理这是要记进备忘的（田哥说的原话照常保存）。
+   const text=row.memo&&!/^(记|备忘|别忘)/.test(heard)?'记一下：'+heard:heard;
+   this.journal.change(()=>{row.type='text';row.text=text;row.inputMode='voice';row.state='queued';row.t={...row.t,asrDone:Date.now()};delete row.pcm;});this.log({id:row.id,role:'user',input:'voice',text,durationMs:row.durationMs});}
    catch(e){this.log({id:row.id,role:'system',input:'voice',text:'语音识别失败：'+e.message});this.emit('voiceerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'识别失败：'+e.message});this.journal.change(()=>{row.state='rejected';row.issue=e.message;delete row.pcm;});}
    await this.flush().catch(()=>{});
   }
