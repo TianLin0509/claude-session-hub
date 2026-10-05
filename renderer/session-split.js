@@ -80,20 +80,27 @@ function createSessionSplit({ document: doc, window: win, primary, buttons, serv
   function sync() {
     const active = s.primaryId();
     if (previousPrimary !== active) { previousPrimary = active; if (view?.sessionId === active) clearRight(); }
-    const rows = s.sessions().filter(session => session.purpose !== 'chuxin-research');
-    const signature = JSON.stringify(rows.map(v => [v.id, v.title, v.kind, v.status]));
-    for (const [select, selected] of [[leftSelect, active], [rightSelect, opening || view?.sessionId]]) {
-      if (select.dataset.signature !== signature) {
-        select.dataset.signature = signature; select.replaceChildren();
-        const emptyOption = doc.createElement('option'); emptyOption.value = ''; emptyOption.textContent = '选择会话…'; select.append(emptyOption);
-        for (const session of rows) {
-          const option = doc.createElement('option'); option.value = session.id;
-          option.textContent = `${session.title || session.kind || '会话'}${session.status === 'dormant' ? ' · 休眠' : ''}`; select.append(option);
-        }
-      }
-      select.value = selected || '';
-    }
     const visible = enabled && !s.otherView() && !primary.classList.contains('home-active') && primary.style.display !== 'none';
+    // These menus are hidden in single mode and other app views. Reconcile
+    // synchronously when shown, so background status events do no menu work.
+    if (visible) {
+      const rows = s.sessions().filter(session => session.purpose !== 'chuxin-research');
+      const label = session => `${session.title || session.kind || '会话'}${session.status === 'dormant' ? ' · 休眠' : ''}`;
+      // Only displayed fields invalidate options: running/idle/completed do
+      // not change this menu's text and must not rebuild every option.
+      const signature = JSON.stringify(rows.map(v => [v.id, label(v)]));
+      for (const [select, selected] of [[leftSelect, active], [rightSelect, opening || view?.sessionId]]) {
+        if (select.dataset.signature !== signature) {
+          select.dataset.signature = signature; select.replaceChildren();
+          const emptyOption = doc.createElement('option'); emptyOption.value = ''; emptyOption.textContent = '选择会话…'; select.append(emptyOption);
+          for (const session of rows) {
+            const option = doc.createElement('option'); option.value = session.id;
+            option.textContent = label(session); select.append(option);
+          }
+        }
+        select.value = selected || '';
+      }
+    }
     workspace.classList.toggle('is-split', visible);
     // Other app views remain siblings of the workspace.
     workspace.hidden = primary.style.display === 'none';

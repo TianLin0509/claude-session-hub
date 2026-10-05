@@ -247,7 +247,21 @@ rl.on('line',line=>{
         for(let i=1;i<=40;i++)setTimeout(()=>{
           const item={id:'scroll-'+i+'-'+turn.id,type:'agentMessage',phase:'commentary',text:`第 ${i} 步：正在持续输出验证信息。\n\n本段用于检查新内容到来时阅读位置是否稳定，用户可以随时向上翻阅。`};
           turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});
-          if(i===40)finish(thread,turn,'completed','滚动验收结束。');
+          if(i===40) {
+            const release = process.env.CLAUDE_HUB_FIXTURE_SCROLL_RELEASE;
+            if (!release) { finish(thread,turn,'completed','滚动验收结束。'); return; }
+            // A real browser gesture may take longer than the scripted stream.
+            // Let the isolated test capture its reading anchor before releasing
+            // the final message. Other fixture users keep their original timing.
+            if (!process.env.CLAUDE_HUB_DATA_DIR) throw Error('scroll release requires isolation');
+            const deadline = Date.now()+30_000;
+            const timer = setInterval(() => {
+              if(turn.status!=='inProgress') { clearInterval(timer); return; }
+              if(fs.existsSync(release) || Date.now()>=deadline) {
+                clearInterval(timer); finish(thread,turn,'completed','滚动验收结束。');
+              }
+            },50);
+          }
         },i*300);
       } else if(mode==='fixture:terminal-design') {
         answer(msg.id,{turn});
