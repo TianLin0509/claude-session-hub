@@ -306,7 +306,7 @@ class AssistantService {
   // 会话是否在干活：PTY 会话以 CLI hook 报告的本轮为准（列表里的 status 对它们常显示空闲），再看原生运行态与待核对的提交。
   sessionBusy(id){const s=this.sessions().find(x=>x.id===id);if(!s?.isOpen)return false;return !!this.deps.isAgentTurnActive?.(id)||require('../session-runtime-truth').sessionRuntimeIsActive(s)||['running','waiting'].includes(s.status)||!!this.deps.hasPendingPrompt?.(id);}
   statusDigest(){
-    try{return require('./status-digest').buildStatusDigest({sessions:this.sessions().map(x=>x.isOpen&&x.status!=='waiting'&&this.sessionBusy(x.id)?{...x,status:'running'}:x),ledger:this.ledger.entries(),followed:this.followedTasks(),reminders:this.reminders.list()});}
+    try{return require('./status-digest').buildStatusDigest({sessions:this.sessions().map(x=>x.isOpen&&x.status!=='waiting'&&this.sessionBusy(x.id)?{...x,status:'running'}:x),ledger:this.ledger.entries(),followed:this.followedTasks(),reminders:this.reminders.list(),memos:this.memos?.view().open||null});}
     catch(e){console.warn('[assistant] status digest',e.message);return '';}
   }
   // 到点提醒：走与关注提醒相同的通道（手机、电脑提示、助理页对话），并标明是否补发。

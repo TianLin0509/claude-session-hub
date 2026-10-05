@@ -9,7 +9,7 @@ const when = (at, now) => (md(at) === md(now) ? '今天' : md(at)) + ' ' + hm(at
 const clip = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; };
 const STATUS = { running: '运行中', waiting: '等你回复', idle: '空闲', closed: '已关闭' };
 
-function buildStatusDigest({ sessions = [], ledger = [], followed = [], reminders = [], now = Date.now(), maxChars = 1500 } = {}) {
+function buildStatusDigest({ sessions = [], ledger = [], followed = [], reminders = [], memos = null, now = Date.now(), maxChars = 1500 } = {}) {
   const lines = [`现在是北京时间 ${when(now, now)}。以下是 AI Hub 的只读状态摘要。`];
   const work = sessions.filter(s => s.purpose !== 'hub-assistant');
   const active = work.filter(s => ['running', 'waiting'].includes(s.status));
@@ -24,6 +24,8 @@ function buildStatusDigest({ sessions = [], ledger = [], followed = [], reminder
   const upcoming = reminders.filter(r => !r.firedAt && r.at > now).sort((a, b) => a.at - b.at).slice(0, 5);
   const REP = { daily: '（每天）', weekdays: '（每个工作日）', weekly: '（每周）' };
   if (upcoming.length) lines.push('待提醒：' + upcoming.map(r => `${when(r.at, now)} ${clip(r.text, 30)}${REP[r.repeat] || ''}`).join('；'));
+  // 备忘清单（编号与各端一致）：快答据此回答「还有几条」「明天要干啥」，改清单仍交给助理会话。
+  if (memos) lines.push(memos.length ? `备忘清单（${memos.length} 条待办，编号与手机和助理页一致）：` + memos.slice(0, 12).map(m => `${m.no}. ${clip(m.title, 24)}${m.dueLabel ? '（' + m.dueLabel + '）' : ''}`).join('；') : '备忘清单是空的。');
   let text = lines.join('\n');
   if (text.length > maxChars) text = text.slice(0, maxChars) + '…';
   return text;
