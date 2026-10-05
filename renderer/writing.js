@@ -236,6 +236,7 @@
           `${kindLabel(m.kind)}${m.model ? ` · ${m.model}` : ''}`))),
       h('div', { class: 'wr-muted', text: '点「开始写」后，Hub 在后台建一个写作群，把这段话发给大家。各家的稿会出现在这里，你在这里回答问题、点评、定稿；群聊只在想看过程时打开。' }),
       h('div', { class: 'wb-row' }, go, S.studio.articles.length ? h('button', { class: 'wr-btn', text: '取消', onclick: () => { S.studio.composing = false; S.studio.sig = null; renderStudio(); } }) : null)));
+    require('./composer-collapse').mountComposerCollapse({ document, host: box.firstElementChild, before: go, input: ta });
     setTimeout(() => ta.focus(), 0);
   }
 

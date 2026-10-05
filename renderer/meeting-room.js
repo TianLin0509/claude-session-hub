@@ -7916,6 +7916,8 @@ if (typeof document !== 'undefined') (function () {
     isActive: id => activeMeetingId === id && voiceBox.getClientRects().length > 0,
     writeText: text => _setMeetingInputText(activeMeetingId, text),
   });
+  require('./composer-collapse').mountComposerCollapse({ document, host: voiceRail,
+    before: document.getElementById('mr-send-btn'), input: voiceBox });
   if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     // 走真实 handleMeetingSend，但**不 await** —— e2e 要量的正是「按下发送那一刻
     // 到看见自己那张气泡」的间隔，await 会把这个间隔藏起来。

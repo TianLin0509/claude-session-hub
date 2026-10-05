@@ -492,6 +492,8 @@ function createWorkbench(ctx) {
         h('button', { class: 'wr-btn', disabled: S.sending, text: S.sending ? '正在发…' : '发出点评，各自改一版', onclick: sendComments }),
         cols.length ? h('span', { class: 'wb-row tight wb-finalize' }, h('span', { class: 'wr-muted', text: '请' }), pick,
           h('button', { class: 'wr-btn primary', disabled: S.sending, text: '汇总定稿', onclick: () => { const col = cols.find((c) => c.sid === pick.value); if (col) sendFinalize(col); } })) : null));
+    require('./composer-collapse').mountComposerCollapse({ document, host: el,
+      before: el.querySelector('.wb-compose-row > button'), input: free });
   }
 
   function render() {
