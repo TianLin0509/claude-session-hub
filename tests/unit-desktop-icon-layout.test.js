@@ -3,10 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { verifyColumns, createDesktopIconLayout } = require('../core/desktop-icon-layout');
+const { verifyColumns, createDesktopIconLayout, desktopLayoutScript } = require('../core/desktop-icon-layout');
 const { registerDesktopOrganizerIpc } = require('../main/ipc/desktop-organizer-handlers');
 const sample = { flags: 0x801, spacingX: 90, spacingY: 100, icons: Array.from({ length: 8 }, (_, index) => ({ index, x: Math.floor(index / 6) * 90, y: index % 6 * 100 })) };
 (async () => {
+  assert.equal(desktopLayoutScript(path.join('dev', 'core'), 'resources'), path.join('dev', 'scripts', 'desktop-icon-layout.ps1'));
+  assert.equal(desktopLayoutScript(path.join('resources', 'app.asar', 'core'), 'resources'), path.join('resources', 'scripts', 'desktop-icon-layout.ps1'));
   assert.deepEqual(verifyColumns(sample), { iconCount: 8, columns: 2, rowsPerColumn: 6, verified: true });
   assert.throws(() => verifyColumns({ ...sample, flags: 0x800 }), /未启用/);
   const gaps = structuredClone(sample); gaps.icons[2].y += 100; assert.throws(() => verifyColumns(gaps), /空隙/);

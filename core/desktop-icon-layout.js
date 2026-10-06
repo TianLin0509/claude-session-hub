@@ -4,6 +4,11 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const runFile = promisify(execFile);
+function desktopLayoutScript(moduleDir = __dirname, resourcesPath = process.resourcesPath) {
+  return resourcesPath && /\.asar(?:\.unpacked)?[\\/]/i.test(moduleDir)
+    ? path.join(resourcesPath, 'scripts', 'desktop-icon-layout.ps1')
+    : path.join(moduleDir, '..', 'scripts', 'desktop-icon-layout.ps1');
+}
 
 function verifyColumns(snapshot) {
   if (!snapshot || (snapshot.flags & 0x801) !== 0x801) throw new Error('Windows 未启用自动排列和竖列排列');
@@ -41,7 +46,7 @@ function createDesktopIconLayout({ testRoot, run = runFile, platform = process.p
       return result;
     }
     if (platform !== 'win32') throw new Error('图标竖列排列目前仅支持 Windows 桌面');
-    const script = path.join(__dirname, '..', 'scripts', 'desktop-icon-layout.ps1');
+    const script = desktopLayoutScript();
     let output;
     try { output = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', script], { windowsHide: true, timeout: 15000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }); }
     catch (error) {
@@ -56,4 +61,4 @@ function createDesktopIconLayout({ testRoot, run = runFile, platform = process.p
   }
   return { arrange };
 }
-module.exports = { createDesktopIconLayout, verifyColumns };
+module.exports = { createDesktopIconLayout, verifyColumns, desktopLayoutScript };
