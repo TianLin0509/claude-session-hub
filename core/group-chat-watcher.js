@@ -703,7 +703,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
           acknowledgement = turnStart.acknowledgement;
           break;
         }
-        const pasteStillPending = pasteStillInInputBox(probeState);
+        const pasteStillPending = pasteStillInInputBox(probeState, prompt);
         if (!pasteStillPending && looksAlreadyRunning(probeState)) {
           observedRunningWithClearInput = true;
           if (runningExtends >= maxRunningExtends) {
@@ -718,7 +718,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
         attempt += 1;
         recoveryAttempts += 1;
         enterAttempts += 1;
-        console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}${pasteStillPending ? ' and a collapsed paste is still sitting in the input box' : ''}; sending late Enter recovery ${attempt}/${retryMax}`);
+        console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}${pasteStillPending ? ' and pending text is still sitting in the input box' : ''}; sending late Enter recovery ${attempt}/${retryMax}`);
         sessionManager.writeToSession(sid, '\r');
         acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, recoveryAckMs, probeState, livePtyObserver);
       }

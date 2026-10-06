@@ -7,6 +7,20 @@ const submit = require('../core/pty-prompt-submit.js');
 const BP_START = '\x1b[200~';
 const BP_END = '\x1b[201~';
 
+test('plain pending input requires the exact single-line prompt and only footer below it', () => {
+  const prompt = '请检查这次发送';
+  assert.equal(submit.pasteStillInInputBox({ lastLiveLines: ['• Working', `› ${prompt}`, 'Context 90% left'] }, prompt), true);
+  assert.equal(submit.pasteStillInInputBox({ lastLiveScreen: [`› ${prompt}`, 'Context 90% left', ...Array(20).fill('')], lastLiveLines: Array(12).fill('') }, prompt), true);
+  assert.equal(submit.hasPromptInInputLine([`❯ ${prompt}`, 'shift+tab to cycle modes'], prompt), true);
+  assert.equal(submit.hasPromptInInputLine([`❯ ${prompt}`, '──────', '  ⏸ manual mode on · ← for agents'], prompt), true);
+  assert.equal(submit.hasPromptInInputLine([`› ${prompt}`, '回答正文', '› Ask Codex to do anything'], prompt), false);
+  assert.equal(submit.hasPromptInInputLine(['› 另一份草稿', 'Context 90% left'], prompt), false);
+  assert.equal(submit.hasPromptInInputLine([`› ${prompt}`, '1. Yes', '2. No'], prompt), false);
+  assert.equal(submit.hasPromptInInputLine([`› ${prompt}`, '回答正文 shift+tab'], prompt), false);
+  assert.equal(submit.hasPromptInInputLine([`› ${prompt}`], prompt + '\n下一行'), false);
+  assert.equal(submit.pasteStillInInputBox({ lastRingTail: `› ${prompt}` }, prompt), false, '历史字节不能证明短文字仍在输入框');
+});
+
 function recorder() {
   const writes = [];
   return {
