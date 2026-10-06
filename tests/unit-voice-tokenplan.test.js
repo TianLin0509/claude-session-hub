@@ -32,10 +32,8 @@ async function main() {
   // 套餐 Key 只认套餐端点。
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-voice-plan-'));
   assert.equal(plan.tokenPlanKey(dir), '');
-  assert.deepEqual(plan.resolveEngine({}, dir), { engine: 'streaming', planKey: '' });
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ acp: { apiKey: 'sk-sp-test', baseURL: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' } }));
-  assert.deepEqual(plan.resolveEngine({}, dir), { engine: 'tokenplan', planKey: 'sk-sp-test' });
-  assert.equal(plan.resolveEngine({ engine: 'streaming' }, dir).engine, 'streaming');
+  assert.equal(plan.tokenPlanKey(dir), 'sk-sp-test');
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ acp: { apiKey: 'sk-other', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1' } }));
   assert.equal(plan.tokenPlanKey(dir), '');
 
@@ -88,7 +86,7 @@ async function main() {
   await new Promise(r => setTimeout(r, 20));
   assert.equal(live.calls.length, 2);
   assert(Math.abs(live.calls.reduce((s, c) => s + c.seconds, 0) - 14) < 0.05);
-  assert.deepEqual(events.filter(e => e.type === 'done'), [{ type: 'done', text: '第1段。第2段。' }]);
+  assert.deepEqual(events.filter(e => e.type === 'done'), [{ type: 'done', text: '第1段。第2段。', via: { tokenplan: 2 } }]);
   await assert.rejects(rec.audio(Buffer.alloc(2)), /结束/);
   // 停止前有一段静音尾巴：只送有声的部分，done 正常。
   const tail = fakeFetch(), tailEvents = [];

@@ -54,6 +54,16 @@ test('profile packets only go to phones that announced the capability; set_profi
  h.assistant.setProfile=async()=>({ok:false,error:'助理正在处理请求'});const bad=crypto.randomUUID();h.incoming(bad,{type:'set_profile',kind:'claude',model:'x'});await h.channel.tick();
  const [err]=packets(h,'profileerror-');assert.equal(err.requestId,bad);assert.match(err.text,/未切换.*正在处理/);
 });
+test('voice_prepare wakes local recognition at once; profile advertises the hub capability',async()=>{
+ const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});let prepared=0;h.channel.prepareVoice=()=>{prepared++;};
+ h.assistant.phoneProfile=async()=>({current:{kind:'claude'},kinds:[]});
+ h.incoming(crypto.randomUUID(),{type:'hello',app:'1.2.0',caps:['profile','voice_message']});await h.channel.tick();
+ assert.deepEqual(packets(h,'profile-')[0].hubCaps,['voice_prepare'],'phone only sends voice_prepare to hubs that advertise it');
+ h.incoming(crypto.randomUUID(),{type:'voice_prepare'});await h.channel.tick();
+ assert.equal(prepared,1);assert.equal(h.s.inbox.filter(r=>r.type==='voice_prepare').length,0,'not queued as a task');assert.equal(h.calls.length,0);
+ h.channel.prepareVoice=()=>{throw Error('no gpu');};h.incoming(crypto.randomUUID(),{type:'voice_prepare'});await h.channel.tick();
+ assert.equal(packets(h,'invalid-').length,0,'prepare failure never bounces a rejection to the phone');
+});
 test('an assistant that cannot start does not block the phone queue forever',async()=>{
  const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});
  h.assistant.ensureSession=async()=>({ok:false,error:'助理原会话未打开'});const first=crypto.randomUUID();h.incoming(first,{type:'text',text:'查进展'});
@@ -246,4 +256,12 @@ test('a voice note recorded on the memo page reaches the assistant as a memo req
  assert.equal(packets(h,'transcript-'+id)[0].text,'周三前把仿真报告发给王工','手机上显示的仍是原话');
  const bad=crypto.randomUUID();h.incoming(bad,{type:'text',text:'x',memo:true});h.remote.at(-1).seq=99;await h.channel.tick();
  assert.equal(h.calls.length,1,'只有语音能带备忘标记');
+});
+test('the phone can send a message straight to the assistant session, skipping the fast lane',async()=>{
+ const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});
+ let asked=0;h.channel.fastLane={eligible:()=>true,answer:async()=>{asked++;return{text:'快答',model:'q'}}};
+ h.incoming(crypto.randomUUID(),{type:'text',text:'今天天气怎么样',to:'assistant'});await h.channel.tick();
+ assert.equal(asked,0,'带了交给助理的标记就不走快答');assert.equal(h.calls.length,1);
+ const bad=crypto.randomUUID();h.incoming(bad,{type:'text',text:'x',to:'someone'});await h.channel.tick();
+ assert.equal(h.calls.length,1,'标记无效的消息不派发');
 });

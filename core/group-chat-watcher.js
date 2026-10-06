@@ -36,6 +36,7 @@ const {
   waitForPasteSettled,
   snapshotPasteMarker,
   pasteStillInInputBox,
+  hasPromptInInputLine,
 } = require('./pty-prompt-submit.js');
 
 let _deps = null;
@@ -703,7 +704,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
           acknowledgement = turnStart.acknowledgement;
           break;
         }
-        const pasteStillPending = pasteStillInInputBox(probeState);
+        const pasteStillPending = pasteStillInInputBox(probeState, prompt);
         if (!pasteStillPending && looksAlreadyRunning(probeState)) {
           observedRunningWithClearInput = true;
           if (runningExtends >= maxRunningExtends) {
@@ -718,7 +719,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
         attempt += 1;
         recoveryAttempts += 1;
         enterAttempts += 1;
-        console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}${pasteStillPending ? ' and a collapsed paste is still sitting in the input box' : ''}; sending late Enter recovery ${attempt}/${retryMax}`);
+        console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}${pasteStillPending ? ' and pending text is still sitting in the input box' : ''}; sending late Enter recovery ${attempt}/${retryMax}`);
         sessionManager.writeToSession(sid, '\r');
         acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, recoveryAckMs, probeState, livePtyObserver);
       }
@@ -1019,14 +1020,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
       await live.probe(probe);
       if (submissionReceipt.status === 'content-mismatch') return { ok: false, mode: 'none', reason: 'content-mismatch' };
       if (submissionReceipt.started) return { ok: true, mode: 'already-submitted' };
-      const lines = probe.lastLiveLines || [];
-      const inputAt = lines.findLastIndex(line => /^\s*[›❯>]\s*/.test(line));
-      const inputText = inputAt >= 0 ? lines[inputAt].replace(/^\s*[›❯>]\s*/, '').trim() : '';
-      const tailIsChrome = lines.slice(inputAt + 1).every(line => !line.trim()
-        || /^[\s─━╭╰╯╮│┌└┘┐┤├]+$/.test(line)
-        || /(?:Context \d+%|shift\+tab|\? for shortcuts)/i.test(line));
-      const promptLine = inputAt >= 0 && !/[\r\n]/.test(prompt)
-        && inputText === prompt.trim() && tailIsChrome;
+      const promptLine = hasPromptInInputLine(probe.lastLiveScreen || probe.lastLiveLines, prompt);
       // Rewriting an uncertain input can duplicate a submitted message or
       // append another copy in Claude. Only recover a visible pending input.
       // A collapsed marker hides the text; matching its size alone cannot
