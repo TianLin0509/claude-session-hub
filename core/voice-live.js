@@ -22,6 +22,7 @@ class LiveVoice {
     Object.assign(this, { rate: sampleRate, onEvent, local, recognizeSegment, context, vp, usage, log, maxSeconds });
     this.state = 'recording'; this.carry = Buffer.alloc(0); this.seconds = 0;
     this.all = Buffer.alloc(0); this.segStart = 0; this.levels = [];
+    const vad = require('./voice-vad'); this.vadStream = vad.available() ? new vad.VadStream() : null; // 有说话检测时用它断句
     this.parts = []; this.preview = ''; this.rolledBytes = 0; this.rolling = false;
     // 段内小句：uttFrom 起是正在滚动识别的那一截；committed 是本段里已定下的前半句
     this.uttFrom = 0; this.committed = []; this.uttScanned = 0; this.uttRun = 0; this.uttSpeech = false;
@@ -86,9 +87,12 @@ class LiveVoice {
       else this.api.queue.push(chunk);
     }
     // 当前段的帧音量（段起点之后的整帧）
-    const segBytes = this.all.length - this.segStart;
-    const have = this.levels.length * FRAME_BYTES;
-    if (segBytes - have >= FRAME_BYTES) this.levels.push(...plan.frameLevels(this.all.subarray(this.segStart), have));
+    if (this.vadStream) this.levels.push(...this.vadStream.push(chunk));
+    else {
+      const segBytes = this.all.length - this.segStart;
+      const have = this.levels.length * FRAME_BYTES;
+      if (segBytes - have >= FRAME_BYTES) this.levels.push(...plan.frameLevels(this.all.subarray(this.segStart), have));
+    }
     for (let f; (f = plan.cutFrame(this.levels)) > 0;) this.cut(this.segStart + f * FRAME_BYTES, f);
     if (this.mode === 'local') this.scanUtterances();
   }
@@ -193,7 +197,7 @@ class LiveVoice {
 
   async finish() {
     if (this.state !== 'recording') throw new Error('当前录音无法停止，请取消后重试');
-    this.state = 'finishing'; clearInterval(this.timer);
+    this.state = 'finishing'; clearInterval(this.timer); this.vadStream?.destroy();
     if (this.mode === 'api' && this.api && !this.api.failed) {
       this.api.end = this.all.length;
       if (this.api.ready) this.api.stream.finish().catch(error => this.apiFailed(error.message));
@@ -217,13 +221,13 @@ class LiveVoice {
   }
   fail(message) {
     if (this.ended) return;
-    this.state = 'error'; clearInterval(this.timer); this.controller.abort();
+    this.state = 'error'; clearInterval(this.timer); this.controller.abort(); this.vadStream?.destroy();
     if (this.api && !this.api.failed) this.api.stream.cancel?.();
     this.onEvent({ type: 'error', message, text: this.text() });
   }
   cancel() {
     if (this.ended) return;
-    this.state = 'cancelled'; clearInterval(this.timer); this.controller.abort();
+    this.state = 'cancelled'; clearInterval(this.timer); this.controller.abort(); this.vadStream?.destroy();
     if (this.api) this.api.stream.cancel?.();
   }
 }

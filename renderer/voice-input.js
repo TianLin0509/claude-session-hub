@@ -55,6 +55,24 @@ async function showSettings(target) {
   const vpActions = document.createElement('div'); vpActions.className = 'voice-actions';
   const vpEnroll = button('录入声纹'); const vpDelete = button('删除声纹'); vpActions.append(vpEnroll, vpDelete);
   vpBox.append(vpTitle, vpState, vpToggleWrap, vpPrompt, vpActions); engine.parentElement.after(vpBox); // 紧跟识别方式，不必滚动就能看到
+  // 使用习惯：快捷键说明、说「发送」自动发出、停顿自动结束、工作时段常驻显卡、从修改里学到的词数
+  const habit = document.createElement('fieldset'); habit.className = 'voice-voiceprint voice-habits';
+  const habitTitle = document.createElement('legend'); habitTitle.textContent = '使用习惯';
+  const hint = document.createElement('p'); hint.className = 'voice-settings-note';
+  hint.textContent = '在 Hub 里按住右 Ctrl 说话，松开结束（单独按住约 0.3 秒才开始，组合键不受影响）。';
+  const check = (label) => { const wrap = document.createElement('label'); const box = document.createElement('input'); box.type = 'checkbox'; wrap.append(box, ' ' + label); habit.append(wrap); return box; };
+  habit.append(habitTitle, hint);
+  const voiceSend = check('说完最后单独说一句「发送」，自动发出（这两个字不会进消息）');
+  const autoStopWrap = document.createElement('label'); autoStopWrap.textContent = '停顿后自动结束录音';
+  const autoStop = document.createElement('select');
+  for (const [v, l] of [['0', '关闭（点停止或松开右 Ctrl 结束）'], ['1.5', '停顿 1.5 秒'], ['2', '停顿 2 秒'], ['3', '停顿 3 秒']]) { const o = document.createElement('option'); o.value = v; o.textContent = l; autoStop.append(o); }
+  autoStopWrap.append(autoStop); habit.append(autoStopWrap);
+  const keepWarm = check('工作时段让本地模型常驻显卡（没有冷启动，期间一直占约 4.8GB 显存）');
+  const timeRow = document.createElement('div'); timeRow.className = 'voice-habit-times';
+  const timeInput = v => { const i = document.createElement('input'); i.type = 'time'; i.value = v; return i; };
+  const warmFrom = timeInput('09:00'), warmTo = timeInput('22:00'); timeRow.append(warmFrom, ' 到 ', warmTo); habit.append(timeRow);
+  const learnedNote = document.createElement('p'); learnedNote.className = 'voice-settings-note'; habit.append(learnedNote);
+  vpBox.after(habit);
   let vpRecording = null;
   const showVoiceprint = vp => {
     if (!vp.available) { vpState.textContent = '本机未安装声纹模型，暂不可用。'; vpToggle.disabled = vpEnroll.disabled = vpDelete.disabled = true; return; }
@@ -118,12 +136,18 @@ async function showSettings(target) {
     const local = config.localInstalled ? `本地识别：${localState}。` : '本地识别未安装。';
     status.textContent = `${local}${plan}${metered}`;
     showVoiceprint(config.voiceprint || { available: false });
+    const prefs = config.prefs || {};
+    voiceSend.checked = prefs.voiceSend !== false; autoStop.value = String(prefs.autoStopSec || 0);
+    if (![...autoStop.options].some(o => o.value === autoStop.value)) autoStop.value = '0';
+    keepWarm.checked = !!prefs.keepWarm?.enabled; warmFrom.value = prefs.keepWarm?.from || '09:00'; warmTo.value = prefs.keepWarm?.to || '22:00';
+    learnedNote.textContent = config.learnedCount ? `已从你的修改学会 ${config.learnedCount} 个词，已加入上面的「通用热词」（可在那里删除）。` : '识别后你在输入框里改正的词，发送时会自动学会，加入「通用热词」。';
     save.disabled = false; key.focus();
   } catch (error) { status.textContent = cleanError(error); }
   save.onclick = async () => {
     save.disabled = true;
     try {
-      await ipcRenderer.invoke('voice:save-config', { project: target.project, engine: engine.value, region: region.value, workspace: workspace.value, apiKey: key.value, clearKey, profile: { terms: terms.value, context: context.value }, global: { terms: globalTerms.value, personal: personal.value } });
+      await ipcRenderer.invoke('voice:save-config', { project: target.project, engine: engine.value, region: region.value, workspace: workspace.value, apiKey: key.value, clearKey, profile: { terms: terms.value, context: context.value }, global: { terms: globalTerms.value, personal: personal.value },
+        prefs: { voiceSend: voiceSend.checked, autoStopSec: Number(autoStop.value), keepWarm: { enabled: keepWarm.checked, from: warmFrom.value || '09:00', to: warmTo.value || '22:00' } } });
       dismiss();
     } catch (error) { status.textContent = cleanError(error); save.disabled = false; }
   };
@@ -232,7 +256,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
     try {
       const config = await ipcRenderer.invoke('voice:config', target.project);
       if (r.ended) return;
-      r.engine = config.engine;
+      r.engine = config.engine; r.prefs = config.prefs || {};
       if (!config.keySet) {
         finishUI(r);
         setStatus({ local: '本地识别未安装，可在语音设置里改用 Token Plan。', tokenplan: '未找到 Token Plan 套餐 Key，可在语音设置里改用按量识别。' }[config.engine] || '请先在语音设置中填写百炼 API Key。');
@@ -278,6 +302,9 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
         const seconds = Math.floor((Date.now() - r.started) / 1000);
         if (!sameTarget(r)) { void cancelRecording(); return; }
         if (seconds >= 295) { void stop(r); return; }
+        // 停顿自动结束：说过话之后连续安静到设定秒数就收尾（默认关闭）
+        const autoStopSec = Number(r.prefs?.autoStopSec) || 0;
+        if (autoStopSec && r.firstSoundAt != null && !r.stopping && Date.now() - r.lastSound > autoStopSec * 1000) { void stop(r); return; }
         const route = { local: '本地识别', api: '实时 API 接力（本地模型装载中）', plan: 'Token Plan 接力（本地模型装载中）' }[r.route] || '';
         setStatus(`录音 ${seconds}s · ${Date.now() - r.lastSound > 5000 ? '未检测到声音，请检查麦克风' : (route ? route + ' · ' : '') + '说完点击停止'} · 最长 5 分钟`);
       }, 250);
@@ -319,20 +346,43 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
       setStatus('已停止录音，可继续编辑。', true);
     } else setStatus('');
   }
+  // 从修改里学：记住这次识别写进去的文字，发送时与实际发出的文字比对，改正过的词交给主进程加入通用热词。
+  let lastVoice = null;
+  function learnFromEdits() {
+    const v = lastVoice; lastVoice = null;
+    if (!v || Date.now() - v.at > 10 * 60 * 1000 || !v.node || !input.contains(v.node)) return;
+    const edited = v.node.data;
+    if (!edited || edited === v.original) return;
+    ipcRenderer.invoke('voice:learn', { original: v.original, edited }).then(result => {
+      if (result?.added?.length) setStatus(`已从你的修改学会：${result.added.map(a => a.right).join('、')}（已加入通用热词，可在语音设置里删除）`, true);
+    }).catch(() => {});
+  }
   function onSubmit(event) {
-    if (!recording || recording.ended) return;
     if (event.type === 'keydown' && (event.key !== 'Enter' || event.shiftKey || event.isComposing)) return;
     if (event.type === 'click' && !event.target.closest('.floating-input-send, #mr-send-btn, #mr-workflow-btn')) return;
+    if (!recording || recording.ended) { learnFromEdits(); return; }
     void cancelRecording();
   }
+  // 说完最后单独说一句「发送」：去掉这两个字并自动发出（需前面有停顿或标点隔开，避免误触）
+  const SEND_COMMAND = /(^|[，。！？、；,.!?;\s])发送[。．.!！]?$/;
   function onEvent(_event, result) {
     const r = recording;
     if (!r || r.id !== result.id || r.ended || disposed) return;
     if (result.type === 'error') { fail(r, result.message); return; }
     if (result.route) r.route = result.route;
-    if (!updateDraft(r, result.text || '')) return;
+    let text = result.text || '';
+    const sendNow = result.type === 'done' && r.prefs?.voiceSend !== false && SEND_COMMAND.test(text);
+    if (sendNow) text = text.replace(/[，。！？、；,.!?;\s]*发送[。．.!！]?$/, '');
+    if (!updateDraft(r, text)) return;
     if (result.type !== 'done') return;
     finishUI(r);
+    lastVoice = r.textNode ? { original: text, node: r.textNode, at: Date.now() } : null;
+    if (sendNow) {
+      setStatus('语音输入完成 · 已按「发送」发出', true);
+      const send = rail.querySelector('.floating-input-send') || document.querySelector('#mr-send-btn');
+      setTimeout(() => send?.click(), 50);
+      return;
+    }
     if (!result.text) { setStatus('未识别到文字，请检查麦克风后重试。'); return; }
     // 说明这次是谁识别的（本地 / Token Plan 各几段），方便核对没有走付费路线。
     const names = { local: '本地', tokenplan: 'Token Plan', realtime: '实时 API', filtered: '已滤掉他人说话' };
@@ -348,9 +398,33 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
   input.addEventListener('keydown', onSubmit, true);
   rail.addEventListener('click', onSubmit, true);
   mic.addEventListener('contextmenu', event => { event.preventDefault(); if (activeRecording) setStatus('请先停止录音。'); else void showSettings(getTarget() || { project: '' }); });
+  // 按住右 Ctrl 说话、松开结束：单独按住 0.3 秒才开始（组合键如右 Ctrl+C 不触发）；只作用于当前可见的输入框。
+  let pttTimer = null, pttActive = false, pttAt = 0;
+  const pttUsable = () => input.isConnected && input.offsetParent !== null && isActive(getTarget()) && !document.querySelector('.voice-settings');
+  const pttRelease = () => {
+    if (pttTimer) { clearTimeout(pttTimer); pttTimer = null; }
+    if (!pttActive) return;
+    pttActive = false;
+    if (!recording || recording.ended) return;
+    if (Date.now() - pttAt < 700) void cancelRecording(); else void stop(recording); // 太短视为误按
+  };
+  const onKeyDown = event => {
+    if (event.code === 'ControlRight') {
+      if (event.repeat || pttTimer || pttActive || !pttUsable() || (recording && !recording.ended)) return;
+      pttTimer = setTimeout(() => { pttTimer = null; pttActive = true; pttAt = Date.now(); void start(); }, 300);
+      return;
+    }
+    if (pttTimer) { clearTimeout(pttTimer); pttTimer = null; } // 右 Ctrl 组合键：不开始录音
+  };
+  const onKeyUp = event => { if (event.code === 'ControlRight') pttRelease(); };
+  document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('keyup', onKeyUp, true);
+  window.addEventListener('blur', pttRelease); // 切走窗口时收不到松键事件，按松开处理
   return { dispose() {
-    disposed = true; void cancelRecording(); clearTimeout(statusTimer);
+    disposed = true; void cancelRecording(); clearTimeout(statusTimer); clearTimeout(pttTimer);
     ipcRenderer.removeListener('voice:event', onEvent);
+    document.removeEventListener('keydown', onKeyDown, true); document.removeEventListener('keyup', onKeyUp, true);
+    window.removeEventListener('blur', pttRelease);
     input.removeEventListener('beforeinput', onEdit); input.removeEventListener('input', onEdit);
     input.removeEventListener('compositionstart', onEdit); input.removeEventListener('keydown', onSubmit, true);
     rail.removeEventListener('click', onSubmit, true);

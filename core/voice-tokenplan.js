@@ -77,16 +77,24 @@ function cutFrame(levels) {
   return best;
 }
 
+// 断句用的帧「音量」：说话检测（TEN VAD）可用时用它（强噪声下也断得开），否则按音量。
+function pauseLevels(pcm16k) {
+  const vad = require('./voice-vad');
+  return vad.available() ? vad.vadLevels(pcm16k) : frameLevels(pcm16k);
+}
+
 // 服务端对纯静音段直接回 HTTP 400（实测），且静音也按秒扣额度：至少 0.2 秒有声才送识别。
+// 说话检测或音量任一认为有声就送：检测器偶尔漏掉轻声时不至于丢字。
 function hasSpeech(pcm16k) {
-  let loud = 0;
-  for (const level of frameLevels(pcm16k)) if (level > 400 && ++loud >= 10) return true;
-  return false;
+  const loudEnough = levels => { let n = 0; for (const level of levels) if (level > 400 && ++n >= 10) return true; return false; };
+  if (loudEnough(frameLevels(pcm16k))) return true;
+  const vad = require('./voice-vad');
+  return vad.available() && loudEnough(vad.vadLevels(pcm16k));
 }
 
 function splitAtPauses(pcm16k) {
   const parts = [];
-  let levels = frameLevels(pcm16k), start = 0;
+  let levels = pauseLevels(pcm16k), start = 0;
   for (let f; (f = cutFrame(levels)) > 0;) {
     parts.push(pcm16k.subarray(start, start + f * FRAME_BYTES)); start += f * FRAME_BYTES; levels = levels.slice(f);
   }
@@ -162,6 +170,7 @@ class RecordedVoice {
       text: await recognize(pcm, { apiKey, profile, fetchImpl, signal }), via: 'tokenplan' }));
     this.via = {};
     this.state = 'recording'; this.pending = Buffer.alloc(0); this.carry = Buffer.alloc(0); this.levels = [];
+    const vad = require('./voice-vad'); this.vadStream = vad.available() ? new vad.VadStream() : null; // 有说话检测时用它断句
     this.seconds = 0; this.parts = []; this.controller = new AbortController();
     this.ready = Promise.resolve();
   }
@@ -189,8 +198,10 @@ class RecordedVoice {
     this.carry = bytes.subarray(usable);
     this.seconds += usable / 2 / this.rate;
     if (this.seconds > this.maxSeconds) { this.fail('录音过长，请分段重试'); throw new Error('录音过长'); }
-    this.pending = Buffer.concat([this.pending, toRate16k(bytes.subarray(0, usable), this.rate)]);
-    this.levels.push(...frameLevels(this.pending, this.levels.length * FRAME_BYTES));
+    const chunk16k = toRate16k(bytes.subarray(0, usable), this.rate);
+    this.pending = Buffer.concat([this.pending, chunk16k]);
+    if (this.vadStream) this.levels.push(...this.vadStream.push(chunk16k));
+    else this.levels.push(...frameLevels(this.pending, this.levels.length * FRAME_BYTES));
     for (let f; (f = cutFrame(this.levels)) > 0;) {
       this.dispatch(this.pending.subarray(0, f * FRAME_BYTES));
       this.pending = Buffer.from(this.pending.subarray(f * FRAME_BYTES)); this.levels = this.levels.slice(f);
@@ -200,7 +211,7 @@ class RecordedVoice {
     if (this.state !== 'recording') throw new Error('当前录音无法停止，请取消后重试');
     this.state = 'finishing';
     this.dispatch(this.pending);
-    this.pending = Buffer.alloc(0);
+    this.pending = Buffer.alloc(0); this.vadStream?.destroy();
     void Promise.all(this.parts.map(p => p.done)).then(() => {
       if (this.ended) return;
       const filtered = this.kept().filter(k => !k).length + this.parts.reduce((n, p) => n + (p.removed || 0), 0);
@@ -210,13 +221,13 @@ class RecordedVoice {
   }
   fail(message) {
     if (this.ended) return;
-    this.state = 'error'; this.controller.abort();
+    this.state = 'error'; this.controller.abort(); this.vadStream?.destroy();
     this.onEvent({ type: 'error', message, text: this.text() });
   }
   cancel() {
     if (this.ended) return;
-    this.state = 'cancelled'; this.controller.abort();
+    this.state = 'cancelled'; this.controller.abort(); this.vadStream?.destroy();
   }
 }
 
-module.exports = { MODEL, PLAN_BASE, tokenPlanKey, toRate16k, wav, frameLevels, cutFrame, hasSpeech, splitAtPauses, speechSegments, recognize, recognizeParts, transcribePcm, joinTexts, RecordedVoice };
+module.exports = { MODEL, PLAN_BASE, tokenPlanKey, toRate16k, wav, frameLevels, pauseLevels, cutFrame, hasSpeech, splitAtPauses, speechSegments, recognize, recognizeParts, transcribePcm, joinTexts, RecordedVoice };

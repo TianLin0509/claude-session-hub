@@ -37,13 +37,14 @@ function usageLogger(dataDir) {
 
 // 声纹筛查出错（进程异常等）时本段不过滤，识别照常。
 async function screenSafely(pcm16k, vp, state, log) {
-  try { return await voiceprint.screen(pcm16k, { vp, state, frameLevels: plan.frameLevels }); }
+  try { return await voiceprint.screen(pcm16k, { vp, state, frameLevels: plan.pauseLevels }); }
   catch (error) { log('[voiceprint] 比对失败，本段不过滤：', error.message); return null; }
 }
 
 // 电脑端每段录音的识别函数（交给 RecordedVoice）。vp = { profile, speaker } 时先做声纹筛查（他人小句静音）再识别。
 // profile：云端用的词表（≤80 个，不含个人信息）；background：只给本地模型的背景文本（个人背景 + 全部热词 + 最近对话），缺省时由 profile 生成。
-function segmentRecognizer({ engine, planKey, profile, background, local, source, usage = () => {}, log = console.warn, fetchImpl, vp = null }) {
+// onConfident(vectors)：很确定是本人的小句声纹，交给声纹自动更新（见 voiceprint.adapt）。
+function segmentRecognizer({ engine, planKey, profile, background, local, source, usage = () => {}, log = console.warn, fetchImpl, vp = null, onConfident = () => {} }) {
   const context = background ?? localContext(profile);
   const recognizeOne = async (pcm16k, signal) => {
     if (engine === 'local' && local) {
@@ -64,6 +65,7 @@ function segmentRecognizer({ engine, planKey, profile, background, local, source
     const sec = pcm16k.length / 32000;
     local?.touch(); // 录音还在进行：每来一段就续期，空闲计时不在说话途中到点
     const screened = vp ? await screenSafely(pcm16k, vp, state, log) : null;
+    if (screened?.confident?.length) { try { onConfident(screened.confident); } catch (error) { log('[voiceprint] 自动更新失败：', error.message); } }
     const audio = screened ? screened.pcm : pcm16k;
     const result = plan.hasSpeech(audio) ? await recognizeOne(audio, signal) : { text: '', via: null }; // 整段都是他人：不送识别
     usage({ source, via: result.via || 'filtered', sec, ...(screened ? { scores: screened.scores, removed: screened.removed } : {}) });

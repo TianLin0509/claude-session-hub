@@ -157,6 +157,7 @@ class LocalAsr extends EventEmitter {
     clearTimeout(this.idleTimer);
     if (!this.proc || this.state === 'env' || this.state === 'starting') return;
     if (this.pending.size) { this.touch(); return; } // 正在识别时不释放，识别完再重新计时
+    if (this.keepWarm?.()) { this.touch(); return; } // 设置了「工作时段常驻显卡」且在时段内
     this.log('空闲到时，释放显存');
     this.recycle();
   }

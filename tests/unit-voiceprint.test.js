@@ -25,7 +25,7 @@ async function main() {
   await assert.rejects(voiceprint.enroll(dir, Buffer.concat([speech(6), Buffer.alloc(32000 * 10)]), { speaker: fakeSpeaker, frameLevels: plan.frameLevels }), /至少 10 秒/);
   const enrolled = await voiceprint.enroll(dir, speech(20), { speaker: fakeSpeaker, frameLevels: plan.frameLevels });
   assert.equal(enrolled.enrolled, true); assert.equal(enrolled.enabled, true); assert.equal(enrolled.threshold, 0.4);
-  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'voiceprint.json'), 'utf8'))).sort(), ['enabled', 'enrolledAt', 'model', 'seconds', 'threshold', 'vector']);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'voiceprint.json'), 'utf8'))).sort(), ['adapted', 'enabled', 'enrolledAt', 'enrolledVector', 'model', 'seconds', 'threshold', 'vector']);
   assert.throws(() => voiceprint.setOptions(dir, { threshold: 0.95 }), /0.1～0.8/);
   voiceprint.setOptions(dir, { enabled: false }); assert.equal(voiceprint.active(dir), null);
   voiceprint.setOptions(dir, { enabled: true, threshold: 0.35 }); assert.equal(voiceprint.active(dir).threshold, 0.35);
@@ -67,6 +67,14 @@ async function main() {
   const done = events.find(e => e.type === 'done');
   assert.deepEqual(done, { type: 'done', text: '一段。', via: { tokenplan: 2, filtered: 1 } });
   assert.equal(voiceEngine.describeVia(done.via), 'Token Plan 2 段 · 已滤掉他人说话 1 段');
+  // 声纹自动更新：只采用接近当初录入声纹的向量，每次微调；离得太远（别人）的不采用。
+  const before = voiceprint.load(dir).vector;
+  assert.equal(voiceprint.adapt(dir, [OTHER]), 0, '离录入声纹太远的不采用');
+  const tilted = unit([1, 0.3, 0]);
+  assert.equal(voiceprint.adapt(dir, [tilted, tilted]), 2);
+  const after = voiceprint.load(dir);
+  assert(voiceprint.cosine(after.vector, before) > 0.99 && after.vector[1] > 0, '小幅更新');
+  assert.deepEqual(after.enrolledVector, ME); assert.equal(voiceprint.status(dir).adapted, 2);
   voiceprint.remove(dir); assert.equal(voiceprint.status(dir).enrolled, false);
   // 同一段里他人插话：送去识别的音频里那句已静音。
   let sent = null;
