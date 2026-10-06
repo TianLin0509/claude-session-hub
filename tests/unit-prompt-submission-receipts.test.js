@@ -1,7 +1,25 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PromptSubmissionReceipts } = require('../core/prompt-submission-receipts');
+const { PromptSubmissionReceipts, unwrapClaudePasteEnvelope } = require('../core/prompt-submission-receipts');
+
+test('real Claude long-paste envelope preserves exact body and rejects malformed boundaries', () => {
+  const body = '材料第 1 行：中文、多行及粘贴完整性校验。\n  第二行保留缩进。\n只回复 DEEP_LONG_OK。';
+  const native = '<pasted_content id="d0dd">\n' + body + '\n</pasted_content id="d0dd">';
+  assert.equal(unwrapClaudePasteEnvelope(native), body);
+  assert.equal(unwrapClaudePasteEnvelope(native.replace(/\n/g, '\r\n')), body.replace(/\n/g, '\r\n'));
+  for (const raw of [native+'\n额外正文', '前置正文\n'+native,
+    native.replace('</pasted_content id="d0dd">','</pasted_content id="other">'),
+    native.replace('</pasted_content id="d0dd">','</pasted_content>'),
+    native.slice(0,-1)]) assert.equal(unwrapClaudePasteEnvelope(raw),raw);
+  const receipts = new PromptSubmissionReceipts();
+  const a = receipts.begin('s','a',body,100);
+  assert.equal(receipts.observe({sessionId:'s',text:unwrapClaudePasteEnvelope(native),submittedAt:110}),true);
+  assert.equal(a.status,'confirmed');
+  const b = receipts.begin('s','b',body,200);
+  receipts.observe({sessionId:'s',text:unwrapClaudePasteEnvelope(native.replace('。\n  第二行','。第二行')),submittedAt:210});
+  assert.equal(b.status,'content-mismatch');
+});
 
 test('late matching receipt corrects timeout and duplicate receipt is idempotent', () => {
   const updates = [];

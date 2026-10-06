@@ -5075,69 +5075,83 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     // 立即清 UI；原生会话继续在 Hub 输入框接收下一条消息。
     // 清空必须走 replaceContenteditableText（execCommand）：直接赋 textContent 会
     // 清掉原生撤销栈，误发之后 Ctrl+Z 拿不回原文。
-    if (inputHistory) {
-      inputHistory.push(sessionId, userText);
-      historyCursor.reset();
-    }
-    replaceContenteditableText(inputBox, '');
-    clearFloatingInputDraft(sessionId);
-    terminal.scrollToBottom();
-    const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
-      ? sessions.get(sessionId) : null;
-    if (isNativeAgent(session)) inputBox.focus();
-    else terminal.focus();
-    const kind = session && session.kind ? session.kind : null;
-    const wasRunning = session && getSessionRuntimeTruth(session).state === RUNTIME_RUNNING;
+    let session, kind, wasRunning;
     const clientSubmissionId = require('node:crypto').randomUUID();
-    // PTY 会话里的斜杠命令（/compact、/model…）是 CLI 本地命令，不一定开新的一轮，
-    // 也就没有完成信号来收尾。乐观地标「运行中」会一直挂着（2026-09-25 真机：Codex /compact
-    // 卡运行 3 分钟）。真开了一轮时 hook / rollout 会自己把状态推到运行。
-    const ptyCommand = !nativeCommand && session?.agentRuntime === 'pty' && text.trimStart().startsWith('/');
-    if (!nativeCommand && !ptyCommand) {
-      clearSessionWaitingState(sessionId);
-      if (!wasRunning) armPtyBurstFallback(sessionId);
-    }
-    if (!nativeCommand && !ptyCommand && isTranscriptCliKind(kind) && !wasRunning) markCodexCardWorking(sessionId, 'floating_input');
-    // PTY Claude 与 Codex 对齐：点下发送就显示「开始」。首条消息要先等 CLI 就绪才粘贴，
-    // 这段时间不能看起来毫无反应；STARTING 有 15s TTL，没有 hook 确认会自行过期。
-    else if (!nativeCommand && !ptyCommand && !wasRunning && session?.agentRuntime === 'pty' && isClaudeRuntimeSession(session)) {
-      const submittedAt = Date.now();
-      notePtyTurnBoundary(session);
-      observeSessionRuntime(session, { state: RUNTIME_STARTING, source: 'pty-local-submit',
-        confidence: CONFIDENCE_SEMANTIC, observedAt: submittedAt, startedAt: submittedAt });
-      scheduleSessionListRender();
-    }
-
-    // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
-    //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
-    //   也走 transcript reload 路径，但 Claude CLI 通常等 LLM call 启动才把 user entry append
-    //   到 JSONL（实测 1-3s 滞后）。聊天 app 标准做法是发出即 mount，待权威 entry 到时 dedup。
-    // 2026-09-07：这里原来逐家列 claude / codex / kimi，把 Gemini 漏在外面 —— Gemini 同样
-    //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
-    //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
-    const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
-    const acpQueueing = session?.runtimeBackend === 'acp' && ['running','waiting'].includes(session.nativeRuntime?.state);
-    const optimisticReceipt = isNativeAgent(session) || (session?.purpose === 'hub-assistant' && !nativeCommand && !ptyCommand)
-      ? { clientSubmissionId } : {};
-    if ((pane.isCard ? pane.isCard() : currentView === 'card') && cardCapableKind && !acpQueueing && typeof mountOptimisticUserCard === 'function') {
-      try {
-        if (pane.optimistic) pane.optimistic(text, kind, optimisticReceipt);
-        else mountOptimisticUserCard(sessionId, text, kind, optimisticReceipt);
-      } catch (err) {
-        console.warn('[optimistic user-card] mount failed:', err);
+    try {
+      if (inputHistory) {
+        inputHistory.push(sessionId, userText);
+        historyCursor.reset();
       }
-    }
+      replaceContenteditableText(inputBox, '');
+      clearFloatingInputDraft(sessionId);
+      terminal.scrollToBottom();
+      session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
+        ? sessions.get(sessionId) : null;
+      if (isNativeAgent(session)) inputBox.focus();
+      else terminal.focus();
+      kind = session && session.kind ? session.kind : null;
+      wasRunning = session && getSessionRuntimeTruth(session).state === RUNTIME_RUNNING;
+      // PTY 会话里的斜杠命令（/compact、/model…）是 CLI 本地命令，不一定开新的一轮，
+      // 也就没有完成信号来收尾。乐观地标「运行中」会一直挂着（2026-09-25 真机：Codex /compact
+      // 卡运行 3 分钟）。真开了一轮时 hook / rollout 会自己把状态推到运行。
+      const ptyCommand = !nativeCommand && session?.agentRuntime === 'pty' && text.trimStart().startsWith('/');
+      if (!nativeCommand && !ptyCommand) {
+        clearSessionWaitingState(sessionId);
+        if (!wasRunning) armPtyBurstFallback(sessionId);
+      }
+      if (!nativeCommand && !ptyCommand && isTranscriptCliKind(kind) && !wasRunning) markCodexCardWorking(sessionId, 'floating_input');
+      // PTY Claude 与 Codex 对齐：点下发送就显示「开始」。首条消息要先等 CLI 就绪才粘贴，
+      // 这段时间不能看起来毫无反应；STARTING 有 15s TTL，没有 hook 确认会自行过期。
+      else if (!nativeCommand && !ptyCommand && !wasRunning && session?.agentRuntime === 'pty' && isClaudeRuntimeSession(session)) {
+        const submittedAt = Date.now();
+        notePtyTurnBoundary(session);
+        observeSessionRuntime(session, { state: RUNTIME_STARTING, source: 'pty-local-submit',
+          confidence: CONFIDENCE_SEMANTIC, observedAt: submittedAt, startedAt: submittedAt });
+        scheduleSessionListRender();
+      }
 
-    // 2026-09-03：这里以前是开环的 —— 写完 paste 就按 700/900/1100ms 盲发三次 \r，
-    //   发完不管。长 prompt 时 node-pty 的 inSocket 队列还没排空，三个 \r 全被并进
-    //   BP_END 那一块当粘贴尾巴吃掉，内容折叠成 [Pasted text +N lines] 躺在输入框里，
-    //   没人再按回车、也没有任何提示。现在整条交给主进程闭环：
-    //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
-    //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
-    clearFloatingInputStuck(bar);
+      // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
+      //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
+      //   也走 transcript reload 路径，但 Claude CLI 通常等 LLM call 启动才把 user entry append
+      //   到 JSONL（实测 1-3s 滞后）。聊天 app 标准做法是发出即 mount，待权威 entry 到时 dedup。
+      // 2026-09-07：这里原来逐家列 claude / codex / kimi，把 Gemini 漏在外面 —— Gemini 同样
+      //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
+      //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
+      const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
+      const acpQueueing = session?.runtimeBackend === 'acp' && ['running','waiting'].includes(session.nativeRuntime?.state);
+      const optimisticReceipt = isNativeAgent(session) || (session?.purpose === 'hub-assistant' && !nativeCommand && !ptyCommand)
+        ? { clientSubmissionId } : {};
+      if ((pane.isCard ? pane.isCard() : currentView === 'card') && cardCapableKind && !acpQueueing && typeof mountOptimisticUserCard === 'function') {
+        try {
+          if (pane.optimistic) pane.optimistic(text, kind, optimisticReceipt);
+          else mountOptimisticUserCard(sessionId, text, kind, optimisticReceipt);
+        } catch (err) {
+          console.warn('[optimistic user-card] mount failed:', err);
+        }
+      }
+
+      // 2026-09-03：这里以前是开环的 —— 写完 paste 就按 700/900/1100ms 盲发三次 \r，
+      //   发完不管。长 prompt 时 node-pty 的 inSocket 队列还没排空，三个 \r 全被并进
+      //   BP_END 那一块当粘贴尾巴吃掉，内容折叠成 [Pasted text +N lines] 躺在输入框里，
+      //   没人再按回车、也没有任何提示。现在整条交给主进程闭环：
+      //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
+      //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
+      clearFloatingInputStuck(bar);
+    } catch (error) {
+      // History and optimistic UI precede dispatch. A synchronous error here
+      // must not leave a cleared composer looking like a completed send.
+      console.warn('[floating-input] preparation failed before dispatch:', error);
+      if (!readContenteditablePlainText(inputBox)) {
+        floatingInputDrafts.set(sessionId, text);
+        try { replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox); }
+        catch (restoreError) { inputBox.textContent = text; console.warn('[floating-input] draft restore failed:', restoreError); }
+      }
+      showToast('消息未发送：' + (error.message || '界面准备异常') + '。原文保留在输入框，可重试', 'error');
+      return;
+    }
     const delivery = nativeCommand ? null : beginPromptDelivery(clientSubmissionId);
     if (delivery) floatingPromptDeliveries.set(sessionId, delivery);
-    ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId, memoryIndex: true }).then((result) => {
+    Promise.resolve().then(() => ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId, memoryIndex: true })).then((result) => {
       if (nativeCommand) {
         if (feedbackSequence !== commandFeedbackSequence) return;
         const failed = !result?.ok || result.sendStatus === 'stuck';
@@ -5146,7 +5160,13 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
           : (result.commandOutput || (['native-command','acp-command'].includes(result.mode) ? '命令已执行。' : '已提交给引擎，执行进度见卡片。')), failed);
         return;
       }
-      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
+      if (floatingPromptDeliveries.get(sessionId) !== delivery) {
+        if (delivery.status !== 'confirmed' && result?.receipt?.status !== 'confirmed' && !result?.ok && !result?.unconfirmed) {
+          const excerpt = text.replace(/\s+/g, ' ').slice(0, 32);
+          showToast(`较早的消息${result?.notSent ? '未发送' : '发送未完成'}（${excerpt}）：${result?.message || result?.error || '发送失败'}。可按↑找回原文${result?.notSent ? '' : '，请先到后台核对'}`, 'error');
+        }
+        return;
+      }
       if (result?.ok && result.mode === 'native-command') {
         updateFloatingPromptReceipt({sessionId,clientSubmissionId,status:'confirmed'});
         showToast('原生命令已完成', 'success');
@@ -5203,8 +5223,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
         if (feedbackSequence === commandFeedbackSequence) commandFeedback.show(text.trim(), err.message || '命令提交失败', true);
         return;
       }
-      if (floatingPromptDeliveries.get(sessionId) !== delivery
-          || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
+      if (floatingPromptDeliveries.get(sessionId) !== delivery) {
+        if (delivery.status !== 'confirmed') showToast(`较早的消息提交未确认（${text.replace(/\s+/g, ' ').slice(0, 32)}）：${err.message || '发送通道异常'}。请到后台核对，可按↑找回原文`, 'error');
+        return;
+      }
+      if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
       if (isNativeAgent(session)) showToast('发送未完成：' + err.message, 'error');
       else reportFloatingSendFailure(sessionId, inputBox, text, err && err.message || '发送通道异常');
