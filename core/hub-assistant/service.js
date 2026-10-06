@@ -324,7 +324,7 @@ class AssistantService {
   // 资料口播：田哥主动提出才做（2026-10-06）。拆章、写稿、合成都在后台，做完发一条提醒。
   get podcasts(){
     if(!this._podcasts&&this.deps.podcast){const {PodcastStudio}=require('./podcast/studio');
-      this._podcasts=new PodcastStudio({dataDir:this.deps.dataDir,...this.deps.podcast,onChange:()=>{try{this.deps.onPodcastsChanged?.();}catch{}},onDone:m=>this.podcastDone(m)});}
+      this._podcasts=new PodcastStudio({dataDir:this.deps.dataDir,...this.deps.podcast,listener:()=>{const m=this.memory?.read?.()||{};return[m.user,m.memory].filter(Boolean).join('\n');},onChange:()=>{try{this.deps.onPodcastsChanged?.();}catch{}},onDone:m=>this.podcastDone(m)});}
     return this._podcasts||null;
   }
   podcastDone(m){

@@ -11,7 +11,8 @@ async function pool(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
 }
 class PodcastStudio {
-  constructor({ dataDir, extract, writers, synthesize, onChange = () => {}, onDone = () => {}, writeLimit = 3, voiceLimit = 2 }) {
+  constructor({ dataDir, extract, writers, synthesize, listener = () => '', onChange = () => {}, onDone = () => {}, writeLimit = 3, voiceLimit = 2 }) {
+    this.listener = listener;
     this.root = path.join(dataDir, 'assistant', 'podcasts'); this.extract = extract; this.writers = writers; this.synthesize = synthesize;
     this.onChange = onChange; this.onDone = onDone; this.writeLimit = writeLimit; this.voiceLimit = voiceLimit; this.running = new Map();
     fs.mkdirSync(this.root, { recursive: true });
@@ -56,7 +57,7 @@ class PodcastStudio {
       try {
         // 导读这一集附上全书章节，讲成一张全书地图。
         const text = doc.chapters[e.n - 1].text + (e.title === '导读' ? '\n\n本书各集：' + todo.filter(x => x.title !== '导读').map(x => x.title).join('；') : '');
-        const prompt = buildPrompt({ book: m.title, chapter: e.title, index: todo.indexOf(e) + 1, total: todo.length, text });
+        const prompt = buildPrompt({ book: m.title, chapter: e.title, index: todo.indexOf(e) + 1, total: todo.length, text, listener: (() => { try { return this.listener(); } catch { return ''; } })() });
         const s = await writeScript(prompt, this.writers);
         fs.writeFileSync(path.join(this.dir(m.id), `${String(e.n).padStart(2, '0')}-稿.md`), s.text, 'utf8'); scripts.set(e.n, s);
         this.update(m.id, x => { Object.assign(x.episodes[e.n - 1], { status: 'voicing', writer: s.writer, scriptChars: s.text.length, writeMs: s.ms }); x.writer = s.writer; });

@@ -9,10 +9,12 @@ const { spawn } = require('node:child_process');
 const TEMPLATE_FILE = path.join(__dirname, 'script-prompt.md');
 const MAX_SOURCE = 12000;
 function lengthFor(chars) { return chars < 1500 ? '900～1300' : chars < 6000 ? '1400～1800' : '1800～2400'; }
-function buildPrompt({ book, chapter, index, total, text }) {
+// listener：助理沉淀的记忆（USER.md / MEMORY.md）。听众身份不写进仓库：Claude 会加载用户自己的全局规则，记忆是给退回的模型用的。
+function buildPrompt({ book, chapter, index, total, text, listener = '' }) {
   const src = String(text || '').slice(0, MAX_SOURCE);
   return fs.readFileSync(TEMPLATE_FILE, 'utf8')
     .replace('{{book}}', book).replace('{{chapter}}', chapter).replace('{{index}}', String(index)).replace('{{total}}', String(total))
+    .replace('{{listener}}', String(listener || '').replace(/^[#>].*$/gm, '').trim().slice(0, 1500) || '（暂无）')
     .replace('{{length}}', lengthFor(src.length)).replace('{{text}}', src);
 }
 // 嵌套在 Hub 里启动 CLI 时，去掉会让它误以为是子会话、或把 hook 投回 Hub 的变量。
