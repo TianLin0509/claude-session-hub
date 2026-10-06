@@ -265,3 +265,17 @@ test('the phone can send a message straight to the assistant session, skipping t
  const bad=crypto.randomUUID();h.incoming(bad,{type:'text',text:'x',to:'someone'});await h.channel.tick();
  assert.equal(h.calls.length,1,'标记无效的消息不派发');
 });
+test('the podcast list syncs to a phone that supports it, and the phone fetches one episode audio or reading text on demand',async()=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pod-'));
+ const audio=path.join(dir,'01.ogg'),text=path.join(dir,'01.md');fs.writeFileSync(audio,Buffer.from('OggS-audio'));fs.writeFileSync(text,'## 导读\n正文');
+ const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});h.s.phoneCaps=['profile','podcast'];
+ let sig='a';h.assistant.podcasts={signature:()=>sig,summary:()=>[{id:'20261006-abcdef12',title:'MBTI 手册',status:'working',episodes:[{n:1,title:'导读',status:'done',seconds:260,bytes:10,readOnly:false}]}],file:(id,n,kind)=>{if(id!=='20261006-abcdef12')throw Error('没有这一集');return kind==='audio'?audio:text;}};
+ await h.channel.tick();assert.equal(packets(h,'podcasts-').length,1);assert.equal(packets(h,'podcasts-')[0].items[0].title,'MBTI 手册');
+ await h.channel.tick();assert.equal(packets(h,'podcasts-').length,1,'没变化不重发');sig='b';await h.channel.tick();assert.equal(packets(h,'podcasts-').length,2);
+ const a=crypto.randomUUID();h.incoming(a,{type:'podcast_get',podcast:'20261006-abcdef12',episode:1,kind:'audio'});await h.channel.tick();
+ const got=packets(h,'podcast-file-'+a)[0];assert.equal(Buffer.from(got.data,'base64').toString(),'OggS-audio');assert.equal(got.requestId,a);
+ const b=crypto.randomUUID();h.incoming(b,{type:'podcast_get',podcast:'20261006-abcdef12',episode:1,kind:'text'});await h.channel.tick();assert.match(packets(h,'podcast-file-'+b)[0].text,/导读/);
+ const c=crypto.randomUUID();h.incoming(c,{type:'podcast_get',podcast:'20261006-zzzzzzzz',episode:1,kind:'audio'});await h.channel.tick();assert.match(packets(h,'podcasterror-'+c)[0].text,/没有这一集/);
+ const bad=crypto.randomUUID();h.incoming(bad,{type:'podcast_get',podcast:'../x',episode:1,kind:'audio'});await h.channel.tick();assert.equal(packets(h,'podcast-file-'+bad).length,0,'编号不合法直接拒收');
+ fs.rmSync(dir,{recursive:true,force:true});
+});

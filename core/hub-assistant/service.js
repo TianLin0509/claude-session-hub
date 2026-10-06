@@ -321,6 +321,24 @@ class AssistantService {
   memoView(){return{ok:true,...this.memos.view()};}
   syncReminder(action,id){const reminder=this.reminders.list().find(x=>x.id===id);if(reminder)try{this.deps.onReminderChanged?.({action,reminder});}catch{}}
   requestSource(id){try{const row=this.dialog.recent({limit:80}).reverse().find(e=>e.role==='user'&&e.id===id);if(row)return(row.source==='hub'?'电脑':'手机')+(row.input==='voice'?'语音':'');}catch{}return this.inputModes?.get(id)==='voice'?'语音':'';}
+  // 资料口播：田哥主动提出才做（2026-10-06）。拆章、写稿、合成都在后台，做完发一条提醒。
+  get podcasts(){
+    if(!this._podcasts&&this.deps.podcast){const {PodcastStudio}=require('./podcast/studio');
+      this._podcasts=new PodcastStudio({dataDir:this.deps.dataDir,...this.deps.podcast,onChange:()=>{try{this.deps.onPodcastsChanged?.();}catch{}},onDone:m=>this.podcastDone(m)});}
+    return this._podcasts||null;
+  }
+  podcastDone(m){
+    const done=m.episodes.filter(e=>e.status==='done'),failed=m.episodes.filter(e=>e.status==='failed').length,mins=Math.round(done.reduce((s,e)=>s+(e.seconds||0),0)/60);
+    const text=done.length?`田哥，《${m.title}》的口播做好了：${done.length} 集，约 ${mins} 分钟${failed?`（另有 ${failed} 集没做成，可以让我重做）`:''}。手机「资料」里可以听，也能看阅读版。`:`田哥，《${m.title}》的口播没做成：${m.error||m.episodes.find(e=>e.error)?.error||'原因未知'}`;
+    this.watches.addNotice({id:'podcast:'+m.id,title:'口播',kind:'podcast',label:'资料口播',text});
+  }
+  podcastSource(file){
+    const p=require('node:path'),os=require('node:os'),abs=p.resolve(String(file||''));
+    const roots=[process.env.AI_HUB_WORKSPACE_ROOT||'C:/AIWork',p.join(os.homedir(),'Desktop','claude-artifacts'),this.deps.dataDir].map(r=>p.resolve(r).toLowerCase()+p.sep);
+    if(!roots.some(r=>abs.toLowerCase().startsWith(r)))throw new Error('只能把工作区、桌面 claude-artifacts 或 Hub 数据目录里的资料做成口播');
+    if(!/\.(html?|md|txt)$/i.test(abs))throw new Error('目前支持 HTML 和 Markdown 资料');
+    return abs;
+  }
   // 手机对话记录：写入后推给助理 Tab 实时显示。
   logDialog(entry){const row=this.dialog.append(entry);try{this.deps.onDialogEntry?.(row);}catch{}return row;}
   dialogLog({limit}={}){return{ok:true,entries:this.dialog.recent({limit}),desk:this.desk?.busy()||null};}
@@ -479,6 +497,15 @@ class AssistantService {
         return response;
       }
       return this.context(args);
+    }
+    if(name==='list_podcasts'){const s=this.podcasts?.summary()||[];return{ok:true,podcasts:s.slice(0,10).map(m=>({id:m.id,title:m.title,status:m.status,episodes:m.episodes.length,done:m.episodes.filter(e=>e.status==='done').length,minutes:Math.round(m.episodes.reduce((t,e)=>t+e.seconds,0)/60)}))};}
+    if(name==='make_podcast'){
+      const current=this.currentRequest;
+      if(!hasCaller||!current||args.requestToken!==current.token||Date.now()-current.createdAt>30*60000)throw new Error('口播请求不属于当前用户回合');
+      requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
+      if(!this.podcasts)throw new Error('这台电脑还没配置口播');
+      const r=await this.podcasts.start(this.podcastSource(args.path),{title:args.title||''});
+      return{ok:true,...r,note:'已在后台制作：先写稿再合成，做好一集手机「资料」里就能听，全部完成会提醒田哥。'};
     }
     if(name==='list_memos'){const v=this.memos.view();return{ok:true,open:v.open.map(m=>({no:m.no,id:m.id,title:m.title,kind:m.kind,group:v.groups[m.group]||m.group,due:m.dueLabel||null,recordedAt:new Date(m.createdAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),raw:m.raw.slice(0,200)})),recentlyClosed:v.closed.slice(0,10).map(m=>({id:m.id,title:m.title,status:m.status}))};}
     if(name==='add_memo'||name==='update_memo'){

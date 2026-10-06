@@ -2000,6 +2000,12 @@ try {
     onReminderChanged: event => phoneService?.reminder?.(event),
     // 备忘变了：助理页实时刷新，手机通道下一轮把清单发过去。
     onMemosChanged: () => { sendToRenderer('assistant:memos-changed', {}); phoneService?.kick?.(); },
+    // 资料口播：Opus 写稿（失败退千问）、微软曉臻合成（失败退千问语音），产物在 Hub 数据目录 assistant/podcasts。
+    podcast: (() => { const electron = require('electron'), sc = require('./core/hub-assistant/podcast/script'), voice = require('./core/hub-assistant/podcast/voice'), fl = require('./core/hub-assistant/fast-lane');
+      return { extract: file => require('./core/hub-assistant/podcast/extract').extract(file, { electron }),
+        writers: [sc.claudeWriter({ cwd: getHubDataDir() }), sc.qwenWriter({ source: () => fl.fastLaneSources({ dataDir: getHubDataDir(), safeStorage: electron.safeStorage }).find(s => s.via === 'token-plan') })],
+        synthesize: (text, out) => voice.synthesize(text, out, { credentials: () => require('./core/hub-phone/voice').dashscopeCredentials({ dataDir: getHubDataDir(), safeStorage: electron.safeStorage }) }) }; })(),
+    onPodcastsChanged: () => { sendToRenderer('assistant:podcasts-changed', {}); phoneService?.kick?.(); },
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
