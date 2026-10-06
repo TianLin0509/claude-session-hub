@@ -20,6 +20,11 @@ assert.equal(dsh.authMeta['api-key'].apiKey,config.acp.apiKey);
 const patches=JSON.parse(fs.readFileSync(dsh.launch.args[dsh.launch.args.indexOf('--patch')+1],'utf8'));
 assert(patches.find(p=>p.id==='llm-pi-ai').config.providers['bailian-tpp'].models.every(m=>m.compat.supportsDeveloperRole===false),
   'Token Plan system instructions must use the supported system role');
+// Remove only the owned fixture link so the suite can safely clean its temp tree.
+const bridgeLink=path.join(dsh.launch.env.DSH_HOME,'profiles/acp/node_modules/@openma/deepseek-harness-acp');
+assert(path.resolve(bridgeLink).startsWith(path.resolve(root)+path.sep));
+assert(fs.lstatSync(bridgeLink).isSymbolicLink());assert.equal(fs.realpathSync(bridgeLink),fs.realpathSync(bridge));
+if(process.platform==='win32')fs.rmdirSync(bridgeLink);else fs.unlinkSync(bridgeLink);
 assert.throws(()=>buildAcpOptions('qwen',options,{acp:{...config.acp,baseURL:'https://api.deepseek.com/v1'}},root),/端点/);
 assert.throws(()=>buildAcpOptions('qwen',{...options,model:'deepseek-official::deepseek-v4-pro'},config,root),/命名空间/);
 const mcp=path.join(root,'mcp.json');fs.writeFileSync(mcp,JSON.stringify([{name:'tool',command:'node',args:['server.js'],env:[]}]));
