@@ -24,7 +24,8 @@ assert.ok(COMMITTEE_DISCIPLINE.includes('不是左侧抄底'), '低吸必须标�
 const sysResearch = buildSystemPromptText('委员A', 'research');
 assert.ok(sysResearch.includes('右侧交易战法纪律'), 'research system prompt 应含战法纪律底色');
 assert.ok(sysResearch.includes('追涨') && sysResearch.includes('低吸'), 'research 含追涨/低吸');
-assert.ok(sysResearch.includes('反空话铁律'), 'research 仍含反空话铁律（未被破坏）');
+assert.ok(sysResearch.includes('关键事实怎样改变判断'), 'research 保留证据要求');
+assert.ok(sysResearch.includes('讨论具体交易决策时采用'), '交易纪律按问题范围采用');
 
 // ── general 场景隔离，不被污染 ──
 const sysGeneral = buildSystemPromptText('x', 'general');

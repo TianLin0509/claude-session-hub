@@ -14,7 +14,7 @@ function fixture(t){
 test('large materials stay in immutable snapshot and normal bootstrap stays below 2048 chars',async t=>{
   const {service,replace}=fixture(t),prepared=service.preparePrompt({text:'最近有什么变化？'});
   assert.ok(prepared.text.length<2048);const view=assistantContextDisplay(prepared.text,'hub-assistant');assert.equal(view.userText,'最近有什么变化？');
-  assert.match(prepared.text,/max_output_tokens/);assert.match(prepared.text,/50000/);assert.match(prepared.text,/text\(\)/);
+  assert.match(prepared.text,/输出截断则扩大本次输出预算补读/);assert.match(prepared.text,/text\(\)/);
   assert.equal(prepared.text.includes('\n'),false,'transport frame stays exact when Codex removes boundary line breaks');
   const token=service.currentRequest.token,stored=JSON.parse(fs.readFileSync(service.snapshots.file(token),'utf8'));
   assert.equal(stored.packetHash,hashPacket(stored.packet));assert.equal(stored.packet.selectedChars,24000);

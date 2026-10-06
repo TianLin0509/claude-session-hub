@@ -8,21 +8,14 @@ const root = path.join(__dirname, '..');
 const orchestrator = require(path.join(root, 'core', 'group-chat-orchestrator.js'));
 const { buildSystemPromptText, RESEARCH_SCENE_PROMPT } = orchestrator._private;
 
-const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
-
-assert.ok(RESEARCH_SCENE_PROMPT.includes('反空话铁律'), 'research prompt must include anti-empty-phrase rule');
-for (const phrase of BANNED_PHRASES) {
-  assert.ok(RESEARCH_SCENE_PROMPT.includes(phrase), `research prompt missing banned phrase: ${phrase}`);
-}
+assert.ok(RESEARCH_SCENE_PROMPT.includes('关键事实怎样改变判断'), 'research prompt requires evidence-based conclusions');
+assert.ok(RESEARCH_SCENE_PROMPT.includes('无可靠量化时明确证据与限制'), 'uncertainty must not force invented numbers');
 
 const sysResearch = buildSystemPromptText('test researcher', 'research');
-assert.ok(sysResearch.includes('反空话铁律'), 'research system prompt must include anti-empty-phrase rule');
-for (const phrase of BANNED_PHRASES) {
-  assert.ok(sysResearch.includes(phrase), `research system prompt missing banned phrase: ${phrase}`);
-}
+assert.ok(sysResearch.includes('关键事实怎样改变判断'), 'research system prompt retains evidence requirement');
 
 const sysGeneral = buildSystemPromptText('test', 'general');
-assert.ok(!sysGeneral.includes('反空话铁律'), 'general scene must not include research anti-empty-phrase rule');
+assert.ok(!sysGeneral.includes('关键事实怎样改变判断'), 'research instructions stay in the research scene');
 
 const mrSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8');
 const startIdx = mrSrc.indexOf('research: [');

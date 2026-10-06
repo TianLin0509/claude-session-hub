@@ -40,7 +40,8 @@ test('buildSystemPromptText contains required markers and no banned terms', () =
   assert.ok(text.includes('这里是AI群聊'), 'missing group-chat scene framing');
   assert.ok(text.includes('可赞同、反对、追问、反问用户及其他群聊队友'), 'missing peer-interaction hint');
   assert.ok(text.includes('独到见解 > 全面但泛泛而谈'), 'missing 独到见解 rule');
-  assert.ok(text.includes('简单问题直答'), 'missing simple-answer fast path');
+  assert.ok(text.includes('默认在聊天正文回答'), 'chat is the default delivery format');
+  assert.ok(text.includes('Markdown 表格'), 'tables must not force an HTML artifact');
   // 2026-07-28：产物落点跟着 workspace 走。原断言写死 C:\Users\lintian\artifacts\，
   // 等于把「三家 AI 都把报告写回 home」这个 bug 锁成了正确行为。
   assert.ok(text.includes('{msgId}-{name}.html'), 'missing artifact filename template');
@@ -148,6 +149,25 @@ test('buildFirstDelta prepends system prompt only before the sid is delivered', 
   const next = orch.buildFirstDelta('s-claude', 'Again', sysText);
   assert.ok(!next.startsWith('## 规则'));
   assert.match(next, /^## 用户\nAgain\n\n请发言。$/);
+});
+
+test('rule changes are delivered once, failed delivery retries, and legacy receipts migrate', () => {
+  for (const member of members) {
+    const { orch } = fresh();
+    orch.beginTurn('Q');
+    assert.ok(orch.buildFirstDelta(member.sid, 'Q', 'OLD RULES').startsWith('OLD RULES'));
+    orch._advanceDeliveryCursors([{ sid: member.sid, promptDelivered: true }]);
+    assert.ok(!orch.buildFirstDelta(member.sid, 'Q', 'OLD RULES').startsWith('OLD RULES'));
+    assert.ok(orch.buildFirstDelta(member.sid, 'Q', 'NEW RULES').startsWith('NEW RULES'));
+    orch._advanceDeliveryCursors([{ sid: member.sid, promptDelivered: false }]);
+    assert.ok(orch.buildFirstDelta(member.sid, 'Q', 'NEW RULES').startsWith('NEW RULES'));
+    orch._advanceDeliveryCursors([{ sid: member.sid, promptDelivered: true }]);
+    assert.ok(!orch.buildFirstDelta(member.sid, 'Q', 'NEW RULES').startsWith('NEW RULES'));
+    delete orch.state.groupContextBySid[member.sid].rulesHash;
+    assert.ok(orch.buildFirstDelta(member.sid, 'Q', 'NEW RULES').startsWith('NEW RULES'));
+    orch._advanceDeliveryCursors([{ sid: member.sid, promptDelivered: true }]);
+    assert.ok(!orch.buildFirstDelta(member.sid, 'Q', 'NEW RULES').startsWith('NEW RULES'));
+  }
 });
 
 test('markDeliveredSilent sets lastDeliveredIdx and writes no messages (no per-act system prompt resend)', () => {
