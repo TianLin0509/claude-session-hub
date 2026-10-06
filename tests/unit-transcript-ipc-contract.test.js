@@ -132,6 +132,51 @@ async function main() {
   });
   console.log('Running transcript IPC contract tests...');
 
+  await test('all unused CLI seats return empty history, including preallocated Claude identity', async () => {
+    for (const kind of ['claude', 'codex', 'deepseek', 'gemini', 'kimi']) {
+      const session = { id: 'fresh', kind, freshLaunch: true,
+        ...(kind === 'claude' ? { ccSessionId: 'preallocated-id' } : {}) };
+      const deps = createDeps({ sessionManager: { getSession: () => session },
+        findTranscriptByCCSessionId: () => null, findCodexRolloutBySid: () => null });
+      const result = await parseSessionTranscript({ hubSessionId: 'fresh' }, deps);
+      assert.equal(result.error, null, kind);
+      assert.deepEqual(result.turns, [], kind);
+      session.freshLaunch = false;
+      session.kind = kind + '-resume';
+      assert.ok((await parseSessionTranscript({ hubSessionId: 'fresh' }, deps)).error, 'restored ' + kind);
+    }
+  });
+
+  await test('a new seat may publish its file path before creation, but genuine failures remain visible', async () => {
+    for (const kind of ['claude', 'gemini', 'kimi']) {
+      const session = { id: 'fresh', kind, freshLaunch: true, transcriptPath: 'pending.jsonl' };
+      let error = Object.assign(new Error('ENOENT: pending.jsonl'), { code: 'ENOENT' });
+      const deps = createDeps({ sessionManager: { getSession: () => session },
+        transcriptParserService: { parse: async () => { throw error; } } });
+      assert.equal((await parseSessionTranscript({ hubSessionId: 'fresh' }, deps)).error, null, kind);
+      error = new Error('invalid history contents');
+      assert.equal((await parseSessionTranscript({ hubSessionId: 'fresh' }, deps)).error, error.message);
+      error = Object.assign(new Error('ENOENT: pending.jsonl'), { code: 'ENOENT' });
+      session.freshLaunch = false;
+      assert.equal((await parseSessionTranscript({ hubSessionId: 'fresh' }, deps)).error, error.message);
+    }
+  });
+
+  await test('observed conversation history ends startup missing-file tolerance permanently', async () => {
+    const session = { id:'fresh', kind:'claude', freshLaunch:true, transcriptPath:'known.jsonl' };
+    let missing = false;
+    const deps = createDeps({ sessionManager: { getSession: () => session,
+      updateSessionMeta: (_id, fields) => Object.assign(session, fields) },
+      transcriptParserService: { parse: async () => {
+        if (missing) throw Object.assign(new Error('ENOENT: known.jsonl'), { code:'ENOENT' });
+        return { turns:[{role:'assistant',text:'actual answer'}], meta:{} };
+      } } });
+    assert.equal((await parseSessionTranscript({ hubSessionId:'fresh' }, deps)).turns[0].text, 'actual answer');
+    assert.equal(session.freshLaunch, false);
+    missing = true;
+    assert.equal((await parseSessionTranscript({ hubSessionId:'fresh' }, deps)).error, 'ENOENT: known.jsonl');
+  });
+
   await test('a fresh Codex CLI has welcome content, not a missing resume history error', async () => {
     const session = { id: 'fresh', kind: 'codex', status: 'idle', cwd: 'C:\\repo',
       lastMessageTime: Date.now(), lastOutputPreview: 'What brings you here?' };

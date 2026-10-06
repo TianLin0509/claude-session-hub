@@ -2930,8 +2930,10 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
       if (st && st.timer) { try { clearTimeout(st.timer); } catch {} }
       window._codexHistoryRetryState.delete(sessionId);
     }
-    if (!incremental) {
-      if (concurrentFullCards.length === 0) {
+    // A successful empty refresh can recover an earlier startup placeholder.
+    // Leave an already-rendered welcome and all optimistic/live cards intact.
+    if (!incremental || container.querySelector(':scope > .msg-overlay-placeholder:not(.session-welcome)')) {
+      if (!container.querySelector(':scope > .turn-card')) {
         container.innerHTML = require('./session-welcome').renderSessionWelcome(session, escapeHtml);
       } else {
         removeLoadingPlaceholder();

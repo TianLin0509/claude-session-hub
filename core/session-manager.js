@@ -1297,6 +1297,7 @@ class SessionManager extends EventEmitter {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
     const id = opts.id || uuid();
+    const freshLaunch = require('./session-history-state').isFreshLaunch(kind, opts);
     const isAcp = isAcpKind(kind);
     const isProviderCli = ['qwen','glm'].includes(kind.replace(/-resume$/, '')) && require('./agent-runtime-mode').agentRuntimeMode() !== 'native';
     const isClaude = kind === 'claude' || kind === 'claude-resume';
@@ -1731,6 +1732,7 @@ class SessionManager extends EventEmitter {
     const info = {
       id,
       kind,
+      freshLaunch,
       ...(isNativeClaude ? { runtimeBackend: 'claude-stream-json', nativeRuntime: ptyProcess.runtime,
         ccSessionId: ptyProcess.sessionId,
         nativeConfig: require('./claude-native-launch').claudeNativeResumeConfig({ ...opts,
@@ -2945,6 +2947,7 @@ class SessionManager extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
     if (s.info.runtimeBackend === 'claude-stream-json' && event.signalSource !== 'claude-stream-json') return null;
+    s.info.freshLaunch = false;
     const observedAt = Number(event.observedAt || event.startedAt) || Date.now();
     s.agentTurnStartSeq = (s.agentTurnStartSeq || 0) + 1;
     s.agentTurnStartedAt = observedAt;
@@ -3154,6 +3157,7 @@ class SessionManager extends EventEmitter {
       meetingId: info.meetingId || null,
       title: info.title,
       kind: info.kind,
+      freshLaunch: info.freshLaunch === true,
       cwd: info.cwd,
       unreadCount: info.unreadCount,
       lastMessageTime: info.lastMessageTime,

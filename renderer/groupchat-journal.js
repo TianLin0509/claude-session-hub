@@ -20,13 +20,13 @@ function key(meeting, message) {
   const act = message.committeeAct ? `${message.committeeAct}#${message.committeeRound || ''}` : '';
   return JSON.stringify([meeting.id, message.sid, message.sourceMessage || message.turnNum || message.id, act]);
 }
-// defaults 只在这张卡从没被用户折叠/展开过时生效（编排群的成员卡默认折叠成一行）。
+// All new answers are readable immediately. Stored choices are explicit actions.
 function preference(id, defaults = null) {
   if (!preferences.has(id)) {
     const stored=read('gc-journal:'+id, null);
     preferences.set(id, stored && typeof stored === 'object'
       ? {expanded:stored.expanded===true,minimized:stored.minimized===true}
-      : {expanded:false,minimized:!!(defaults && defaults.minimized)});
+      : {expanded:true,minimized:false});
   }
   return preferences.get(id);
 }
@@ -55,6 +55,7 @@ function actions({copy = '', prompt = '', attempt = '', resync = '', retry = '',
 function disclosure() { return '<button type="button" class="gc-journal-expand" data-copy-exclude data-journal-action="expand" aria-expanded="false" hidden>展开全文</button>'; }
 function enhance(panel) {
   if (!panel) return;
+  require('./message-disclosure-state').restore(panel);
   for (const article of panel.querySelectorAll('[data-journal-key]')) {
     const text = article.querySelector('.gc-journal-text');
     if (!text) continue;
