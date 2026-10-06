@@ -111,7 +111,10 @@ class LocalAsr extends EventEmitter {
       this.setState('loading');
       const t = Date.now();
       try { await this.call('load', {}, 120000); }
-      catch (error) { if (proc === this.proc) this.setState('env'); throw error; }
+      catch (error) {
+        if (proc === this.proc) { this.setState('env'); this.recycle(); } // 查显存本身也会占约 200MB：换个干净的环境进程
+        throw error;
+      }
       if (proc !== this.proc) throw new Error('本地识别进程已更换');
       this.setState('ready'); this.touch();
       this.log(`模型已装入显卡 ${Date.now() - t}ms`);
@@ -119,10 +122,13 @@ class LocalAsr extends EventEmitter {
     })().finally(() => { this.loading = null; });
     return this.loading;
   }
-  async transcribe(pcms, context = '') {
+  // timeoutMs：本地正常每 8 秒语音不到 1 秒；超时多半是显卡被别的程序挤占，此时卸掉模型把显存还回去，调用方改走 Token Plan。
+  async transcribe(pcms, context = '', timeoutMs = this.requestTimeoutMs) {
     if (!this.ready) throw new Error('本地模型未就绪');
     this.touch();
-    const r = await this.call('transcribe', { pcm: pcms.map(p => Buffer.from(p).toString('base64')), context });
+    let r;
+    try { r = await this.call('transcribe', { pcm: pcms.map(p => Buffer.from(p).toString('base64')), context }, timeoutMs); }
+    catch (error) { if (/超时/.test(error.message)) { this.log('本地识别过慢（显卡可能被占用），释放模型'); this.release(); } throw error; }
     this.touch();
     if (!Array.isArray(r.texts) || r.texts.length !== pcms.length) throw new Error('本地识别返回数量不符');
     return r.texts.map(t => String(t || '').trim());
@@ -150,10 +156,14 @@ class LocalAsr extends EventEmitter {
   release() {
     clearTimeout(this.idleTimer);
     if (!this.proc || this.state === 'env' || this.state === 'starting') return;
+    if (this.pending.size) { this.touch(); return; } // 正在识别时不释放，识别完再重新计时
     this.log('空闲到时，释放显存');
-    const proc = this.proc; proc.plannedExit = true;
-    this.onExit(proc, 'release'); proc.kill();
-    this.start();
+    this.recycle();
+  }
+  // 结束当前 worker 并立即换一个只含环境的新 worker（不占显存）。
+  recycle() {
+    const proc = this.proc; if (!proc) return;
+    proc.plannedExit = true; this.onExit(proc, 'recycle'); proc.kill(); this.start();
   }
   stop() {
     this.stopped = true; clearTimeout(this.idleTimer);

@@ -10,6 +10,7 @@ const { localPaths, localInstalled } = require('../core/local-asr/manager');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function freePort() { return new Promise(resolve => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); }); }
 const vram = () => Number(execFileSync('nvidia-smi', ['--query-gpu=memory.used', '--format=csv,noheader,nounits'], { windowsHide: true }).toString().trim());
+const vramTotal = () => Number(execFileSync('nvidia-smi', ['--query-gpu=memory.total', '--format=csv,noheader,nounits'], { windowsHide: true }).toString().trim());
 
 function synth(file, text) {
   const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SelectVoice('Microsoft Huihui Desktop');
@@ -46,13 +47,17 @@ async function main() {
   wavFile(audioFile, Buffer.concat([Buffer.alloc(16000), a, gap, b, gap, a, gap, b, gap, a, gap, b, Buffer.alloc(32000)]));
   const audioSeconds = (fs.statSync(audioFile).size - 44) / 32000;
   const baseVram = vram();
+  // 显卡被别的程序占着、剩余不足 5.6GB 时，预期不装本地模型、全部 Token Plan 且不拖慢（验证显存保护）。
+  // E2E_FORCE_GPU_BUSY=1 时把装载门槛调到超过显卡容量，模拟显卡被占满。
+  const forceBusy = process.env.E2E_FORCE_GPU_BUSY === '1';
+  const gpuBusy = forceBusy || vramTotal() - baseVram < 5600;
   const evidence = { passed: false, checks: [], out, audioSeconds, baseVram, kind: 'Real isolated Hub; WAV-file microphone (Huihui TTS); REAL local Qwen3-ASR on GPU + REAL Token Plan relay' };
   let hub, cdp;
   const until = async (expr, label, ms = 30000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await cdp.eval(expr)) return; await sleep(100); } throw Error('timeout: ' + label); };
   const snap = async name => { const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(shot.data, 'base64')); };
   try {
     hub = await launchIsolatedHub({ dataDir: data, port: await freePort(), windowMode: 'hidden', label: 'voice-local', entryPath: path.join(__dirname, 'fixtures/voice-tokenplan-hub.js'), extraEnv: {
-      DASHSCOPE_API_KEY: '', HUB_VOICE_TEST_WAV: audioFile, CODEX_HOME: home, HUB_LOCAL_ASR_IDLE_MS: '15000',
+      DASHSCOPE_API_KEY: '', HUB_VOICE_TEST_WAV: audioFile, CODEX_HOME: home, HUB_LOCAL_ASR_IDLE_MS: '15000', ...(forceBusy ? { HUB_LOCAL_ASR_MIN_FREE_MB: '99999' } : {}),
       CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.join(__dirname, 'fixtures/codex-app-server.js'),
     } });
     cdp = await connectFirstPage(hub);
@@ -85,11 +90,18 @@ async function main() {
     await snap('final');
     const ledger = fs.readFileSync(path.join(data, 'voice-usage.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     evidence.ledger = ledger.map(l => `${l.via}:${l.sec}s`);
-    assert(ledger.some(l => l.via === 'local'), '至少一段应走本地');
-    assert(evidence.status.includes('本地'), '完成提示应说明本地识别段数：' + evidence.status);
+    evidence.gpuBusy = gpuBusy;
+    if (gpuBusy) {
+      assert(ledger.every(l => l.via === 'tokenplan'), '显存不足时应全部由 Token Plan 识别');
+      assert(evidence.stopToFinalSec < 10, '显存不足时也不应拖慢：' + evidence.stopToFinalSec);
+      assert(/显存不足/.test(hub.log().join(' ')), '日志应说明显存不足');
+    } else {
+      assert(ledger.some(l => l.via === 'local'), '至少一段应走本地');
+      assert(evidence.status.includes('本地'), '完成提示应说明本地识别段数：' + evidence.status);
+    }
     for (const word of ['作手林铛', '昨日之我', 'SuperRAN']) assert(evidence.finalText.includes(word), `缺少「${word}」：${evidence.finalText}`);
     evidence.checks.push(`第 ${evidence.firstSegmentAtSec.toFixed(1)} 秒出第一段；停止后 ${evidence.stopToFinalSec.toFixed(1)} 秒完成；${evidence.status}；术语正确`);
-    assert(evidence.loadedVram - baseVram > 3000, `模型应在显卡（基线 ${baseVram}MB，录音中 ${evidence.loadedVram}MB）`);
+    if (!gpuBusy) assert(evidence.loadedVram - baseVram > 3000, `模型应在显卡（基线 ${baseVram}MB，录音中 ${evidence.loadedVram}MB）`);
     // 空闲 15 秒（测试设定）后释放显存
     const end = Date.now() + 45000; let now = vram();
     while (Date.now() < end && now - baseVram > 1000) { await sleep(1000); now = vram(); }

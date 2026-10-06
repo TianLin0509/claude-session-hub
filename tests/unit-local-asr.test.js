@@ -63,6 +63,13 @@ async function main() {
   assert(f.procs[0].killed, '空闲到时应结束进程释放显存');
   assert.equal(f.procs.length, 2, '释放后应立即换一个只含环境的新 worker');
   await tick(10); assert.equal(local.state, 'env');
+  // 正在识别（有在途请求）时空闲到点也不释放。
+  const busy = fakeSpawn();
+  const inUse = new LocalAsr({ paths: {}, spawnImpl: busy.spawnImpl, idleMs: 30, log: silentLog });
+  await inUse.prepare();
+  const hanging = inUse.call('embed', { pcm: [] }, 1000).catch(() => {});
+  await tick(80); assert(!busy.procs[0].killed, '在途请求未完成不应释放显存');
+  inUse.stop(); await hanging;
   // prepare 在环境启动中调用：等环境就绪后再装模型；并发 prepare 共用一次装载。
   local.stop();
   const g = fakeSpawn({ envDelay: 20 });
@@ -77,7 +84,8 @@ async function main() {
   // 装载失败（如显存不足）：回到 env，prepare 拒绝，调用方据此改走 Token Plan。
   const h = fakeSpawn({ failLoad: true });
   const oom = new LocalAsr({ paths: {}, spawnImpl: h.spawnImpl, log: silentLog });
-  await assert.rejects(oom.prepare(), /CUDA out of memory/); assert.equal(oom.state, 'env');
+  await assert.rejects(oom.prepare(), /CUDA out of memory/);
+  assert(h.procs[0].killed && h.procs.length === 2, '装载失败后换一个干净的环境进程'); await tick(10); assert.equal(oom.state, 'env');
   oom.stop();
 
   // 逐段路由：本地未就绪 → Token Plan 接力；就绪 → 本地；本地出错 → Token Plan；用量逐段记账。

@@ -56,6 +56,11 @@ def main():
                 raise RuntimeError("speaker-only worker cannot %s" % op)
             if op == "load":
                 if model is None:
+                    # 显卡被别的程序占着时硬装会溢出到内存，推理慢到几十秒；剩余不够就不装，让 Hub 改走 Token Plan
+                    free_mb = torch.cuda.mem_get_info()[0] // (1024 * 1024)
+                    need_mb = int(os.environ.get("HUB_LOCAL_ASR_MIN_FREE_MB") or 5600)
+                    if free_mb < need_mb:
+                        raise RuntimeError("显存不足：剩余 %d MB，需要 %d MB" % (free_mb, need_mb))
                     model = Qwen3ASRModel.from_pretrained(model_dir, dtype=torch.bfloat16, device_map="cuda:0", max_new_tokens=1024)
                     # 用 1 秒静音预热：首次推理的一次性开销不落到用户第一句话上
                     model.transcribe(audio=(np.zeros(16000, dtype=np.float32), 16000), language=language)

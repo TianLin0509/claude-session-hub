@@ -24,6 +24,9 @@ function localContext(profile = {}) {
   return [terms.join('、'), String(profile.context || '').trim()].filter(Boolean).join('\n');
 }
 
+// 本地识别时限：正常 8 秒语音不到 1 秒；给到 3 秒 + 语音时长的 0.6 倍，超了就改走 Token Plan（手机整批按三分之一时长折算，批量更快）。
+function localTimeout(sec) { return Math.round(3000 + sec * 600); }
+
 function usageLogger(dataDir) {
   const file = path.join(dataDir, 'voice-usage.jsonl');
   return entry => {
@@ -45,7 +48,7 @@ function segmentRecognizer({ engine, planKey, profile, local, source, usage = ()
     if (engine === 'local' && local) {
       if (!local.ready && !planKey) await local.prepare();
       if (local.ready) {
-        try { const [text] = await local.transcribe([pcm16k], context); return { text, via: 'local' }; }
+        try { const [text] = await local.transcribe([pcm16k], context, localTimeout(pcm16k.length / 32000)); return { text, via: 'local' }; }
         catch (error) {
           if (!planKey) throw error;
           log('[voice] 本地识别失败，改由 Token Plan 接力：', error.message);
@@ -58,6 +61,7 @@ function segmentRecognizer({ engine, planKey, profile, local, source, usage = ()
   const state = { seenMe: false }; // 每条录音一个识别函数，跨段记住是否已确认本人
   return async (pcm16k, signal) => {
     const sec = pcm16k.length / 32000;
+    local?.touch(); // 录音还在进行：每来一段就续期，空闲计时不在说话途中到点
     const screened = vp ? await screenSafely(pcm16k, vp, state, log) : null;
     const audio = screened ? screened.pcm : pcm16k;
     const result = plan.hasSpeech(audio) ? await recognizeOne(audio, signal) : { text: '', via: null }; // 整段都是他人：不送识别
@@ -85,7 +89,7 @@ async function transcribeRecording(pcm16k, { engine, planKey, profile, local, so
   if (engine === 'local' && local) {
     if (!local.ready && !planKey) await local.prepare();
     if (local.ready) {
-      try { texts = await local.transcribe(parts, localContext(profile)); route = 'local'; }
+      try { texts = await local.transcribe(parts, localContext(profile), localTimeout(parts.reduce((s, p) => s + p.length, 0) / 32000 / 3)); route = 'local'; }
       catch (error) {
         if (!planKey) throw error;
         log('[voice] 本地识别失败，改由 Token Plan 接力：', error.message);

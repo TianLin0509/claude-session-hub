@@ -223,6 +223,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
     try {
       const config = await ipcRenderer.invoke('voice:config', target.project);
       if (r.ended) return;
+      r.engine = config.engine;
       if (!config.keySet) {
         finishUI(r);
         setStatus({ local: '本地识别未安装，可在语音设置里改用 Token Plan。', tokenplan: '未找到 Token Plan 套餐 Key，可在语音设置里改用按量识别。' }[config.engine] || '请先在语音设置中填写百炼 API Key。');
@@ -243,7 +244,8 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
         if (r.ended || !data.pcm) return;
         if (data.peak > .01) r.lastSound = Date.now();
         r.queuedBytes += data.pcm.byteLength;
-        if (r.queuedBytes > r.context.sampleRate * 4) { fail(r, '网络发送积压，请分段重试'); return; }
+        // 积压上限：流式识别 2 秒（实时上传）；分段识别（本地 / Token Plan）只是交给后台，机器忙时放宽到 15 秒
+        if (r.queuedBytes > r.context.sampleRate * 2 * (r.engine === 'streaming' ? 2 : 15)) { fail(r, r.engine === 'streaming' ? '网络发送积压，请分段重试' : '电脑忙不过来，录音积压，请分段重试'); return; }
         r.queue = r.queue.then(async () => {
           if (!r.ended) await ipcRenderer.invoke('voice:audio', { id: r.id, data: new Uint8Array(data.pcm) });
           r.queuedBytes -= data.pcm.byteLength;
