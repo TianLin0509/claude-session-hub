@@ -26,3 +26,5 @@
 .voice-voiceprint legend{padding:0 6px;font-size:13px;font-weight:600}
 .voice-settings-dialog .voice-voiceprint input[type=checkbox]{display:inline-block;width:auto;margin:0 6px 0 0;vertical-align:middle}
 .voice-voiceprint-script{padding:8px 10px;border-radius:6px;background:var(--bg-secondary,#253143);font-size:14px!important;line-height:1.8!important}
+.voice-habit-times{display:flex;align-items:center;gap:6px;margin:4px 0 10px 24px;font-size:13px}
+.voice-settings-dialog .voice-habit-times input[type=time]{display:inline-block;width:auto;margin:0}

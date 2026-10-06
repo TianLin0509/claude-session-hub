@@ -38,7 +38,8 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
       localInstalled: localReady, localState: local?.state || 'off', model: ENGINE_LABEL[engine],
       voiceprint: { ...voiceprint.status(dataDir), available: !!getSpeaker(c), appliesTo: engine === 'streaming' ? 'none' : 'all' },
       keySet: engine === 'local' ? localReady : engine === 'tokenplan' ? !!planKey : meteredKey, envKey: !c.encryptedKey && !!process.env.DASHSCOPE_API_KEY,
-      profile: c.profiles?.[profileKey(project)] || { terms: '', context: '' }, global: c.global || { terms: '', personal: '' } };
+      profile: c.profiles?.[profileKey(project)] || { terms: '', context: '' }, global: c.global || { terms: '', personal: '' },
+      prefs: prefsOf(c), learnedCount: (c.learned || []).length };
   }
   ipcMain.handle('voice:config', (_e, project) => view(project));
   ipcMain.handle('voice:save-config', (_e, patch = {}) => {
@@ -60,6 +61,7 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     if (project.length > 1000 || ['__proto__', 'constructor', 'prototype'].includes(project)) throw new Error('项目标识无效');
     c.profiles = { ...c.profiles, [project]: normalizeProfile(patch.profile) };
     if (patch.global !== undefined) c.global = voiceText.normalizeGlobal(patch.global);
+    if (patch.prefs !== undefined) c.prefs = normalizePrefs(patch.prefs);
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     fs.writeFileSync(`${filename}.tmp`, JSON.stringify(c, null, 2), 'utf8');
     fs.renameSync(`${filename}.tmp`, filename);
@@ -116,7 +118,8 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     const speaker = vpProfile ? getSpeaker(c) : null;
     const vp = vpProfile && speaker ? { profile: vpProfile, speaker } : null;
     const recognizeSegment = engine === 'streaming' ? undefined
-      : voiceEngine.segmentRecognizer({ engine, planKey, profile, background, local, source: 'desktop', usage, vp });
+      : voiceEngine.segmentRecognizer({ engine, planKey, profile, background, local, source: 'desktop', usage, vp,
+        onConfident: vectors => voiceprint.adapt(dataDir, vectors) });
     const onEvent = result => {
       if (streams.get(sender.id)?.id !== id) return;
       if (['done', 'error'].includes(result.type)) streams.delete(sender.id);
@@ -152,6 +155,40 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     usage({ source: 'desktop', via: 'mic', sec: 0, engine: String(d.engine || ''), clickToCaptureMs: n(d.clickToCaptureMs), captureToSoundMs: n(d.captureToSoundMs), clickToReadyMs: n(d.clickToReadyMs) });
     return true;
   });
+  // 从你的修改里学：识别结果 vs 实际发出的文字，改正过的词加入通用热词（本地与云端都会用上）。
+  // learned 记下「错 → 对」与次数，供撤销和以后排查；只存词，不存原句。
+  function writeConfig(c) {
+    fs.writeFileSync(`${filename}.tmp`, JSON.stringify(c, null, 2), 'utf8');
+    fs.renameSync(`${filename}.tmp`, filename);
+  }
+  const termList = s => String(s || '').split(/\r?\n/).map(t => t.trim()).filter(Boolean);
+  ipcMain.handle('voice:learn', (_e, { original, edited } = {}) => {
+    const pairs = voiceText.correctionPairs(original, edited);
+    if (!pairs.length) return { added: [] };
+    const c = read();
+    const global = c.global || { terms: '', personal: '' };
+    const terms = termList(global.terms);
+    const added = [], now = new Date().toISOString();
+    c.learned = Array.isArray(c.learned) ? c.learned : [];
+    for (const { wrong, right } of pairs) {
+      const item = c.learned.find(x => x.right === right);
+      if (item) { item.count += 1; item.last = now; if (!item.wrongs.includes(wrong)) item.wrongs.push(wrong); }
+      else c.learned.push({ right, wrongs: [wrong], count: 1, first: now, last: now });
+      if (!terms.includes(right)) { if (terms.length >= voiceText.LIMITS.terms) terms.shift(); terms.push(right); added.push({ wrong, right }); }
+    }
+    c.learned = c.learned.slice(-200);
+    c.global = voiceText.normalizeGlobal({ ...global, terms: terms.join('\n') });
+    writeConfig(c);
+    return { added };
+  });
+  ipcMain.handle('voice:unlearn', (_e, { right } = {}) => {
+    const c = read();
+    const global = c.global || { terms: '', personal: '' };
+    c.global = { ...global, terms: termList(global.terms).filter(t => t !== right).join('\n') };
+    c.learned = (c.learned || []).filter(x => x.right !== right);
+    writeConfig(c);
+    return true;
+  });
   ipcMain.handle('voice:voiceprint-set', (_e, options = {}) => voiceprint.setOptions(dataDir, options));
   ipcMain.handle('voice:voiceprint-delete', () => voiceprint.remove(dataDir));
   ipcMain.handle('voice:audio', async (e, { id, data } = {}) => { await owned(e, id).stream.audio(data); return true; });
@@ -160,9 +197,41 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
   app.on('before-quit', () => { for (const senderId of streams.keys()) cancelOwner(senderId); getLocal(read())?.stop(); getSpeaker(read())?.stop(); });
   // 运行环境常驻（不占显存）：启动后稍等再拉起，不拖慢 Hub 启动；第一次说话只需装模型约 5 秒。
   const warmEnv = setTimeout(() => {
-    try { const c = read(); if (voiceEngine.resolveEngine(c, dataDir).engine === 'local') getLocal(c)?.start(); }
-    catch (error) { console.warn('[voice] 本地识别环境未启动：', error.message); }
+    try {
+      const c = read();
+      if (voiceEngine.resolveEngine(c, dataDir).engine !== 'local') return;
+      const local = getLocal(c);
+      if (!local) return;
+      local.keepWarm = () => { try { return inWindow(prefsOf(read()).keepWarm); } catch { return false; } };
+      local.start();
+      // 工作时段常驻：每分钟看一次，进入时段就提前装好模型（时段外照常空闲 10 分钟释放）
+      const tick = setInterval(() => { if (local.keepWarm() && ['env', 'off'].includes(local.state)) void local.prepare().catch(() => {}); }, 60000);
+      tick.unref?.();
+    } catch (error) { console.warn('[voice] 本地识别环境未启动：', error.message); }
   }, envStartDelayMs);
   warmEnv.unref?.();
+  void require('../../core/voice-vad').load(); // 说话检测（断句更稳）；缺文件时自动退回按音量判断
 }
-module.exports = { registerVoiceInputIpc };
+
+// 使用偏好：说「发送」自动发出（默认开）、停顿自动结束（秒，0=关）、工作时段常驻显卡（默认关）
+function prefsOf(c = {}) {
+  const p = c.prefs || {};
+  return { voiceSend: p.voiceSend !== false, autoStopSec: Number(p.autoStopSec) || 0,
+    keepWarm: { enabled: !!p.keepWarm?.enabled, from: p.keepWarm?.from || '09:00', to: p.keepWarm?.to || '22:00' } };
+}
+function normalizePrefs(p = {}) {
+  const time = v => (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v)) ? String(v) : null);
+  const autoStopSec = Number(p.autoStopSec) || 0;
+  if (autoStopSec && (autoStopSec < 1 || autoStopSec > 10)) throw new Error('停顿自动结束需在 1～10 秒之间');
+  const from = time(p.keepWarm?.from ?? '09:00'), to = time(p.keepWarm?.to ?? '22:00');
+  if (!from || !to) throw new Error('常驻时段格式应为 HH:MM');
+  return { voiceSend: p.voiceSend !== false, autoStopSec, keepWarm: { enabled: !!p.keepWarm?.enabled, from, to } };
+}
+// 当前时刻是否在常驻时段内（支持跨午夜，如 22:00～02:00）
+function inWindow(w, now = new Date()) {
+  if (!w?.enabled) return false;
+  const m = s => Number(s.slice(0, 2)) * 60 + Number(s.slice(3));
+  const t = now.getHours() * 60 + now.getMinutes(), a = m(w.from), b = m(w.to);
+  return a <= b ? t >= a && t < b : t >= a || t < b;
+}
+module.exports = { registerVoiceInputIpc, prefsOf, normalizePrefs, inWindow };
