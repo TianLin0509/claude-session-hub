@@ -84,13 +84,15 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
     if(!entry.bridgePath)throw new Error('DeepSeek 完整交互需要配置 ACP 扩展包目录');
     env.DSH_HOME = path.join(home, '.dsh');
     env.BAILIAN_API_KEY = key;
-    env.BAILIAN_TPP_API_KEY = key;
+    // authenticate persists the native provider credential in this isolated
+    // profile. DSH rejects that write if the same key is injected read-only
+    // through BAILIAN_TPP_API_KEY. The model adapter uses BAILIAN_API_KEY.
     const settings = {
       'agent-default-model': { provider: 'bailian-tpp', model },
       'llm-pi-ai': { providers: { 'bailian-tpp': { api: 'openai-completions', baseURL,
         apiKeyEnv: 'BAILIAN_API_KEY', models: models.map(({id}) => ({ id,
           reasoningEfforts: require('./acp-model-catalog').deepseekReasoningEfforts(id),
-          compat: { thinkingFormat: 'deepseek' } })) } } },
+          compat: { thinkingFormat: 'deepseek', supportsDeveloperRole: false } })) } } },
     };
     writeJson(path.join(env.DSH_HOME, 'settings.yaml'), settings);
     const patch = path.join(sessionRoot, 'acp-route.yaml');
