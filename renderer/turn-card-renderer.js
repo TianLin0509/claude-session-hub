@@ -456,6 +456,11 @@ function _renderMetaPills(turn, compact = false) {
   return `<span class="turn-meta-pills">${pills.join('')}</span>`;
 }
 
+function renderTurnSpeed(turn) {
+  const display = require('./turn-speed-display').speedDisplay(turn.turnSpeed);
+  return display ? `<span class="turn-speed" title="${escapeHtml(display.title)}" aria-label="${escapeHtml(display.text)}"><span class="turn-speed-detail">${escapeHtml(display.mode ? display.mode + ' · ' : '')}均速 </span>≈${escapeHtml(display.rate)} tok/s</span>` : '';
+}
+
 // === Spec 1 v0.9.0 · turn 卡片渲染 ===
 function renderCardActions(turn) {
   const user = turn.role === 'user', activity = turn.phase === 'activity';
@@ -575,6 +580,7 @@ function renderTurnCard(turn) {
         ${!isUser && !isSimple ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
         ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}${nativeChip}
         <span class="turn-meta">${escapeHtml(ts)}</span>
+        ${!isUser ? renderTurnSpeed(turn) : ''}
         ${isSimple && isUser ? _renderMetaPills(turn, true) : ''}
         ${processHtml}
         <div class="turn-actions">
@@ -952,6 +958,7 @@ function turnRenderSignature(turn) {
     tsEnd: turn.tsEnd || null,
     toolCalls: Array.isArray(turn.toolCalls) ? turn.toolCalls : [],
     usage: turn.usage || null,
+    turnSpeed: turn.turnSpeed || null,
     promptReceipt: turn.promptReceipt || '',
     chatProcessMessages: turn.chatProcessMessages || null,
   });

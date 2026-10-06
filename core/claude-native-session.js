@@ -421,6 +421,8 @@ class ClaudeNativeSession extends EventEmitter {
     this.active = record;
     record.status = 'submitting';
     record.submittedAt = Date.now();
+    record.speedTier = typeof this.runtime?.fastMode === 'boolean'
+      ? (this.runtime.fastMode ? 'fast' : 'standard') : null;
     // Writing a submission is ordinary work in flight, not an uncertain result.
     // Publishing it as "unknown" made every send flash "本条提交待核对" and a
     // reconnect button. A crash here still leaves a non-idle snapshot, so a

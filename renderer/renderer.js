@@ -1803,6 +1803,8 @@ function getOrCreateTerminal(sessionId) {
 const toolbarCrumbEl = document.getElementById('toolbar-crumb');
 const toolbarActionsEl = document.getElementById('toolbar-actions');
 const backstageButton = document.getElementById('btn-backstage');
+const turnSpeedDisplay = require('./turn-speed-display').createTurnSpeedDisplay(document,
+  id => sessions.get(id), () => sessionSplit?.focusedId() || activeSessionId);
 let sessionImmersive = null;
 function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId) {
   sessionImmersive?.sync(!!getReadingSurface());
@@ -1811,6 +1813,7 @@ function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessi
   backstageButton.hidden = !visible;
   backstageButton.setAttribute('aria-pressed', String(mode === 'pty'));
   backstageButton.title = mode === 'pty' ? '返回卡片视图' : '查看后台输出';
+  turnSpeedDisplay.paint(visible);
 }
 
 const appToolbarEl = document.getElementById('app-toolbar');
@@ -2446,6 +2449,7 @@ const terminalMinimapFactory = createTerminalMinimapFactory({
 const { mountMinimap, mountPromptNavButtons } = terminalMinimapFactory;
 const { createTurnCardRenderer } = require('./turn-card-renderer.js');
 function syncTurnPresentationToSession(sessionId, presentation, turn) {
+  turnSpeedDisplay.observe(sessionId, turn);
   const session = sessions.get(sessionId);
   if (!session || !presentation || !turn || turn.role !== 'assistant') return;
   if (isNativeSession(session)) {
@@ -3254,7 +3258,18 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
   if (hubSessionId !== activeSessionId) return;
 
   // 3. only render in card view (PTY view doesn't use msg-overlay)
-  if (currentView !== 'card') return;
+  if (currentView !== 'card') {
+    // The visible CLI still needs the completed turn's measurement. Read
+    // one structured reply on this existing event; no timer or card mount.
+    try {
+      const result = await ipcRenderer.invoke('parse-session-transcript', {
+        hubSessionId, transcriptPath, kind: kind || sessions.get(hubSessionId)?.kind,
+        opts: { limit: 1, fromTail: true },
+      });
+      if (!result?.error) for (const turn of result?.turns || []) turnSpeedDisplay.observe(hubSessionId, turn);
+    } catch (error) { console.warn('[turn-speed] completed measurement unavailable:', error.message); }
+    return;
+  }
 
   // 4. If history was never fully hydrated for this session, trigger backfill
   //    before appending the single new turn. Use explicit state flag instead of
@@ -4975,6 +4990,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     speedChip.setAttribute('aria-label',`速度：${speed.label}`);
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
     speedChip.title = speed.reason || '选择标准 / 快速；快速会增加用量或费用';
+    if (sessionId === (sessionSplit?.focusedId() || activeSessionId)) turnSpeedDisplay.paint();
 
     contextBudget.update(rail.context);
 

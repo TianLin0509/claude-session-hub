@@ -9,7 +9,13 @@ function inputTokens(usage) {
 function claudeTurnMetrics(record, frames) {
   const messages = new Map();
   for (const frame of frames) {
-    if (frame.type === 'assistant' && !frame.parent_tool_use_id && frame.message?.id) messages.set(frame.message.id, frame.message);
+    if (frame.type === 'assistant' && !frame.parent_tool_use_id && frame.message?.id) {
+      const old = messages.get(frame.message.id);
+      const message = frame.message;
+      messages.set(message.id, old?.usage && (!message.usage
+        || count(old.usage.output_tokens) > count(message.usage.output_tokens))
+        ? { ...message, usage: old.usage } : message);
+    }
   }
   const calls = [...messages.values()];
   const last = calls.findLast(message => message.usage);
@@ -18,7 +24,12 @@ function claudeTurnMetrics(record, frames) {
   const usage = record.usage || result.usage;
   const contextWindow = result.modelUsage?.[model]?.contextWindow;
   const duration = record.durationMs ?? result.duration_ms;
+  const modes = new Set(calls.map(message => require('./turn-speed-metrics').speedTier(message.usage?.speed)));
   return {
+    speedTier: require('./turn-speed-metrics').speedTier(record.speedTier)
+      || (modes.size === 1 ? [...modes][0] : null),
+    outputUsageComplete: usage ? Number.isSafeInteger(usage.output_tokens) && usage.output_tokens >= 0
+      : calls.length > 0 && calls.every(message => Number.isSafeInteger(message.usage?.output_tokens) && message.usage.output_tokens >= 0),
     ...(model ? { model } : {}),
     ...(usage || last ? { usage: {
       input_tokens: usage ? inputTokens(usage) : calls.reduce((sum, message) => sum + inputTokens(message.usage), 0),

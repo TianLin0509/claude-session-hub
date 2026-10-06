@@ -417,7 +417,9 @@ class CodexNativeSession extends EventEmitter {
       if (this.apply({type:'started',threadId:this.threadId,turn:p.turn})
           && this.runtime.turnId === p.turn.id && !TERMINAL.has(this.runtime.state)) {
         if (prior.turnId !== p.turn.id) this.items.clear();
-        this.history.set(p.turn.id,{...p.turn,hubStartedAt:this.runtime.startedAt});
+        this.history.set(p.turn.id,{...p.turn,hubStartedAt:this.runtime.startedAt,
+          hubUsageBaseline: this.tokenUsage?.total || null,
+          hubSpeedTier: this.options.turnParams?.serviceTier || null});
         for (const item of p.turn.items || []) this.items.set(item.id,item);
         this.lifecycle('turn-started',{startedAt:this.runtime.startedAt});
       }
@@ -480,6 +482,15 @@ class CodexNativeSession extends EventEmitter {
         this.emit('items', this.blocks());
       }
     } else if (type === 'thread/tokenUsage/updated') {
+      const turn = p.turnId && this.history.get(p.turnId);
+      if (turn) {
+        const { codexTurnUsage } = require('./turn-speed-metrics');
+        if (!turn.hubUsageBaseline && codexTurnUsage(null, p.tokenUsage))
+          turn.hubUsageBaseline = { inputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
+        if (turn.hubUsageInfo && !codexTurnUsage(turn.hubUsageInfo.total, p.tokenUsage)) turn.hubUsageInvalid = true;
+        turn.hubUsageInfo = p.tokenUsage;
+        turn.hubUsage = turn.hubUsageInvalid ? null : codexTurnUsage(turn.hubUsageBaseline, p.tokenUsage);
+      }
       this.tokenUsage = p.tokenUsage;
       this.emit('usage',p.tokenUsage);
     } else if (type === 'error') {

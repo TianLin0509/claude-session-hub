@@ -47,8 +47,10 @@ function nativeTranscriptTurns(threadId, turns) {
       stopReason:turn.status,nativeOutcome:TERMINAL.has(turn.status)?turn.status:null,
       displayTurnKey:threadId+':'+turn.id,
       providerTurnId:turn.id,
+      ...(turn.hubUsage ? { usage: turn.hubUsage } : {}),
+      speedTier: turn.hubSpeedTier,
       durationMs:ts && tsEnd ? tsEnd-ts : undefined});
   }
-  return cards;
+  return cards.map(require('./turn-speed-metrics').withTurnSpeed);
 }
 module.exports={nativeTranscriptTurns};
