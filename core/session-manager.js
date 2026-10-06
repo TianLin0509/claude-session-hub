@@ -2322,13 +2322,17 @@ class SessionManager extends EventEmitter {
       });
     }
     const meetingId = entry.info ? entry.info.meetingId : null;
-    const wasSuspended = !!entry.suspendRequestedAt;
+    // A CLI can exit before Hub enters graceful shutdown (for example when
+    // Windows closes the launcher console). That is not a request to remove
+    // the logical group member or its native conversation identity.
+    const unexpectedMemberExit = !!meetingId && !entry.closeRequestedAt && supportsRecoverableSession(entry.info);
+    const wasSuspended = !!entry.suspendRequestedAt || unexpectedMemberExit;
     const dormantInfo = wasSuspended
       ? {
         ...entry.info,
         status: 'dormant',
-        suspendedAt: entry.suspendRequestedAt,
-        suspendReason: entry.suspendReason || 'manual',
+        suspendedAt: entry.suspendRequestedAt || Date.now(),
+        suspendReason: entry.suspendReason || (unexpectedMemberExit ? 'process-exit' : 'manual'),
       }
       : null;
     if (entry.terminalSnapshot) entry.terminalSnapshot.dispose();

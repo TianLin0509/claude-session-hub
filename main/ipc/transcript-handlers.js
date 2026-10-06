@@ -3,7 +3,7 @@
 const { isUsableCodexRolloutPath, readCodexRolloutMeta } = require('../../core/codex-transcript-parser.js');
 const { isKimiCliKind: defaultIsKimiCliKind } = require('../../core/ai-kinds.js');
 const { parseKimiWireToTurns: defaultParseKimiWireToTurns } = require('../../core/kimi-transcript-parser.js');
-const { isFreshSession } = require('../../core/session-history-state');
+const { isFreshSession, isUnsubmittedBranch } = require('../../core/session-history-state');
 const {
   MAX_BRANCH_DEPTH,
   applyTailLimit,
@@ -285,7 +285,9 @@ async function parseProviderTranscript(args = {}, deps) {
       }
     }
     if (!transcriptPath) {
-      return { turns: [], transcriptPath: null, error: isFreshSession(session) ? null : 'transcript not found' };
+      const record = session || (hubSessionId ? lookupSessionRecord(hubSessionId, deps)?.record : null);
+      return { turns: [], transcriptPath: null,
+        error: isFreshSession(record) || isUnsubmittedBranch(record) ? null : 'transcript not found' };
     }
     if (hubSessionId && transcriptPath && session && session.transcriptPath !== transcriptPath) {
       updateSessionTranscriptBinding(hubSessionId, { transcriptPath });

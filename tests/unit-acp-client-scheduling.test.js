@@ -2,6 +2,25 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {AcpClient}=require('../main/acp-client');
 
+test('generic protocol errors retain redacted native details',async()=>{
+  const client=new AcpClient({secrets:['test-private-key']});
+  const result=new Promise((resolve,reject)=>client.pending.set(7,{resolve,reject,timer:null}));
+  client.feed(Buffer.from(JSON.stringify({jsonrpc:'2.0',id:7,error:{code:-32603,message:'Internal error',
+    data:{details:'read-only credential test-private-key'}}})+'\n'));
+  await assert.rejects(result,error=>error.message==='Internal error: read-only credential [REDACTED]');
+});
+
+test('startup failure is not overwritten by child cleanup disconnect',async()=>{
+  const {EventEmitter}=require('node:events');
+  const client=new EventEmitter();
+  client.start=async()=>{throw new Error('read-only native credential');};
+  client.close=()=>client.emit('disconnect',new Error('ACP 连接已关闭'));
+  const session=new(require('../core/acp-session').AcpSession)({id:'startup-failure',kind:'deepseek-acp',clientFactory:()=>client});
+  await assert.rejects(session.start(),/read-only native credential/);
+  assert.equal(session.runtime.reason,'read-only native credential');
+  session.kill();
+});
+
 test('busy ACP output yields to other work without dropping or reordering frames',async()=>{
   const client=new AcpClient(),seen=[];let pauses=0,resumes=0;
   client.proc={stdout:{pause(){pauses++;},resume(){resumes++;}}};

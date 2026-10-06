@@ -28,4 +28,12 @@ function isFreshSession(session, { allowMissingTranscript = false } = {}) {
   ].some(Boolean);
 }
 
-module.exports = { hasSubmittedPrompt, isFreshSession, isFreshLaunch };
+// Claude does not create a fork's own JSONL until its first prompt. A parent
+// identity is context, not proof that the child has already produced history.
+// Never hide a missing file that was previously bound or a submitted turn.
+function isUnsubmittedBranch(session) {
+  return !!session?.branchSourceSessionId && !session.transcriptPath
+    && !hasSubmittedPrompt(session) && !Number(session.lastCompletedAt);
+}
+
+module.exports = { hasSubmittedPrompt, isFreshSession, isFreshLaunch, isUnsubmittedBranch };

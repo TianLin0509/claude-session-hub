@@ -97,9 +97,14 @@ class AcpClient extends EventEmitter {
         if (!pending) { this.emit('late-response', { id: message.id }); continue; }
         this.pending.delete(message.id);
         clearTimeout(pending.timer);
-        if (message.error) pending.reject(Object.assign(new Error(this.redact(message.error.message || 'ACP 请求失败')), {
+        if (message.error) {
+          const summary = message.error.message || 'ACP 请求失败';
+          const detail = message.error.data?.details;
+          const reason = summary === 'Internal error' && typeof detail === 'string'
+            ? `${summary}: ${detail.slice(0, 2048)}` : summary;
+          pending.reject(Object.assign(new Error(this.redact(reason)), {
           code: message.error.code, details: message.error.data == null ? null : this.redact(JSON.stringify(message.error.data)), uncertain: false }));
-        else if (Object.hasOwn(message, 'result')) pending.resolve(message.result);
+        } else if (Object.hasOwn(message, 'result')) pending.resolve(message.result);
         else pending.reject(Object.assign(new Error('ACP 响应缺少 result/error'), { uncertain: true }));
       } else return this.fail(new Error('ACP 消息缺少请求身份'));
       if (this.closed) return;

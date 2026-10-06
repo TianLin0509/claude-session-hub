@@ -31,6 +31,37 @@ function attachFakePty(manager, sessionId) {
   return { pty, snapshot };
 }
 
+test('unexpected group CLI exits keep the logical member and native resume identity', () => {
+  for (const kind of ['claude', 'codex', 'gemini', 'kimi', 'deepseek']) {
+    const manager = new SessionManager();
+    const { pty } = attachFakePty(manager, kind);
+    Object.assign(manager.sessions.get(kind).info, { kind, ccSessionId: 'claude-native', codexSid: 'codex-native',
+      geminiChatId: 'gemini-native', kimiSid: 'kimi-native' });
+    let closed = 0, suspended;
+    manager.onSessionClosed = () => closed++;
+    manager.onSessionSuspended = (id, meetingId, session, exit) => { suspended = { id, meetingId, session, exit }; };
+    pty.emitExit({ exitCode: 1, signal: 0 });
+    assert.equal(closed, 0, kind + ': a process exit must not remove a group member');
+    assert.equal(suspended.meetingId, 'meeting-1');
+    assert.equal(suspended.session.status, 'dormant');
+    assert.equal(suspended.session.suspendReason, 'process-exit');
+    assert.equal(suspended.session.codexSid, 'codex-native');
+    assert.equal(suspended.session.ccSessionId, 'claude-native');
+  }
+});
+
+test('explicit group member removal still emits the logical close event', () => {
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'member');
+  Object.assign(manager.sessions.get('member').info, { kind: 'claude' });
+  manager.sessions.get('member').closeRequestedAt = Date.now();
+  let closed = 0;
+  manager.onSessionClosed = () => closed++;
+  manager.onSessionSuspended = () => assert.fail('explicit removal is not suspension');
+  pty.emitExit();
+  assert.equal(closed, 1);
+});
+
 test('graceful shutdown keeps Node alive until the PTY onExit path completes', async () => {
   const manager = new SessionManager();
   const { pty, snapshot } = attachFakePty(manager, 'pty-1');

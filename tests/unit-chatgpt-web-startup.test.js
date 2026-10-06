@@ -55,15 +55,20 @@ test('spawn errors propagate and invalid mode/model never launches', async () =>
 test('test or alternate isolation root cannot launch the fixed production executable', async () => {
   await assert.rejects(openWebSettings({background:true,env:fixture()}),/隔离目录不匹配|未安装/);
 });
-test('installed launcher receives --hidden and isolated homes without inherited API credentials', {
-  skip: !fs.existsSync('C:/DevTools/CodexWebGPT-AIHub/ai-hub-isolation-install.json'),
-}, async t => {
+test('installed launcher receives --hidden and isolated homes without inherited API credentials', async t => {
+  const isolated=fixture();
+  const launcher=path.resolve('C:/DevTools/CodexWebGPT-AIHub/Codex Web GPT.exe');
+  const marker=path.join(path.dirname(launcher),'ai-hub-isolation-install.json');
+  const exists=fs.existsSync,read=fs.readFileSync;
+  t.mock.method(fs,'existsSync',file=>[launcher,marker].includes(path.resolve(String(file))) || exists(file));
+  t.mock.method(fs,'readFileSync',(file,...args)=>path.resolve(String(file))===marker
+    ? JSON.stringify({version:1,pinned:true,root:isolated.AI_HUB_CHATGPT_ROOT}) : read(file,...args));
   const {EventEmitter}=require('events'); let invocation;
   t.mock.method(require('child_process'),'spawn',(exe,args,options)=>{
     invocation={exe,args,options};const child=new EventEmitter();child.unref=()=>{};
     process.nextTick(()=>child.emit('spawn'));return child;
   });
-  const env={...process.env,AI_HUB_CHATGPT_ROOT:'C:/VibeData/CodexChatGPTWeb/ai-hub-isolated',CODEX_HOME:'C:/ordinary',OPENAI_API_KEY:'never-pass',OPENAI_BASE_URL:'http://127.0.0.1:17841/v1',ELECTRON_RUN_AS_NODE:'1'};
+  const env={...process.env,...isolated,CODEX_HOME:'C:/ordinary',OPENAI_API_KEY:'never-pass',OPENAI_BASE_URL:'http://127.0.0.1:17841/v1',ELECTRON_RUN_AS_NODE:'1'};
   await openWebSettings({background:true,env});
   assert.deepEqual(invocation.args,['--hidden']);
   assert.equal(invocation.options.windowsHide,true);

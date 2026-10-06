@@ -163,8 +163,10 @@ class AcpSession extends EventEmitter {
       return result;
     } catch (error) {
       this.bootstrapping = false;
-      this.apply({ type: 'disconnect', reason: error.message });
       this.client?.close();
+      // Intentional cleanup emits its own generic disconnect; retain the
+      // actual startup failure after closing the child process.
+      this.apply({ type: 'disconnect', reason: error.message });
       throw error;
     }
   }

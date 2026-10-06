@@ -11,6 +11,20 @@ assert.equal(built.launch.env.OPENAI_BASE_URL,PLAN_BASE_URL);assert.equal(built.
 assert.equal(built.launch.env.USERPROFILE,built.home);assert.equal(built.launch.env.PATH,process.env.PATH);
 for(const key of ['ZCODE_ACP_RESUME_SESSION','DSH_HOME','CODEX_HOME','ANTHROPIC_AUTH_TOKEN','NODE_OPTIONS'])assert.equal(built.launch.env[key],undefined);
 assert(!built.launch.args.join(' ').includes(config.acp.apiKey));
+const bridge=path.join(root,'bridge');fs.mkdirSync(bridge);fs.writeFileSync(path.join(bridge,'package.json'),'{}');
+config.acp.providers['deepseek-acp']={entryPath:entry,bridgePath:bridge,model:'deepseek-v4-pro'};
+const dsh=buildAcpOptions('deepseek-acp',{id:'dsh',cwd:root},config,root,{BAILIAN_TPP_API_KEY:'foreign'});
+assert.equal(dsh.launch.env.BAILIAN_TPP_API_KEY,undefined,'native authentication must not shadow a read-only environment key');
+assert.equal(dsh.launch.env.BAILIAN_API_KEY,config.acp.apiKey);
+assert.equal(dsh.authMeta['api-key'].apiKey,config.acp.apiKey);
+const patches=JSON.parse(fs.readFileSync(dsh.launch.args[dsh.launch.args.indexOf('--patch')+1],'utf8'));
+assert(patches.find(p=>p.id==='llm-pi-ai').config.providers['bailian-tpp'].models.every(m=>m.compat.supportsDeveloperRole===false),
+  'Token Plan system instructions must use the supported system role');
+// Remove only the owned fixture link so the suite can safely clean its temp tree.
+const bridgeLink=path.join(dsh.launch.env.DSH_HOME,'profiles/acp/node_modules/@openma/deepseek-harness-acp');
+assert(path.resolve(bridgeLink).startsWith(path.resolve(root)+path.sep));
+assert(fs.lstatSync(bridgeLink).isSymbolicLink());assert.equal(fs.realpathSync(bridgeLink),fs.realpathSync(bridge));
+if(process.platform==='win32')fs.rmdirSync(bridgeLink);else fs.unlinkSync(bridgeLink);
 assert.throws(()=>buildAcpOptions('qwen',options,{acp:{...config.acp,baseURL:'https://api.deepseek.com/v1'}},root),/端点/);
 assert.throws(()=>buildAcpOptions('qwen',{...options,model:'deepseek-official::deepseek-v4-pro'},config,root),/命名空间/);
 const mcp=path.join(root,'mcp.json');fs.writeFileSync(mcp,JSON.stringify([{name:'tool',command:'node',args:['server.js'],env:[]}]));

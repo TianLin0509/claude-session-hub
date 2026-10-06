@@ -15,7 +15,7 @@ async function main() {
   for (const dir of [home, cwd, data, out]) fs.mkdirSync(dir, { recursive: true });
   const sourceAuth = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), '.credentials.json');
   const copiedAuth = path.join(home, '.credentials.json'), beforeAuth = hash(sourceAuth);
-  const report = { passed: false, checks: [], out, boundary: 'Real isolated Hub, real Claude PTY and one Haiku response.' };
+  const report = { passed: false, checks: [], out, boundary: 'Real isolated Hub, real Claude PTY and Haiku responses.' };
   const longReply = process.env.HUB_LONG_REPLY_AUDIT === '1';
   let hub, client, sid;
   const until = async (expression, label, timeout = 90000) => {
@@ -101,6 +101,39 @@ async function main() {
       report.checks.push('real long Claude reply defaults expanded; explicit collapse and expansion survive history refresh');
     }
     await capture('02-first-real-reply');
+    if (process.env.HUB_BRANCH_WELCOME_AUDIT === '1') {
+      // Actual UI shortcut, same fork path as the user's screenshot.
+      await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'B', code: 'KeyB', modifiers: 10, windowsVirtualKeyCode: 66 });
+      await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'B', code: 'KeyB', modifiers: 10, windowsVirtualKeyCode: 66 });
+      await until(`activeSessionId !== ${j(sid)} && sessions.get(activeSessionId)?.branchSourceSessionId === ${j(sid)}`, 'actual branch shortcut');
+      const branchId = await client.eval('activeSessionId');
+      await until('!!document.querySelector("#msg-overlay>.session-welcome")', 'unused branch welcome');
+      const ready = `(()=>{const text=window.__hubE2E.terminalBufferText(${j(branchId)});return text.includes('❯') && /Haiku|shortcuts|manual mode on/.test(text);})()`;
+      const browserConsent = `window.__hubE2E.terminalBufferText(${j(branchId)}).includes('Esc to keep browser tools off')`;
+      await until(`(${ready}) || (${browserConsent})`, 'fork startup or optional browser onboarding');
+      if (await client.eval(browserConsent)) {
+        // Decline optional browser access in this temporary test profile.
+        await _waitMs(500);
+        await client.eval(`ipcRenderer.send('terminal-input',${j({ sessionId: branchId, data: '\x1b' })})`);
+      }
+      await until(`(()=>{const text=window.__hubE2E.terminalBufferText(${j(branchId)});return text.includes('❯') && /Haiku|shortcuts|manual mode on/.test(text);})()`, 'fork CLI ready');
+      await client.eval(`loadSessionHistoryToOverlay(${j(branchId)},{incremental:false})`);
+      assert(await client.eval('!!document.querySelector("#msg-overlay>.session-welcome")'));
+      await capture('04-unused-branch-welcome');
+      report.checks.push('actual Ctrl+Shift+B Claude fork retains welcome before its first prompt');
+      console.log('PASS: real unused fork welcome; sending branch prompt');
+      await click('.floating-input-box');
+      await client.send('Input.insertText', { text: '不要调用工具。请只回复 BRANCH_LIVE_OK。' });
+      await click('.floating-input-send');
+      await until('[...document.querySelectorAll("#msg-overlay .turn-card.assistant")].some(e=>e.innerText.includes("BRANCH_LIVE_OK"))', 'real branch reply', 120000);
+      assert.equal(await client.eval('!!document.querySelector("#msg-overlay>.session-welcome")'), false);
+      const branchHistory = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(branchId)}})`);
+      assert.equal(branchHistory.error, null);
+      assert(branchHistory.turns.some(t => t.role === 'assistant' && j(t).includes('BRANCH_LIVE_OK')));
+      assert(branchHistory.turns.some(t => t.role === 'assistant' && j(t).includes('WELCOME_LIVE_OK')), 'parent context remains available after first child transcript');
+      report.checks.push('first real branch reply replaces welcome and retains inherited parent history');
+      await capture('05-first-branch-reply');
+    }
     report.passed = true;
   } catch (error) {
     report.error = error.stack; process.exitCode = 1;
