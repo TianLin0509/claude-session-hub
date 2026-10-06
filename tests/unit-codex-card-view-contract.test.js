@@ -105,8 +105,8 @@ assert.ok(
 assert.ok(
   rendererCardSrc.includes("const _bodyFoldState = new Map()") &&
   rendererCardSrc.includes("_bodyFoldState.set(turnId, true)") &&
-  rendererCardSrc.includes("_bodyFoldState.get(turnId) === true"),
-  'card body expand/collapse state must survive incremental Codex card re-renders',
+  rendererCardSrc.includes("_bodyFoldState.get(turnId) !== false"),
+  'card bodies default expanded and explicit collapse survives incremental Codex card re-renders',
 );
 assert.ok(
   rendererCardSrc.includes("function turnRenderSignature") &&
