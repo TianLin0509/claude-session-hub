@@ -7,11 +7,15 @@ const planVoice = require('../../core/voice-tokenplan');
 const voiceEngine = require('../../core/voice-engine');
 const { getLocalAsr, getSpeakerWorker } = require('../../core/local-asr/manager');
 const voiceprint = require('../../core/voiceprint');
+const { LiveVoice } = require('../../core/voice-live');
+// 冷启动接力用的实时识别模型：3.1 流式（免费额度 100 万 token，已开「用完自动停止」）
+const REALTIME_MODEL = 'qwen-audio-3.1-asr-flash-streaming';
 
 const ENGINE_LABEL = { local: '本地 Qwen3-ASR-1.7B（未就绪时 Token Plan 接力）', tokenplan: planVoice.MODEL + '（Token Plan）', streaming: MODEL + '（按量）' };
 
 function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = options => new VoiceStream(options),
-  createRecorded = options => new planVoice.RecordedVoice(options), getLocal = getLocalAsr, getSpeaker = getSpeakerWorker, envStartDelayMs = 20000 }) {
+  createRecorded = options => new planVoice.RecordedVoice(options), createLive = options => new LiveVoice(options),
+  getLocal = getLocalAsr, getSpeaker = getSpeakerWorker, envStartDelayMs = 20000 }) {
   const dataDir = getHubDataDir();
   const usage = voiceEngine.usageLogger(dataDir);
   const filename = path.join(dataDir, 'voice-input.json');
@@ -102,13 +106,21 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     const vp = vpProfile && speaker ? { profile: vpProfile, speaker } : null;
     const recognizeSegment = engine === 'streaming' ? undefined
       : voiceEngine.segmentRecognizer({ engine, planKey, profile, local, source: 'desktop', usage, vp });
-    const stream = (engine === 'streaming' ? createStream : createRecorded)({ config: c, apiKey, sampleRate: request.sampleRate,
-      profile, recognizeSegment,
-      onEvent: result => {
-        if (streams.get(sender.id)?.id !== id) return;
-        if (['done', 'error'].includes(result.type)) streams.delete(sender.id);
-        if (!sender.isDestroyed()) sender.send('voice:event', { ...result, id });
-      } });
+    const onEvent = result => {
+      if (streams.get(sender.id)?.id !== id) return;
+      if (['done', 'error'].includes(result.type)) streams.delete(sender.id);
+      if (!sender.isDestroyed()) sender.send('voice:event', { ...result, id });
+    };
+    let stream;
+    if (engine === 'local') {
+      // 冷启动期间用实时 API 逐字出字：需要按量识别的百炼 Key（没有就由 Token Plan 接力）
+      let meteredKey = process.env.DASHSCOPE_API_KEY || '';
+      if (c.encryptedKey) { try { meteredKey = safeStorage.decryptString(Buffer.from(c.encryptedKey, 'base64')); } catch { meteredKey = ''; } }
+      const openApi = apiEvent => meteredKey ? createStream({ config: c, apiKey: meteredKey, sampleRate: 16000, profile, model: REALTIME_MODEL, onEvent: apiEvent }) : null;
+      stream = createLive({ sampleRate: request.sampleRate, local, recognizeSegment, context: voiceEngine.localContext(profile), openApi, vp, usage, onEvent });
+    } else {
+      stream = (engine === 'streaming' ? createStream : createRecorded)({ config: c, apiKey, sampleRate: request.sampleRate, profile, recognizeSegment, onEvent });
+    }
     streams.set(sender.id, { id, stream });
     try { await stream.ready; return { id }; }
     catch (error) { if (streams.get(sender.id)?.id === id) streams.delete(sender.id); throw error; }

@@ -41,6 +41,23 @@ def main():
     model_dir = os.environ.get("HUB_LOCAL_ASR_MODEL", "")
     language = os.environ.get("HUB_LOCAL_ASR_LANGUAGE") or None
     out({"event": "env-ready", "ms": int((time.perf_counter() - t0) * 1000)})
+    import threading
+    stop_prewarm = threading.Event()
+    if not speaker_only and model_dir:
+        # 后台把模型文件读一遍放进系统文件缓存（可被系统随时回收，不锁内存）：预读完成后装载 3.6 秒，
+        # 未预读 10 秒以上。开始装模型时立即停止预读，避免两者抢硬盘（实测抢盘时装载 6～10 秒）。
+        def prewarm():
+            for root, _, files in os.walk(model_dir):
+                for name in files:
+                    if name.endswith((".safetensors", ".bin")):
+                        try:
+                            with open(os.path.join(root, name), "rb", buffering=0) as fh:
+                                while not stop_prewarm.is_set() and fh.read(16 * 1024 * 1024):
+                                    pass
+                        except OSError:
+                            pass
+
+        threading.Thread(target=prewarm, daemon=True).start()
     model = None
     speaker = None
     for line in sys.stdin:
@@ -55,6 +72,7 @@ def main():
             if op in ("load", "transcribe") and speaker_only:
                 raise RuntimeError("speaker-only worker cannot %s" % op)
             if op == "load":
+                stop_prewarm.set()
                 if model is None:
                     # 显卡被别的程序占着时硬装会溢出到内存，推理慢到几十秒；剩余不够就不装，让 Hub 改走 Token Plan
                     free_mb = torch.cuda.mem_get_info()[0] // (1024 * 1024)

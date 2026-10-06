@@ -29,7 +29,7 @@ async function main() {
   const data = path.join(root, 'data'); fs.mkdirSync(data);
   fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ acp: { apiKey: acp.apiKey, baseURL: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' } }));
   const project = cwd.toLowerCase().replace(/\\/g, '/');
-  fs.writeFileSync(path.join(data, 'voice-input.json'), JSON.stringify({ region: 'beijing', profiles: { [project]: { terms: 'SRS\nE2E', context: '' } }, engine: 'tokenplan' }));
+  fs.writeFileSync(path.join(data, 'voice-input.json'), JSON.stringify({ region: 'beijing', profiles: { [project]: { terms: 'SRS\nE2E', context: '' } }, engine: process.env.E2E_ENGINE || 'tokenplan' }));
   const home = path.join(root, 'codex'); fs.mkdirSync(home); fs.writeFileSync(path.join(home, 'config.toml'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "xhigh"\n');
   const A = 'C:/AIWork/20261005-声纹过滤实验-claude1/audio/';
   const clip = name => fs.readFileSync(A + name + '.wav').subarray(44);
@@ -48,7 +48,7 @@ async function main() {
   const snap = async name => { const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(shot.data, 'base64')); };
   try {
     hub = await launchIsolatedHub({ dataDir: data, port: await freePort(), windowMode: 'hidden', label: 'voiceprint', entryPath: path.join(__dirname, 'fixtures/voice-tokenplan-hub.js'), extraEnv: {
-      DASHSCOPE_API_KEY: '', HUB_VOICE_TEST_WAV: audioFile, CODEX_HOME: home, 
+      DASHSCOPE_API_KEY: (fs.readFileSync(path.join(os.homedir(), '.bailian', 'config.json'), 'utf8').match(/"(sk-[A-Za-z0-9]+)"/) || [])[1] || '', HUB_VOICE_TEST_WAV: audioFile, CODEX_HOME: home, 
       CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.join(__dirname, 'fixtures/codex-app-server.js'),
     } });
     cdp = await connectFirstPage(hub);
