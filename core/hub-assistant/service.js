@@ -329,7 +329,7 @@ class AssistantService {
   }
   podcastDone(m){
     const done=m.episodes.filter(e=>e.status==='done'),failed=m.episodes.filter(e=>e.status==='failed').length,mins=Math.round(done.reduce((s,e)=>s+(e.seconds||0),0)/60);
-    const text=done.length?`田哥，《${m.title}》的口播做好了：${done.length} 集，约 ${mins} 分钟${failed?`（另有 ${failed} 集没做成，可以让我重做）`:''}。手机「资料」里可以听，也能看阅读版。`:`田哥，《${m.title}》的口播没做成：${m.error||m.episodes.find(e=>e.error)?.error||'原因未知'}`;
+    const text=done.length?`田哥，《${m.title}》的口播做好了：${done.length} 集，约 ${mins} 分钟${failed?`（另有 ${failed} 集没做成，可以让我重做）`:''}。手机左侧菜单「资料口播」里可以听，也能看阅读版。`:`田哥，《${m.title}》的口播没做成：${m.error||m.episodes.find(e=>e.error)?.error||'原因未知'}`;
     this.watches.addNotice({id:'podcast:'+m.id,title:'口播',kind:'podcast',label:'资料口播',text});
   }
   podcastSource(file){
@@ -505,7 +505,7 @@ class AssistantService {
       requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
       if(!this.podcasts)throw new Error('这台电脑还没配置口播');
       const r=await this.podcasts.start(this.podcastSource(args.path),{title:args.title||''});
-      return{ok:true,...r,note:'已在后台制作：先写稿再合成，做好一集手机「资料」里就能听，全部完成会提醒田哥。'};
+      return{ok:true,...r,note:'已在后台制作：先写稿再合成，做好一集手机左侧菜单「资料口播」里就能听，全部完成会提醒田哥。'};
     }
     if(name==='list_memos'){const v=this.memos.view();return{ok:true,open:v.open.map(m=>({no:m.no,id:m.id,title:m.title,kind:m.kind,group:v.groups[m.group]||m.group,due:m.dueLabel||null,recordedAt:new Date(m.createdAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}),raw:m.raw.slice(0,200)})),recentlyClosed:v.closed.slice(0,10).map(m=>({id:m.id,title:m.title,status:m.status}))};}
     if(name==='add_memo'||name==='update_memo'){
