@@ -14,7 +14,7 @@ const ALLOWED_EXTENSIONS = new Set([
   '.zip', '.mp4',
 ]);
 const DELIVERY_SIGNAL_RE = /(?:绝对路径|成果|交付|产物|输出路径|已生成|已保存|可打开|下载地址|artifact|deliverable|generated|saved\s+to|output\s+path|report\s+at|preview\s+at)/i;
-const TRUSTED_OUTPUT_RE = /(?:[\\/](?:artifacts?|outputs?)[\\/]|[\\/]Desktop[\\/]claude-artifacts[\\/]|[\\/]VibeData[\\/]Artifacts[\\/]Reports[\\/]|[\\/]\.claude-session-hub[\\/]images[\\/])/i;
+const TRUSTED_OUTPUT_RE = /(?:[\\/](?:artifacts?|outputs?)[\\/]|[\\/]AI-Artifacts[\\/]|[\\/]Desktop[\\/]claude-artifacts[\\/]|[\\/]VibeData[\\/]Artifacts[\\/]Reports[\\/]|[\\/]\.claude-session-hub[\\/]images[\\/])/i;
 const SENSITIVE_SEGMENTS = new Set([
   '.git', 'node_modules', '.ssh', '.aws', '.azure', '.lark-cli', '.codex', '.claude',
   'credentials', 'secrets', 'cookies', 'tokens',

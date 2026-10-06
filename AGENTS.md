@@ -22,6 +22,10 @@ Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导入本文件；Codex / Kimi 等直接
 - 单会话卡片读原生落盘；群聊卡片读 `task-docs/<群>/answers/turn-<n>/<成员>/回答.md`，工作流读该步交付。草稿标草稿，异常看成员状态；文件更新随时生效。旧 transcript 协议仅作兼容逃生入口。设计：`docs/design/group-answer-files.md`。
 - 同一原生 session 同时仅一个 Hub writer；关闭先保存、停 writer 再释放，其他 Hub 从最新记录恢复。未打开历史入口不订阅/监听/回写，窗口关闭不驻托盘；保留事务锁与定时去重。设计：`docs/design/session-exclusive-ownership.md`。
 
+## 产物位置
+
+- 2026-10-06 用户确认：电脑桌面只保留关键启动入口。Agent 产物默认写当前项目 `artifacts/` 或 `output/`；跨项目重要交付写 `C:/Users/lintian/AI-Artifacts/`，文件名使用 `YYYYMMDD-<任务>-<席位>`。未经用户当次明确指定，不把文件、截图、报告、临时目录或归档放到 Desktop（含旧 `claude-artifacts`）。交付提供实际绝对路径。
+
 ## UI、记忆与专项入口
 
 - 会话/群聊/成员进入默认卡片，主动点击后台才显示 CLI，PowerShell 直接终端。PTY→main→renderer→xterm 单写入；重复显示先查 TUI 重绘/resize/reopen。修改 resize、splitter、zoom 等先看手册「UI 与终端风险区」。

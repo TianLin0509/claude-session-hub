@@ -99,6 +99,7 @@ const { createDesktopNotificationController } = require('./main/desktop-notifica
 const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handlers.js');
 const { registerMemoryReleaseIpc } = require('./main/ipc/memory-release-handlers.js');
 const { registerDiskReleaseIpc } = require('./main/ipc/disk-release-handlers.js');
+const { registerDesktopOrganizerIpc } = require('./main/ipc/desktop-organizer-handlers.js');
 const { registerAutoSuspendIpc } = require('./main/ipc/auto-suspend-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
@@ -2333,6 +2334,7 @@ registerMemoryReleaseIpc(ipcMain, {
   getSessionManager: () => sessionManager,
   logger: console,
 });
+registerDesktopOrganizerIpc(ipcMain, { dataDir: getHubDataDir(), shell });
 registerDiskReleaseIpc(ipcMain, {
   app,
   dataDir: getHubDataDir(),
