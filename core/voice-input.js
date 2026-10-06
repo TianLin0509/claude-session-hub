@@ -21,11 +21,11 @@ function endpoint(config) {
     : config.region === 'beijing' ? 'dashscope.aliyuncs.com' : 'dashscope-intl.aliyuncs.com';
   return `wss://${host}/api-ws/v1/inference`;
 }
-function runTask(id, sampleRate, profile) {
+function runTask(id, sampleRate, profile, model = MODEL) {
   const { terms, context } = normalizeProfile(profile);
   return {
     header: { action: 'run-task', task_id: id, streaming: 'duplex' },
-    payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: MODEL,
+    payload: { task_group: 'audio', task: 'asr', function: 'recognition', model,
       parameters: { format: 'pcm', sample_rate: sampleRate, language_hints: ['zh', 'en'],
         vocabulary: Object.fromEntries(terms.split('\n').filter(Boolean).map(t => [t, 3])),
         max_sentence_silence: 1300 },
@@ -36,7 +36,8 @@ function runTask(id, sampleRate, profile) {
 // One bounded connection per recording. No retries or provider fallback: an error
 // is visible, and the partial text remains available for explicit recovery.
 class VoiceStream {
-  constructor({ config, apiKey, sampleRate, profile, onEvent, socketFactory, timeoutMs = 15000 }) {
+  // model：默认 3.0 流式；实时接力用 3.1 流式（免费额度更多、价格更低）。
+  constructor({ config, apiKey, sampleRate, profile, onEvent, socketFactory, timeoutMs = 15000, model = MODEL }) {
     if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 96000) throw new Error('麦克风采样率不受支持');
     if (!apiKey || /[\r\n]/.test(apiKey)) throw new Error('请先配置百炼语音 API Key');
     this.id = randomUUID();
@@ -46,7 +47,7 @@ class VoiceStream {
     this.onEvent = onEvent;
     this.state = 'connecting';
     this.timeoutMs = timeoutMs;
-    const request = runTask(this.id, sampleRate, profile);
+    const request = runTask(this.id, sampleRate, profile, model);
     const url = endpoint(config);
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.socket = (socketFactory || ((url, opts) => new WebSocket(url, opts)))(url, {
@@ -102,7 +103,8 @@ class VoiceStream {
         if (!s || s.heartbeat) return;
         if (!Number.isInteger(s.sentence_id) || s.sentence_id < 0 || typeof s.text !== 'string') { this.fail('语音结果缺少句子编号或文字'); return; }
         if (this.sentences.get(s.sentence_id)?.final && !s.sentence_end) return;
-        this.sentences.set(s.sentence_id, { text: s.text, final: s.sentence_end === true });
+        // begin/end（毫秒）供声纹按句比对
+        this.sentences.set(s.sentence_id, { text: s.text, final: s.sentence_end === true, begin: s.begin_time, end: s.end_time });
         this.onEvent({ type: 'partial', text: this.text() }); break;
       }
       case 'task-finished':
