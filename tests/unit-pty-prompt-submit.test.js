@@ -4,6 +4,17 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const submit = require('../core/pty-prompt-submit.js');
 
+test('real Codex 0.159.3 model/context and warning footers do not hide an exact pending short prompt', () => {
+  const prompt = '只回复 DEEP_SHORT_OK，不调用工具。';
+  const screen = [...Array(26).fill(''), '› ' + prompt, '',
+    '  GPT-6.1-Sol low fast · Context 100% left · ~\\AppData\\Local\\Temp\\workspace',
+    '                                                                                               ⚠ 1 warning · f2 to view'];
+  assert.equal(submit.pasteStillInInputBox({lastLiveScreen:screen},prompt),true);
+  assert.equal(submit.hasPromptInInputLine([...screen,'额外未发送正文'],prompt),false);
+  assert.equal(submit.hasPromptInInputLine(screen,prompt+' 改动'),false);
+  assert.equal(submit.hasPromptInInputLine(screen.map(l=>l.replace('1 warning · f2 to view','1 warning · OTHER INPUT')),prompt),false);
+});
+
 const BP_START = '\x1b[200~';
 const BP_END = '\x1b[201~';
 

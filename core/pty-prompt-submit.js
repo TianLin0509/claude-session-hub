@@ -182,6 +182,8 @@ function hasPromptInInputLine(lines, prompt) {
   return lines.slice(inputAt + 1).every(line => !String(line || '').trim()
     || /^[\s─━╭╰╯╮│┌└┘┐┤├]+$/.test(line)
     || /^\s*(?:Context \d+%.*|shift\+tab.*|\? for shortcuts.*)$/i.test(line)
+    || /^\s*GPT-[\w.-]+(?:\s+(?:minimal|low|medium|high|xhigh|default|fast|flex))*\s*·\s*Context\s+\d+%\s+left(?:\s*·\s*.*)?$/i.test(line)
+    || /^\s*⚠\s*\d+\s+warnings?\s*·\s*f2\s+to\s+view\s*$/i.test(line)
     || /^\s*(?:[⏸⏵▶»]+\s*)?(?:(?:manual|plan|auto) mode on|bypass permissions on|accept edits on)\b.*$/i.test(line));
 }
 

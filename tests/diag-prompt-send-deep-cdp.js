@@ -32,8 +32,14 @@ async function main() {
     fs.writeFileSync(entryPath,`
       const fs=require('node:fs');
       const {SessionManager}=require(${j(path.join(ROOT,'core/session-manager.js'))});
+      const submit=require(${j(path.join(ROOT,'core/pty-prompt-submit.js'))}),detect=submit.pasteStillInInputBox;
+      submit.pasteStillInInputBox=(probe,prompt)=>{const result=detect(probe,prompt);
+        fs.appendFileSync(${j(path.join(OUT,'probes.jsonl'))},JSON.stringify({at:Date.now(),prompt,result,probe})+'\\n');return result;};
+      const watcher=require(${j(path.join(ROOT,'core/group-chat-watcher.js'))}),init=watcher.init;
+      watcher.init=deps=>init({...deps,enableSendDiagnostics:true});
       const counts=new Map(),write=SessionManager.prototype.writeToSession,buffer=SessionManager.prototype.getSessionBuffer;
       SessionManager.prototype.writeToSession=function(sid,data){
+        fs.appendFileSync(${j(path.join(OUT,'writes.jsonl'))},JSON.stringify({sid,data,at:Date.now()})+'\\n');
         if(data.includes('\\x1b[200~')&&!counts.has(sid)) counts.set(sid,0);
         if(data==='\\r'&&counts.has(sid)){
           const n=counts.get(sid)+1;counts.set(sid,n);
@@ -81,6 +87,7 @@ async function main() {
       await until('session row',()=>c.eval(`!!document.querySelector('.session-item[data-session-id="${sid}"]')`));
       await c.eval(`document.querySelector('.session-item[data-session-id="${sid}"]').click();true`);
       await until('composer',()=>c.eval(`!!document.querySelector('.floating-input-bar[data-session-id="${sid}"] .floating-input-box')`));
+      if(process.env.DEEP_SHOW_PTY==='1') await c.eval(`applyViewMode('pty');true`);
       await until(provider+' ready',async()=>{
         const screen=await c.eval(`window.__hubE2E.terminalLiveScreenText(${j(sid)})`);
         if(/trust.*(?:directory|folder)|Yes, I trust this folder/i.test(screen)) {
@@ -96,7 +103,7 @@ async function main() {
       for(const [label,prompt,marker] of (process.env.DEEP_SHORT_ONLY==='1'?realCases.slice(0,1):realCases)) {
         const at=Date.now(),id=await send(sid,prompt);assert.ok(id);
         await recall(sid,prompt);
-        await until(provider+' '+label+' receipt',()=>c.eval(`floatingPromptDeliveries.get(${j(sid)})?.status==='confirmed'`));
+        await until(provider+' '+label+' receipt',()=>c.eval(`floatingPromptDeliveries.get(${j(sid)})?.status==='confirmed'`),Number(process.env.DEEP_RECEIPT_TIMEOUT)||90000);
         const latency=Date.now()-at;
         await until(provider+' '+label+' answer',()=>c.eval(`ipcRenderer.invoke('get-last-assistant-text',${j(sid)}).then(x=>String(x||'').includes(${j(marker)}))`),180000);
         // Wait until the real CLI has finished before sending the next case.
