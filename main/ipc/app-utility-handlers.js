@@ -106,10 +106,13 @@ function registerAppUtilityIpc(ipcMain, deps) {
 
   ipcMain.handle('get-system-resource-usage', async (_event, options = {}) => {
     const coreUsage = sampleSystemResourceUsage();
-    // The sidebar samples disk from the 60 s cache, without spawning nvidia-smi.
+    // Reuse the bounded GPU (10 s) and disk (60 s) caches for the compact footer.
     if (options.extended === false) {
-      try { return { ...coreUsage, disk: await systemTelemetry.sampleDisk() }; }
-      catch { return { ...coreUsage, disk: null }; }
+      const [gpu, disk] = await Promise.allSettled([
+        systemTelemetry.sampleGpu?.(), systemTelemetry.sampleDisk?.(),
+      ]);
+      return { ...coreUsage, gpu: gpu.status === 'fulfilled' ? gpu.value || null : null,
+        disk: disk.status === 'fulfilled' ? disk.value || null : null };
     }
     try {
       const extended = await systemTelemetry.sample({ force: options && options.force === true });

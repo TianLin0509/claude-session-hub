@@ -6,7 +6,7 @@ const {connectFirstPage}=require('./helpers/cdp-client');
 const {seedUsageData,getFreePort,waitFor,click,key}=require('./helpers/usage-refresh-fixture');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'hub-compact-status-')),dataDir=path.join(temp,'data');
 const fixture=seedUsageData(dataDir,'regression');
-const out=path.resolve(__dirname,'../artifacts/20261002-status-countdown-codex1',String(Date.now()));
+const out=path.resolve(__dirname,'../artifacts/20261006-gpu-footer-codex1',String(Date.now()));
 fs.mkdirSync(out,{recursive:true});
 fs.mkdirSync(path.join(dataDir,'bailian'));fs.writeFileSync(path.join(dataDir,'bailian/config.json'),'{}');
 const tokenControl=path.join(temp,'token-quota.json');fs.writeFileSync(tokenControl,JSON.stringify({ratio:.9}));
@@ -64,6 +64,15 @@ const hover=async selector=>{await c.eval(`document.querySelector(${JSON.stringi
   await waitFor(c,'document.querySelector("#rail-usage-popover").hidden');
   // Rendering a controlled telemetry sample validates colors while real sampling is independently checked below.
   const actual=await c.eval('systemResourceUsage');check(Number.isFinite(actual?.memoryPct),'真实系统内存采样仍工作');
+  check(Number.isFinite(actual?.gpu?.usagePct),'真实 NVIDIA GPU 占用率采样工作');
+  check(await c.eval(`document.querySelector('.strip-gpu b').textContent===${JSON.stringify(Math.round(actual.gpu.usagePct)+'%')}`),'底栏 GPU 读数来自实际采样');
+  check(await c.eval('document.querySelector("[data-resource-kind=cpu]").nextElementSibling.matches(".strip-gpu")'),'GPU 位于 CPU 旁边');
+  await c.eval('systemResourceUsage={...systemResourceUsage,gpu:{name:"测试 GPU",usagePct:96}};renderSidebarStrip()');
+  check(await c.eval('document.querySelector(".strip-gpu").classList.contains("strip-resource-critical") && document.querySelector(".strip-gpu b").textContent==="96%"'),'GPU 心跳更新读数并在高占用时标红');
+  await c.eval('systemResourceUsage={...systemResourceUsage,gpu:null};renderSidebarStrip()');
+  check(await c.eval('document.querySelector(".strip-gpu b").textContent==="—"'),'GPU 不可用时显示未知，保留其他指标');
+  await c.eval('systemResourceUsage={...systemResourceUsage,gpu:{name:"测试 GPU",usagePct:0}};renderSidebarStrip()');
+  check(await c.eval('document.querySelector(".strip-gpu b").textContent==="0%"'),'GPU 零占用正常显示');
   await c.eval('systemResourceUsage={...systemResourceUsage,cpuPct:24,memoryPct:90,disk:{...systemResourceUsage.disk,usagePct:96}};hubProxyInfo={...hubProxyInfo,proxy:"http://127.0.0.1:7890",clashDelay:{status:"ok",delayMs:155,nodeName:"测试节点",measuredAt:Date.now()}};renderSidebarStrip()');
   check(await c.eval('document.querySelector("[data-resource-kind=memory]").classList.contains("strip-resource-critical") && document.querySelector(".strip-delay").textContent.includes("155 ms")'),'90% 内存为紧张色，VPN 节点延迟仍完整显示');
   await hover('[data-resource-kind=memory]');await waitFor(c,'!document.querySelector("#resource-process-tooltip").hidden && document.querySelector("#resource-process-tooltip").textContent.includes("内存占用 Top 3")');
