@@ -425,3 +425,25 @@ test('review: an unsupported user budget prevents old plan confirmation',async t
   await assert.rejects(x.service.userAction('mt1','confirm'),/不会静默截断/);
   assert.equal(x.service.ledgerFor('mt1').plan.confirmedVersion,0);
 });
+
+test('plan tool reports the Hub round check, and a filework segment runs edit then review without merge terms', async t => {
+  const x = fixture(t);
+  await x.addExisting({ role: '落盘', kind: 'codex' });
+  await x.addExisting({ role: '审核', kind: 'claude' });
+  const plan = await x.call('orch_propose_plan', { summary: '调研后落盘', segments: [
+    { name: '调研', preset: 'research', goal: 'g', acceptance: 'a' },
+    { name: '落盘', preset: 'filework', goal: '写入记忆', acceptance: '审核通过' }] });
+  assert.equal(plan.budgetCheck.minRounds, 4);
+  assert.equal(plan.budgetCheck.ok, false, 'default 3 rounds cannot finish research (3) + filework (1)');
+  assert.match(plan.note, /不够/);
+  const y = fixture(t, { settings: { requireConfirm: false } });
+  await y.addExisting({ role: '落盘', kind: 'codex' });
+  await y.addExisting({ role: '审核', kind: 'claude' });
+  await assert.rejects(y.call('orch_start_workflow', { name: '落盘', preset: 'filework', goal: 'g', acceptance: 'a', members: ['m2'] }), /两位/);
+  await y.call('orch_start_workflow', { name: '落盘', preset: 'filework', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
+  const stages = y.meetingObj.serialWorkflow.deliveryStages;
+  assert.deepEqual(stages.map(s => [s.members[0], s.after]), [['m2', 'next'], ['m3', 'review']]);
+  assert.equal(y.meetingObj.serialWorkflow.deliveryKind, 'serial');
+  const goal = y.engineCalls.find(c => c[0] === 'start')[1];
+  assert.match(goal, /不合并、不推送/); assert.doesNotMatch(goal, /合并到主干/);
+});

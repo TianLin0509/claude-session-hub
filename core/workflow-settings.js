@@ -29,9 +29,14 @@ function createPreset(id, members) {
     { name: '汇总建议', members: one(1), prompt: '综合提案与质疑，给出一个推荐方案、取舍理由、仍不确定的事项及需要用户决定的问题。到此结束，不自动进入实施。', after: 'end' },
   ] };
   if (id === 'research') return { ...base, rounds: [
-    { name: '分工查证', members: all, prompt: `${names[0]}：查支持证据；${names[1]}：查最强反证和失败条件；${names[2] ? names[2] + '：查缺失信息与可比性。' : '两位共同记录缺失信息。'}\n围绕用户当前问题核验一手来源，时效性事实标明日期和链接。区分事实、推断与未知，不重复对方的分工。`, after: 'next' },
-    { name: '补证核验', members: ids.slice(0, 2), prompt: '只补查前一轮最可能改变结论的争议与缺口。逐项核验原始来源及适用条件，不能核实就保留未知，不无限扩大检索范围。', after: 'next' },
-    { name: '形成结论', members: one(1), prompt: '交付结论、关键依据与来源、最强反证、未知项和推荐下一步。证据不足时明确暂不能判断。只交付研究，不自行执行购买、交易、发布或开发。', after: 'end' },
+    { name: '分工查证', members: all, prompt: `${names[0]}：查支持证据；${names[1]}：查最强反证和失败条件；${names[2] ? names[2] + '：查缺失信息与可比性。' : '两位共同记录缺失信息。'}\n围绕用户当前问题核对原始材料（文件、数据、代码或网页），引用外部或时效性信息时标明日期和来源。区分事实、推断与未知，不重复对方的分工。`, after: 'next' },
+    { name: '补证核验', members: ids.slice(0, 2), prompt: '只补查前一轮最可能改变结论的争议与缺口。逐项核对原始材料及适用条件，不能核实就保留未知，不无限扩大检索范围。', after: 'next' },
+    { name: '形成结论', members: one(1), prompt: '交付结论、关键依据与出处、最强反证、未知项和推荐下一步。证据不足时明确暂不能判断。只交付结论，不自行执行购买、交易、发布、开发或改写正式文件。', after: 'end' },
+  ] };
+  // 文件修改：非 git 开发的文件改动（文档、记忆、配置等）。审核需返工时退回上一步修改，不合并、不推送。
+  if (id === 'filework') return { ...base, rounds: [
+    { name: '修改与自查', members: one(0), prompt: '按目标修改指定文件，不改与目标无关的文件。改写已有文件前先备份。交付改动清单（文件路径、改了什么、依据）、备份位置和自查结果。收到需返工时先读上一轮审核意见，逐项修复后重新交付。不合并、不推送。', after: 'next' },
+    { name: '独立审核', members: one(1), prompt: '对照目标与验收，独立核对实际文件内容、出处和副作用，不采信自查结论，不代为修改。全部满足交付已交付；有需修复的缺陷交付需返工，逐项写清问题与期望改法；环境或权限阻碍时交付阻塞。', after: 'review' },
   ] };
   if (id !== 'custom') throw new Error('未知工作流模板');
   return { ...base, rounds: [{ name: '第一轮', members: one(0), prompt: '', after: 'end' }] };
@@ -59,7 +64,9 @@ function validate(d, memberIds) {
     if (r.members.some(id => !memberIds.includes(id))) throw new Error(`第 ${i + 1} 轮有已移除的成员，请重新选择`);
     if (typeof r.name !== 'string' || !r.name.trim() || r.name.length > 80) throw new Error(`第 ${i + 1} 轮名称不能为空且不能超过 80 字`);
     if (typeof r.prompt !== 'string' || !r.prompt.trim() || r.prompt.length > 16000) throw new Error(`第 ${i + 1} 轮共享 prompt 不能为空且不能超过 16000 字`);
-    if (!['next', 'end', ...(d.kind === 'file' ? ['review'] : [])].includes(r.after)) throw new Error('轮次接续规则无效');
+    // 串行流程可在最后一轮设审核：需返工退回上一轮。
+    const serialReview = d.kind === 'serial' && i > 0 && i === d.rounds.length - 1;
+    if (!['next', 'end', ...(d.kind === 'file' || serialReview ? ['review'] : [])].includes(r.after)) throw new Error('轮次接续规则无效');
   });
   if (d.kind === 'file') {
     const [k,b,m] = d.rounds;
