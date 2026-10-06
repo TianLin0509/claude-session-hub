@@ -1,6 +1,6 @@
 'use strict';
 const { companyCards } = require('./account-center-view');
-const { TABS, aiHtml, cliHtml, servicesHtml, toolConnections } = require('./account-workspace-view');
+const { TABS, aiHtml, cliHtml, servicesHtml, toolConnections, codexQuotaHtml } = require('./account-workspace-view');
 function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, configModal, closeOtherPanels = () => {} }) {
   const page = document.getElementById('account-page'), body = page.querySelector('.ac-content');
   let tab = 'ai';
@@ -26,6 +26,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     const el = page.querySelector('.ac-status'), text = error || notice;
     el.textContent = text; el.hidden = !text; el.classList.toggle('error', !!error);
     for (const b of page.querySelectorAll('[data-ac="open"],[data-ac="login"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="tools"],[data-ac="tools-connect"],[data-ac="external"]')) b.disabled = !!busy || state?.setupProgress?.status === 'running';
+    for (const b of page.querySelectorAll('[data-ac="codex-quota"]')) b.disabled=!!busy || !!state?.clis?.find(c=>c.kind==='codex' && c.profileId===b.dataset.profile)?.isDefault;
   }
   function toolsHtml() {
     const progress = state?.setupProgress;
@@ -48,6 +49,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     if (!state) { body.innerHTML = '<p class="ac-empty">正在读取账号…</p>'; return renderStatus(); }
     const expanded = [...body.querySelectorAll('details[open]')].map(d => d.dataset.details);
     body.innerHTML = tab === 'ai' ? aiHtml(state, search.value, esc) : tab === 'cli' ? cliHtml(state, search.value, esc) : servicesHtml(toolAccounts, tab, search.value, state, esc, toolAccountsError);
+    if (['ai','cli'].includes(tab) && !search.value) body.innerHTML=codexQuotaHtml(state,esc)+body.innerHTML;
     if (tab === 'ai' && state.tools?.some(tool => tool.tool === 'images' && tool.state === 'changed')) {
       body.innerHTML = '<p class="ac-connection-notice" role="status">生图工具连接配置已变化，生图记录暂不能归入共享账号。请在下方「工具连接」核对。</p>' + body.innerHTML;
     }
@@ -129,6 +131,19 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     } catch (e) { if (ticket === epoch) error = e.message; }
     finally { busy = ''; if (ticket === epoch) renderStatus(); }
   }
+  async function switchCodexQuota(profileId) {
+    if (busy) return;
+    busy='codex-quota';error='';notice='正在切换后续会话的用量账号…';renderStatus();
+    const ticket=epoch;
+    try {
+      const result=await ipcRenderer.invoke('codex:set-global-account',{profileId,scope:'launch'});
+      if (!result?.ok) throw Error(result?.error || '用量账号切换失败');
+      if (ticket!==epoch) return;
+      notice='已切换后续会话的用量账号。已打开的会话保持原账号，新建、恢复和重启使用新账号。';
+      await refresh();
+    } catch (e) {if(ticket===epoch)error=e.message;}
+    finally {busy='';if(ticket===epoch)renderStatus();}
+  }
   async function configure(provider = 'codex') {
     try { await configModal.openAccountConfig(provider); if (!page.hidden) { view = 'config'; clearTimeout(timer); render(); } }
     catch (e) { error = e.message; renderStatus(); }
@@ -162,6 +177,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     else if (a === 'login') void action('login', args);
     else if (a === 'add' || a === 'preferred') void action('preference', { ...args, add: a === 'add' });
     else if (a === 'authorize') void authorize(b.dataset.id);
+    else if (a === 'codex-quota') void switchCodexQuota(b.dataset.profile);
     else if (a === 'config') void configure(b.dataset.id);
     else if (a === 'tools') void action('tools');
     else if (a === 'external') void action('external', { service: b.dataset.service, action: b.dataset.operation });
@@ -188,6 +204,8 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     if (card && n >= 1 && n <= 7) { e.preventDefault(); void action('open', { site: card.site }); }
   });
   document.addEventListener('hub-account-config-saved', () => { notice = '接入配置已保存。'; void refresh(); });
+  ipcRenderer.on('codex-global-account-changed',()=>{if(!page.hidden)void refresh();});
+  ipcRenderer.on('launch-auth-status',(_event,result)=>{if(!page.hidden){notice=result.message;void refresh();}});
   window.addEventListener('resize', position);
   return { open, close, refresh };
 }

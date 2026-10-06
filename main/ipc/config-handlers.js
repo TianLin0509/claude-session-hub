@@ -287,6 +287,7 @@ function registerConfigIpc(ipcMain, deps) {
     sessionManager,
     meetingManager,
     testCompletionNotification,
+    ensureLaunchAuth,
   } = deps;
 
   ipcMain.handle('get-hub-config', () => toMaskedConfig(require('../../core/codex-global-account').currentConfig()));
@@ -295,16 +296,18 @@ function registerConfigIpc(ipcMain, deps) {
 
   ipcMain.handle('codex:set-global-account', async (_e, payload = {}) => {
     try {
+      if (payload.scope === 'launch' && ensureLaunchAuth) await ensureLaunchAuth('codex',{launchProfile:payload.profileId});
       const merged = require('../../core/codex-global-account').withGlobalAccount(
-        readConfigJsonForUpdate(),require('../../core/codex-global-account').currentConfig(),payload.profileId);
+        readConfigJsonForUpdate(),require('../../core/codex-global-account').currentConfig(),payload.profileId,process.env,payload.scope);
       saveConfig(merged);
       clearSessionManagerConfigCache();
       const scope=currentCodexUsageScope();
       clearCodexJsonlCache();
       sendToRenderer('agent-usage',{codex:attachCodexUsageScope({usage5h:null,usage7d:null,unavailable:true},scope)});
       sendToRenderer('codex-global-account-changed',{profileId:payload.profileId});
-      const sessions=await sessionManager.syncCodexAccounts();
-      return {ok:true,profileId:payload.profileId,sessions};
+      const switchScope=require('../../core/codex-global-account').currentConfig().codexAccountSwitchScope;
+      const sessions=switchScope === 'launch' ? [] : await sessionManager.syncCodexAccounts();
+      return {ok:true,profileId:payload.profileId,scope:switchScope,sessions};
     } catch(error) { return {ok:false,error:error.message}; }
   });
 

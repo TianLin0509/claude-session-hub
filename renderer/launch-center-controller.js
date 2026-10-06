@@ -13,6 +13,7 @@ function normalizeLaunchIntent(value) {
 
 function createLaunchCenterController({
   document,
+  ipcRenderer,
   openSessionModal,
   closeSessionModal,
   prepareGroupPanel,
@@ -199,6 +200,12 @@ function createLaunchCenterController({
   }
 
   selectIntent('session', { focus: false });
+  ipcRenderer?.on('launch-auth-status',(_event,result)=>{
+    if (result?.message && menuEl.style.display!=='none') {
+      const target=activeIntent==='session' ? document.getElementById('new-session-error') : activeIntent==='group' ? groupErrorEl : errorEl;
+      if (target) {target.textContent=result.message;target.hidden=false;target.scrollIntoView?.({block:'nearest'});}
+    }
+  });
   initializeTrigger();
   return {
     close,

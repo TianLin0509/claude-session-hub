@@ -714,10 +714,9 @@
   function setError(message = '') {
     const errorEl = document.getElementById('new-session-error');
     if (!errorEl) return;
-    errorEl.textContent = selectedKind === 'chatgpt'
-      ? message.replace(/Error invoking remote method '[^']+': (?:Error: )?/, '') : message;
+    errorEl.textContent = message.replace(/Error invoking remote method '[^']+': (?:Error: )?/, '');
     errorEl.hidden = !message;
-    if (message && selectedKind === 'chatgpt') errorEl.scrollIntoView({ block: 'nearest' });
+    if (message && (selectedKind === 'chatgpt' || /官方登录界面|登录入口/.test(message))) errorEl.scrollIntoView({ block: 'nearest' });
   }
 
   // Recent workspaces are the primary way to pick an existing path; the OS folder
@@ -902,7 +901,7 @@
     if (accountNote) {
       accountNote.hidden=!showAccount;
       accountNote.textContent=accountReadError || (accountSaving ? '正在切换全局账号…' : accountNotice)
-        || '选择后立即设为全局账号。新建、恢复和重启都跟随；正在回答的会话在本轮结束后切换。';
+        || '选择后，新建、恢复和重启使用所选账号额度；已打开的会话继续使用原账号。';
     }
     if (accountSelect) {
       const signature=JSON.stringify(codexAccounts);
@@ -1405,12 +1404,12 @@
       const profileId=event.target.value;
       accountSaving=true;pendingAccountId=profileId;configReadRevision++;accountNotice='';setError('');paint();
       try {
-        const result=await ipcRenderer.invoke('codex:set-global-account',{profileId});
+        const result=await ipcRenderer.invoke('codex:set-global-account',{profileId,scope:'launch'});
         if (!result?.ok) throw new Error(result?.error || '账号切换失败');
         codexAccountId=result.profileId;
         const failed=(result.sessions || []).filter(s=>s?.error).length;
         const pending=(result.sessions || []).filter(s=>s?.pending).length;
-        accountNotice=failed ? `全局账号已保存；${failed} 个会话切换失败，请查看会话提示并重试恢复。`
+        accountNotice=result.scope==='launch' ? '后续会话的用量账号已切换；已打开的会话保持原账号，新建、恢复和重启使用新账号。' : failed ? `全局账号已保存；${failed} 个会话切换失败，请查看会话提示并重试恢复。`
           : pending ? `全局账号已切换；${pending} 个进行中的会话将在本轮结束后切换。` : '全局账号已切换，新建、恢复和重启会话均跟随。';
         codexTuningCatalog=null;
         await loadCodexTuningCatalog({force:true});

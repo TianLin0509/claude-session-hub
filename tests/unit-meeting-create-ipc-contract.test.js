@@ -113,6 +113,21 @@ function test(name, fn) {
 
 console.log('Running meeting create IPC contract tests...');
 
+test('login preflight checks each launch route before creating any meeting or session', async () => {
+  const ipc=createFakeIpc(),seen=[];
+  const deps=createBaseDeps({ensureLaunchAuth:async(kind,opts)=>{
+    seen.push([kind,opts.model]);
+    if(opts.model==='gpt-6-astra')throw Object.assign(Error('login required'),{code:'auth_required'});
+  }});
+  registerMeetingCreateIpc(ipc,deps);
+  await assert.rejects(ipc.handlers.get('create-meeting')(null,{scene:'general',slots:[
+    {kind:'codex',model:'chatgpt-web'}, {kind:'codex',model:'gpt-6-astra'}
+  ]}),{code:'auth_required'});
+  assert.deepEqual(seen,[['codex','chatgpt-web'],['codex','gpt-6-astra']]);
+  assert.equal(deps.meetingManager.calls.some(c=>c[0]==='createMeeting'),false);
+  assert.equal(deps.calls.some(c=>c[0]==='createSession'),false);
+});
+
 test('development native seats defer their launch; other rooms and providers keep existing behavior', async () => {
   // Both native backends hold their seat identity without an engine, so a dev
   // room spawns nothing until it actually dispatches. A general room, and a

@@ -85,6 +85,7 @@ function createGroupChatDispatcher(deps) {
     sendToRenderer,
     sessionManager,
     transcriptTap,
+    recoverLaunchAuth,
   } = deps;
 
   groupChatWatcher.init({
@@ -566,6 +567,8 @@ function createGroupChatDispatcher(deps) {
         warn(`[group-chat] auth failure banner confirmed for ${label}(${sid.slice(0, 8)}) - marking errored`);
         try { watcher.markErrored('auth_required'); }
         catch (e) { warn('[group-chat] markErrored auth_required threw:', e && e.message); }
+        const session=sessionManager.getSession(sid);
+        if (session && recoverLaunchAuth) void Promise.resolve(recoverLaunchAuth(session,{code:'auth_required'})).catch(()=>{});
         return;
       }
       if (groupChatWatcher.checkHostShellTakeover(sid)) {

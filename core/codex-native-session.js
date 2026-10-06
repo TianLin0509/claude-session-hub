@@ -993,9 +993,14 @@ class CodexNativeSession extends EventEmitter {
       this.emit('action-error','Codex 使用 Hub 输入框提交；终端为只读输出。');
     }
   }
-  async reconnect() {
+  async reconnect({useLaunchAccount = false} = {}) {
     if (this.closed) throw new Error('Codex 会话正在关闭，不能重新连接');
-    if (await this.followGlobalAccount()) return this.runtime;
+    const launchAccount=useLaunchAccount ? this.options.resolveLaunchAccount?.() : undefined;
+    if (launchAccount && launchAccount.id !== this.options.accountId
+        && (['running','waiting','unknown'].includes(this.runtime.state) || ['unknown','submitting'].includes(this.runtime.submission?.status))) {
+      throw new Error('会话仍在运行或状态待核对，请结束当前工作后再按新账号重启');
+    }
+    if (await this.followGlobalAccount(undefined,launchAccount)) return this.runtime;
     if (isUnstartedRuntime(this.runtime)) return this.runtime;
     if (this.runtime.connection === 'connected') return this.reconcile();
     if (!this.entry || this.entry.client.closed || !this.threadId) {
@@ -1022,10 +1027,10 @@ class CodexNativeSession extends EventEmitter {
     }
     return this.reconcile();
   }
-  async followGlobalAccount(intent) {
+  async followGlobalAccount(intent, launchAccount) {
     if (!this.options.resolveAccount) return false;
     if (this.accountSwitch) { await this.accountSwitch; return false; }
-    const target = this.options.resolveAccount();
+    const target = launchAccount || this.options.resolveAccount();
     const same = target.id === this.options.accountId && require('path').toNamespacedPath(target.home).toLowerCase()
       === require('path').toNamespacedPath(this.options.env.CODEX_HOME).toLowerCase();
     if (same) return false;
