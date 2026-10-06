@@ -85,6 +85,8 @@ function createOrchestrationService(deps) {
     return v;
   }
 
+  // 读收口交付正文（提取「收口结论」）；文件有大小上限，由交付协议保证。
+  function readText(file) { return fs.readFileSync(file, 'utf8'); }
   function readRun(meetingId) {
     try { return JSON.parse(fs.readFileSync(path.join(Delivery.directory(dataDir(), meetingId), 'run.json'), 'utf8')); }
     catch { return null; }
@@ -237,7 +239,7 @@ function createOrchestrationService(deps) {
     if (!ledger) return;
     const run = readRun(meetingId);
     if (run) bindStartingSegment(ledger, run);
-    const notices = run ? Ledger.applyRun(ledger, run, now()) : [];
+    const notices = run ? Ledger.applyRun(ledger, run, now(), { readText }) : [];
     for (const n of notices) Ledger.enqueue(ledger, n.key, n.text, now());
     if(run?.status==='paused' && ledger.status==='running' && !/已完成 \d+ 轮审查仍需返工|用户已暂停|额度/.test(run.error||'')){
       Ledger.halt(ledger,'runtime_error',run.error||'工作流运行暂停，需核对现场',now());
@@ -297,7 +299,7 @@ function createOrchestrationService(deps) {
     recovered.add(meetingId);
     const uncertain = Ledger.recoverAfterRestart(ledger);
     const run = readRun(meetingId);
-    if (run) { bindStartingSegment(ledger, run); Ledger.applyRun(ledger, run, now()); }
+    if (run) { bindStartingSegment(ledger, run); Ledger.applyRun(ledger, run, now(), { readText }); }
     const seg = Ledger.activeSegment(ledger);
     if (seg && run && !terminalRun(run) && ledger.status !== 'ended') {
       Ledger.enqueue(ledger, `restart:${process.pid}:${seg.id}`, `Hub 已重启。工作段「${seg.name}」当前${run.status === 'paused' ? '已暂停' + (run.error ? '（' + run.error + '）' : '') : '状态为 ' + run.status}；需要时用 orch_control_workflow(continue) 续跑。`, now());
@@ -388,7 +390,7 @@ function createOrchestrationService(deps) {
       const rounds = (Array.isArray(args.rounds) ? args.rounds : []).map((r, i, all) => ({
         name: String(r.name || `第 ${i + 1} 轮`).slice(0, 80), prompt: String(r.prompt || '').trim(),
         members: Array.isArray(r.members) && r.members.length ? r.members : args.members,
-        after: i === all.length - 1 ? 'end' : (r.after === 'end' ? 'end' : 'next'),
+        after: i === all.length - 1 ? (i > 0 && r.after === 'review' ? 'review' : 'end') : (r.after === 'end' ? 'end' : 'next'),
       }));
       if (!rounds.length) throw new Error('custom 模板要用 rounds 写清每一轮');
       return { enabled: true, presetId: 'custom', kind: 'serial', rounds };
@@ -402,7 +404,10 @@ function createOrchestrationService(deps) {
     if(!planned || ['preset','goal','acceptance'].some(k=>String(planned[k]||'').trim()!==String(args[k]||'').trim()))throw Error('派工必须匹配当前确认计划工作段的名称、模板、目标和验收标准');
     if (Ledger.overBudget(ledger)) { checkBudget(meetingId, ledger); persist(meetingId, ledger); throw new Error('额度已用满，已暂停；请用 orch_report(need_decision) 汇报'); }
     if (ledger.budget.roundsUsed >= ledger.budget.roundCap) throw new Error('迭代额度已用满；请用 orch_report(need_decision) 汇报');
-    if (!Ledger.PRESETS.includes(args.preset)) throw new Error('preset 只能是 development / research / roundtable / custom');
+    if (!Ledger.PRESETS.includes(args.preset)) throw new Error('preset 只能是 ' + Ledger.PRESETS.join(' / '));
+    if (args.preset === 'custom' && planned.steps && Array.isArray(args.rounds) && args.rounds.length > planned.steps && !args.rounds.some(r => r && r.after === 'review')) {
+      throw new Error(`计划里这段写的是 ${planned.steps} 步，实际排了 ${args.rounds.length} 步；请先更新计划（steps）让田哥确认额度`);
+    }
     const run = readRun(meetingId);
     if (run && !terminalRun(run)) throw new Error('已有工作段在进行（同一时间只能跑一段）；先用 orch_control_workflow 处理当前段');
     const list = members(meetingId);
@@ -413,8 +418,8 @@ function createOrchestrationService(deps) {
       if (!member) throw new Error(`没有已有成员 ${id}；请田哥调整成员配置`);
       if (member.orchestrator) throw new Error('编排员不参与工作流，members 里不能有自己');
     }
-    if (args.preset === 'development') {
-      if (ids.length !== 2) throw new Error('development 需要 members=[开发位, 审核位] 两位');
+    if (args.preset === 'development' || args.preset === 'filework') {
+      if (ids.length !== 2) throw new Error(`${args.preset} 需要 members=[实现位, 审核位] 两位`);
     }
     const draft = draftFor(meetingId, args, list);
     const workerIds = list.filter(x => !x.orchestrator).map(x => x.memberId);
@@ -525,7 +530,9 @@ function createOrchestrationService(deps) {
         const plan = Ledger.proposePlan(ledger, {...args,budget:BudgetIntent.forPlan(ledger,args.budget)}, now());
         if(!ledger.settings.requireConfirm)Ledger.confirmPlan(ledger,now());
         persist(m.id, ledger);
-        return { version: plan.version, status: ledger.status, budget:plan.budget, segments:plan.segments, note: ledger.status === 'awaiting_confirm' ? '计划与额度已交给田哥确认；确认后使用已有成员派工。' : '计划已记录，可以使用已有成员派工。' };
+        const check = Ledger.budgetCheck(ledger);
+        const budgetNote = check && !check.ok ? `${check.text}向田哥汇报计划时原样说明这句核算，并给出推荐额度。` : (check?.text || '');
+        return { version: plan.version, status: ledger.status, budget:plan.budget, budgetCheck: check, segments:plan.segments, note: [ledger.status === 'awaiting_confirm' ? '计划与额度已交给田哥确认；确认后使用已有成员派工。' : '计划已记录，可以使用已有成员派工。', budgetNote].filter(Boolean).join('') };
       }
       case 'orch_add_member': throw Error('编排员只使用固定的已有成员；新建成员由田哥操作');
       case 'orch_start_workflow': return startWorkflow(m.id, ledger, args);

@@ -166,7 +166,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       if(Object.values(step.deliveries).some(d=>d.outcome==='blocked')){r.status='paused';r.error='成员报告阻塞，请查看任务文件；可结束本次任务，保留记录后调整目标重开';save(id,r);return;}
       if(step.members.every(m=>step.deliveries[m])) {
         const stage=r.stages[step.index],rework=Object.values(step.deliveries).some(d=>d.outcome==='rework');
-        let next=stage.after==='review'?(rework?1:null):stage.after==='end'?null:step.index+1;
+        let next=stage.after==='review'?(rework?Math.max(0,step.index-1):null):stage.after==='end'?null:step.index+1;
         if(next===null || next>=r.stages.length){r.status='done';r.error='';save(id,r);getDispatcher().handoffMeetingTurn?.(id);return;}
         // A build is tested by the Hub before a reviewer sees it.
         if(r.kind==='file' && stage.phase==='build' && r.stages[next]?.after==='review'){

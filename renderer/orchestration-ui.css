@@ -41,3 +41,9 @@
 .mr-gc-msg:not([data-journal-minimized="true"]) .mr-orch-peek { display: none; }
 .mr-orch-dispatch summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sl-orch-tag { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 999px; font-size: 10px; line-height: 15px; color: #9a5a00; border: 1px solid #f2cf98; background: #fff8ec; vertical-align: 1px; }
+.mr-orch-budget-check { margin-top: 4px; font-size: 12px; color: var(--fg-muted); }
+.mr-orch-budget-check.short { color: #b42318; font-weight: 600; }
+.mr-orch-decision { font-size: 12px; }
+.mr-orch-decision.d-pass { color: #067647; }
+.mr-orch-decision.d-rework { color: #b42318; }
+.mr-orch-decision.d-open { color: #b54708; }

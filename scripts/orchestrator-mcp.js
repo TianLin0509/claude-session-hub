@@ -5,26 +5,26 @@ const readline = require('node:readline');
 const fs = require('node:fs');
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = { type: 'string' };
-const presets = { type: 'string', enum: ['development', 'research', 'roundtable', 'custom'] };
+const presets = { type: 'string', enum: ['development', 'filework', 'research', 'roundtable', 'custom'] };
 const tools = [
   { name: 'orch_status', annotations: { readOnlyHint: true },
     description: '读取本群计划账本：状态、额度、计划、已有成员、进度与交付证据。currentRun 含派工回执、失败步骤和 recovery（是否允许原地续跑与处理建议）。每次被唤醒先调用；遇到故障按 recovery 给田哥建议。',
     inputSchema: schema({}) },
   { name: 'orch_propose_plan',
-    description: '提交或更新计划。team 给已有成员分配角色（memberId 来自 orch_status，不含编排员）；segments 写各段唯一名称、模板、目标和验收标准。自然语言额度由 Hub 识别并随计划确认；复杂表达可用 budget 引用田哥原话，未指定的维度保持当前额度。提交后向田哥简述计划与额度，按确认设置执行。',
+    description: '提交或更新计划。team 给已有成员分配角色（memberId 来自 orch_status，不含编排员）；segments 写各段唯一名称、模板、目标和验收标准；custom 段用 steps 写步数。Hub 按模板核算剩余各段至少需要的轮数并对比额度，结果在 budgetCheck 里，不够时向田哥说明并给推荐额度。自然语言额度由 Hub 识别并随计划确认；复杂表达可用 budget 引用田哥原话，未指定的维度保持当前额度。提交后向田哥简述计划与额度，按确认设置执行。',
     inputSchema: schema({
       summary: string,
       team: { type: 'array', items: schema({ memberId: string, role: string, reason: string }, ['memberId','role']) },
       budget: schema({roundCap:{type:'integer',minimum:1,maximum:30},timeCapMin:{type:'number',minimum:1,maximum:1440},sourceQuote:string},['sourceQuote']),
-      segments: { type: 'array', items: schema({ name: string, preset: presets, goal: string, acceptance: string }, ['name', 'preset', 'acceptance']) },
+      segments: { type: 'array', items: schema({ name: string, preset: presets, goal: string, acceptance: string, steps: { type: 'integer', minimum: 1, maximum: 6 } }, ['name', 'preset', 'acceptance']) },
       estimateRounds: { type: 'number' },
     }, ['summary', 'segments']) },
   { name: 'orch_start_workflow',
-    description: '启动当前计划中的工作段，name、preset、goal、acceptance 必须匹配计划；成员仅从已有队伍选取，同一时间一段。development：members=[实现位,独立审核位]，开题→实现与自测→审核，正常返工自动迭代；research / roundtable 为 2–3 位，members 第 2 位负责收口，可用顺序选择收口成员；custom 用 rounds 自定义 1–6 轮，各轮安排 1–3 位已有成员并行，轮间按 next/end 串行接续。',
+    description: '启动当前计划中的工作段，name、preset、goal、acceptance 必须匹配计划；成员仅从已有队伍选取，同一时间一段。development：members=[实现位,独立审核位]，git 项目开题→实现与自测→审查并合并，返工自动迭代；filework：members=[实现位,独立审核位]，修改与自查→独立审核，需返工退回修改，不合并不推送；research / roundtable 为 2–3 位，members 第 2 位负责收口；custom 用 rounds 自定义 1–6 轮，各轮安排 1–3 位已有成员并行，轮间按 next/end 串行接续，最后一轮可设 review（需返工退回上一轮）。',
     inputSchema: schema({
       name: string, preset: presets, goal: string, acceptance: string,
       members: { type: 'array', items: string },
-      rounds: { type: 'array', items: schema({ name: string, prompt: string, members: { type: 'array', items: string }, after: { type: 'string', enum: ['next', 'end'] } }, ['name', 'prompt', 'members']) },
+      rounds: { type: 'array', items: schema({ name: string, prompt: string, members: { type: 'array', items: string }, after: { type: 'string', enum: ['next', 'end', 'review'] } }, ['name', 'prompt', 'members']) },
     }, ['name', 'preset', 'goal', 'acceptance', 'members']) },
   { name: 'orch_control_workflow',
     description: '控制当前工作段：continue 续跑正常审核返工或用户已授权恢复的任务；remind 提醒未交付成员补交（可带 note）；pause 暂停；cancel 取消。运行故障仅给田哥建议，等待明确恢复；普通询问保持暂停。',

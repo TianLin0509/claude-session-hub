@@ -95,6 +95,7 @@ async function run() {
     ok('计划账本展开显示计划与待确认', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('一位 Codex 调研') && document.querySelector('.mr-orch-ledger').textContent.includes('待确认')"));
     await shot('03-plan-awaiting');
     ok('确认前显示自然语言额度与生效时机', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('10 轮') && document.querySelector('.mr-orch-ledger').textContent.includes('30 分钟') && document.querySelector('.mr-orch-ledger').textContent.includes('确认后生效')"));
+    ok('确认前显示 Hub 按模板核算的最少轮数', await cdp.eval("(()=>{const e=document.querySelector('.mr-orch-ledger .mr-orch-budget-check'); return !!e && e.textContent.includes('至少 3 轮') && e.textContent.includes('额度剩 10 轮') && !e.classList.contains('short');})()"));
     await click('.mr-orch-strip [data-orch-action="confirm"]');
     await wait(async () => (await invoke('orchestration:view', { meetingId: meeting.id })).view.status === 'running', 'confirmed');
     const budget=(await invoke('orchestration:view',{meetingId:meeting.id})).view.budget; ok('自然语言额度确认后实际生效',budget.roundCap===10 && budget.minutesCap===30);
