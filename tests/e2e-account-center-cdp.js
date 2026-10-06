@@ -31,7 +31,7 @@ async function main() {
   write(path.join(home, '.mcporter/mcporter.json'), { mcpServers: { douyin: { command: 'unused', env: { DASHSCOPE_API_KEY: 'ACCOUNT-SECRET-FIXTURE' } } } });
   // CLI token files: two Codex profiles on two accounts, Claude expired, Gemini fine, Kimi absent.
   write(path.join(home, '.codex', 'auth.json'), { tokens: { id_token: jwt({ email: 'alt@example.com' }), refresh_token: 'SECRET-1' } });
-  write(path.join(home, '.codex-second', 'auth.json'), { tokens: { id_token: jwt({ email: 'main@example.com' }), refresh_token: 'SECRET-2' } });
+  write(path.join(home, '.codex-second', 'auth.json'), { auth_mode:'chatgpt', tokens: { id_token: jwt({ email: 'main@example.com' }), refresh_token: 'SECRET-2' } });
   write(path.join(home, '.claude', '.credentials.json'), { claudeAiOauth: { refreshToken: 'SECRET-3', refreshTokenExpiresAt: Date.now() - 1000 } });
   write(path.join(home, '.gemini', 'oauth_creds.json'), { refresh_token: 'SECRET-4' });
   // Web logins as Chrome stores them: main holds ChatGPT until well after today, nothing else.
@@ -62,8 +62,10 @@ async function main() {
   const oldCli = path.join(toolsRoot, 'old-cli.cjs'); write(oldCli, 'process.stdout.write("closed fixture browser");');
   write(path.join(laneConfig, 'settings.json'), { data_dir: laneData, cli_entry: oldCli, account_name: 'main@example.com' });
   const queue = new DatabaseSync(path.join(pool, 'queue.sqlite3'));
-  queue.exec('CREATE TABLE accounts (id TEXT, config_dir TEXT, login_group TEXT); CREATE TABLE jobs (account_id TEXT, status TEXT, updated REAL, error TEXT, result TEXT)');
-  queue.prepare('INSERT INTO accounts VALUES (?,?,?)').run('primary', laneConfig, 'primary'); queue.close();
+  queue.exec("CREATE TABLE accounts (id TEXT, config_dir TEXT, login_group TEXT, enabled INTEGER DEFAULT 0, ready INTEGER DEFAULT 0, state TEXT DEFAULT 'browser_challenge',pid INTEGER,heartbeat REAL DEFAULT 0,updated REAL DEFAULT 0); CREATE TABLE jobs (account_id TEXT, status TEXT, updated REAL, error TEXT, result TEXT,cancel_requested INTEGER DEFAULT 0); CREATE TABLE login_cooldowns (login_group TEXT,retry_after REAL)");
+  queue.prepare('INSERT INTO accounts(id,config_dir,login_group) VALUES (?,?,?)').run('primary', laneConfig, 'primary'); queue.close();
+  write(path.join(pool,'codex-fallback.json'),{enabled:true,prefer:'codex',codex_home:path.join(home,'.codex-second')});
+  write(path.join(pool,'codex-lane-health.json'),{pid:process.pid,beat:Date.now()/1000,version:'0.7.32'});
   const out = path.resolve('artifacts/account-center-cdp'); fs.mkdirSync(out, { recursive: true });
   const result = { passed: false, boundary: '真实隔离 Hub、鼠标键盘、DOM、IPC、磁盘记录；网页打开、CLI 授权及工具使用结果采用显式夹具，未调用真实网站', checks: [], root };
   let hub, cdp;
@@ -87,14 +89,16 @@ async function main() {
     const main = '.ac-company[data-site="chatgpt"]';
     assert.match(await text(main), /main@example\.com/);
     assert.match(await text(main), /访问过网页/);
+    assert.match(await text('.ac-image-status'),/生图可用.*Codex 订阅/);
+    assert.ok(!(await text(main)).includes('已登录'),'subscription readiness does not claim website login');
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-tabs [role=tab]").length'), 6);
-    assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#account-page")).backgroundColor'), 'rgb(249, 251, 254)');
+    assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#account-page")).backgroundColor'), 'rgb(255, 255, 255)');
     assert.equal(await cdp.eval('document.querySelectorAll("[data-ac=check],[data-ac=cancel],.ac-progress").length'), 0);
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account").length'), 2);
     await snap('01-clear-white');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 2560, height: 960, deviceScaleFactor: 1, mobile: false });
     const wide = await cdp.eval('(()=>{const page=document.querySelector("#account-page").getBoundingClientRect(), card=document.querySelector(".ac-company").getBoundingClientRect(), rail=document.querySelector("#scene-rail").getBoundingClientRect();return {pageWidth:page.width,cardWidth:card.width,left:card.left-page.left,right:page.right-card.right,railWidth:rail.width,pageLeft:page.left,railRight:rail.right}})()');
-    assert.ok(wide.pageWidth > 2000 && wide.cardWidth > wide.pageWidth - 100 && Math.abs(wide.left - wide.right) < 40 && wide.railWidth === 72 && Math.abs(wide.pageLeft - wide.railRight) < 2, JSON.stringify(wide));
+    assert.ok(wide.pageWidth > 2000 && wide.cardWidth > wide.pageWidth - 100 && Math.abs(wide.left - wide.right) < 40 && Math.abs(wide.railWidth - 44) < .01 && Math.abs(wide.pageLeft - wide.railRight) < 2, JSON.stringify(wide));
     await snap('01-clear-white-wide');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
     result.checks.push('白色六分类界面、七家公司和双 ChatGPT；进入页面不启动浏览器，无主动检查入口');
@@ -140,6 +144,19 @@ async function main() {
     await until('document.querySelector(".ac-company[data-site=google] [data-ac=login]")', 'real use login error actionable', 12000);
     assert.match(await text('.ac-company[data-site="google"]'), /上次成功/);
     result.checks.push('更多菜单添加/默认账号、鼠标和 Alt+1 打开正确身份；夹具工具事件被动刷新并提示登录异常');
+    const blockedId='web-account-recovery-fixture';
+    write(path.join(data,'web-roundtable',blockedId+'.json'),{id:blockedId,kind:'web',state:'needs_attention',updatedAt:new Date().toISOString(),input:{provider:'deepseek',prompt:'PRIVATE-NOT-IN-UI'},submissionAttempted:true,recovery:{reason:'login_required'}});
+    write(path.join(data,'web-roundtable/recovery',blockedId+'.json'),{taskId:blockedId,provider:'deepseek'});
+    await until('document.querySelector(".ac-company[data-site=deepseek] [data-ac=recover]")','original task recovery action',12000);
+    assert.match(await text('.ac-company[data-site="deepseek"]'),/只补收原回答/);
+    assert.ok(!(await text('#account-page')).includes('PRIVATE-NOT-IN-UI'));
+    await click('.ac-company[data-site="deepseek"] [data-ac="recover"]');
+    await until('document.querySelector("#account-page .ac-item-error")?.textContent.includes("部分原任务未恢复")','missing original URL is reported without resend',20000);
+    const blocked=JSON.parse(fs.readFileSync(path.join(data,'web-roundtable',blockedId+'.json'),'utf8'));
+    assert.equal(blocked.state,'needs_attention');assert.equal(blocked.submissionAttempted,true);
+    assert.equal(await chrome.running(),false,'invalid collect never opens a browser');
+    result.checks.push('真实点击只复核对应账号；已发送但原会话未知时提示恢复失败，保留任务且不重发');
+    await snap('03-recovery');
     await click('[data-tab="cli"]');
     await click('[data-ac="authorize"][data-id="kimi"]');
     await until('document.querySelector(".ac-status").textContent.includes("官方登录入口已启动")', 'CLI authorization routed');

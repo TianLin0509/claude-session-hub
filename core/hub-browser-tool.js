@@ -39,7 +39,7 @@ function integrationStatus(root) {
     const connected = entries.filter(t => {
       if (typeof t.config !== 'string' || typeof t.entry !== 'string') return false;
       const config = read(t.config);
-      return config?.cli_entry === t.entry && fs.existsSync(t.entry);
+      return require('./hub-tool-binding').matchesBinding(t, config, { requireEntry: true });
     });
     // @community-strip 中转工具
     return { tool, name: tool === 'images' ? '网页生图' : '公司中转', state: connected.length && connected.length === entries.length ? 'connected' : entries.length ? 'changed' : 'pending',
@@ -188,10 +188,16 @@ function noteActivity(binding, argv, outcome) {
   if (binding.tool !== 'bridge' || !['goto', 'run-code'].includes(command) || !outcome) return;
   try { require('./hub-account-activity').recordActivity(binding.root, { identity: binding.identity, site: 'chatgpt', source: 'bridge', outcome }); } catch {}
 }
+function bridgeOutcome(result) {
+  if (result?.challenge === true || result?.cloudflare === true) return 'verification_required';
+  if (['login_required', 'credential_required', 'account_selection_required'].includes(result?.auth_state)) return 'login_required';
+  if (result?.logged_in === false) return 'failed';
+  return 'success';
+}
 async function main(binding, argv = process.argv.slice(2)) {
   try {
     const result = await new BrowserTool(binding).execute(argv);
-    noteActivity(binding, argv, result?.challenge === true ? 'verification_required' : 'success');
+    noteActivity(binding, argv, bridgeOutcome(result));
     process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n');
   } catch (e) {
     // Native tools classify these categories; never print evaluated code or page contents.
@@ -204,8 +210,10 @@ async function main(binding, argv = process.argv.slice(2)) {
       : /Target.*closed/.test(e.message) ? 'Target closed'
       : /Timeout|timeout/.test(e.message) ? 'Timeout' : 'Hub browser operation failed';
     // A person holding the browser is not a failure of the tool.
-    noteActivity(binding, argv, category === 'Site challenged' ? 'verification_required' : category === 'Human handoff' ? null : 'failed');
+    noteActivity(binding, argv, category === 'Site challenged' ? 'verification_required' : category === 'Human handoff' ? null
+      : /ERR_(?:NETWORK|CONNECTION|INTERNET|NAME|TIMED)/.test(e.message) ? 'network_error'
+      : /strict mode violation|IMAGE_TOOL_UNAVAILABLE/.test(category) ? 'adapter_changed' : 'failed');
     process.stdout.write(JSON.stringify({ isError: true, error: category }) + '\n'); process.exitCode = 1;
   }
 }
-module.exports = { BrowserTool, main, noteActivity, argumentsOf, validateBinding, save, read, integrationStatus };
+module.exports = { BrowserTool, main, noteActivity, bridgeOutcome, argumentsOf, validateBinding, save, read, integrationStatus };
