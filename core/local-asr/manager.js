@@ -28,9 +28,10 @@ function localInstalled(paths) {
 
 // state: off → starting → env → loading → ready；失败回到 env（加载失败）或 off（进程退出）。
 class LocalAsr extends EventEmitter {
-  constructor({ paths, idleMs = IDLE_MS, spawnImpl = spawn, requestTimeoutMs = 60000, log = (...a) => console.log('[local-asr]', ...a) }) {
+  // mode='speaker'：只做声纹的轻量 worker（CPU、约 170MB 内存），与识别 worker 并行。
+  constructor({ paths, mode = 'asr', idleMs = IDLE_MS, spawnImpl = spawn, requestTimeoutMs = 60000, log = (...a) => console.log('[local-asr]', ...a) }) {
     super();
-    Object.assign(this, { paths, idleMs, spawnImpl, requestTimeoutMs, log });
+    Object.assign(this, { paths, mode, idleMs, spawnImpl, requestTimeoutMs, log });
     this.state = 'off'; this.proc = null; this.pending = new Map(); this.seq = 0;
     this.loading = null; this.idleTimer = null; this.crashes = []; this.stopped = false;
   }
@@ -46,7 +47,7 @@ class LocalAsr extends EventEmitter {
     const proc = this.spawnImpl(this.paths.python, ['-u', worker], {
       windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', HUB_LOCAL_ASR_MODEL: this.paths.model,
-        HUB_LOCAL_SPEAKER_MODEL: this.paths.speakerModel, HUB_LOCAL_ASR_LANGUAGE: 'Chinese' },
+        HUB_LOCAL_SPEAKER_MODEL: this.paths.speakerModel, HUB_LOCAL_ASR_LANGUAGE: 'Chinese', HUB_LOCAL_WORKER: this.mode },
     });
     this.proc = proc; this.setState('starting');
     let buf = '';
@@ -126,10 +127,18 @@ class LocalAsr extends EventEmitter {
     if (!Array.isArray(r.texts) || r.texts.length !== pcms.length) throw new Error('本地识别返回数量不符');
     return r.texts.map(t => String(t || '').trim());
   }
-  async embed(pcm) {
-    if (this.state === 'off' || this.state === 'failed') this.start();
-    if (this.state === 'starting') await new Promise(resolve => this.once('env-ready', resolve));
-    return (await this.call('embed', { pcm: Buffer.from(pcm).toString('base64') })).vector;
+  // 声纹向量（每段一个单位向量）；maxSeconds 只取每段开头，够判断是谁又省时间。
+  async embed(pcms, maxSeconds = 6) {
+    if (!this.proc) this.start();
+    if (this.state === 'starting') await new Promise((resolve, reject) => {
+      const onReady = () => { cleanup(); resolve(); };
+      const onState = s => { if (s === 'off' || s === 'failed') { cleanup(); reject(new Error('声纹进程未能启动')); } };
+      const cleanup = () => { this.off('env-ready', onReady); this.off('state', onState); };
+      this.on('env-ready', onReady); this.on('state', onState);
+    });
+    const r = await this.call('embed', { pcm: pcms.map(p => Buffer.from(p).toString('base64')), max_seconds: maxSeconds });
+    if (!Array.isArray(r.vectors) || r.vectors.length !== pcms.length) throw new Error('声纹返回数量不符');
+    return r.vectors;
   }
   touch() {
     clearTimeout(this.idleTimer);
@@ -163,6 +172,15 @@ function getLocalAsr(cfg) {
   shared = new LocalAsr({ paths, idleMs: Number(process.env.HUB_LOCAL_ASR_IDLE_MS) || IDLE_MS });
   return shared;
 }
-function resetLocalAsrForTests() { shared?.stop(); shared = null; }
+let sharedSpeaker = null;
+// 声纹 worker：模型文件在才创建；常驻（轻量），随 Hub 退出。
+function getSpeakerWorker(cfg) {
+  if (sharedSpeaker) return sharedSpeaker;
+  const paths = localPaths(cfg);
+  if (!fs.existsSync(paths.python) || !fs.existsSync(paths.speakerModel)) return null;
+  sharedSpeaker = new LocalAsr({ paths, mode: 'speaker', log: (...a) => console.log('[voiceprint]', ...a) });
+  return sharedSpeaker;
+}
+function resetLocalAsrForTests() { shared?.stop(); shared = null; sharedSpeaker?.stop(); sharedSpeaker = null; }
 
-module.exports = { LocalAsr, getLocalAsr, localPaths, localInstalled, resetLocalAsrForTests, DEFAULTS, IDLE_MS };
+module.exports = { LocalAsr, getLocalAsr, getSpeakerWorker, localPaths, localInstalled, resetLocalAsrForTests, DEFAULTS, IDLE_MS };

@@ -41,6 +41,47 @@ async function showSettings(target) {
   const workspace = field('Workspace ID（可选）');
   const terms = field('当前项目术语（每行一个，最多 80 个）', 'textarea'); terms.rows = 4; terms.placeholder = 'Codex\nElectron\nSINR\nSRS';
   const context = field('当前项目领域说明（可选，最多 400 字）', 'textarea'); context.rows = 2; context.placeholder = '例如：普通话夹英文的无线通信技术讨论。';
+  // 声纹过滤：录入一次本人声纹，之后旁人说话的段落不进文字（电脑与手机语音都适用）。
+  const vpBox = document.createElement('fieldset'); vpBox.className = 'voice-voiceprint';
+  const vpTitle = document.createElement('legend'); vpTitle.textContent = '声纹过滤（只识别你的声音）';
+  const vpState = document.createElement('p'); vpState.className = 'voice-settings-note';
+  const vpToggleWrap = document.createElement('label'); const vpToggle = document.createElement('input'); vpToggle.type = 'checkbox';
+  vpToggleWrap.append(vpToggle, ' 启用：旁人说话的段落不写进输入框');
+  const vpPrompt = document.createElement('p'); vpPrompt.className = 'voice-voiceprint-script'; vpPrompt.hidden = true;
+  const vpActions = document.createElement('div'); vpActions.className = 'voice-actions';
+  const vpEnroll = button('录入声纹'); const vpDelete = button('删除声纹'); vpActions.append(vpEnroll, vpDelete);
+  vpBox.append(vpTitle, vpState, vpToggleWrap, vpPrompt, vpActions); engine.parentElement.after(vpBox); // 紧跟识别方式，不必滚动就能看到
+  let vpRecording = null;
+  const showVoiceprint = vp => {
+    if (!vp.available) { vpState.textContent = '本机未安装声纹模型，暂不可用。'; vpToggle.disabled = vpEnroll.disabled = vpDelete.disabled = true; return; }
+    vpState.textContent = vp.enrolled ? `已录入（${new Date(vp.enrolledAt).toLocaleDateString()}，有效说话 ${vp.seconds} 秒）· 门槛 ${vp.threshold}` + (vp.appliesTo === 'none' ? '。当前「按量流式」不支持过滤。' : '')
+      : '还没有录入。点「录入声纹」，在安静环境里按平常语速朗读下面的文字约 25 秒。';
+    vpToggle.checked = !!vp.enabled; vpToggle.disabled = !vp.enrolled; vpDelete.disabled = !vp.enrolled;
+    vpEnroll.textContent = vp.enrolled ? '重新录入' : '录入声纹'; vpEnroll.disabled = false;
+  };
+  vpToggle.onchange = async () => {
+    try { showVoiceprint({ ...await ipcRenderer.invoke('voice:voiceprint-set', { enabled: vpToggle.checked }), available: true }); }
+    catch (error) { vpState.textContent = cleanError(error); }
+  };
+  vpDelete.onclick = async () => {
+    try { showVoiceprint({ ...await ipcRenderer.invoke('voice:voiceprint-delete'), available: true }); }
+    catch (error) { vpState.textContent = cleanError(error); }
+  };
+  vpEnroll.onclick = async () => {
+    if (vpRecording) { vpRecording.stop(); return; }
+    if (activeRecording) { vpState.textContent = '请先结束正在进行的语音输入。'; return; }
+    vpPrompt.hidden = false;
+    vpPrompt.textContent = VOICEPRINT_SCRIPT;
+    vpEnroll.textContent = '读完了，保存'; vpToggle.disabled = vpDelete.disabled = true;
+    try {
+      vpRecording = await recordVoiceprint(seconds => { vpState.textContent = `正在录音 ${seconds} 秒 · 读满约 25 秒自动保存（至少 15 秒）`; });
+      const { pcm, sampleRate } = await vpRecording.done;
+      vpState.textContent = '正在计算声纹…';
+      showVoiceprint({ ...await ipcRenderer.invoke('voice:voiceprint-enroll', { pcm, sampleRate }), available: true });
+      vpState.textContent += ' · 录入成功';
+    } catch (error) { vpState.textContent = `录入失败：${cleanError(error)}`; vpEnroll.textContent = '重新录入'; vpEnroll.disabled = false; }
+    finally { vpRecording = null; vpPrompt.hidden = true; }
+  };
   const model = document.createElement('p'); model.className = 'voice-settings-note'; dialog.append(model);
   const status = document.createElement('p'); status.setAttribute('role', 'status'); dialog.append(status);
   const actions = document.createElement('div'); actions.className = 'voice-actions';
@@ -48,7 +89,7 @@ async function showSettings(target) {
   overlay.append(dialog); document.body.append(overlay);
   let clearKey = false;
   clear.onclick = () => { clearKey = true; key.value = ''; status.textContent = '保存后清除本机密钥；环境变量提供的密钥不受影响。'; };
-  const dismiss = () => { key.value = ''; overlay.remove(); };
+  const dismiss = () => { key.value = ''; vpRecording?.cancel(); overlay.remove(); };
   close.onclick = dismiss;
   overlay.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.stopPropagation(); dismiss(); }
@@ -71,6 +112,7 @@ async function showSettings(target) {
     const localState = { off: '未启动', starting: '运行环境启动中', env: '运行环境就绪（未占显存）', loading: '模型装载中', ready: '模型已在显卡', failed: '启动失败' }[config.localState] || config.localState;
     const local = config.localInstalled ? `本地识别：${localState}。` : '本地识别未安装。';
     status.textContent = `${local}${plan}${metered}`;
+    showVoiceprint(config.voiceprint || { available: false });
     save.disabled = false; key.focus();
   } catch (error) { status.textContent = cleanError(error); }
   save.onclick = async () => {
@@ -80,6 +122,32 @@ async function showSettings(target) {
       dismiss();
     } catch (error) { status.textContent = cleanError(error); save.disabled = false; }
   };
+}
+
+const VOICEPRINT_SCRIPT = '请朗读：今天我在看调度算法的仿真结果，链路自适应那部分还要再调一下参数。另外 AI Hub 的语音输入要接上声纹过滤，下午我再跟大家对一下进度，顺便看看投研那边的数据有没有更新，晚上再把明天的计划整理一下。';
+
+// 录入声纹用的录音：与语音输入同一套麦克风处理，最长 25 秒自动结束；stop() 提前结束（不足 15 秒报错），cancel() 放弃。
+async function recordVoiceprint(onTick) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
+  const context = new AudioContext(); await context.resume();
+  await context.audioWorklet.addModule(new URL('voice-pcm-worklet.js', window.location.href).href);
+  const source = context.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(context, 'hub-voice-pcm', { channelCount: 1, channelCountMode: 'explicit', numberOfInputs: 1, numberOfOutputs: 1 });
+  const chunks = []; let finish, fail; const started = Date.now();
+  const done = new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+  const release = () => { clearInterval(timer); stream.getTracks().forEach(t => t.stop()); source.disconnect(); node.disconnect(); void context.close(); };
+  node.port.onmessage = ({ data }) => { if (data.pcm) chunks.push(new Uint8Array(data.pcm)); };
+  source.connect(node); node.connect(context.destination);
+  const stop = () => {
+    const seconds = (Date.now() - started) / 1000; release();
+    if (seconds < 15) { fail(new Error('朗读不足 15 秒，请重新录入')); return; }
+    const pcm = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0)); let at = 0;
+    for (const c of chunks) { pcm.set(c, at); at += c.length; }
+    finish({ pcm, sampleRate: context.sampleRate });
+  };
+  const timer = setInterval(() => { const s = Math.floor((Date.now() - started) / 1000); onTick(s); if (s >= 25) stop(); }, 250);
+  onTick(0);
+  return { done, stop, cancel: () => { release(); fail(new Error('已取消')); } };
 }
 
 function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
@@ -245,7 +313,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
     finishUI(r);
     if (!result.text) { setStatus('未识别到文字，请检查麦克风后重试。'); return; }
     // 说明这次是谁识别的（本地 / Token Plan 各几段），方便核对没有走付费路线。
-    const names = { local: '本地', tokenplan: 'Token Plan' };
+    const names = { local: '本地', tokenplan: 'Token Plan', filtered: '已滤掉他人说话' };
     const via = Object.entries(result.via || {}).filter(([, n]) => n > 0).map(([k, n]) => `${names[k] || k} ${n} 段`).join(' · ');
     setStatus(via ? `语音输入完成 · ${via}` : '语音输入完成', true);
   }

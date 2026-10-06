@@ -24,7 +24,9 @@ async function transcribe(data,{dataDir,safeStorage,chunkDelayMs=0}){
   if(engine==='local'&&!localReady)throw Error('电脑上本地识别未安装，请在 Hub 语音设置里改用 Token Plan');
   if(engine==='tokenplan'&&!planKey)throw Error('电脑上未找到 Token Plan 套餐 Key，请在 Hub 语音设置里改用按量识别');
   const local=engine==='local'?require('../local-asr/manager').getLocalAsr(cfg):null;
-  const r=await voiceEngine.transcribeRecording(pcm,{engine,planKey,profile:mergedProfile(cfg),local,source:'phone',usage:voiceEngine.usageLogger(dataDir)});
+  // 声纹过滤：电脑上录入的本人声纹同样用于手机语音（剔除旁人说话的段落）。
+  const vpProfile=require('../voiceprint').active(dataDir),speaker=vpProfile?require('../local-asr/manager').getSpeakerWorker(cfg):null;
+  const r=await voiceEngine.transcribeRecording(pcm,{engine,planKey,profile:mergedProfile(cfg),local,source:'phone',usage:voiceEngine.usageLogger(dataDir),vp:vpProfile&&speaker?{profile:vpProfile,speaker}:null});
   return r.text;
  }
  if(cfg.encryptedKey)key=safeStorage.decryptString(Buffer.from(cfg.encryptedKey,'base64'));

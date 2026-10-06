@@ -5,12 +5,13 @@ const { getHubDataDir } = require('../../core/data-dir');
 const { VoiceStream, normalizeProfile, endpoint, MODEL } = require('../../core/voice-input');
 const planVoice = require('../../core/voice-tokenplan');
 const voiceEngine = require('../../core/voice-engine');
-const { getLocalAsr } = require('../../core/local-asr/manager');
+const { getLocalAsr, getSpeakerWorker } = require('../../core/local-asr/manager');
+const voiceprint = require('../../core/voiceprint');
 
 const ENGINE_LABEL = { local: '本地 Qwen3-ASR-1.7B（未就绪时 Token Plan 接力）', tokenplan: planVoice.MODEL + '（Token Plan）', streaming: MODEL + '（按量）' };
 
 function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = options => new VoiceStream(options),
-  createRecorded = options => new planVoice.RecordedVoice(options), getLocal = getLocalAsr, envStartDelayMs = 20000 }) {
+  createRecorded = options => new planVoice.RecordedVoice(options), getLocal = getLocalAsr, getSpeaker = getSpeakerWorker, envStartDelayMs = 20000 }) {
   const dataDir = getHubDataDir();
   const usage = voiceEngine.usageLogger(dataDir);
   const filename = path.join(dataDir, 'voice-input.json');
@@ -28,6 +29,7 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     const local = localReady ? getLocal(c) : null;
     return { region: c.region, workspace: c.workspace || '', engine, planReady: !!planKey, meteredKeySet: meteredKey,
       localInstalled: localReady, localState: local?.state || 'off', model: ENGINE_LABEL[engine],
+      voiceprint: { ...voiceprint.status(dataDir), available: !!getSpeaker(c), appliesTo: engine === 'streaming' ? 'none' : 'all' },
       keySet: engine === 'local' ? localReady : engine === 'tokenplan' ? !!planKey : meteredKey, envKey: !c.encryptedKey && !!process.env.DASHSCOPE_API_KEY,
       profile: c.profiles?.[profileKey(project)] || { terms: '', context: '' } };
   }
@@ -94,9 +96,12 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     }
     const id = request.id;
     const profile = c.profiles?.[profileKey(request.project)] || {};
-    const recognizeSegment = engine === 'local'
-      ? voiceEngine.segmentRecognizer({ engine, planKey, profile, local, source: 'desktop', usage })
-      : engine === 'tokenplan' ? voiceEngine.segmentRecognizer({ engine, planKey, profile, source: 'desktop', usage }) : undefined;
+    // 声纹过滤只作用于分段识别（本地 / Token Plan）；按量流式逐字出，无法按段剔除。
+    const vpProfile = engine === 'streaming' ? null : voiceprint.active(dataDir);
+    const speaker = vpProfile ? getSpeaker(c) : null;
+    const vp = vpProfile && speaker ? { profile: vpProfile, speaker } : null;
+    const recognizeSegment = engine === 'streaming' ? undefined
+      : voiceEngine.segmentRecognizer({ engine, planKey, profile, local, source: 'desktop', usage, vp });
     const stream = (engine === 'streaming' ? createStream : createRecorded)({ config: c, apiKey, sampleRate: request.sampleRate,
       profile, recognizeSegment,
       onEvent: result => {
@@ -108,10 +113,21 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     try { await stream.ready; return { id }; }
     catch (error) { if (streams.get(sender.id)?.id === id) streams.delete(sender.id); throw error; }
   });
+  // 声纹：录入（整段朗读 PCM 一次传入）、开关与门槛、删除。只存向量，不存录音。
+  ipcMain.handle('voice:voiceprint-enroll', async (_e, { pcm, sampleRate } = {}) => {
+    const bytes = Buffer.from(pcm || []);
+    if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 96000) throw new Error('麦克风采样率不受支持');
+    if (bytes.length < 2 || bytes.length > sampleRate * 2 * 60) throw new Error('录入录音需在 60 秒以内');
+    const speaker = getSpeaker(read());
+    if (!speaker) throw new Error('本机未安装声纹模型');
+    return voiceprint.enroll(dataDir, planVoice.toRate16k(bytes.subarray(0, bytes.length - (bytes.length % 2)), sampleRate), { speaker, frameLevels: planVoice.frameLevels });
+  });
+  ipcMain.handle('voice:voiceprint-set', (_e, options = {}) => voiceprint.setOptions(dataDir, options));
+  ipcMain.handle('voice:voiceprint-delete', () => voiceprint.remove(dataDir));
   ipcMain.handle('voice:audio', async (e, { id, data } = {}) => { await owned(e, id).stream.audio(data); return true; });
   ipcMain.handle('voice:stop', async (e, id) => { if (!await owned(e, id).stream.finish()) throw new Error('停止录音失败'); return true; });
   ipcMain.handle('voice:cancel', (e, id) => { if (streams.get(e.sender.id)?.id === id) cancelOwner(e.sender.id); return true; });
-  app.on('before-quit', () => { for (const senderId of streams.keys()) cancelOwner(senderId); getLocal(read())?.stop(); });
+  app.on('before-quit', () => { for (const senderId of streams.keys()) cancelOwner(senderId); getLocal(read())?.stop(); getSpeaker(read())?.stop(); });
   // 运行环境常驻（不占显存）：启动后稍等再拉起，不拖慢 Hub 启动；第一次说话只需装模型约 5 秒。
   const warmEnv = setTimeout(() => {
     try { const c = read(); if (voiceEngine.resolveEngine(c, dataDir).engine === 'local') getLocal(c)?.start(); }

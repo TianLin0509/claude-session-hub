@@ -31,6 +31,7 @@ function fakeSpawn({ envDelay = 1, failLoad = false, failTranscribe = false } = 
   return { spawnImpl, procs };
 }
 const silentLog = () => {};
+const tv = r => ({ text: r.text, via: r.via });
 // 有声片段（与 voice-tokenplan 的静音判定配合）。
 function speech(sec) { const b = Buffer.alloc(Math.round(sec * 16000) * 2); for (let i = 0; i < b.length / 2; i++) b.writeInt16LE(Math.round(6000 * Math.sin(i / 7)), i * 2); return b; }
 
@@ -85,9 +86,9 @@ async function main() {
   const k = fakeSpawn();
   const routed = new LocalAsr({ paths: {}, spawnImpl: k.spawnImpl, idleMs: 5000, log: silentLog });
   const rec = voiceEngine.segmentRecognizer({ engine: 'local', planKey: 'sk-sp-x', profile: { terms: 'SRS' }, local: routed, source: 'desktop', usage: u => usage.push(u), fetchImpl, log: silentLog });
-  assert.deepEqual(await rec(speech(2)), { text: '套餐。', via: 'tokenplan' });
+  assert.deepEqual(tv(await rec(speech(2))), { text: '套餐。', via: 'tokenplan' });
   await routed.prepare();
-  assert.deepEqual(await rec(speech(2)), { text: '本地1。', via: 'local' });
+  assert.deepEqual(tv(await rec(speech(2))), { text: '本地1。', via: 'local' });
   assert.deepEqual(usage.map(u => [u.source, u.via, u.sec]), [['desktop', 'tokenplan', 2], ['desktop', 'local', 2]]);
   routed.stop();
   const bad = fakeSpawn({ failTranscribe: true });
@@ -102,7 +103,7 @@ async function main() {
   const waiting = new LocalAsr({ paths: {}, spawnImpl: w.spawnImpl, log: silentLog });
   const rec4 = voiceEngine.segmentRecognizer({ engine: 'local', planKey: '', profile: {}, local: waiting, fetchImpl, log: silentLog });
   const before = calls.length;
-  assert.deepEqual(await rec4(speech(1)), { text: '本地1。', via: 'local' });
+  assert.deepEqual(tv(await rec4(speech(1))), { text: '本地1。', via: 'local' });
   assert.equal(calls.length, before);
   waiting.stop();
 

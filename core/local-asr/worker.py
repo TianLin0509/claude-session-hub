@@ -33,9 +33,12 @@ def pcm(b64):
 def main():
     t0 = time.perf_counter()
     import numpy as np
-    import torch
-    from qwen_asr import Qwen3ASRModel
-    model_dir = os.environ["HUB_LOCAL_ASR_MODEL"]
+    # HUB_LOCAL_WORKER=speaker：只做声纹（CPU，约 170MB 内存），不导入显卡识别环境，可与识别 worker 并行。
+    speaker_only = os.environ.get("HUB_LOCAL_WORKER") == "speaker"
+    if not speaker_only:
+        import torch
+        from qwen_asr import Qwen3ASRModel
+    model_dir = os.environ.get("HUB_LOCAL_ASR_MODEL", "")
     language = os.environ.get("HUB_LOCAL_ASR_LANGUAGE") or None
     out({"event": "env-ready", "ms": int((time.perf_counter() - t0) * 1000)})
     model = None
@@ -49,6 +52,8 @@ def main():
             msg = json.loads(line)
             op = msg.get("op")
             t = time.perf_counter()
+            if op in ("load", "transcribe") and speaker_only:
+                raise RuntimeError("speaker-only worker cannot %s" % op)
             if op == "load":
                 if model is None:
                     model = Qwen3ASRModel.from_pretrained(model_dir, dtype=torch.bfloat16, device_map="cuda:0", max_new_tokens=1024)
@@ -64,16 +69,23 @@ def main():
                 res = model.transcribe(audio=audios, context=[ctx] * len(audios), language=[language] * len(audios))
                 out({"id": msg.get("id"), "texts": [r.text for r in res], "ms": int((time.perf_counter() - t) * 1000)})
             elif op == "embed":
+                # pcm 为 base64 列表，每段返回一个单位化声纹向量；max_seconds 截取每段开头（够判断是谁，又省时间）
                 if speaker is None:
                     import sherpa_onnx
                     speaker = sherpa_onnx.SpeakerEmbeddingExtractor(sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-                        model=os.environ["HUB_LOCAL_SPEAKER_MODEL"], num_threads=2))
-                s = speaker.create_stream()
-                s.accept_waveform(16000, pcm(msg["pcm"]))
-                s.input_finished()
-                v = np.array(speaker.compute(s), dtype=np.float32)
-                v = v / (np.linalg.norm(v) + 1e-9)
-                out({"id": msg.get("id"), "vector": [round(float(x), 6) for x in v], "ms": int((time.perf_counter() - t) * 1000)})
+                        model=os.environ["HUB_LOCAL_SPEAKER_MODEL"], num_threads=4))
+                cap = int(float(msg.get("max_seconds") or 0) * 16000)
+                vectors = []
+                for p in msg["pcm"]:
+                    x = pcm(p)
+                    if cap:
+                        x = x[:cap]
+                    s = speaker.create_stream()
+                    s.accept_waveform(16000, x)
+                    s.input_finished()
+                    v = np.array(speaker.compute(s), dtype=np.float32)
+                    vectors.append([round(float(e), 6) for e in v / (np.linalg.norm(v) + 1e-9)])
+                out({"id": msg.get("id"), "vectors": vectors, "ms": int((time.perf_counter() - t) * 1000)})
             else:
                 raise ValueError("unknown op: %s" % op)
         except Exception as e:  # 单条失败只回报这一条，进程继续服务

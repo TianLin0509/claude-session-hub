@@ -153,6 +153,7 @@ function speechSegments(pcm16k) { return splitAtPauses(pcm16k).filter(hasSpeech)
 // recognizeSegment(pcm16k, signal) → { text, via }：每段走哪条路由调用方决定（本地 / Token Plan），
 // 不传时全部走 Token Plan。事件里的 via 记录各路段数，界面据此说明这次是谁识别的。
 class RecordedVoice {
+  // 声纹过滤由 recognizeSegment 完成（他人小句静音）；它返回的 me/otherOnly/removed 用于事后拿掉「确认本人前、全是他人」的段落。
   constructor({ apiKey, sampleRate, profile, onEvent, fetchImpl, maxSeconds = 300, recognizeSegment }) {
     if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 96000) throw new Error('麦克风采样率不受支持');
     if (!apiKey && !recognizeSegment) throw new Error('请先在 Hub 配置百炼 Token Plan 套餐 Key');
@@ -165,13 +166,14 @@ class RecordedVoice {
     this.ready = Promise.resolve();
   }
   get ended() { return ['done', 'error', 'cancelled'].includes(this.state); }
-  text() { return joinTexts(this.parts.map(p => p.text)); }
+  kept() { const anyMe = this.parts.some(p => p.me > 0); return this.parts.map(p => !(anyMe && p.otherOnly)); }
+  text() { const keep = this.kept(); return joinTexts(this.parts.map((p, i) => keep[i] ? p.text : '')); }
   dispatch(pcm16k) {
     if (!hasSpeech(pcm16k)) return;
     const part = { text: '' };
     part.done = this.recognizeSegment(pcm16k, this.controller.signal)
-      .then(({ text, via }) => {
-        part.text = text; this.via[via] = (this.via[via] || 0) + 1;
+      .then(({ text, via, me = null, removed = 0, otherOnly = false }) => {
+        Object.assign(part, { text, me, removed, otherOnly }); if (via) this.via[via] = (this.via[via] || 0) + 1;
         if (!this.ended) this.onEvent({ type: 'partial', text: this.text(), via: { ...this.via } });
       })
       .catch(error => this.fail(error.message));
@@ -201,7 +203,8 @@ class RecordedVoice {
     this.pending = Buffer.alloc(0);
     void Promise.all(this.parts.map(p => p.done)).then(() => {
       if (this.ended) return;
-      this.state = 'done'; this.onEvent({ type: 'done', text: this.text(), via: { ...this.via } });
+      const filtered = this.kept().filter(k => !k).length + this.parts.reduce((n, p) => n + (p.removed || 0), 0);
+      this.state = 'done'; this.onEvent({ type: 'done', text: this.text(), via: { ...this.via, ...(filtered ? { filtered } : {}) } });
     });
     return true;
   }
