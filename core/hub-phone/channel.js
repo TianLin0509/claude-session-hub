@@ -33,6 +33,7 @@ class PhoneChannel{
   for(const packet of messages){if(packet.seq<=s.cursor)continue;if(!s.inbox.some(r=>r.id===packet.id)){try{const m=open(s.credentials.key,s.credentials.channel,packet.id,'phone',packet.payload);this.validate(m);
      if(m.type==='hello'){this.journal.change(x=>{x.cursor=packet.seq;x.lastInbound=Date.now();x.phoneCaps=m.caps.map(String).slice(0,20);x.phoneApp=String(m.app||'').slice(0,20);x.memoSignature=null;x.inbox.push({id:packet.id,type:'hello',state:'done'});});await this.sendProfile(packet.id).catch(e=>console.warn('[phone] profile',e.message));this.sendReminders();continue;}
      if(m.attachment){const saved=this.saveAttachment(m.attachment);m.text=m.text+'\n\n（我从手机分享了一个文件：'+saved+'）';m.noFast=true;m.shared=require('node:path').basename(saved);delete m.attachment;}
+     if(m.to==='assistant')m.noFast=true;
      this.journal.change(x=>{x.inbox.push({...m,id:packet.id,state:'queued',t:{received:Date.now()}});x.cursor=packet.seq;x.lastInbound=Date.now();});if(m.type==='text')this.log({id:packet.id,role:'user',input:'text',text:m.text});}catch{this.journal.change(x=>{x.cursor=packet.seq;});this.emit('invalid-'+packet.id,{type:'status',requestId:packet.id,state:'rejected',text:'消息校验未通过，未提交任务。'});}}else this.journal.change(x=>{x.cursor=packet.seq;});}
  }
  validate(m){
@@ -40,6 +41,8 @@ class PhoneChannel{
   if(m.type==='text'&&(typeof m.text!=='string'||!m.text.trim()||m.text.length>50000))throw Error('任务文字无效');
   if(m.attachment!==undefined&&(m.type!=='text'||typeof m.attachment!=='object'||typeof m.attachment.name!=='string'||m.attachment.name.length>160||typeof m.attachment.data!=='string'||m.attachment.data.length>7400000))throw Error('分享的文件无效（单个不超过 4MB）');
   if(m.memo!==undefined&&(m.type!=='voice_message'||typeof m.memo!=='boolean'))throw Error('备忘标记无效');
+  // 手机输入框上方选了「交给助理会话」，或点了回答下方的「重新回答」：这一条跳过快答。
+  if(m.to!==undefined&&(!['text','voice_message'].includes(m.type)||m.to!=='assistant'))throw Error('交给谁的标记无效');
   if(m.type==='voice_message'&&(typeof m.pcm!=='string'||!m.pcm||m.pcm.length>Math.ceil(MAX_VOICE_BYTES/3)*4+4))throw Error('语音无效');
   if(m.type==='set_profile'&&!['kind','model'].every(k=>typeof m[k]==='string'&&m[k]&&m[k].length<=160))throw Error('助理设置无效');
   if(m.type==='hello'&&(!Array.isArray(m.caps)||m.caps.length>20))throw Error('手机能力声明无效');

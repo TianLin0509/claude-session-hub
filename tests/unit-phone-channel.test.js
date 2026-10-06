@@ -247,3 +247,11 @@ test('a voice note recorded on the memo page reaches the assistant as a memo req
  const bad=crypto.randomUUID();h.incoming(bad,{type:'text',text:'x',memo:true});h.remote.at(-1).seq=99;await h.channel.tick();
  assert.equal(h.calls.length,1,'只有语音能带备忘标记');
 });
+test('the phone can send a message straight to the assistant session, skipping the fast lane',async()=>{
+ const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});
+ let asked=0;h.channel.fastLane={eligible:()=>true,answer:async()=>{asked++;return{text:'快答',model:'q'}}};
+ h.incoming(crypto.randomUUID(),{type:'text',text:'今天天气怎么样',to:'assistant'});await h.channel.tick();
+ assert.equal(asked,0,'带了交给助理的标记就不走快答');assert.equal(h.calls.length,1);
+ const bad=crypto.randomUUID();h.incoming(bad,{type:'text',text:'x',to:'someone'});await h.channel.tick();
+ assert.equal(h.calls.length,1,'标记无效的消息不派发');
+});
