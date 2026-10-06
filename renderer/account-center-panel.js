@@ -25,7 +25,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
   function renderStatus() {
     const el = page.querySelector('.ac-status'), text = error || notice;
     el.textContent = text; el.hidden = !text; el.classList.toggle('error', !!error);
-    for (const b of page.querySelectorAll('[data-ac="open"],[data-ac="login"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="tools"],[data-ac="tools-connect"],[data-ac="external"]')) b.disabled = !!busy || state?.setupProgress?.status === 'running';
+    for (const b of page.querySelectorAll('[data-ac="open"],[data-ac="login"],[data-ac="recover"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="tools"],[data-ac="tools-connect"],[data-ac="external"]')) b.disabled = !!busy || state?.setupProgress?.status === 'running' || state?.progress?.status === 'running';
     for (const b of page.querySelectorAll('[data-ac="codex-quota"]')) b.disabled=!!busy || !!state?.clis?.find(c=>c.kind==='codex' && c.profileId===b.dataset.profile)?.isDefault;
   }
   function toolsHtml() {
@@ -55,6 +55,9 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     }
     if (tab === 'ai' && !search.value) body.innerHTML += footerHtml();
     if (state.activity?.warnings?.length) body.innerHTML += `<p class="ac-item-error">${esc(state.activity.warnings.join(' / '))}</p>`;
+    if (tab === 'ai' && (state.webTools?.images?.readError || state.webTools?.roundtable?.recoveryError)) body.innerHTML += '<p class="ac-item-error">部分网页工具状态读取失败；请在原会话查看任务结果。</p>';
+    if (state.progress?.status === 'running') body.innerHTML += `<p class="ac-connection-notice" role="status">${esc(state.progress.stage)} · ${state.progress.done}/${state.progress.total} <button class="ac-text-btn" data-ac="check-cancel">取消复核</button></p>`;
+    else if (state.progress?.error || state.progress?.warnings?.length) body.innerHTML += `<p class="ac-item-error">${esc(state.progress.error || state.progress.warnings.join(' / '))}</p>`;
     for (const d of body.querySelectorAll('details')) d.open = expanded.includes(d.dataset.details);
     renderStatus();
   }
@@ -175,6 +178,8 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     else if (a === 'tab') selectTab(b.dataset.tab);
     else if (a === 'open') void action('open', args);
     else if (a === 'login') void action('login', args);
+    else if (a === 'recover') void action('check-start', args);
+    else if (a === 'check-cancel') void action('check-cancel', {});
     else if (a === 'add' || a === 'preferred') void action('preference', { ...args, add: a === 'add' });
     else if (a === 'authorize') void authorize(b.dataset.id);
     else if (a === 'codex-quota') void switchCodexQuota(b.dataset.profile);

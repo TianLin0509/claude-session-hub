@@ -56,7 +56,7 @@ function historyActivity(root, now = Date.now()) {
 }
 function recordActivity(root, { identity = 'main', site, source = 'website', outcome, at = Date.now() }) {
   if (!['main', 'alt'].includes(identity) || !SITES.has(site) || !SOURCES.has(source)
-      || !['opened', 'success', 'failed', 'login_required', 'verification_required'].includes(outcome) || !Number.isFinite(at)) throw Error('账号使用记录无效');
+      || !['opened', 'success', 'failed', 'login_required', 'verification_required', 'network_error', 'rate_limited', 'quota_exhausted', 'adapter_changed'].includes(outcome) || !Number.isFinite(at)) throw Error('账号使用记录无效');
   const dir = path.join(root, 'account-activity'), file = path.join(dir, `${identity}-${site}-${source}.json`);
   fs.mkdirSync(dir, { recursive: true });
   let previous;
@@ -107,7 +107,7 @@ function imageActivity(root, env) {
       const binding = bindings.find(b => typeof b.config === 'string' && same(b.config, path.join(account.config_dir, 'settings.json')));
       if (!binding) continue;
       const config = JSON.parse(fs.readFileSync(binding.config, 'utf8'));
-      if (config.cli_entry !== binding.entry) continue;
+      if (!require('./hub-tool-binding').matchesBinding(binding, config)) continue;
       const job = latest.get(account.id); if (!job) continue;
       const result = JSON.parse(job.result || '{}'), error = JSON.parse(job.error || 'null') || result.error;
       const outcome = ['login_required', 'credential_required', 'account_selection_required'].includes(error?.code) ? 'login_required'
@@ -135,7 +135,7 @@ function recordWebJob(job, env = process.env) {
   const provider = job.input?.provider, site = provider === 'gemini' ? 'google' : provider;
   if (job.kind !== 'web' || !SITES.has(site) || !['succeeded', 'failed', 'needs_attention'].includes(job.state)) return;
   const { defaultRoot } = require('./hub-chrome');
-  const outcome = job.state === 'succeeded' ? 'success' : job.recovery?.reason === 'login_required' ? 'login_required'
+  const outcome = job.state === 'succeeded' ? 'success' : job.errorCode === 'quota_exhausted' ? 'quota_exhausted' : job.recovery?.reason === 'login_required' ? 'login_required'
     : job.recovery?.reason === 'human_verification' ? 'verification_required' : 'failed';
   recordActivity(defaultRoot(env), { site, source: 'roundtable', outcome, at: Date.parse(job.updatedAt) });
 }

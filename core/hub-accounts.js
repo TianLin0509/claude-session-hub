@@ -109,6 +109,7 @@ class HubAccounts {
   publicState(value = this.lastState) { return JSON.parse(JSON.stringify({ ...value, risk: this.riskState(),
     ...(this.setup.progress?.status === 'complete' ? { tools: require('./hub-browser-tool').integrationStatus(this.chrome.root) } : {}),
     activity: require('./hub-account-activity').readActivity(this.chrome.root, this.env),
+    webTools: require('./web-tool-status').readWebTools({ root: this.chrome.root, env: this.env, recovery: this.recovery, now: this.now() }),
     progress: this.progress, setupProgress: this.setup.progress })); }
   async compose({ passive = false } = {}) {
     const cache = this.readCache(), preferences = readPreferences(this.chrome.root);
@@ -195,7 +196,10 @@ class HubAccounts {
     for (const identity of identities.filter(i => i.id === 'main')) for (const site of identity.sites) {
       const provider = ROUNDTABLE_PROVIDER[site.key];
       if (!provider || site.state !== 'signed_in' || !site.live || site.stale) continue;
-      try { await this.recovery.resume({ managedBrowser: true, provider }); }
+      try {
+        const result = await this.recovery.resume({ managedBrowser: true, provider });
+        if (result.errors?.length && this.progress) (this.progress.warnings ||= []).push((site.name || site.key) + '：部分原任务未恢复，请在原会话查看任务状态');
+      }
       catch (e) { if (this.progress) (this.progress.warnings ||= []).push((site.name || site.key) + '：任务恢复失败，' + e.message); }
     }
   }
