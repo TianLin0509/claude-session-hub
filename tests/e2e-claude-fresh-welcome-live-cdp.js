@@ -109,11 +109,12 @@ async function main() {
       const branchId = await client.eval('activeSessionId');
       await until('!!document.querySelector("#msg-overlay>.session-welcome")', 'unused branch welcome');
       const ready = `(()=>{const text=window.__hubE2E.terminalBufferText(${j(branchId)});return text.includes('❯') && /Haiku|shortcuts|manual mode on/.test(text);})()`;
-      const browserConsent = `window.__hubE2E.terminalBufferText(${j(branchId)}).includes('No, keep browser tools off')`;
+      const browserConsent = `window.__hubE2E.terminalBufferText(${j(branchId)}).includes('Esc to keep browser tools off')`;
       await until(`(${ready}) || (${browserConsent})`, 'fork startup or optional browser onboarding');
       if (await client.eval(browserConsent)) {
         // Decline optional browser access in this temporary test profile.
-        await client.eval(`ipcRenderer.send('terminal-input',{sessionId:${j(branchId)},data:'\\x1b'})`);
+        await _waitMs(500);
+        await client.eval(`ipcRenderer.send('terminal-input',${j({ sessionId: branchId, data: '\x1b' })})`);
       }
       await until(`(()=>{const text=window.__hubE2E.terminalBufferText(${j(branchId)});return text.includes('❯') && /Haiku|shortcuts|manual mode on/.test(text);})()`, 'fork CLI ready');
       await client.eval(`loadSessionHistoryToOverlay(${j(branchId)},{incremental:false})`);
