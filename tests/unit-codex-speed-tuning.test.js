@@ -114,6 +114,18 @@ test('Sol 默认显式使用 1M context，其它模型不虚构窗口', () => {
   assert.equal(buildCodexContextWindowArg('not-a-number'), '');
 });
 
+test('context overrides follow the selected account catalog without enlarging newer model defaults', () => {
+  const a = makeCodexHome({ modelsCache: CATALOG });
+  const b = makeCodexHome({ modelsCache: {models:[{slug:'gpt-5.6-sol',max_context_window:600000}]} });
+  try {
+    assert.equal(resolveCodexContextWindow('gpt-5.6-sol', null, {configDir:a.home}), 872000);
+    assert.equal(resolveCodexContextWindow('gpt-5.6-sol', null, {configDir:b.home}), 600000);
+    assert.equal(resolveCodexContextWindow('gpt-5.6-sol', 272000, {configDir:a.home}), 272000);
+    assert.equal(resolveCodexContextWindow('gpt-6.1-sol', null, {configDir:a.home}), null);
+    assert.equal(resolveCodexContextWindow('unknown-model', 1000000, {models:[]}), 1000000);
+  } finally { a.cleanup(); b.cleanup(); }
+});
+
 test('session-manager 的 Codex 默认与 DeepSeek 默认彼此隔离', () => {
   // 2026-08-29：DeepSeek 也从 lean 改成 none。lean 会走「无线工作区自动放行」，
   // 在 C:\Vibe\Wireless 下等于把 superran（每进程 2.66 GB）又拉回来，默认档形同虚设。

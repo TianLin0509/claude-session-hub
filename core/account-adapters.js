@@ -21,13 +21,14 @@ function resolveClaudeExe(env){
  const local=path.join(env.USERPROFILE||os.homedir(),'.local','bin','claude.exe');
  return fs.existsSync(local)?local:'claude.exe';
 }
-function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,runImpl=run,terminal=openTerminal,browser=new AccountBrowser({dataDir,env}),getConfig=()=>require('./hub-config').getConfig()}={}){
+function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,runImpl=run,terminal=openTerminal,browser=new AccountBrowser({dataDir,env}),getConfig=()=>require('./hub-config').getConfig(),onLoginComplete=()=>{}}={}){
  const isolated=!!env.CLAUDE_HUB_HOME_DIR;const py=path.join(env.LOCALAPPDATA||'','Programs/Python/Python312/python.exe');
  if(isolated && env.CLAUDE_HUB_ACCOUNT_FIXTURE){
   const fixture=env.CLAUDE_HUB_ACCOUNT_FIXTURE;
   const invoke=async(action,row={})=>jsonResult(await runImpl(process.execPath,[fixture,action,JSON.stringify({id:row.id,provider:row.provider,type:row.type})],{...env,ELECTRON_RUN_AS_NODE:'1'},5000));
   return {imageAccounts:async()=>(await invoke('images')).accounts.map(a=>({...a,accountLabel:a.account_name||''})),check:row=>invoke('check',row),open:row=>invoke('open',row),login:row=>invoke('login',row),submitCode:async()=>({stage:'checking',message:'夹具已接收验证码'})};
  }
+ const codexLogin=new(require('./codex-browser-login').CodexBrowserLogin)({onComplete:onLoginComplete});
  const python=fs.existsSync(py)?py:'python';
  const toolsRoot=path.join(homeDir,'plugins/chatgpt-web-images/scripts');
  // @community-strip 公司中转
@@ -45,7 +46,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
    state:/login_required|credential_required|account_selection_required/.test(a.state)?'login_required':a.login_confirmed?'signed_in':'unknown',
    observedAt:a.checked_at*1000||0,message:a.control_pending?'原工具正在处理账号操作，请稍后检查':a.enabled?'原工具账号记录；额度与排队单独判断':'账号在原工具已停用'}));
  };
- return {imageAccounts,
+ return {imageAccounts,dispose:()=>codexLogin.close(),
  async open(row){
   external();
   if(row.managedBrowser)return browser.open(row.provider);
@@ -66,6 +67,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
    return {state:v.loggedIn?'signed_in':'login_required',identity:v.email,accountLabel:typeof v.email==='string'?v.email:'',message:v.loggedIn?'Claude 官方 CLI 已确认本机登录；会话仍保留启动身份':'Claude 官方 CLI 报告尚未登录',source:'claude auth status'};
   }
   if(row.provider==='codex'){
+   try {require('./codex-auth-validation').assertUsableCredential(row.home);}catch {return {state:'login_required',message:'Codex 凭据不可用，请完成订阅授权',source:'本机凭据检查'};}
    const e=cliEnv(row),cmd=require('../main/codex-windows-command').resolveWindowsCodex(e);
    const r=await runImpl(cmd.command,[...cmd.args,'login','status'],cmd.env);const text=r.stdout+'\n'+r.stderr;
    if(r.code===0&&/logged in/i.test(text)&&!/not logged in/i.test(text)){const auth=require('./codex-usage-scope').readCodexAuthInfo(row.home);return {state:'signed_in',identity:auth.accountEmail,accountLabel:auth.accountEmail||auth.accountName,message:'Codex 官方 CLI 已确认本机登录；网页 ChatGPT 另行管理',source:'codex login status'};}
@@ -79,7 +81,8 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   }
   if(row.provider==='gemini'){
    const present=fs.existsSync(path.join(row.home,'oauth_creds.json'));
-   return {state:present?'configured':'unknown',message:present?'发现 Gemini CLI 登录记录；有效性需在官方 CLI 确认':'未发现 OAuth 登录记录；如使用其他方式，请在官方 CLI 确认',source:'Gemini 本地记录，不是有效性证明'};
+   const api=!!(env.GEMINI_API_KEY||env.GOOGLE_API_KEY||env.GOOGLE_GENAI_USE_VERTEXAI);
+   return {state:present||api?'configured':'login_required',message:present?'发现 Gemini CLI 登录记录；有效性需在官方 CLI 确认':api?'使用已配置的 Gemini 授权方式':'未发现 Gemini 登录记录，请完成官方登录',source:'Gemini 本地记录，不是有效性证明'};
   }
   if(row.provider==='token-plan'){
    const svc=require('../main/usage/token-plan-usage').createTokenPlanUsageService({env:cliEnv(row),...(isolated?{configDir:path.join(homeDir,'.bailian')}:{})});
@@ -99,7 +102,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   if(row.provider==='images'){await tool('images','open',row.accountId);return {message:'已交给生图共享队列打开原账号浏览器；当前图片任务不会重发'};}
   if(row.provider==='chatgpt-web'){external();return require('./chatgpt-web-integration').openWebSettings();}
   let e=cliEnv(row),command,args;
-  if(row.provider==='codex'){const cmd=require('../main/codex-windows-command').resolveWindowsCodex(e);command=cmd.command;args=[...cmd.args,'login'];e=cmd.env;}
+  if(row.provider==='codex'){if(isolated)throw Error('隔离 Hub 不打开真实 Codex 授权');return codexLogin.login(row,e);}
   else if(row.provider==='claude'){command=resolveClaudeExe(e);args=['auth','login'];}
   else if(row.provider==='kimi'){command='kimi.exe';args=['login'];}
   else if(row.provider==='gemini'){command='gemini';args=[];}
@@ -113,4 +116,4 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   return terminal(command,args,e);
  }};
 }
-module.exports={createAccountAdapters,quotePS,jsonResult,run,openTerminal};
+module.exports={createAccountAdapters,quotePS,jsonResult,run,openTerminal,resolveClaudeExe};

@@ -417,7 +417,9 @@ class CodexNativeSession extends EventEmitter {
       if (this.apply({type:'started',threadId:this.threadId,turn:p.turn})
           && this.runtime.turnId === p.turn.id && !TERMINAL.has(this.runtime.state)) {
         if (prior.turnId !== p.turn.id) this.items.clear();
-        this.history.set(p.turn.id,{...p.turn,hubStartedAt:this.runtime.startedAt});
+        this.history.set(p.turn.id,{...p.turn,hubStartedAt:this.runtime.startedAt,
+          hubUsageBaseline: this.tokenUsage?.total || null,
+          hubSpeedTier: this.options.turnParams?.serviceTier || null});
         for (const item of p.turn.items || []) this.items.set(item.id,item);
         this.lifecycle('turn-started',{startedAt:this.runtime.startedAt});
       }
@@ -480,6 +482,15 @@ class CodexNativeSession extends EventEmitter {
         this.emit('items', this.blocks());
       }
     } else if (type === 'thread/tokenUsage/updated') {
+      const turn = p.turnId && this.history.get(p.turnId);
+      if (turn) {
+        const { codexTurnUsage } = require('./turn-speed-metrics');
+        if (!turn.hubUsageBaseline && codexTurnUsage(null, p.tokenUsage))
+          turn.hubUsageBaseline = { inputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
+        if (turn.hubUsageInfo && !codexTurnUsage(turn.hubUsageInfo.total, p.tokenUsage)) turn.hubUsageInvalid = true;
+        turn.hubUsageInfo = p.tokenUsage;
+        turn.hubUsage = turn.hubUsageInvalid ? null : codexTurnUsage(turn.hubUsageBaseline, p.tokenUsage);
+      }
       this.tokenUsage = p.tokenUsage;
       this.emit('usage',p.tokenUsage);
     } else if (type === 'error') {
@@ -982,9 +993,14 @@ class CodexNativeSession extends EventEmitter {
       this.emit('action-error','Codex 使用 Hub 输入框提交；终端为只读输出。');
     }
   }
-  async reconnect() {
+  async reconnect({useLaunchAccount = false} = {}) {
     if (this.closed) throw new Error('Codex 会话正在关闭，不能重新连接');
-    if (await this.followGlobalAccount()) return this.runtime;
+    const launchAccount=useLaunchAccount ? this.options.resolveLaunchAccount?.() : undefined;
+    if (launchAccount && launchAccount.id !== this.options.accountId
+        && (['running','waiting','unknown'].includes(this.runtime.state) || ['unknown','submitting'].includes(this.runtime.submission?.status))) {
+      throw new Error('会话仍在运行或状态待核对，请结束当前工作后再按新账号重启');
+    }
+    if (await this.followGlobalAccount(undefined,launchAccount)) return this.runtime;
     if (isUnstartedRuntime(this.runtime)) return this.runtime;
     if (this.runtime.connection === 'connected') return this.reconcile();
     if (!this.entry || this.entry.client.closed || !this.threadId) {
@@ -1011,10 +1027,10 @@ class CodexNativeSession extends EventEmitter {
     }
     return this.reconcile();
   }
-  async followGlobalAccount(intent) {
+  async followGlobalAccount(intent, launchAccount) {
     if (!this.options.resolveAccount) return false;
     if (this.accountSwitch) { await this.accountSwitch; return false; }
-    const target = this.options.resolveAccount();
+    const target = launchAccount || this.options.resolveAccount();
     const same = target.id === this.options.accountId && require('path').toNamespacedPath(target.home).toLowerCase()
       === require('path').toNamespacedPath(this.options.env.CODEX_HOME).toLowerCase();
     if (same) return false;

@@ -157,6 +157,8 @@ function mergeContinuations(head, continuations) {
         input_tokens: (merged.usage?.input_tokens || 0) + assistant.usage.input_tokens,
         output_tokens: (merged.usage?.output_tokens || 0) + assistant.usage.output_tokens };
     }
+    merged.outputUsageComplete = merged.outputUsageComplete && assistant.outputUsageComplete;
+    if (merged.speedTier !== assistant.speedTier) merged.speedTier = null;
     // A continuation is part of this displayed turn; preserve the elapsed
     // interval rather than retaining only the first query's engine duration.
     delete merged.durationMs;
@@ -179,7 +181,7 @@ function claudeTranscriptTurns(records) {
     if (head.assistant) cards.push(mergeContinuations(head.assistant, continuations));
     else for (const { assistant } of continuations) if (assistant) cards.push(assistant);
   }
-  return cards;
+  return cards.map(require('./turn-speed-metrics').withTurnSpeed);
 }
 
 function claudeDisplayMessages(record) {

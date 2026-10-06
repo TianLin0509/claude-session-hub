@@ -47,6 +47,7 @@ function registerSessionIpc(ipcMain, deps) {
     resumeSession,
     getTerminalOutputBatchStats = () => null,
     getPersistedSessions = () => [],
+    ensureLaunchAuth,
   } = deps;
   require('./codex-backstage-handlers').registerCodexBackstageIpc(ipcMain, { sessionManager });
   require('../../core/codex-fast-command').registerCodexSpeedIpc(ipcMain,{sessionManager,sendToRenderer});
@@ -153,6 +154,7 @@ function registerSessionIpc(ipcMain, deps) {
         return createResolvedSession(kind, opts);
       });
     }
+    if (ensureLaunchAuth) return ensureLaunchAuth(kind,opts).then(()=>createResolvedSession(kind,opts));
     return createResolvedSession(kind, opts);
   };
   ipcMain.handle('create-session', (_e, arg) => createSession(arg));
@@ -506,6 +508,15 @@ function registerSessionIpc(ipcMain, deps) {
 
   // overrides 只用于 PTY 原生会话的「按新模型/深度重启并接着原会话历史」（助理切换模型）。
   function restartSession(sessionId, overrides = null) {
+    if (ensureLaunchAuth) {
+      const old=sessionManager.getSession(sessionId);
+      if (old) return ensureLaunchAuth(old.kind,{...old,...overrides,model:sessionModelId(old)})
+        .then(()=>restartAuthorizedSession(sessionId,overrides))
+        .catch(error=>({ok:false,error:error.code || 'restart-failed',message:error.message}));
+    }
+    return restartAuthorizedSession(sessionId,overrides);
+  }
+  function restartAuthorizedSession(sessionId, overrides = null) {
     const old = sessionManager.getSession(sessionId);
     if (!old) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
@@ -518,7 +529,7 @@ function registerSessionIpc(ipcMain, deps) {
     if (old.purpose !== 'chuxin-research' && (old.runtimeBackend === 'codex-app-server' || (nativeCodex && !nativeCodex.isCliProvider))) {
       const native = nativeCodex;
       if (!native) return {ok:false,error:'unmanaged-codex',message:'旧 Codex 进程尚未接管；请先在原会话结束工作并关闭，再恢复'};
-      return native.reconnect().then(()=>sessionManager.getSession(sessionId))
+      return native.reconnect({useLaunchAccount:true}).then(()=>sessionManager.getSession(sessionId))
         .catch(error=>({ok:false,message:error.message}));
     }
     if (old.purpose === 'chuxin-research') {

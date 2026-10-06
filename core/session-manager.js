@@ -1171,6 +1171,7 @@ class SessionManager extends EventEmitter {
     } finally { driver.accountSyncRequest=null; }
   }
   async syncCodexAccounts() {
+    if (require('./codex-global-account').currentConfig().codexAccountSwitchScope === 'launch') return [];
     const entries=[...this.sessions.values()].filter(s=>s.pty?.options?.resolveAccount && !s.pty.closed);
     return Promise.all(entries.map(async ({pty,info})=>{
       try { return await this._syncCodexAccount(pty,info); }
@@ -1650,6 +1651,11 @@ class SessionManager extends EventEmitter {
           historyStorageHome:opts.codexHistoryStorageHome,
           resolveAccount:()=>{
             const accounts=require('./codex-global-account');
+            return accounts.resolveRunningAccount(accounts.currentConfig(),{
+              id:ptyProcess.options.accountId,label:info.codexProfileLabel,
+              home:ptyProcess.options.env.CODEX_HOME});
+          },resolveLaunchAccount:()=>{
+            const accounts=require('./codex-global-account');
             return accounts.resolveAccount(accounts.currentConfig());
           }} : {}),
         hubDataDir:getHubDataDir(),hubPid:process.pid,hubVersion:require('../package.json').version,
@@ -1715,7 +1721,7 @@ class SessionManager extends EventEmitter {
       : null;
     const normalizedContextMax = normalizeCodexContextWindow(opts.contextMax);
     const effectiveContextMax = isCodexRuntime
-      ? (normalizedContextMax || resolveCodexContextWindow(currentModel && currentModel.id, null))
+      ? resolveCodexContextWindow(currentModel && currentModel.id, normalizedContextMax, { configDir: sessionEnv.CODEX_HOME })
       : (typeof opts.contextMax === 'number' ? opts.contextMax : null);
 
     const now = Date.now();
@@ -3038,7 +3044,7 @@ class SessionManager extends EventEmitter {
       const codexRelaunchModel = modelId || DEFAULT_MODEL_BY_KIND.codex;
       const codexReasoningArg = buildCodexReasoningConfigArg(normalizeCodexEffort(s.info && s.info.effort))
         + buildCodexSpeedTierArg(resolveCodexSpeedTier(runtimeKind, s.info && s.info.codexSpeedTier))
-        + buildCodexContextWindowArg(resolveCodexContextWindow(codexRelaunchModel, s.info && s.info.contextMax));
+        + buildCodexContextWindowArg(resolveCodexContextWindow(codexRelaunchModel, s.info && s.info.contextMax, { configDir: codexConfigDir }));
       ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}`;
       const relaunchMcpProfile = resolveCodexMcpProfile(runtimeKind, s.info && s.info.mcpProfile);

@@ -25,6 +25,8 @@
 .ac-company>header{display:flex;align-items:center;gap:10px;padding:10px 18px;background:#f5f7fa;border-radius:10px 10px 0 0}
 .ac-company-mark{width:25px;height:25px;display:grid;place-items:center;flex-shrink:0;border-radius:6px;font-size:15px;font-weight:600;color:#344359;background:#fff;border:1px solid #e2e8f0;border-bottom:3px solid var(--ac-mark)}
 .ac-company h2{margin:0;font-size:14px;font-weight:600;color:#27344b}
+.ac-codex-quota .ac-tool-help{margin:0;padding:10px 22px;font-size:12px}
+.ac-codex-quota .ac-account{grid-template-columns:minmax(0,1fr) auto}
 .ac-count{color:#8490a3;font-size:11px}
 .ac-company kbd{margin-left:auto;font:10px system-ui;color:#8d98aa;border:1px solid #e0e6ef;border-radius:4px;padding:2px 5px;white-space:nowrap}
 .ac-account{display:grid;grid-template-columns:minmax(190px,1.4fr) minmax(165px,1fr) auto;align-items:center;gap:18px;padding:14px 22px;min-width:0;border-top:1px solid #eef1f6}

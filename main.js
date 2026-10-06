@@ -1460,6 +1460,7 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
 }
 
 const { addMeetingSubInternal } = registerMeetingCreateIpc(ipcMain, {
+  ensureLaunchAuth:(kind,opts)=>launchAuth.ensure(kind,opts),
   fs,
   getOrchestrationService: () => global.__orchestrationService || null,
   getHookPort: () => hookPort,
@@ -1519,6 +1520,7 @@ registerMeetingIpc(ipcMain, {
 // Group Chat Mode dispatch
 // =====================================================================
 groupChatDispatcher = createGroupChatDispatcher({
+  recoverLaunchAuth:(session,failure)=>launchAuth.recover(session.kind,{...session,model:session.currentModel?.id},failure),
   cliReadyDetector,
   getHubDataDir,
   groupchat,
@@ -1885,6 +1887,7 @@ registerTranscriptIpc(ipcMain, {
 // Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
 
 const resumeSession = createResumeSessionHandler({
+  ensureLaunchAuth:(kind,opts)=>launchAuth.ensure(kind,opts),
   async prepareAssistantResume(meta) {
     if (!assistantService) throw new Error('助理服务尚未就绪');
     assistantService.requireAssistantResume(meta);
@@ -1934,6 +1937,7 @@ const resumeSession = createResumeSessionHandler({
 });
 
 const sessionOperations = registerSessionIpc(ipcMain, {
+  ensureLaunchAuth:(kind,opts)=>launchAuth.ensure(kind,opts),
   getPersistedSessions: () => lastPersistedSessions,
   getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
   meetingManager,
@@ -2000,6 +2004,12 @@ try {
     onReminderChanged: event => phoneService?.reminder?.(event),
     // 备忘变了：助理页实时刷新，手机通道下一轮把清单发过去。
     onMemosChanged: () => { sendToRenderer('assistant:memos-changed', {}); phoneService?.kick?.(); },
+    // 资料口播：Opus 写稿（失败退千问）、微软曉臻合成（失败退千问语音），产物在 Hub 数据目录 assistant/podcasts。
+    podcast: (() => { const electron = require('electron'), sc = require('./core/hub-assistant/podcast/script'), voice = require('./core/hub-assistant/podcast/voice'), fl = require('./core/hub-assistant/fast-lane');
+      return { extract: file => require('./core/hub-assistant/podcast/extract').extract(file, { electron }),
+        writers: [sc.claudeWriter({ cwd: getHubDataDir() }), sc.qwenWriter({ source: () => fl.fastLaneSources({ dataDir: getHubDataDir(), safeStorage: electron.safeStorage }).find(s => s.via === 'token-plan') })],
+        synthesize: (text, out) => voice.synthesize(text, out, { credentials: () => require('./core/hub-phone/voice').dashscopeCredentials({ dataDir: getHubDataDir(), safeStorage: electron.safeStorage }) }) }; })(),
+    onPodcastsChanged: () => { sendToRenderer('assistant:podcasts-changed', {}); phoneService?.kick?.(); },
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
@@ -3021,6 +3031,7 @@ registerUsageIpc(ipcMain, {
 });
 
 registerConfigIpc(ipcMain, {
+  ensureLaunchAuth:(kind,opts)=>launchAuth.ensure(kind,opts),
   attachCodexUsageScope,
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   clearSessionManagerConfigCache,
@@ -3038,8 +3049,17 @@ const capabilityService = new (require('./core/capability-service').CapabilitySe
 const accountCenter = new (require('./core/account-center').AccountCenter)({
   dataDir: getHubDataDir(), homeDir: accountCenterHome,
   getConfig: () => require('./core/hub-config').getConfig(),
-  adapter: require('./core/account-adapters').createAccountAdapters({ dataDir:getHubDataDir(),homeDir:accountCenterHome }),
+  adapter: require('./core/account-adapters').createAccountAdapters({ dataDir:getHubDataDir(),homeDir:accountCenterHome,
+    onLoginComplete:result=>sendToRenderer('launch-auth-status',result) }),
 });
+const launchAuth = new (require('./core/launch-auth').LaunchAuth)({accounts:accountCenter,
+  getConfig:()=>require('./core/codex-global-account').currentConfig(),
+  notify:result=>sendToRenderer('launch-auth-status',result)});
+sessionManager.on('codex-session-updated',session=>{
+  const failure=session.nativeActionError || session.nativeRuntime?.reason || session.cliRuntime?.reason;
+  if (failure) void launchAuth.recover(session.kind,{...session,model:session.currentModel?.id},failure);
+});
+app.on('before-quit',()=>{accountCenter.stopPump();accountCenter.adapter.dispose?.();});
 require('./main/ipc/account-center-handlers').registerAccountCenterIpc(ipcMain,accountCenter);
 // The account page: one Hub Chrome holds every web login; CLIs report their own token files.
 hubAccountsService = new (require('./core/hub-accounts').HubAccounts)({

@@ -20,7 +20,7 @@ function cliAuthStatus({ env = process.env, config = {}, now = Date.now() } = {}
   const { readCodexAuthInfo, expandHomePath } = require('./codex-usage-scope');
   const profiles = config.codexSubscriptionProfiles?.length ? config.codexSubscriptionProfiles : [{ id: 'default', label: '主账号', home: '' }];
   for (const p of profiles) {
-    const dir = path.resolve(expandHomePath(p.home || env.CODEX_HOME || path.join(home, '.codex'), home));
+    const dir = path.resolve(expandHomePath(p.home || path.join(home, '.codex'), home));
     const auth = readJson(path.join(dir, 'auth.json'));
     let account = '';
     try { account = readCodexAuthInfo(dir).accountEmail || ''; } catch { /* no auth file yet */ }

@@ -44,7 +44,7 @@ class AccountCenter {
     const profiles=c.codexSubscriptionProfiles?.length?c.codexSubscriptionProfiles:[{id:'default',label:'主账号',home:''}];
     const native=(id,name,provider,home,uses)=>({id,name,provider,home:path.resolve(require('./codex-usage-scope').expandHomePath(home,this.homeDir)),type:'native',uses,action:'login',configProvider:provider});
     const rows=[native('claude','Claude Code','claude',this.env.CLAUDE_CONFIG_DIR || path.join(this.homeDir,'.claude'),['Claude 会话','开发群聊']),
-      ...profiles.filter(p=>/^[\w-]{1,64}$/.test(p.id)).map(p=>{const row=native('codex-'+p.id,'Codex · '+p.label,'codex',p.home || this.env.CODEX_HOME || path.join(this.homeDir,'.codex'),['Codex 会话','开发群聊']);return {...row,isDefault:p.id===(c.codexSubscriptionProfile || 'default'),accountLabel:codexAccountLabel(row.home)};}),
+      ...profiles.filter(p=>/^[\w-]{1,64}$/.test(p.id)).map(p=>{const row=native('codex-'+p.id,'Codex · '+p.label,'codex',p.home || path.join(this.homeDir,'.codex'),['Codex 会话','开发群聊']);return {...row,profileLabel:p.label,browserIdentity:p.browserIdentity,isDefault:p.id===(c.codexSubscriptionProfile || 'default'),accountLabel:codexAccountLabel(row.home)};}),
       native('gemini-cli','Gemini CLI','gemini',path.join(this.homeDir,'.gemini'),['Gemini 会话']),
       native('kimi','Kimi Code','kimi',this.env.KIMI_CODE_HOME || path.join(this.homeDir,'.kimi-code'),['Kimi 会话']),
       // @community-strip 公司中转与本机专用 ChatGPT 工具

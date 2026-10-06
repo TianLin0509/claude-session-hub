@@ -9,6 +9,15 @@ function contentFingerprint(text) {
   return promptFingerprint(String(text || '').replace(/\s/g, ''));
 }
 
+// Claude's actual UserPromptSubmit / transcript adds this complete envelope
+// around a long bracketed paste. Preserve the inner text; never strip prose,
+// partial tags or mismatched ids. Callers must try the raw receipt first.
+function unwrapClaudePasteEnvelope(text) {
+  if (typeof text !== 'string') return text;
+  const match = text.match(/^\s*<pasted_content(?: id="([^"<>]+)")?>\r?\n([\s\S]*?)\r?\n<\/pasted_content(?: id="([^"<>]+)")?>\s*$/);
+  return match && match[1] === match[3] ? match[2] : text;
+}
+
 // Delivery receipts share provider events with RuntimeTruth, but must identify
 // the submitted message. Running/automatic continuation alone cannot do that.
 class PromptSubmissionReceipts {
@@ -102,4 +111,4 @@ class PromptSubmissionReceipts {
   }
 }
 
-module.exports = { PromptSubmissionReceipts, promptFingerprint };
+module.exports = { PromptSubmissionReceipts, promptFingerprint, unwrapClaudePasteEnvelope };

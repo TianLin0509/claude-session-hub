@@ -170,12 +170,32 @@ function hasPasteMarkerInLines(lines) {
   return lines.some(line => PASTE_MARKER_REGEX.test(String(line || '')));
 }
 
-// 「折叠标记还挂在输入框那一带」= 这次粘贴根本没提交，是补回车的正向依据。
+// A short paste stays as plain text rather than a collapsed marker. Only an
+// exact, single-line prompt at the bottom input row counts: quoted messages in
+// scrollback, another draft, menus and wrapped/multiline text remain ambiguous.
+function hasPromptInInputLine(lines, prompt) {
+  if (!Array.isArray(lines) || typeof prompt !== 'string' || !prompt.trim() || /[\r\n]/.test(prompt)) return false;
+  const inputAt = lines.findLastIndex(line => /^\s*[›❯>]\s*/.test(String(line || '')));
+  if (inputAt < 0) return false;
+  const text = String(lines[inputAt]).replace(/^\s*[›❯>]\s*/, '').trim();
+  if (text !== prompt.trim()) return false;
+  return lines.slice(inputAt + 1).every(line => !String(line || '').trim()
+    || /^[\s─━╭╰╯╮│┌└┘┐┤├]+$/.test(line)
+    || /^\s*(?:Context \d+%.*|shift\+tab.*|\? for shortcuts.*)$/i.test(line)
+    || /^\s*GPT-[\w.-]+(?:\s+(?:minimal|low|medium|high|xhigh|default|fast|flex))*\s*·\s*Context\s+\d+%\s+left(?:\s*·\s*.*)?$/i.test(line)
+    || /^\s*⚠\s*\d+\s+warnings?\s*·\s*f2\s+to\s+view\s*$/i.test(line)
+    || /^\s*(?:[⏸⏵▶»]+\s*)?(?:(?:manual|plan|auto) mode on|bypass permissions on|accept edits on)\b.*$/i.test(line));
+}
+
+// 折叠标记或完整短文字仍在输入行，是补回车的正向依据。
 //   优先用 livePtyObserver 抓到的**可见屏幕末尾行**；拿不到（探针没起来 / viewport 是空的）
 //   才退到 probeStrongPtyWorkStart 记的 ring 尾巴，并只取最后若干行近似输入框那一屏。
 //   不整条扫 ring buffer：它是只增的历史，提交成功后标记仍留在里面，会永远判成"没提交"。
-function pasteStillInInputBox(probeState) {
+function pasteStillInInputBox(probeState, prompt) {
   if (!probeState) return false;
+  // On a fresh/short TUI screen the input row can sit above the last 12 rows.
+  // Inspect the complete visible screen for exact text, never ring history.
+  if (hasPromptInInputLine(probeState.lastLiveScreen || probeState.lastLiveLines, prompt)) return true;
   const live = probeState.lastLiveLines;
   if (Array.isArray(live) && live.some(line => String(line || '').trim())) {
     return hasPasteMarkerInLines(live);
@@ -189,6 +209,7 @@ module.exports = {
   BP_START,
   BP_END,
   hasPasteMarkerInLines,
+  hasPromptInInputLine,
   pasteStillInInputBox,
   computeSettleMs,
   writeBracketedPaste,

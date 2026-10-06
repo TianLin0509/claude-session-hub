@@ -78,6 +78,19 @@ function test(name, fn) {
 
 console.log('Running resume session IPC contract tests...');
 
+test('missing login stops resume before acquiring or replacing a session writer', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps({ ensureLaunchAuth: async (kind, opts) => {
+    assert.equal(kind, 'codex');
+    assert.equal(opts.codexProfile, 'default');
+    throw Object.assign(new Error('login required'), {code:'auth_required'});
+  } });
+  deps.sessionManager.reserveSessionOpen = () => { throw Error('writer reservation must not happen'); };
+  registerResumeSessionIpc(ipc, deps);
+  await assert.rejects(ipc.handlers.get('resume-session')(null, {hubId:'auth-not-started',kind:'codex',codexProfile:'default'}), {code:'auth_required'});
+  assert.equal(deps.calls.filter(c=>c[0]==='createSession').length,0);
+});
+
 test('assistant resume restores scoped tools while keeping the native session identity', async () => {
   const ipc = createFakeIpc();
   const entry = { name: 'hub_assistant', command: 'node', args: ['assistant-mcp.js'], toolApprovalModes: { create_session: 'approve' } };

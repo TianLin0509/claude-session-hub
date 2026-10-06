@@ -2,7 +2,7 @@
 // 本文件验证 Codex App Server 后端；2026-09-25 起它只是回退开关，需要显式打开。
 process.env.CLAUDE_HUB_AGENT_RUNTIME = 'native';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),path=require('path'),os=require('os');
-const {resolveAccount,withGlobalAccount,prepareLaunch}=require('../core/codex-global-account');
+const {resolveAccount,resolveRunningAccount,withGlobalAccount,prepareLaunch}=require('../core/codex-global-account');
 const {CodexNativeSession}=require('../core/codex-native-session');
 function setup(){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'global-account-'));
@@ -18,6 +18,23 @@ function setup(){
 }
 async function until(fn){const end=Date.now()+7000;while(!fn()){if(Date.now()>end)throw Error('timeout');await new Promise(r=>setTimeout(r,10));}}
 async function close(s){if(s.closed && !s.entry)return;await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error('close timeout')),7000);s.once('exit',()=>{clearTimeout(t);resolve();});s.kill();});}
+
+test('future quota selection pins existing turns until explicit restart; new launches use the selected account',async()=>{
+ const {s,config,env,a,b}=setup();
+ s.options.resolveAccount=()=>resolveRunningAccount(config,{id:s.options.accountId,home:s.options.env.CODEX_HOME},env);
+ s.options.resolveLaunchAccount=()=>resolveAccount(config,env);
+ try {
+  await s.start();await s.send('first');await until(()=>s.runtime.state==='completed');const sid=s.threadId,client=s.entry.client;
+  const saved=withGlobalAccount({},config,'second',env,'launch');assert.equal(saved.providers.codex.switch_scope,'launch');
+  config.codexSubscriptionProfile='second';config.codexAccountSwitchScope='launch';
+  assert.equal(await s.followGlobalAccount(),false);assert.equal(s.entry.client,client);
+  await s.send('still original account');await until(()=>s.runtime.state==='completed');assert.equal(s.options.env.CODEX_HOME,a);
+  assert.equal(prepareLaunch({},config,env).account.home,b);
+  await s.reconnect({useLaunchAccount:true});assert.equal(s.options.env.CODEX_HOME,b);assert.equal(s.threadId,sid);assert.equal(s.runtime.sqliteHome,a);
+  await s.send('new quota after restart');await until(()=>s.runtime.state==='completed');
+  assert.equal((await s.entry.client.request('thread/read',{threadId:sid})).thread.turns.length,3);
+ } finally {await close(s);}
+});
 test('another Hub account change bypasses stale routing cache and malformed config blocks routing',()=>{
  const {root,a,b}=setup(),data=path.join(root,'data');fs.mkdirSync(data);
  const before={CLAUDE_HUB_DATA_DIR:process.env.CLAUDE_HUB_DATA_DIR,HUB_CODEX_PROFILE:process.env.HUB_CODEX_PROFILE};

@@ -146,6 +146,7 @@ function normalizeCodexSubscriptionProfiles(profiles) {
         id,
         label: String(p.label || p.name || id).trim() || id,
         home: String(p.home || '').trim(),
+        ...(['main','alt'].includes(p.browserIdentity) ? {browserIdentity:p.browserIdentity} : {}),
       });
     }
   }
@@ -172,6 +173,7 @@ function getConfig() {
     codexBackend: getConfigValue('codexBackend', 'HUB_CODEX_BACKEND', 'providers.codex.backend', DEFAULTS.codex_backend),
     codexSubscriptionProfile: getConfigValue('codexSubscriptionProfile', 'HUB_CODEX_PROFILE', 'providers.codex.subscription_profile', DEFAULTS.codex_subscription_profile),
     codexSubscriptionProfiles,
+    codexAccountSwitchScope: codexProvider.switch_scope === 'launch' ? 'launch' : 'live',
     codexApiKey: getConfigValue('codexApiKey', 'HUB_CODEX_API_KEY', 'providers.codex.api_key', ''),
     codexApiBaseUrl: normalizeBaseUrl(getConfigValue('codexApiBaseUrl', 'HUB_CODEX_API_BASE_URL', 'providers.codex.base_url', DEFAULTS.codex_api_base_url)),
     codexApiModel: getConfigValue('codexApiModel', 'HUB_CODEX_API_MODEL', 'providers.codex.model', DEFAULTS.codex_api_model),

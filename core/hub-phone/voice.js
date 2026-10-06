@@ -18,9 +18,17 @@ async function transcribe(data,{dataDir,safeStorage,chunkDelayMs=0}){
  const pcm=Buffer.from(data,'base64');if(!pcm.length||pcm.length%2||pcm.length>16000*2*MAX_SECONDS)throw Error(`录音需为 16kHz 单声道，且不超过 ${MAX_SECONDS} 秒`);
  let cfg={region:'beijing'},key=process.env.DASHSCOPE_API_KEY||'';
  const file=path.join(dataDir,'voice-input.json');if(fs.existsSync(file))cfg=JSON.parse(fs.readFileSync(file,'utf8'));
- // 与电脑端同一识别方式：套餐（说完再识别，在停顿处切段并发）或按量流式；套餐失败不自动改走按量，免得悄悄计费。
- const plan=require('../voice-tokenplan'),{engine,planKey}=plan.resolveEngine(cfg,dataDir);
- if(engine==='tokenplan'){if(!planKey)throw Error('电脑上未找到 Token Plan 套餐 Key，请在 Hub 语音设置里改用按量识别');return plan.transcribePcm(pcm,{apiKey:planKey,profile:mergedProfile(cfg)});}
+ // 与电脑端同一识别方式：本地（未就绪时 Token Plan 接力）、套餐或按量流式；失败不自动改走按量，免得悄悄计费。
+ const voiceEngine=require('../voice-engine'),{engine,planKey,localReady}=voiceEngine.resolveEngine(cfg,dataDir);
+ if(engine==='local'||engine==='tokenplan'){
+  if(engine==='local'&&!localReady)throw Error('电脑上本地识别未安装，请在 Hub 语音设置里改用 Token Plan');
+  if(engine==='tokenplan'&&!planKey)throw Error('电脑上未找到 Token Plan 套餐 Key，请在 Hub 语音设置里改用按量识别');
+  const local=engine==='local'?require('../local-asr/manager').getLocalAsr(cfg):null;
+  // 声纹过滤：电脑上录入的本人声纹同样用于手机语音（剔除旁人说话的段落）。
+  const vpProfile=require('../voiceprint').active(dataDir),speaker=vpProfile?require('../local-asr/manager').getSpeakerWorker(cfg):null;
+  const r=await voiceEngine.transcribeRecording(pcm,{engine,planKey,profile:mergedProfile(cfg),local,source:'phone',usage:voiceEngine.usageLogger(dataDir),vp:vpProfile&&speaker?{profile:vpProfile,speaker}:null});
+  return r.text;
+ }
  if(cfg.encryptedKey)key=safeStorage.decryptString(Buffer.from(cfg.encryptedKey,'base64'));
  if(!key)throw Error('电脑尚未设置语音识别，请在 Hub 输入框的语音设置中配置');
  const {VoiceStream}=require('../voice-input');let finish,fail;const result=new Promise((a,b)=>{finish=a;fail=b;});result.catch(()=>{});
@@ -29,4 +37,11 @@ async function transcribe(data,{dataDir,safeStorage,chunkDelayMs=0}){
  // 录音已完整到手，不再按说话节奏回放（旧做法让 30 秒语音多等约 27 秒）；按 0.1 秒一块连续推送。
  try{await stream.ready;for(let at=0;at<pcm.length;at+=3200){await stream.audio(pcm.subarray(at,at+3200));if(chunkDelayMs)await new Promise(r=>setTimeout(r,chunkDelayMs));}await stream.finish();return await result;}finally{if(!stream.ended)stream.cancel();}
 }
-module.exports={transcribe,mergedProfile,dashscopeCredentials,MAX_SECONDS};
+// 手机按下说话键时先通知电脑：本地模式下趁用户说话把模型装进显卡。
+function prepare({dataDir}){
+ const file=path.join(dataDir,'voice-input.json');const cfg=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};
+ const voiceEngine=require('../voice-engine');if(voiceEngine.resolveEngine(cfg,dataDir).engine!=='local')return false;
+ const local=require('../local-asr/manager').getLocalAsr(cfg);if(!local)return false;
+ void local.prepare().catch(e=>console.warn('[phone] 本地识别准备失败：',e.message));return true;
+}
+module.exports={transcribe,prepare,mergedProfile,dashscopeCredentials,MAX_SECONDS};

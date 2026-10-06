@@ -20,7 +20,7 @@ const root = path.resolve(__dirname, '..');
 const watcher = require(path.join(root, 'core', 'group-chat-watcher.js'));
 const { createLoopEngine } = require(path.join(root, 'main', 'groupchat', 'loop-engine.js'));
 
-function watcherHarness({ screenReadsRunning, pasteStuckInInputBox = false }) {
+function watcherHarness({ screenReadsRunning, pasteStuckInInputBox = false, pendingText = null }) {
   const transcriptTap = new EventEmitter();
   let enters = 0;
   class SM extends EventEmitter {
@@ -41,6 +41,7 @@ function watcherHarness({ screenReadsRunning, pasteStuckInInputBox = false }) {
       // 「上一轮还在收尾，但本轮的粘贴还挂在输入框里没提交」——
       //   屏幕同时读成 running 且末尾挂着折叠标记。
       if (pasteStuckInInputBox) frame += '› [Pasted Content 10377 chars]\n';
+      if (pendingText !== null) frame = '\x1b[2J\x1b[H' + frame.replace(/\n/g, '\r\n') + `› ${pendingText}\r\nContext 90% left\r\n`;
       this.buf += frame;
       this.emit('output', { sessionId: sid, data: frame });
     }
@@ -52,6 +53,7 @@ function watcherHarness({ screenReadsRunning, pasteStuckInInputBox = false }) {
     cliReadyDetector: { isReady: () => true },
     agentTurnStartAckMs: 150,
     agentTurnStartRecoveryMs: 150,
+    enableSendDiagnostics: true,
   });
   return { get enters() { return enters; } };
 }
@@ -89,6 +91,15 @@ test('a genuinely idle input box still gets exactly one bounded recovery Enter',
   assert.strictEqual(state.enters, 2, 'the stuck-paste fallback must survive the running guard');
   assert.strictEqual(result.enterAttempts, 2);
   assert.strictEqual(result.sendStatus, 'stuck');
+});
+
+test('a running screen does not hide an exact short prompt still in the input line', async () => {
+  const prompt = '请检查这次发送';
+  const state = watcherHarness({ screenReadsRunning: true, pendingText: prompt });
+  const result = await watcher.sendToPty('s', prompt, 'codex');
+  assert.strictEqual(state.enters, 2, '短文字没有折叠标记，也必须识别出尚未提交的原文 ' + JSON.stringify(result.probeDiagnostics));
+  assert.strictEqual(result.enterAttempts, 2);
+  assert.strictEqual(result.sendStatus, 'stuck', '未收到确认不能把上一轮运行当成本次提交');
 });
 
 test('the first acknowledgement window clears the measured Codex task_started latency', () => {
