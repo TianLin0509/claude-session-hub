@@ -75,6 +75,16 @@ async function main() {
     await snap('settings'); evidence.checks.push('已安装本地识别时，设置默认「本地识别」并显示本地状态');
     await cdp.eval('[...document.querySelectorAll(".voice-settings-dialog button")].find(b=>b.textContent==="关闭").click()');
     await cdp.eval('document.querySelector(' + JSON.stringify(box) + ').focus()');
+    // E2E_WARM=1：先录一段把本地模型装好（模拟 10 分钟内用过），正式这段全程本地出字
+    if (process.env.E2E_WARM === '1') {
+      await cdp.eval('document.querySelector(' + JSON.stringify(mic) + ').click()');
+      await sleep(15000);
+      await cdp.eval('document.querySelector(' + JSON.stringify(mic) + ').click()');
+      await until('document.querySelector(' + JSON.stringify(status) + ')?.textContent.includes("语音输入完成")', 'warm-up done', 60000);
+      await cdp.eval('(()=>{const b=document.querySelector(' + JSON.stringify(box) + ');b.textContent="";b.dispatchEvent(new Event("input",{bubbles:true}));b.focus();})()');
+      fs.writeFileSync(path.join(data, 'voice-usage.jsonl'), '');
+      await sleep(1500);
+    }
     await cdp.eval('document.querySelector(' + JSON.stringify(mic) + ').click()');
     const t0 = Date.now();
     await until('document.querySelector(' + JSON.stringify(mic) + ').textContent === "停止"', 'recording started');
@@ -100,7 +110,10 @@ async function main() {
     evidence.finalText = await cdp.eval('document.querySelector(' + JSON.stringify(box) + ').textContent');
     evidence.status = await cdp.eval('document.querySelector(' + JSON.stringify(status) + ').textContent');
     await snap('final');
-    const ledger = fs.readFileSync(path.join(data, 'voice-usage.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const rows = fs.readFileSync(path.join(data, 'voice-usage.jsonl'), 'utf8').trim().split(/\r?\n/).filter(Boolean).map(l => JSON.parse(l));
+    const ledger = rows.filter(l => l.via !== 'mic');
+    evidence.mic = rows.filter(l => l.via === 'mic').map(l => ({ clickToCaptureMs: l.clickToCaptureMs, captureToSoundMs: l.captureToSoundMs, clickToReadyMs: l.clickToReadyMs }));
+    assert(evidence.mic.length >= 1, '应记录麦克风时序诊断');
     evidence.ledger = ledger.map(l => `${l.via}:${l.sec}s`);
     evidence.gpuBusy = gpuBusy;
     if (gpuBusy) {
@@ -109,10 +122,12 @@ async function main() {
       assert(/显存不足/.test(hub.log().join(' ')), '日志应说明显存不足');
     } else {
       assert(ledger.some(l => l.via === 'local'), '至少一段应走本地');
-      assert(ledger.some(l => l.via === 'realtime'), '冷启动应由实时 API 接力');
+      if (process.env.E2E_WARM !== '1') assert(ledger.some(l => l.via === 'realtime'), '冷启动应由实时 API 接力');
+      else assert(ledger.every(l => l.via === 'local'), '模型已热时应全程本地');
       assert(evidence.status.includes('本地'), '完成提示应说明本地识别段数：' + evidence.status);
     }
     for (const word of ['作手林铛', '昨日之我', 'SuperRAN']) assert(evidence.finalText.includes(word), `缺少「${word}」：${evidence.finalText}`);
+    evidence.routes = await cdp.eval('window.__routes || null');
     assert(evidence.firstTextAtSec < 4, '开口后 4 秒内应出字（音频开头有 1 秒静音）：' + evidence.firstTextAtSec);
     assert(evidence.updates >= 15, '说话途中文字应持续刷新：' + evidence.updates);
     evidence.checks.push(`第 ${evidence.firstTextAtSec.toFixed(1)} 秒出字（音频开头 1 秒静音）；录音期间刷新 ${evidence.updates} 次；停止后 ${evidence.stopToFinalSec.toFixed(1)} 秒完成；${evidence.status}；术语正确`);

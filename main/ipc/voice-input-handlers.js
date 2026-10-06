@@ -134,6 +134,12 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     if (!speaker) throw new Error('本机未安装声纹模型');
     return voiceprint.enroll(dataDir, planVoice.toRate16k(bytes.subarray(0, bytes.length - (bytes.length % 2)), sampleRate), { speaker, frameLevels: planVoice.frameLevels });
   });
+  // 麦克风时序诊断：排查「开头几个字漏掉」卡在哪一步（只记毫秒数，不记音频）
+  ipcMain.handle('voice:diag', (_e, d = {}) => {
+    const n = v => (Number.isFinite(v) && v >= 0 && v < 600000 ? Math.round(v) : null);
+    usage({ source: 'desktop', via: 'mic', sec: 0, engine: String(d.engine || ''), clickToCaptureMs: n(d.clickToCaptureMs), captureToSoundMs: n(d.captureToSoundMs), clickToReadyMs: n(d.clickToReadyMs) });
+    return true;
+  });
   ipcMain.handle('voice:voiceprint-set', (_e, options = {}) => voiceprint.setOptions(dataDir, options));
   ipcMain.handle('voice:voiceprint-delete', () => voiceprint.remove(dataDir));
   ipcMain.handle('voice:audio', async (e, { id, data } = {}) => { await owned(e, id).stream.audio(data); return true; });

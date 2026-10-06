@@ -40,6 +40,16 @@ async function main() {
     assert.deepEqual(done.via, { local: 2 });
     assert.match(done.text, /^定稿(9|10)秒定稿[23]秒$/);
   }
+  // 1b) 小停顿（0.4 秒）切成小句：滚动识别只重识别停顿之后的那一截，窗口不随整句变长；停顿前的小句单独识别定下。
+  {
+    const local = fakeLocal(true), events = [];
+    const v = new LiveVoice({ sampleRate: 16000, local, recognizeSegment: segmentBy(local), openApi: () => null, onEvent: e => events.push(e), rollingMs: 10, log: () => {} });
+    await feed(v, Buffer.concat([speech(2.5), pause(0.4), speech(2.5), pause(0.4), speech(2.5)]), 3200, 3);
+    assert(Math.max(...local.calls) < 4, '滚动窗口应在小停顿处重新开始：' + Math.max(...local.calls));
+    assert(events.at(-1).text.split('本地').length - 1 >= 3, '前面的小句应已定下、显示在预览之前：' + events.at(-1).text);
+    assert.equal(events.at(-1).route, 'local');
+    v.cancel();
+  }
   // 2) 冷启动：先走实时 API 逐字出；本地装好后在下一个停顿处切到本地，实时 API 收尾。
   {
     const local = fakeLocal(false), events = [], api = fakeApi(), usage = [];
