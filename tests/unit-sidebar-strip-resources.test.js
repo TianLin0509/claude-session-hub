@@ -29,7 +29,7 @@ const sessions = new Map([
   ['hidden-research', { id: 'hidden-research', status: 'idle', purpose: 'chuxin-research' }],
   ['history', { id: 'history', status: 'dormant' }],
 ]);
-let resourceUsage = { cpuPct: 23.4, memoryPct: 67.8, disk: { root: 'C:\\', usagePct: 89, totalBytes: 1000 * 1024 ** 3 } };
+let resourceUsage = { cpuPct: 23.4, gpu: { name:'RTX 3080',usagePct:37 }, memoryPct: 67.8, disk: { root: 'C:\\', usagePct: 89, totalBytes: 1000 * 1024 ** 3 } };
 let proxyInfo = null;
 
 const document = {
@@ -68,6 +68,9 @@ assert.match(stripEl.innerHTML, /width:23%/);
 assert.match(stripEl.innerHTML, /title="内存 68%"/);
 assert.match(stripEl.innerHTML, /width:68%/);
 assert.match(stripEl.innerHTML, /CPU<b>23%<\/b>/);
+assert.match(stripEl.innerHTML, /GPU<b>37%<\/b>/);
+assert.ok(stripEl.innerHTML.indexOf('CPU<b>') < stripEl.innerHTML.indexOf('GPU<b>'));
+assert.ok(stripEl.innerHTML.indexOf('GPU<b>') < stripEl.innerHTML.indexOf('内存<b>'));
 assert.match(stripEl.innerHTML, /内存<b>68%<\/b>/);
 assert.match(stripEl.innerHTML, /硬盘<b>89%<\/b>/);
 assert.match(stripEl.innerHTML, /C:\\ 已用 89%/);
@@ -79,6 +82,7 @@ assert.strictEqual(stripEl.title, '');
 resourceUsage = { cpuPct: 91, memoryPct: 86 };
 renderer.renderSidebarStrip();
 assert.strictEqual((stripEl.innerHTML.match(/strip-resource-high/g) || []).length, 2);
+assert.match(stripEl.innerHTML, /GPU<b>—<\/b>/);
 assert.strictEqual((stripEl.innerHTML.match(/strip-resource-critical/g) || []).length, 1);
 resourceUsage = { cpuPct: 89, memoryPct: 90, disk: { usagePct: 100 } };
 renderer.renderSidebarStrip();

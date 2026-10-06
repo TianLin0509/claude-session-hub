@@ -94,15 +94,30 @@ test('unchanged Git proof starts no processes; target branch changes invalidate 
     await verifyMerge(root, merge, options); assert.equal(calls, 4, 'packing the same target preserves its proof');
   } finally { await fsp.rm(root, { recursive: true, force: true }); }
 });
-test('sidebar resource requests skip GPU/disk sampling; explicit details still work', async () => {
-  const handlers = new Map(); let extendedCalls = 0;
+test('sidebar requests reuse cached GPU/disk probes without requesting full details', async () => {
+  const handlers = new Map(); let gpuCalls = 0, diskCalls = 0;
+  const systemTelemetry = require('../core/system-telemetry').createSystemTelemetry({ now:()=>1000,
+    execFile:async()=>{gpuCalls++;return {stdout:'fixture, 37, 100, 1000, 40'};},
+    statfs:async()=>{diskCalls++;return {bsize:10,blocks:100,bavail:50};} });
   require('../main/ipc/app-utility-handlers').registerAppUtilityIpc({ handle: (name, fn) => handlers.set(name, fn) }, {
-    systemTelemetry: { sample: async () => { extendedCalls++; return { gpu: { name: 'fixture' } }; } },
+    systemTelemetry,
   });
   const sample = handlers.get('get-system-resource-usage');
-  for (let i = 0; i < 6; i++) assert(Number.isFinite((await sample(null, { extended: false })).memoryPct));
-  assert.equal(extendedCalls, 0);
-  assert.equal((await sample(null, { force: true })).gpu.name, 'fixture'); assert.equal(extendedCalls, 1);
+  for (let i = 0; i < 6; i++) {
+    const result = await sample(null, { extended:false });
+    assert(Number.isFinite(result.memoryPct)); assert.equal(result.gpu.usagePct,37);
+  }
+  assert.equal(gpuCalls,1); assert.equal(diskCalls,1);
+  assert.equal((await sample(null,{force:true})).gpu.name,'fixture'); assert.equal(gpuCalls,2);
+});
+
+test('an unavailable GPU does not block CPU, memory or disk in the footer', async () => {
+  const handlers = new Map();
+  require('../main/ipc/app-utility-handlers').registerAppUtilityIpc({handle:(name,fn)=>handlers.set(name,fn)}, {
+    systemTelemetry:{sampleGpu:async()=>{throw Error('GPU unavailable');},sampleDisk:async()=>({usagePct:50})},
+  });
+  const result=await handlers.get('get-system-resource-usage')(null,{extended:false});
+  assert.equal(result.gpu,null); assert.equal(result.disk.usagePct,50); assert(Number.isFinite(result.memoryPct));
 });
 test('unchanged usage files are not reread and caller mutation cannot poison the cache', async () => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'hub-usage-read-'));
