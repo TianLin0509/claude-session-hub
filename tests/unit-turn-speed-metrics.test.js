@@ -79,6 +79,7 @@ test('recent Codex task-before-user order and explicit per-turn usage do not los
     event('task_complete', { last_agent_message: 'answer' }, 10)];
   const answer = parseCodexRolloutText(text(rows)).at(-1);
   assert.equal(answer.turnSpeed.tokensPerSecond, 30); assert.equal(answer.turnSpeed.speedTier, null);
+  assert.equal(answer.turnSpeed.elapsedMs, 10000);
 });
 
 test('Claude deduplicates shared message IDs and preserves metrics in compact cards and continuations', () => {

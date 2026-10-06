@@ -343,6 +343,7 @@ function parseCodexRolloutEntries(entries) {
         sourceEndIndex: null,
         id: null,
         ts: null,
+        taskStartedAt: null,
         tsEnd: null,
         text: '',
         finalText: '',
@@ -381,6 +382,7 @@ function parseCodexRolloutEntries(entries) {
         role: 'assistant',
         text,
         ts: pendingAssistant.ts,
+        speedStartedAt: pendingAssistant.taskStartedAt,
         tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
         stopReason: pendingAssistant.completed ? 'task_complete' : 'partial_commentary',
         // 与原生卡片同一字段：卡片据此显示「本轮已完成 / 已中断」。仍在进行的一轮留空。
@@ -488,6 +490,7 @@ function parseCodexRolloutEntries(entries) {
         // task's timing/counter boundary rather than dropping it on receipt.
         if (!pendingAssistant?.hasTaskStart || pendingAssistant.agentMessages.length || pendingAssistant.toolCalls.length)
           flushAssistant();
+        else { pendingAssistant.id = null; pendingAssistant.ts = null; }
         const raw = userEvent.text.trim();
         const text = raw && !isSyntheticUserEntry(obj, raw) ? displayUserText(raw) : null;
         if (text) {
@@ -509,6 +512,7 @@ function parseCodexRolloutEntries(entries) {
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
         pending.hasTaskStart = true;
+        pending.taskStartedAt = toMs(obj.timestamp);
         pending.providerTurnId = payload.turn_id || payload.turnId || null;
         return;
       }
@@ -555,6 +559,7 @@ function parseCodexRolloutEntries(entries) {
       if (text && !hasNearbyEventUserDuplicate(entries, entryIndex, text)) {
         if (!pendingAssistant?.hasTaskStart || pendingAssistant.agentMessages.length || pendingAssistant.toolCalls.length)
           flushAssistant();
+        else { pendingAssistant.id = null; pendingAssistant.ts = null; }
         turns.push({
           id: _makeTurnId('codex-user', obj, index),
           role: 'user',

@@ -11,7 +11,7 @@ function speedTier(value) {
 function measureTurnSpeed(turn) {
   if (turn?.role !== 'assistant' || turn.nativeOutcome !== 'completed' || turn.outputUsageComplete === false) return null;
   const output = turn.usage?.output_tokens;
-  const startedAt = turn.speedStartedAt ?? turn.ts, endedAt = turn.tsEnd;
+  const startedAt = Object.hasOwn(turn, 'speedStartedAt') ? turn.speedStartedAt : turn.ts, endedAt = turn.tsEnd;
   if (!count(output) || output === 0 || !Number.isFinite(startedAt) || startedAt <= 0
       || !Number.isFinite(endedAt) || endedAt <= startedAt) return null;
   const elapsedMs = endedAt - startedAt;
