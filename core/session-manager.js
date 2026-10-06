@@ -1715,7 +1715,7 @@ class SessionManager extends EventEmitter {
       : null;
     const normalizedContextMax = normalizeCodexContextWindow(opts.contextMax);
     const effectiveContextMax = isCodexRuntime
-      ? (normalizedContextMax || resolveCodexContextWindow(currentModel && currentModel.id, null))
+      ? resolveCodexContextWindow(currentModel && currentModel.id, normalizedContextMax, { configDir: sessionEnv.CODEX_HOME })
       : (typeof opts.contextMax === 'number' ? opts.contextMax : null);
 
     const now = Date.now();
@@ -3038,7 +3038,7 @@ class SessionManager extends EventEmitter {
       const codexRelaunchModel = modelId || DEFAULT_MODEL_BY_KIND.codex;
       const codexReasoningArg = buildCodexReasoningConfigArg(normalizeCodexEffort(s.info && s.info.effort))
         + buildCodexSpeedTierArg(resolveCodexSpeedTier(runtimeKind, s.info && s.info.codexSpeedTier))
-        + buildCodexContextWindowArg(resolveCodexContextWindow(codexRelaunchModel, s.info && s.info.contextMax));
+        + buildCodexContextWindowArg(resolveCodexContextWindow(codexRelaunchModel, s.info && s.info.contextMax, { configDir: codexConfigDir }));
       ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}`;
       const relaunchMcpProfile = resolveCodexMcpProfile(runtimeKind, s.info && s.info.mcpProfile);

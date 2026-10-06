@@ -186,7 +186,7 @@ test('群规则：写作场景换成写作规则——文章放在两行标记�
   const { buildSystemPromptText } = require('../core/group-chat-orchestrator.js');
   if (typeof buildSystemPromptText === 'function') {
     assert.ok(buildSystemPromptText('Claude 1', 'writing', { workspace: 'C:\\x' }).includes('这是写作群聊'));
-    assert.ok(buildSystemPromptText('Claude 1', 'general', {}).includes('HTML 三段式'), '通用场景不受影响');
+    assert.ok(buildSystemPromptText('Claude 1', 'general', {}).includes('默认在聊天正文回答'), '通用场景同样默认正文交付');
   }
 });
 

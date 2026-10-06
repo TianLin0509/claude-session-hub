@@ -239,7 +239,7 @@ const RESEARCH_SCENE_PROMPT = [
   '用户写“@英灵”、点名巴菲特/利弗莫尔镜头或要求英灵对抗时：先用 stock_* 补齐与该镜头有关的证据，再调用 spirit_prepare 生成统一 Lens Packet；所有席位按同一 rule_id 与 manifest_hash 发言。英灵只是有边界的方法论，禁止自称历史人物本人，也不得把英灵建议当成交易执行。',
   '只引用工具返回中能改变判断的关键字段；工具不可用或数据缺失时明确说未查到，不要凭记忆补数字。',
   'stock_static 返回的估值/基本面字段带 `confidence` 标签（HIGH/MEDIUM/LOW/CONFLICT/UNAVAILABLE，详细措辞规则见该工具 description），引用前先看 `_meta.warnings` 扫一眼非 HIGH 字段；CONFLICT/UNAVAILABLE 时 value=null，禁止编数值或填默认值。',
-  `反空话铁律：结论必须落到具体数字或可查事实上，禁用空话套话（${BANNED_PHRASES.join('、')} 等同类表述）——出现即视为无效结论，请用带数字/来源的判断重写。`,
+  '结论说明关键事实怎样改变判断；有数字用已核查的数字，无可靠量化时明确证据与限制。',
 ].join('\n');
 
 // 右侧交易战法纪律（投委会「纪律底色」，常驻 research 场景）。与「流程档位」解耦：
@@ -247,6 +247,7 @@ const RESEARCH_SCENE_PROMPT = [
 // 内容 = 用户锁定的追涨/低吸右侧画像表（preference_invest_chase_vs_dip）。
 const COMMITTEE_DISCIPLINE = [
   '## 右侧交易战法纪律（底色）',
+  '以下是用户确认的选股与买卖时机偏好，讨论具体交易决策时采用；财报解读、材料整理和方法讨论按当次问题展开。',
   '本群偏中短线**右侧交易**。评估个股先归位是「追涨」还是「低吸」——两者**都是右侧、都在上升趋势**，差异只在阶段，不是方向：',
   '- 共同底座（缺一即降级）：右侧上升趋势 · 板块龙头/认同度高 · 题材正宗够硬 · 基本面硬 · 关键趋势线不破。',
   '- **追涨**（主升进行中）：5/10 日线强趋势、空中加油、接力强势龙；主升浪里跟随。',
@@ -267,8 +268,8 @@ function artifactsInstruction(workspace) {
   const dir = workspace && String(workspace).trim()
     ? `${String(workspace).replace(/[\\/]+$/, '')}\\artifacts\\`
     : '当前工作目录下的 artifacts\\';
-  return `简单问题直答；复杂分析 / 多方案 / 含表格 / 预计 > 300 字 -> HTML 三段式`
-    + `（先口头大纲 -> 写 ${dir}{msgId}-{name}.html -> 贴绝对路径+3-8 条摘要卡片）。`;
+  return `默认在聊天正文回答，可用 Markdown 表格。用户指定格式时照做；图解、交互或独立保存明显有助于使用时再制作 HTML，`
+    + `写入 ${dir}{msgId}-{name}.html，贴绝对路径并简述结果。`;
 }
 
 function buildSystemPromptText(displayName, scene, opts = {}) {
@@ -1256,7 +1257,12 @@ class GroupChatOrchestrator {
       this.state.groupContextPendingBySid = {};
     }
     const receipt = this.state.groupContextBySid[selfSid] || null;
+    const rulesHash = promptFingerprint(String(systemPromptText || ''));
     let includeRules = firstTime;
+    // Silent committee cursors do not establish delivery of these group rules.
+    const rulesChanged = !firstTime && receipt && (receipt.rulesDeliveredAt || receipt.rulesHash)
+      && receipt.rulesHash !== rulesHash;
+    if (rulesChanged) includeRules = true;
     let compacted = false;
     if (!firstTime && receipt) {
       const check = checkCompaction(receipt.peakContext, opts.contextUsed);
@@ -1269,7 +1275,8 @@ class GroupChatOrchestrator {
     }
     this.state.groupContextPendingBySid[selfSid] = {
       rules: includeRules,
-      ...(compacted ? { reason: 'compacted' } : {}),
+      rulesHash,
+      ...(rulesChanged ? { reason: 'rules-changed' } : compacted ? { reason: 'compacted' } : {}),
       ...(roster ? { roster } : {}),
     };
     const delta = this.buildDelta(selfSid, userInput, opts);
@@ -1299,7 +1306,10 @@ class GroupChatOrchestrator {
     if (!existing || (pending && pending.rules)) {
       // 规则刚送达（首次或压缩后重发）：峰值从零重新观测。
       receipt.peakContext = 0;
-      if (pending && pending.rules) receipt.rulesDeliveredAt = Date.now();
+      if (pending && pending.rules) {
+        receipt.rulesDeliveredAt = Date.now();
+        receipt.rulesHash = pending.rulesHash;
+      }
     }
     if (pending && Array.isArray(pending.roster)) receipt.roster = pending.roster;
     this.state.groupContextBySid[sid] = receipt;

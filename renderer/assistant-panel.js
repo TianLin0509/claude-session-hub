@@ -81,7 +81,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     setClass(nav, 'active', selected);
     if (selected) nav.setAttribute('aria-current', 'page'); else nav.removeAttribute('aria-current');
     const tools = document.getElementById('toolbar-actions');
-    let picker = tools?.querySelector('.assistant-backend');
+    let picker = tools?.querySelector('.assistant-backend:not(.assistant-frontdesk)');
     if (active && tools && !picker) {
       picker = document.createElement('button'); picker.type='button'; picker.className = 'assistant-backend';
       picker.setAttribute('aria-label', '助理 AI 后端');
@@ -134,7 +134,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     if (opening || switching) return;
     const ticket = ++epoch;
     switching = true;
-    const picker = document.querySelector('.assistant-backend');
+    const picker = document.querySelector('.assistant-backend:not(.assistant-frontdesk)');
     if (picker) { picker.disabled = true; picker.setAttribute('aria-busy','true'); }
     const label = nav.querySelector('.btn-label'); label.textContent = '切换中…';
     try {
@@ -145,7 +145,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     finally {
       switching = false; label.textContent = '助理';
       if (picker) picker.removeAttribute('aria-busy');
-      const displayed = document.querySelector('.assistant-backend');
+      const displayed = document.querySelector('.assistant-backend:not(.assistant-frontdesk)');
       if (displayed) { displayed.disabled=false; displayed.removeAttribute('aria-busy'); }
       // Native selectSession also advances the navigation epoch. Refresh only
       // when the assistant surface is still visible, using the new toolbar.

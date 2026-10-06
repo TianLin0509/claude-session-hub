@@ -23,7 +23,7 @@ async function main(){
  const screen=id=>cdp.eval('(()=>{const t=terminalCache.get('+j(id)+')?.terminal;if(!t)return "";const b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||"").join(String.fromCharCode(10))})()');
  const click=async selector=>{await until('clickable '+selector,()=>cdp.eval('(()=>{const e=document.querySelector('+j(selector)+');if(!e||e.disabled)return false;e.scrollIntoView({block:"center"});const r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return r.width>0&&r.height>0&&(h===e||e.contains(h))})()'),60000);const p=await cdp.eval('(()=>{const r=document.querySelector('+j(selector)+').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()');for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1});};
  const key=async(key,code,virtualKey,modifiers=0)=>{for(const type of ['keyDown','keyUp'])await cdp.send('Input.dispatchKeyEvent',{type,key,code,windowsVirtualKeyCode:virtualKey,modifiers});};
- const change=async kind=>{await click('.assistant-backend');await click('[data-assistant-backend="'+kind+'"]');await until('backend '+kind,async()=>{const r=await invoke('assistant:get-overview',{});return r.backendKind===kind&&(await active())===r.sessionId&&!await cdp.eval('document.querySelector(".assistant-backend")?.disabled')?r.sessionId:null;});};
+ const change=async kind=>{await click('.assistant-backend:not(.assistant-frontdesk)');await click('[data-assistant-backend="'+kind+'"]');await until('backend '+kind,async()=>{const r=await invoke('assistant:get-overview',{});return r.backendKind===kind&&(await active())===r.sessionId&&!await cdp.eval('document.querySelector(".assistant-backend:not(.assistant-frontdesk)")?.disabled')?r.sessionId:null;});};
  const chooseModel=async(id,modelId)=>{await click('.composer-model');await click('.model-picker-item[data-model-id="'+modelId+'"]');await until('model '+modelId,async()=>{const m=await meta(id);return m.currentModel?.id===modelId&&!m._modelSwitchPending;});};
  const send=async text=>{assert.equal((await cdp.eval('document.querySelector(".floating-input-box").textContent')).trim(),'');await click('.floating-input-box');await cdp.send('Input.insertText',{text});await click('.floating-input-send');};
  const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
@@ -37,6 +37,12 @@ async function main(){
   assert.equal(hooks.errors.length,0,'真实 Claude 测试配置必须部署 Hub 生命周期 hook');
   fs.writeFileSync(path.join(codexHome,'config.toml'),'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "low"\n'+[workspace,path.resolve('.')].map(p=>"[projects.'"+p.toLowerCase()+"']\ntrust_level = \"trusted\"").join('\n')+'\n');
   fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:'gpt-6.1-sol',claude:'claude-haiku-4-5-20251001'}},providers:{codex:{backend:'subscription',subscription_profile:profile.id,subscription_profiles:[{id:profile.id,label:profile.label,home:codexHome}]}}}));
+  // Pin only this isolated fixture; production defaults can change independently.
+  const {AssistantStore}=require('../core/hub-assistant/store');
+  const store=new AssistantStore(path.join(data,'assistant'));
+  store.set('assistantDefaultsVersion',2);store.set('backendKind','codex');
+  store.set('profile:codex',{model:'gpt-6.1-sol',effort:'low'});
+  store.set('profile:claude',{model:'claude-haiku-4-5-20251001',effort:null});store.db.close();
   const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
   const launchOptions={dataDir:data,port,windowMode:'background',label:'assistant-backends-live',allowExternalState:true,extraEnv:{CLAUDE_HUB_HOME_DIR:home,CLAUDE_CONFIG_DIR:claudeHome,CODEX_HOME:codexHome,CODEX_SQLITE_HOME:'',CLAUDE_HUB_AGENT_RUNTIME:'pty',HUB_CODEX_BACKEND:'subscription',HUB_CODEX_PROFILE:'',CLAUDE_HUB_NO_FAST:'1',CLAUDE_HUB_E2E:'1',CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:'',CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:'',CLAUDE_HUB_NATIVE_FIXTURE_STORE:'',OPENAI_API_KEY:'',CODEX_API_KEY:'',ANTHROPIC_API_KEY:'',DEEPSEEK_API_KEY:'',AI_HUB_WORKSPACE_ROOT:workspace,HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty')}};hub=await launchIsolatedHub(launchOptions);
   result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
@@ -44,7 +50,7 @@ async function main(){
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
   await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');const codex=await until('codex active',async()=>{const r=await invoke('assistant:get-overview',{});return r.available?r.sessionId:null;});result.codexId=codex;
   await until('codex ready',async()=>/Ask Codex to do anything/.test(await screen(codex)));
-  if(process.env.HUB_ASSISTANT_KEEP_EFFORT!=='1'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('effort low',async()=>{const m=await meta(codex);return m.effort==='low'&&!m._modelSwitchPending;});}
+  if(process.env.HUB_ASSISTANT_KEEP_EFFORT!=='1'&&(await meta(codex)).effort!=='low'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('effort low',async()=>{const m=await meta(codex);return m.effort==='low'&&!m._modelSwitchPending;});}
   await send('请先读取本轮资料。记住验收暗号“青桥企鹅”，仅用一句话确认。');const codexAnswer=await final(codex);assert.match(codexAnswer.text,/青桥企鹅/);await settled(codex);result.checks.push('Codex 真实读取 Hub 资料并回答');
   result.codexNativeId=(await meta(codex)).codexSid;
   if(process.env.HUB_ASSISTANT_MODEL_SWITCHES==='1'){

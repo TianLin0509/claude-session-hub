@@ -21,7 +21,7 @@ test('switch round trip retains two native identities and provider defaults',asy
 test('inactive backend cannot read or manage; current Claude has manager tools',async t=>{
   const x=setup(t),codex=await x.service.ensureSession(),claude=await x.service.switchBackend({kind:'claude'});
   const frame=x.service.preparePrompt({sessionId:claude.sessionId,text:'查看进展',clientSubmissionId:'claude-request'});
-  assert.match(frame.text,/mcp__hub_assistant__history_context/);assert.doesNotMatch(frame.text,/functions.exec/);
+  assert.match(frame.text,/使用原生列出的 hub_assistant 工具/);assert.doesNotMatch(frame.text,/functions.exec/);
   await assert.rejects(x.service.invokeTool({name:'list_sessions',callerSessionId:codex.sessionId}),/未授予/);
   const packet=await x.service.invokeTool({name:'history_context',callerSessionId:claude.sessionId,arguments:{requestToken:x.service.currentRequest.token}});
   assert.ok(packet.snapshotReceipt);assert.throws(()=>x.service.preparePrompt({sessionId:codex.sessionId,text:'继续'}),/不是固定助理/);
