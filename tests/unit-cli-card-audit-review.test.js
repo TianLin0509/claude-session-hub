@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const read = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 
-test('explicit send failures stay visible and return the text to the composer; unconfirmed stays quiet', () => {
+test('explicit send failures return the text; unconfirmed has a receipt-bound recovery entry', () => {
   const src = read('renderer/renderer.js');
   assert.match(src, /function reportFloatingSendFailure\(sessionId, inputBox, text, reason\) \{/);
   assert.match(src, /if \(restored\) \{ replaceContenteditableText\(inputBox, text\); saveFloatingInputDraft\(sessionId, inputBox\); \}/);
@@ -17,8 +17,9 @@ test('explicit send failures stay visible and return the text to the composer; u
   assert.match(src, /else reportFloatingSendFailure\(sessionId, inputBox, text, err && err\.message/, 'IPC failure of a PTY send is visible too');
   assert.match(src, /if \(result\?\.sendStatus === 'content-mismatch'\) \{ notifyPromptContentMismatch\(delivery\); return; \}/);
   assert.match(src, /if \(state\.status === 'content-mismatch' && !state\.dismissed\) notifyPromptContentMismatch\(state\);/);
-  // 用户决定：未确认不再出横幅 / 补发。
-  assert.match(src, /function markFloatingInputStuck\(bar, sessionId\) \{\s*clearFloatingInputStuck\(bar\);\s*\}/);
+  // 当前用户提供的项目规则要求未确认可见，补发绑定本次消息。
+  assert.match(src, /resend\.className = 'fi-stuck-resend'/);
+  assert.match(src, /invoke\('session:resend-prompt', \{ sessionId, clientSubmissionId: delivery.clientSubmissionId \}\)/);
 });
 
 test('unknown results keep their unconfirmed flag through the submit handler', () => {

@@ -89,6 +89,46 @@ async function main() {
       if (process.env.PROBE_DROP_FIRST_ENTER === '1' && prompted === (process.env.PROBE_RECOVERY_BASELINE === '1')) process.exitCode = 1;
       console.log(`[first-send] ${label} ${permissionMode} prompted=${prompted} latency=${row.promptLatencyMs} stuck=${stuck} draft=${JSON.stringify(draft)} state=${JSON.stringify(probeState)}`);
     }
+    if (process.env.PROBE_UI_RECEIPT === '1') {
+      const assert = require('node:assert/strict');
+      const sid = result.sessions[0].sid;
+      await c.eval(`window.__uiOriginalInvoke=ipcRenderer.invoke.bind(ipcRenderer);window.__uiPending=[];window.__uiResends=[];
+        ipcRenderer.invoke=(channel,request)=>channel==='session:send-prompt'
+          ? new Promise(resolve=>window.__uiPending.push({request,resolve}))
+          : channel==='session:resend-prompt' ? (window.__uiResends.push(request),Promise.resolve({ok:false,reason:'input-state-unconfirmed'}))
+          : window.__uiOriginalInvoke(channel,request);true`);
+      const send = async text => {
+        await c.eval(`(()=>{const box=document.querySelector('.floating-input-bar[data-session-id="${sid}"] .floating-input-box');box.focus();replaceContenteditableText(box,${j(text)});box.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+        await c.send('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+        await c.send('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+        return c.eval(`floatingPromptDeliveries.get(${j(sid)}).clientSubmissionId`);
+      };
+      const resolveStuck = () => c.eval(`window.__uiPending.shift().resolve({ok:true,sendStatus:'stuck'});true`);
+      const receipt = (id,status) => c.eval(`ipcRenderer.emit('session:prompt-receipt',{},${j({sessionId:sid,clientSubmissionId:id,status})});true`);
+      const warning = () => c.eval(`document.querySelector('.fi-stuck')?.textContent||''`);
+      const first = await send('UI 未确认消息'); await resolveStuck();
+      await until(`!!document.querySelector('.fi-stuck')`, 'visible unconfirmed receipt');
+      assert.match(await warning(), /暂未确认/);
+      const screenshot = await c.send('Page.captureScreenshot', {format:'png'});
+      fs.writeFileSync(path.join(out,'unconfirmed-ui.png'),Buffer.from(screenshot.data,'base64'));
+      await c.eval(`document.querySelector('.fi-stuck-resend').click();true`);
+      await until('window.__uiResends.length===1', 'bound resend');
+      assert.equal(await c.eval('window.__uiResends[0].clientSubmissionId'),first);
+      await receipt(first,'confirmed'); assert.equal(await warning(),'');
+      const old = await send('UI A'); await resolveStuck();
+      const latest = await send('UI B'); await resolveStuck();
+      await until(`document.querySelector('.fi-stuck')?.dataset.submissionId===${j(latest)}`, 'B warning');
+      await receipt(old,'confirmed'); assert.match(await warning(),/暂未确认/);
+      await receipt(latest,'content-mismatch'); assert.match(await warning(),/换行或空白不同/);
+      assert.equal(await c.eval(`document.querySelector('.fi-stuck-resend').disabled`),true);
+      const dismissed = await send('UI 忽略提示'); await resolveStuck();
+      await until(`!!document.querySelector('.fi-stuck')`, 'dismiss warning');
+      await c.eval(`document.querySelector('.fi-stuck-dismiss').click();true`);
+      await receipt(dismissed,'unconfirmed'); assert.equal(await warning(),'');
+      await c.eval('ipcRenderer.invoke=window.__uiOriginalInvoke;true');
+      result.uiChecks = ['未确认可见','补发绑定本次消息','迟到确认清除提示','旧回执不覆盖新消息','内容不同禁用补发','忽略后不反复提示'];
+      console.log('[receipt-ui] PASS '+result.uiChecks.length+' isolated DOM checks (controlled IPC results)');
+    }
   } catch (error) { result.error = error.stack; process.exitCode = 1; }
   finally {
     try { if (hub) result.hubLog = hub.log().filter(l => /group-chat|prompt-submit|claude hook/.test(l)).slice(-80); } catch {}

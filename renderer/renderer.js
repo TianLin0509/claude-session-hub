@@ -4159,13 +4159,57 @@ function clearFloatingInputStuck(bar) {
   if (existing) existing.remove();
 }
 
-// 用户 2026-09-26 决定直接查看 CLI，不再展示未确认横幅或补发按钮。
-// 提交回执仍由 main 保存；这里只清理旧节点，不把未知结果改成成功。
+// 当前项目规则要求未确认结果可见。补发绑定本次提交身份，由主进程
+// 核对回执和当前输入行；不能把上一轮运行或未知结果当作已经收到。
 function markFloatingInputStuck(bar, sessionId) {
-  clearFloatingInputStuck(bar);
+  const delivery = floatingPromptDeliveries.get(sessionId);
+  if (!bar || !delivery || delivery.dismissed || ['pending', 'confirmed', 'queued'].includes(delivery.status)) {
+    clearFloatingInputStuck(bar); return;
+  }
+  let row = bar.querySelector('.fi-stuck');
+  if (row?.dataset.submissionId !== delivery.clientSubmissionId) { clearFloatingInputStuck(bar); row = null; }
+  if (!row) {
+    row = document.createElement('div'); row.className = 'fi-stuck';
+    row.dataset.submissionId = delivery.clientSubmissionId;
+    const label = document.createElement('span'); label.className = 'fi-stuck-label';
+    const resend = document.createElement('button'); resend.type = 'button';
+    resend.className = 'fi-stuck-resend'; resend.textContent = '补发';
+    resend.title = '先核对本次接收回执和 CLI 输入行，再决定是否补回车';
+    resend.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      if (floatingPromptDeliveries.get(sessionId) !== delivery || delivery.status === 'content-mismatch' || row.dataset.busy === 'true') return;
+      row.dataset.busy = 'true';
+      resend.disabled = true; resend.textContent = '核对中…';
+      try {
+        const result = await ipcRenderer.invoke('session:resend-prompt', { sessionId, clientSubmissionId: delivery.clientSubmissionId });
+        if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
+        if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
+        if (delivery.status === 'confirmed' || result?.mode === 'already-submitted') { clearFloatingInputStuck(bar); return; }
+        if (row.isConnected) label.textContent = result?.message || '仍未确认，请到后台核对是否收到；未重复发送正文';
+      } catch (error) {
+        if (row.isConnected) label.textContent = '核对未完成，请到后台查看是否收到';
+      } finally {
+        delete row.dataset.busy;
+        if (row.isConnected) { resend.textContent = '补发'; resend.disabled = delivery.status === 'content-mismatch' || isNativeAgent(sessions.get(sessionId)); }
+      }
+    });
+    const dismiss = document.createElement('button'); dismiss.type = 'button';
+    dismiss.className = 'fi-stuck-dismiss'; dismiss.textContent = '忽略';
+    dismiss.addEventListener('click', (event) => {
+      event.stopPropagation(); delivery.dismissed = true;
+      for (const other of document.querySelectorAll('.floating-input-bar')) if (other.dataset.sessionId === sessionId) clearFloatingInputStuck(other);
+    });
+    row.append(label, resend, dismiss);
+    const stack = bar.querySelector('.fi-content-stack') || bar;
+    stack.insertBefore(row, stack.firstChild);
+  }
+  row.querySelector('.fi-stuck-label').textContent = delivery.status === 'content-mismatch'
+    ? '接收内容与原文的换行或空白不同，请到后台核对'
+    : '暂未确认 agent 收到消息，请核对后台或点击补发';
+  row.querySelector('.fi-stuck-resend').disabled = row.dataset.busy === 'true' || delivery.status === 'content-mismatch' || isNativeAgent(sessions.get(sessionId));
 }
 
-// 去掉的只是「未确认」横幅；明确失败仍要看得见（「可以失败，不能无声」）。
+// 明确失败还要归还原文并解释原因，不能仅显示未确认状态。
 function reportFloatingSendFailure(sessionId, inputBox, text, reason) {
   const restored = !!inputBox && !readContenteditablePlainText(inputBox) && !!text;
   if (restored) { replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox); }
@@ -5147,7 +5191,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
           return;
         }
       }
-      // 未确认横幅按用户决定去掉了，但明确的失败不能跟着变成无声：输入框在发送前已清空，
+      // 明确的失败不能只显示未确认横幅：输入框在发送前已清空，
       // 这里说明原因并把原文放回（可能已部分写进终端，所以提示先核对，不自动重发）。
       if (!result?.ok && !result?.unconfirmed) {
         reportFloatingSendFailure(sessionId, inputBox, text, result?.message || result?.error || '发送失败');
