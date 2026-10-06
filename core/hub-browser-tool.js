@@ -194,6 +194,18 @@ function bridgeOutcome(result) {
   if (result?.logged_in === false) return 'failed';
   return 'success';
 }
+function failureCategory(error) {
+  const message=String(error?.message || ''), network=message.match(/\b(?:ERR_[A-Z_]+|ECONN[A-Z]+)\b/);
+  return /^Unsupported Hub browser command/.test(message) ? 'Unsupported command'
+    : /^Human handoff/.test(message) ? 'Human handoff'
+    : /^Site challenged/.test(message) ? 'Site challenged'
+    : /No browser session/.test(message) ? 'No browser session'
+    : /IMAGE_TOOL_UNAVAILABLE/.test(message) ? 'IMAGE_TOOL_UNAVAILABLE'
+    : /strict mode violation/.test(message) ? 'strict mode violation'
+    : /Target.*closed/.test(message) ? 'Target closed'
+    : network ? 'Network ' + network[0]
+    : /Timeout|timeout/.test(message) ? 'Timeout' : 'Hub browser operation failed';
+}
 async function main(binding, argv = process.argv.slice(2)) {
   try {
     const result = await new BrowserTool(binding).execute(argv);
@@ -201,19 +213,12 @@ async function main(binding, argv = process.argv.slice(2)) {
     process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n');
   } catch (e) {
     // Native tools classify these categories; never print evaluated code or page contents.
-    const category = /^Unsupported Hub browser command/.test(e.message) ? 'Unsupported command'
-      : /^Human handoff/.test(e.message) ? 'Human handoff'
-      : /^Site challenged/.test(e.message) ? 'Site challenged'
-      : /No browser session/.test(e.message) ? 'No browser session'
-      : /IMAGE_TOOL_UNAVAILABLE/.test(e.message) ? 'IMAGE_TOOL_UNAVAILABLE'
-      : /strict mode violation/.test(e.message) ? 'strict mode violation'
-      : /Target.*closed/.test(e.message) ? 'Target closed'
-      : /Timeout|timeout/.test(e.message) ? 'Timeout' : 'Hub browser operation failed';
+    const category = failureCategory(e);
     // A person holding the browser is not a failure of the tool.
     noteActivity(binding, argv, category === 'Site challenged' ? 'verification_required' : category === 'Human handoff' ? null
-      : /ERR_(?:NETWORK|CONNECTION|INTERNET|NAME|TIMED)/.test(e.message) ? 'network_error'
+      : category.startsWith('Network ') ? 'network_error'
       : /strict mode violation|IMAGE_TOOL_UNAVAILABLE/.test(category) ? 'adapter_changed' : 'failed');
     process.stdout.write(JSON.stringify({ isError: true, error: category }) + '\n'); process.exitCode = 1;
   }
 }
-module.exports = { BrowserTool, main, noteActivity, bridgeOutcome, argumentsOf, validateBinding, save, read, integrationStatus };
+module.exports = { BrowserTool, main, noteActivity, bridgeOutcome, failureCategory, argumentsOf, validateBinding, save, read, integrationStatus };

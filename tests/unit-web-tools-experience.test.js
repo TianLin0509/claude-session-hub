@@ -41,10 +41,12 @@ test('recovery action belongs only to the main profile and original provider, ne
   assert.match(html,/data-ac="recover" data-site="deepseek" data-identity="main"/);
 });
 test('bridge login evidence is not mistaken for a successful operation and network errors do not request login', t => {
-  const {bridgeOutcome}=require('../core/hub-browser-tool'), {combine}=require('../core/hub-account-activity'), {usage}=require('../renderer/account-workspace-view');
+  const {bridgeOutcome,failureCategory}=require('../core/hub-browser-tool'), {combine}=require('../core/hub-account-activity'), {usage}=require('../renderer/account-workspace-view');
   assert.equal(bridgeOutcome({logged_in:false,auth_state:'login_required'}),'login_required');
   assert.equal(bridgeOutcome({logged_in:false,challenge:true}),'verification_required');
   assert.equal(bridgeOutcome({logged_in:false,auth_state:'page_not_ready'}),'failed');
+  assert.equal(failureCategory(Error('net::ERR_CONNECTION_CLOSED at https://example.com/?secret=PRIVATE')),'Network ERR_CONNECTION_CLOSED');
+  assert.equal(failureCategory(Error('Human handoff: ERR_CONNECTION_CLOSED')),'Human handoff');
   for(const outcome of ['network_error','adapter_changed','rate_limited','quota_exhausted']) assert.equal(usage(combine([{identity:'main',site:'chatgpt',source:'bridge',outcome,at:Date.now()}])['main:chatgpt']).login,false);
 });
 test('fresh official proof resumes only the correct original roundtable tasks and reports partial recovery', async t => {
