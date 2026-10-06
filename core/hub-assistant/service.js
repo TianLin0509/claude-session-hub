@@ -334,8 +334,8 @@ class AssistantService {
   }
   podcastSource(file){
     const p=require('node:path'),os=require('node:os'),abs=p.resolve(String(file||''));
-    const roots=[process.env.AI_HUB_WORKSPACE_ROOT||'C:/AIWork',p.join(os.homedir(),'Desktop','claude-artifacts'),this.deps.dataDir].map(r=>p.resolve(r).toLowerCase()+p.sep);
-    if(!roots.some(r=>abs.toLowerCase().startsWith(r)))throw new Error('只能把工作区、桌面 claude-artifacts 或 Hub 数据目录里的资料做成口播');
+    const roots=[process.env.AI_HUB_WORKSPACE_ROOT||'C:/AIWork',p.join(os.homedir(),'AI-Artifacts'),p.join(os.homedir(),'Desktop','claude-artifacts'),this.deps.dataDir].map(r=>p.resolve(r).toLowerCase()+p.sep);
+    if(!roots.some(r=>abs.toLowerCase().startsWith(r)))throw new Error('只能把工作区、AI-Artifacts 或 Hub 数据目录里的资料做成口播');
     if(!/\.(html?|md|txt)$/i.test(abs))throw new Error('目前支持 HTML 和 Markdown 资料');
     return abs;
   }

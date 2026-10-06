@@ -1019,6 +1019,7 @@ require('./resource-process-tooltip').attachResourceProcessTooltip({
   document, escapeHtml,
   request: () => ipcRenderer.invoke('get-resource-top-processes'),
 });
+require('./desktop-organizer-panel').attachDesktopOrganizerPanel({ document, escapeHtml, invoke: (channel, options) => ipcRenderer.invoke(channel, options) });
 let diskReleasePanel = null;
 const memoryReleasePanel = require('./memory-release-panel').attachMemoryReleasePanel({
   document, escapeHtml,
