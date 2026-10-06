@@ -19,13 +19,21 @@ async function showSettings(target) {
   const dialog = document.createElement('section'); dialog.className = 'voice-settings-dialog';
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', '语音输入设置');
   const heading = document.createElement('h3'); heading.textContent = '语音输入设置';
-  const note = document.createElement('p'); note.textContent = '录音发送至阿里云百炼，按语音服务计费。识别文字实时写入输入框，由你检查并发送。';
+  const note = document.createElement('p');
   dialog.append(heading, note);
   const field = (label, tag = 'input') => {
     const wrap = document.createElement('label'); wrap.textContent = label;
     const el = document.createElement(tag); wrap.append(el); dialog.append(wrap); return el;
   };
-  const key = field('百炼 API Key（留空保留现有密钥）'); key.type = 'password'; key.autocomplete = 'off';
+  const engine = field('识别方式', 'select');
+  for (const [value, label] of [['tokenplan', '说完再识别 · Token Plan 套餐内，不另计费'], ['streaming', '边说边出字 · 百炼按量计费']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; engine.append(option); }
+  const describe = () => {
+    note.textContent = engine.value === 'tokenplan'
+      ? '录音发送至阿里云百炼，从 Token Plan 套餐额度扣除。每说完一句（停顿处）就写入输入框，停止后补上最后一段，由你检查并发送。'
+      : '录音发送至阿里云百炼，按语音服务单独计费。识别文字实时写入输入框，由你检查并发送。';
+  };
+  engine.onchange = describe; describe();
+  const key = field('按量识别用的百炼 API Key（留空保留现有密钥）'); key.type = 'password'; key.autocomplete = 'off';
   const region = field('API Key 所属地域', 'select');
   for (const [value, label] of [['beijing', '北京'], ['singapore', '新加坡']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; region.append(option); }
   const workspace = field('Workspace ID（可选）');
@@ -54,14 +62,17 @@ async function showSettings(target) {
     const config = await ipcRenderer.invoke('voice:config', target.project);
     if (!overlay.isConnected) return;
     region.value = config.region; workspace.value = config.workspace; terms.value = config.profile.terms; context.value = config.profile.context;
+    engine.value = config.engine; describe();
     model.textContent = `识别模型：${config.model} · 术语所属：${target.project || '通用项目'}`;
-    status.textContent = config.keySet ? (config.envKey ? '正在使用环境变量中的密钥。' : '已保存密钥（系统加密）。') : '尚未配置密钥。';
+    const plan = config.planReady ? '已找到 Token Plan 套餐 Key。' : '未找到 Token Plan 套餐 Key（在 Hub 的 Token Plan 配置里设置）。';
+    const metered = config.meteredKeySet ? (config.envKey ? '按量识别使用环境变量中的密钥。' : '按量识别密钥已保存（系统加密）。') : '按量识别尚未配置密钥。';
+    status.textContent = `${plan}${metered}`;
     save.disabled = false; key.focus();
   } catch (error) { status.textContent = cleanError(error); }
   save.onclick = async () => {
     save.disabled = true;
     try {
-      await ipcRenderer.invoke('voice:save-config', { project: target.project, region: region.value, workspace: workspace.value, apiKey: key.value, clearKey, profile: { terms: terms.value, context: context.value } });
+      await ipcRenderer.invoke('voice:save-config', { project: target.project, engine: engine.value, region: region.value, workspace: workspace.value, apiKey: key.value, clearKey, profile: { terms: terms.value, context: context.value } });
       dismiss();
     } catch (error) { status.textContent = cleanError(error); save.disabled = false; }
   };
@@ -140,7 +151,11 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
     try {
       const config = await ipcRenderer.invoke('voice:config', target.project);
       if (r.ended) return;
-      if (!config.keySet) { finishUI(r); setStatus('请先在语音设置中填写百炼 API Key。'); await showSettings(target); return; }
+      if (!config.keySet) {
+        finishUI(r);
+        setStatus(config.engine === 'tokenplan' ? '未找到 Token Plan 套餐 Key，可在语音设置里改用按量识别。' : '请先在语音设置中填写百炼 API Key。');
+        await showSettings(target); return;
+      }
       r.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
       if (r.ended || !sameTarget(r)) { await releaseAudio(r); if (!r.ended) fail(r, '会话已切换，请回原会话重新录音'); return; }
       r.context = new AudioContext(); await r.context.resume();

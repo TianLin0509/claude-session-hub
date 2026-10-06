@@ -49,6 +49,19 @@ async function main() {
   assert.equal(fs.readFileSync(path.join(root, 'voice-input.json'), 'utf8'), disk);
   await call(one, 'voice:save-config', { region: 'beijing', clearKey: true, project, profile: {} });
   assert.equal((await call(one, 'voice:config', project)).keySet, false);
+  // 有 Token Plan 套餐 Key 时默认走套餐（说完再识别），可在设置里显式改回按量流式。
+  fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({ acp: { apiKey: 'sk-sp-plan', baseURL: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' } }));
+  const planView = await call(one, 'voice:config', project);
+  assert.equal(planView.engine, 'tokenplan'); assert.equal(planView.keySet, true); assert.equal(planView.model, 'qwen-audio-3.0-asr-flash');
+  assert(!JSON.stringify(planView).includes('sk-sp-plan'));
+  const before = streams.length;
+  await call(one, 'voice:start', { ...req, id: 'plan1234567890abcd' });
+  assert.equal(streams.length, before, '套餐模式不应创建按量流式连接');
+  await call(one, 'voice:cancel', 'plan1234567890abcd');
+  await assert.rejects(call(one, 'voice:save-config', { region: 'beijing', project, engine: 'other', profile: {} }), /识别方式/);
+  await call(one, 'voice:save-config', { region: 'beijing', project, engine: 'streaming', profile: {} });
+  const meteredView = await call(one, 'voice:config', project);
+  assert.equal(meteredView.engine, 'streaming'); assert.equal(meteredView.keySet, false); assert.equal(meteredView.planReady, true);
   fs.writeFileSync(path.join(root, 'voice-input.json'), 'corrupt');
   await assert.rejects(call(one, 'voice:config'), /读取失败/);
   console.log('PASS voice IPC: encrypted config, project scope, window ownership, startup cancellation, stale callback, reload/destroy cleanup, save failures');
