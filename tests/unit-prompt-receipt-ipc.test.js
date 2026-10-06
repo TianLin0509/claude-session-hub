@@ -5,6 +5,37 @@ const { EventEmitter } = require('node:events');
 const watcher = require('../core/group-chat-watcher');
 const { registerPromptSubmitIpc } = require('../main/ipc/prompt-submit-handlers');
 
+test('bound Claude receipts recognize the real long-paste envelope without weakening other providers or literal text', async () => {
+  const original = watcher.sendToPty;
+  const body = '材料第 1 行：完整正文。\n  第二行保留缩进。';
+  const wrap = text => '<pasted_content id="d0dd">\n' + text + '\n</pasted_content id="d0dd">';
+  const cases = [
+    ['claude', body, wrap(body), 'confirmed'],
+    ['claude', wrap(body), wrap(body), 'confirmed'],
+    ['claude', wrap(body), wrap(wrap(body)), 'confirmed'],
+    ['claude', body, wrap(body).replace('id="d0dd">\n', 'id="other">\n'), 'unconfirmed'],
+    ['claude', body, wrap(body.replace('。\n  第二行', '。第二行')), 'content-mismatch'],
+    ['codex', body, wrap(body), 'unconfirmed'],
+  ];
+  try {
+    for (const [kind, expected, actual, status] of cases) {
+      const handlers = new Map(), sm = new EventEmitter();
+      sm.getSession = () => ({ kind, agentRuntime: 'pty' });
+      watcher.sendToPty = async (sid, text, provider, options) => {
+        sm.emit('agent-turn-started', { sessionId: sid, observedAt: Date.now(), prompt: actual,
+          signalSource: kind + '-user-prompt-submit', turnId: 'native-turn' });
+        return { ok: true, sendStatus: options.submissionReceipt.started ? 'ok' : 'stuck', enterAttempts: 1 };
+      };
+      const registration = registerPromptSubmitIpc({ handle: (k, v) => handlers.set(k, v) }, { sessionManager: sm, logger: { warn() {} } });
+      try {
+        const result = await handlers.get('session:send-prompt')(null, { sessionId: 's', text: expected, clientSubmissionId: 'native-paste' });
+        assert.equal(result.receipt.status, status, kind + ': ' + actual);
+        assert.equal(result.enterAttempts, 1);
+      } finally { registration.dispose(); }
+    }
+  } finally { watcher.sendToPty = original; }
+});
+
 test('managed Codex IPC ignores legacy receipts and binds the exact native message, thread and turn', async () => {
   const original=watcher.sendToPty,handlers=new Map(),tap=new EventEmitter(),sm=new EventEmitter(),events=[];
   sm.getSession=()=>({id:'native',kind:'codex',runtimeBackend:'codex-app-server'});

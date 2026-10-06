@@ -160,12 +160,23 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     if(session?.kind!=='claude'||session.purpose!=='hub-assistant')return event;
     return {...event,text:require('../../core/assistant-context-display').assistantSubmissionText(event.text,session.purpose)};
   };
-  const onTranscriptPrompt = event => receipts.observe(normalizeAssistantReceipt(event));
+  const observePrompt = event => {
+    // Literal user-authored tags must still match as submitted. Only after raw
+    // matching fails, and only for a bound Claude session, try its native paste
+    // envelope against the exact pending body. Whitespace loss stays a mismatch.
+    if (receipts.observe(normalizeAssistantReceipt(event))) return true;
+    const session = sessionManager.getSession(event.sessionId || event.hubSessionId);
+    if (!/^claude(?:-resume)?$/.test(session?.transcriptKind || session?.kind || '')) return false;
+    const { unwrapClaudePasteEnvelope } = require('../../core/prompt-submission-receipts');
+    const text = unwrapClaudePasteEnvelope(event.text);
+    return text !== event.text && receipts.observe({ ...event, text });
+  };
+  const onTranscriptPrompt = event => observePrompt(event);
   const onProviderPrompt = event => {
     // Native UserPromptSubmit carries the actual body. Codex can write its
     // matching rollout UserMessage much later than the bounded submit wait.
     if (!['claude-user-prompt-submit', 'codex-user-prompt-submit'].includes(event?.signalSource)) return;
-    receipts.observe(normalizeAssistantReceipt({ ...event, text: event.prompt }));
+    observePrompt({ ...event, text: event.prompt });
   };
   transcriptTap?.on('prompt-submitted', onTranscriptPrompt);
   sessionManager.on?.('agent-turn-started', onProviderPrompt);

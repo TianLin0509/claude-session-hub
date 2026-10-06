@@ -161,10 +161,10 @@ const orchestratorSrc = read('core', 'group-chat-orchestrator.js');
 assert.ok(/clientMessageId \? \{ clientMessageId \} : \{\}/.test(orchestratorSrc),
   'orchestrator 要把 id 写进权威 user 消息，且没有 id 时不留空字段');
 
-// 用户 2026-09-26 指定去掉未确认提醒；提交闭环保持原有行为。
-const markStuck = rendererSrc.match(/function markFloatingInputStuck\([^)]*\) \{([^}]+)\}/)?.[1];
-assert.ok(markStuck, '找到横幅清理入口');
-assert.ok(!/createElement|session:resend-prompt/.test(markStuck), '不得再创建未确认横幅或补发按钮');
-assert.ok(/clearFloatingInputStuck/.test(markStuck), '旧横幅节点应清理');
+// 当前用户提供的项目规则要求未确认结果可见，补发必须绑定本次提交。
+const markStuck = sliceFn(rendererSrc, 'function markFloatingInputStuck(', 'function reportFloatingSendFailure(', 'markStuck');
+assert.ok(/createElement/.test(markStuck) && /fi-stuck-resend/.test(markStuck), '未确认结果必须显示提示和补发入口');
+assert.ok(/session:resend-prompt/.test(markStuck) && /clientSubmissionId: delivery.clientSubmissionId/.test(markStuck), '补发必须带当前提交身份，交给现有安全核对路径');
+assert.ok(!/terminal-input/.test(markStuck), '渲染层不能盲发回车');
 
 console.log('Prompt submit reliability contract: ok');
