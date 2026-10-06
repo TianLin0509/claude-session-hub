@@ -113,4 +113,4 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   return terminal(command,args,e);
  }};
 }
-module.exports={createAccountAdapters,quotePS,jsonResult,run,openTerminal};
+module.exports={createAccountAdapters,quotePS,jsonResult,run,openTerminal,resolveClaudeExe};
