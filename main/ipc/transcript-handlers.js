@@ -3,6 +3,7 @@
 const { isUsableCodexRolloutPath, readCodexRolloutMeta } = require('../../core/codex-transcript-parser.js');
 const { isKimiCliKind: defaultIsKimiCliKind } = require('../../core/ai-kinds.js');
 const { parseKimiWireToTurns: defaultParseKimiWireToTurns } = require('../../core/kimi-transcript-parser.js');
+const { isFreshSession } = require('../../core/session-history-state');
 const {
   MAX_BRANCH_DEPTH,
   applyTailLimit,
@@ -126,9 +127,10 @@ async function parseProviderTranscript(args = {}, deps) {
   await defer();
 
   const { hubSessionId, ccSessionId, transcriptPath: inPath, kind: inKind, opts } = args || {};
+  let session = null;
   let transcriptPath = null;
   try {
-    const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
+    session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
     const nativeCodex = hubSessionId && (sessionManager.getNativeSession?.(hubSessionId) || sessionManager.getNativeCodex?.(hubSessionId));
     if (nativeCodex) {
       try {
@@ -192,7 +194,8 @@ async function parseProviderTranscript(args = {}, deps) {
     if(/^gemini(?:-resume)?$/.test(String(runtimeKind||''))){
       const bound=session||(hubSessionId?lookupSessionRecord(hubSessionId,deps)?.record:null);
       transcriptPath=bound?.transcriptPath||inPath||null;
-      if(!transcriptPath)return {turns:[],transcriptPath:null,error:'Gemini 原生记录尚未绑定，请等待 CLI 启动'};
+      if(!transcriptPath)return {turns:[],transcriptPath:null,
+        error:isFreshSession(session)?null:'Gemini 原生记录尚未绑定，请等待 CLI 启动'};
       const parseOpts={limit:50,fromTail:true,...opts,expectedSessionId:bound?.geminiChatId};
       const parsed=await runTranscriptParser(deps,'gemini',transcriptPath,parseOpts,
         require('../../core/gemini-transcript-parser').parseGeminiTranscriptToTurns);
@@ -228,7 +231,7 @@ async function parseProviderTranscript(args = {}, deps) {
         if (byCwd && validateCodexRolloutPath(byCwd)) transcriptPath = byCwd;
       }
       if (!transcriptPath) {
-        if (require('../../core/session-history-state').isFreshSession(session)) {
+        if (isFreshSession(session)) {
           return { turns: [], transcriptPath: null, error: null };
         }
         return { turns: [], transcriptPath: null, error: 'codex rollout not found' };
@@ -253,7 +256,7 @@ async function parseProviderTranscript(args = {}, deps) {
         transcriptPath = require('path').join(session.kimiSessionDir, 'agents', 'main', 'wire.jsonl');
       }
       if (!transcriptPath) {
-        return { turns: [], transcriptPath: null, error: 'kimi wire transcript not found' };
+        return { turns: [], transcriptPath: null, error: isFreshSession(session) ? null : 'kimi wire transcript not found' };
       }
       if (hubSessionId && session && session.transcriptPath !== transcriptPath) {
         updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
@@ -282,7 +285,7 @@ async function parseProviderTranscript(args = {}, deps) {
       }
     }
     if (!transcriptPath) {
-      return { turns: [], transcriptPath: null, error: 'transcript not found' };
+      return { turns: [], transcriptPath: null, error: isFreshSession(session) ? null : 'transcript not found' };
     }
     if (hubSessionId && transcriptPath && session && session.transcriptPath !== transcriptPath) {
       updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
@@ -304,6 +307,12 @@ async function parseProviderTranscript(args = {}, deps) {
       error: null,
     };
   } catch (err) {
+    // Some CLIs bind the future transcript path at startup. Only a genuinely
+    // unused launch may treat that specific missing-file race as empty history.
+    if ((err?.code === 'ENOENT' || /^ENOENT\b/.test(String(err?.message || '')))
+        && isFreshSession(hubSessionId ? sessionManager.getSession(hubSessionId) : null, { allowMissingTranscript: true })) {
+      return { turns: [], transcriptPath, error: null };
+    }
     return { turns: [], transcriptPath, error: err && err.message ? err.message : String(err) };
   }
 }
@@ -311,6 +320,11 @@ async function parseProviderTranscript(args = {}, deps) {
 async function parseSessionTranscript(args = {}, deps) {
   const result = await parseProviderTranscript(args, deps);
   if (!args.hubSessionId) return result;
+  // After observing real history, never reinterpret its later disappearance as
+  // the normal missing-file interval of a brand-new launch.
+  if (result.turns?.length && deps.sessionManager.getSession(args.hubSessionId)?.freshLaunch === true) {
+    deps.sessionManager.updateSessionMeta?.(args.hubSessionId, { freshLaunch: false });
+  }
   const { commandTranscriptStore, mergeCommandTurns } = require('../../core/command-transcript-store');
   const path = require('path'), fs = require('fs');
   if (!deps.commandTranscriptStore && !fs.existsSync(path.join(require('../../core/data-dir').getHubDataDir(), 'command-transcript.sqlite'))) return result;
