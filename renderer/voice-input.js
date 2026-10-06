@@ -44,7 +44,7 @@ async function showSettings(target) {
   // 所有项目共用：通用热词（云端接力时也会带上前若干个）、个人背景（只给本地模型，不上传）
   const globalTerms = field('通用热词（所有项目共用，每行一个，最多 300 个）', 'textarea'); globalTerms.rows = 4; globalTerms.placeholder = 'Claude\nCodex\nSuperRAN';
   const personal = field('个人背景（只给本地识别模型，不上传云端，最多 2000 字）', 'textarea'); personal.rows = 4;
-  personal.placeholder = '例如：我是林田（田哥），华为无线研发。家人：……常提到的人：……';
+  personal.placeholder = '例如：我的名字和常用称呼、家人和同事的名字、常聊的领域（只在本机使用）';
   // 声纹过滤：录入一次本人声纹，之后旁人说话的段落不进文字（电脑与手机语音都适用）。
   const vpBox = document.createElement('fieldset'); vpBox.className = 'voice-voiceprint';
   const vpTitle = document.createElement('legend'); vpTitle.textContent = '声纹过滤（只识别你的声音）';
