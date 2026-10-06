@@ -22,8 +22,14 @@ function defaultCodexContextWindow(modelId) {
     : null;
 }
 
-function resolveCodexContextWindow(modelId, value) {
-  return normalizeCodexContextWindow(value) || defaultCodexContextWindow(modelId);
+function resolveCodexContextWindow(modelId, value, catalogOptions = null) {
+  const requested = normalizeCodexContextWindow(value) || defaultCodexContextWindow(modelId);
+  if (!requested || !catalogOptions) return requested;
+  // Bound only a requested override; newer models continue using CLI defaults.
+  const tuning = require('./codex-model-catalog').describeCodexModelTuning(modelId, catalogOptions);
+  const maximum = Number(tuning.maxContextWindow);
+  return tuning.fromCache && Number.isInteger(maximum) && maximum > 0
+    ? Math.min(requested, maximum) : requested;
 }
 
 function buildCodexContextWindowArg(value) {
