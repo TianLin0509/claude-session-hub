@@ -37,6 +37,11 @@ async function main() {
     fs.copyFileSync(sourceAuth, copiedAuth);
     fs.writeFileSync(path.join(home, '.claude.json'), j({ hasCompletedOnboarding: true, theme: 'light', skipDangerousModePermissionPrompt: true,
       projects: { [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } } }));
+    const hooks = require('../core/claude-hook-integration').ensureClaudeHookIntegration({
+      claudeDir: home, sourceScriptsDir: path.resolve(__dirname, '../scripts'),
+      logger: { log() {}, warn() {} },
+    });
+    assert.deepEqual(hooks.errors, [], 'isolated Claude lifecycle hooks installed');
     fs.writeFileSync(path.join(data, 'config.json'), j({ runtime: { agent: 'pty' } }));
     const port = await new Promise((resolve, reject) => {
       const server = net.createServer(); server.on('error', reject);
@@ -54,7 +59,7 @@ async function main() {
     } })})`);
     sid = session.id; assert(sid); assert.equal(session.freshLaunch, true); assert(session.ccSessionId);
     await until(`activeSessionId===${j(sid)} && !!document.querySelector('#msg-overlay>.session-welcome')`, 'fresh Claude welcome');
-    await until(`window.__hubE2E.terminalBufferText(${j(sid)}).includes('? for shortcuts')`, 'real Claude startup');
+    await until(`(()=>{const text=window.__hubE2E.terminalBufferText(${j(sid)});return text.includes('❯') && /Haiku|shortcuts|manual mode on/.test(text);})()`, 'real Claude startup');
     await _waitMs(1500);
     assert.equal(await client.eval('currentView'), 'card');
     assert(await client.eval('!!document.querySelector("#msg-overlay>.session-welcome")'));
@@ -75,7 +80,8 @@ async function main() {
     const parsed = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(sid)}})`);
     assert.equal(parsed.error, null);
     assert(parsed.turns.some(turn => turn.role === 'assistant' && j(turn).includes('WELCOME_LIVE_OK')));
-    assert.equal(await client.eval(`sessions.get(${j(sid)}).freshLaunch`), false);
+    assert.equal(await client.eval(`require('../core/session-history-state').isFreshSession(sessions.get(${j(sid)}))`), false,
+      'after a real prompt the renderer must no longer classify this as an unused session');
     report.checks.push('first real Haiku reply replaces welcome and is read from its native transcript');
     await capture('02-first-real-reply');
     report.passed = true;
