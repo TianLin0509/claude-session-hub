@@ -3,7 +3,7 @@ const pendingSpeedSwitches = new Set();
 
 // Explicit model ids only: /fast on can promote an unsupported Claude model.
 function claudeSupportsFast(model) {
-  return /^(?:claude-)?opus-(?:5|4[.-]8)(?:-\d{8})?(?:\[1m\])?$/i.test(String(model || ''));
+  return /^(?:claude-)?opus-(?:5(?:[.-]5)?|4[.-]8)(?:-\d{8})?(?:\[1m\])?$/i.test(String(model || ''));
 }
 
 // Why the engine refuses Fast, in the user's words. `sdk_opt_in_required` is
