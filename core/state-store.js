@@ -151,11 +151,13 @@ function loadAndSelfHeal({ sessionStore, meetingStore, canEditSession = () => tr
       }
     }
 
+    let meetingBackups = [];
     // meeting orphans
     if (meetingStore && typeof meetingStore.listMeetingFilesWithData === 'function') {
       try {
         const onDisk = new Set(disk.meetings.map(m => m.id));
         const fromFiles = meetingStore.listMeetingFilesWithData();
+        meetingBackups = fromFiles;
         for (const data of fromFiles) {
           if (!data || !data.id) continue;
           if (onDisk.has(data.id)) {
@@ -172,6 +174,15 @@ function loadAndSelfHeal({ sessionStore, meetingStore, canEditSession = () => tr
         }
       } catch (e) {
         console.warn('[hub] meeting-store self-heal scan failed:', e.message);
+      }
+    }
+
+    // Older builds deleted group members on unexpected CLI exit. An intact
+    // roster backup plus exact native identities can restore the empty room.
+    if (haveLock && sessionStore && meetingStore) {
+      const repairs = require('./meeting-member-recovery').recoverEmptyMeetingMembers(disk, meetingBackups, { canEditSession });
+      for (const repair of repairs) {
+        for (const member of repair.members) sessionStore.saveSessionFile(member.hubId, member);
       }
     }
 

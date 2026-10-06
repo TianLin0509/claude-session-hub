@@ -170,6 +170,21 @@ async function main() {
   );
   assert.ok(Array.isArray(result.turns) && result.turns.length > 0, '成环时应返回结果而不是挂死');
 
+  // A new Claude fork has inherited CLI context, but no child JSONL yet.
+  const unused = { id: 'unused', hubId: 'unused', kind: 'claude', ccSessionId: 'new-child',
+    branchSourceSessionId: 'parent', freshLaunch: false };
+  for (const live of [true, false]) {
+    const deps = makeDeps(live ? { liveSessions: { unused } } : { persisted: [unused] });
+    result = await parseSessionTranscript({ hubSessionId: 'unused', kind: 'claude', ccSessionId: 'new-child' }, deps);
+    assert.strictEqual(result.error, null, 'unsubmitted branch should render welcome even after restart');
+    assert.deepStrictEqual(result.turns, []);
+  }
+  for (const evidence of [{ runStartedAt: 10 }, { lastRunStartedAt: 10 }, { lastCompletedAt: 10 },
+    { _attentionClock: { lastPromptAt: 10 } }]) {
+    result = await parseSessionTranscript({ hubSessionId: 'unused' },
+      makeDeps({ liveSessions: { unused: { ...unused, ...evidence } } }));
+    assert.strictEqual(result.error, 'transcript not found', 'used branch must keep missing-history diagnostics');
+  }
   console.log('unit-transcript-branch-inheritance: OK');
 }
 
