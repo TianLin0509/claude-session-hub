@@ -100,8 +100,10 @@ function codexLineFilter(prefix, context = {}, profile = 'turns') {
   const envelope = inspectCodexEnvelope(prefix);
   const recordType = envelope.recordType;
   if (!recordType) return prefixExhausted ? false : null;
+  if (profile === 'turns' && recordType === 'token_usage_record') return boundedActivityDecision(context, prefixExhausted);
 
-  if (profile === 'live' && (recordType === 'turn_context' || recordType === 'turn_aborted')) {
+  if ((profile === 'live' || profile === 'turns') && recordType === 'turn_context'
+      || profile === 'live' && recordType === 'turn_aborted') {
     return true;
   }
 
@@ -120,6 +122,7 @@ function codexLineFilter(prefix, context = {}, profile = 'turns') {
       return payloadType === 'user_message' || payloadType === 'thread_goal_updated';
     }
     if (profile === 'live') return LIVE_EVENT_TYPES.has(payloadType);
+    if (profile === 'turns' && payloadType === 'token_count') return boundedActivityDecision(context, prefixExhausted);
     if (TURN_EVENT_TYPES.has(payloadType)) return true;
     if (profile === 'search' && isSearchableToolCallType(payloadType)) return true;
     return false;

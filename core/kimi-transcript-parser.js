@@ -83,10 +83,12 @@ function parseKimiWireRecords(records) {
   let turnText = '';
   let lastUserText = '';
   let currentAssistantTs = null;
+  let currentPromptTs = null;
   let currentModel = null;
   let turnInputTokens = 0;
   let turnOutputTokens = 0;
   let turnContextTokens = 0;
+  let outputUsageComplete = true;
   let toolCalls = [];
   const steps = new Map();
 
@@ -112,9 +114,11 @@ function parseKimiWireRecords(records) {
       toolCalls = [];
       steps.clear();
       currentAssistantTs = null;
+      currentPromptTs = toMs(record);
       turnInputTokens = 0;
       turnOutputTokens = 0;
       turnContextTokens = 0;
+      outputUsageComplete = true;
       const text = (blocksText(record.input) || lastUserText).trim();
       if (text && (!record.origin || record.origin.kind === 'user')) {
         turns.push({
@@ -169,10 +173,13 @@ function parseKimiWireRecords(records) {
     if (event.type !== 'step.end') continue;
     const ended = steps.get(event.uuid || stepKey) || step;
     const stepUsage = kimiStepUsage(event.usage);
+    if (!event.usage || !Number.isSafeInteger(event.usage.output) || event.usage.output < 0) outputUsageComplete = false;
     if (stepUsage) {
-      turnInputTokens += stepUsage.inputTokens;
-      turnOutputTokens += stepUsage.outputTokens;
+      turnInputTokens += Math.max(0, stepUsage.inputTokens - (ended.usage?.inputTokens || 0));
+      turnOutputTokens += Math.max(0, stepUsage.outputTokens - (ended.usage?.outputTokens || 0));
       turnContextTokens = stepUsage.inputTokens;
+      ended.usage = stepUsage;
+      steps.set(event.uuid || stepKey, ended);
     }
     if (ended.text) turnText += ended.text;
     if (isToolFinish(event.finishReason) || ended.hadTool) continue;
@@ -183,10 +190,12 @@ function parseKimiWireRecords(records) {
       role: 'assistant',
       text,
       ts: currentAssistantTs,
+      speedStartedAt: currentPromptTs,
       tsEnd: toMs(record),
       stopReason: event.finishReason || 'completed',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       model: currentModel || undefined,
+      outputUsageComplete,
       usage: (turnInputTokens > 0 || turnOutputTokens > 0) ? {
         input_tokens: turnInputTokens,
         output_tokens: turnOutputTokens,
@@ -196,7 +205,11 @@ function parseKimiWireRecords(records) {
       source: 'kimi_wire',
     });
   }
-  return coalesceKimiTurnCards(turns);
+  return coalesceKimiTurnCards(turns).map(turn => {
+    const turnSpeed = ['stop', 'completed', 'end_turn'].includes(turn.stopReason)
+      ? require('./turn-speed-metrics').measureTurnSpeed({ ...turn, nativeOutcome: 'completed' }) : null;
+    return turnSpeed ? { ...turn, turnSpeed } : turn;
+  });
 }
 
 function parseKimiWireText(text) {

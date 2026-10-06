@@ -332,6 +332,7 @@ function normalizeUserDuplicateText(text) {
 function parseCodexRolloutEntries(entries) {
   const turns = [];
   let pendingAssistant = null;
+  let totalUsage = null;
 
   // sourceIndex/sourceEndIndex are rollout line numbers, so search docs built
   // from turns share one ordering scale with per-record tool docs.
@@ -342,11 +343,16 @@ function parseCodexRolloutEntries(entries) {
         sourceEndIndex: null,
         id: null,
         ts: null,
+        taskStartedAt: null,
         tsEnd: null,
         text: '',
         finalText: '',
         completed: false,
         durationMs: null,
+        usageBaseline: totalUsage,
+        usageInfo: null,
+        context: null,
+        hasTaskStart: false,
         agentMessages: [],
         displayMessages: [],
         toolCalls: [],
@@ -367,22 +373,31 @@ function parseCodexRolloutEntries(entries) {
             : tool
         ));
       }
-      turns.push({
+      const usage = pendingAssistant.hasTaskStart && !pendingAssistant.usageInvalid
+        ? require('./turn-speed-metrics').codexTurnUsage(
+          pendingAssistant.turnUsage ? { input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } : pendingAssistant.usageBaseline,
+          pendingAssistant.turnUsage ? { total_token_usage: pendingAssistant.turnUsage } : pendingAssistant.usageInfo) : null;
+      turns.push(require('./turn-speed-metrics').withTurnSpeed({
         id: pendingAssistant.id || `codex-assistant-${turns.length}`,
         role: 'assistant',
         text,
         ts: pendingAssistant.ts,
+        speedStartedAt: pendingAssistant.taskStartedAt,
         tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
         stopReason: pendingAssistant.completed ? 'task_complete' : 'partial_commentary',
         // 与原生卡片同一字段：卡片据此显示「本轮已完成 / 已中断」。仍在进行的一轮留空。
         nativeOutcome: pendingAssistant.aborted ? 'interrupted' : pendingAssistant.completed ? 'completed' : null,
         durationMs: pendingAssistant.durationMs || undefined,
+        ...(usage ? { usage } : {}),
+        model: pendingAssistant.context?.model,
+        providerTurnId: pendingAssistant.providerTurnId,
+        speedTier: require('./turn-speed-metrics').speedTier(pendingAssistant.context?.service_tier),
         toolCalls: pendingAssistant.toolCalls,
         displayMessages: pendingAssistant.displayMessages,
         source: pendingAssistant.completed ? 'codex_rollout' : 'codex_rollout_streaming',
         sourceIndex: pendingAssistant.sourceIndex,
         sourceEndIndex: pendingAssistant.sourceEndIndex,
-      });
+      }));
     }
     pendingAssistant = null;
   };
@@ -432,6 +447,16 @@ function parseCodexRolloutEntries(entries) {
   };
 
   entries.forEach(({ obj, index }, entryIndex) => {
+    if (obj.type === 'turn_context') {
+      if (pendingAssistant && (!obj.payload?.turn_id || obj.payload.turn_id === pendingAssistant.providerTurnId))
+        pendingAssistant.context = obj.payload || null;
+      return;
+    }
+    if (obj.type === 'token_usage_record') {
+      if (pendingAssistant?.hasTaskStart && obj.payload?.turn_id === pendingAssistant.providerTurnId
+          && obj.payload?.turn_token_usage) pendingAssistant.turnUsage = obj.payload.turn_token_usage;
+      return;
+    }
     const toolEvent = codexToolActivityEventFromRecord(obj, index);
     if (toolEvent) {
       const pending = ensurePendingAssistant(index);
@@ -444,9 +469,28 @@ function parseCodexRolloutEntries(entries) {
     if (obj.type === 'event_msg') {
       const payload = obj.payload || {};
       const eventType = payload.type;
+      if (eventType === 'token_count') {
+        const info = payload.info;
+        if (info?.total_token_usage) {
+          if (pendingAssistant) {
+            if (!pendingAssistant.usageBaseline && require('./turn-speed-metrics').codexTurnUsage(null, info)) {
+              pendingAssistant.usageBaseline = { input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
+            }
+            if (pendingAssistant.usageInfo && !require('./turn-speed-metrics').codexTurnUsage(
+              pendingAssistant.usageInfo.total_token_usage, info)) pendingAssistant.usageInvalid = true;
+            pendingAssistant.usageInfo = info;
+          }
+          totalUsage = info.total_token_usage;
+        }
+        return;
+      }
       const userEvent = codexUserMessageEventFromRecord(obj);
       if (userEvent) {
-        flushAssistant();
+        // Recent CLI starts a task before its user item. Retain that empty
+        // task's timing/counter boundary rather than dropping it on receipt.
+        if (!pendingAssistant?.hasTaskStart || pendingAssistant.agentMessages.length || pendingAssistant.toolCalls.length)
+          flushAssistant();
+        else { pendingAssistant.id = null; pendingAssistant.ts = null; }
         const raw = userEvent.text.trim();
         const text = raw && !isSyntheticUserEntry(obj, raw) ? displayUserText(raw) : null;
         if (text) {
@@ -467,6 +511,9 @@ function parseCodexRolloutEntries(entries) {
         const pending = ensurePendingAssistant(index);
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
+        pending.hasTaskStart = true;
+        pending.taskStartedAt = toMs(obj.timestamp);
+        pending.providerTurnId = payload.turn_id || payload.turnId || null;
         return;
       }
       if (eventType === 'turn_aborted') {
@@ -510,7 +557,9 @@ function parseCodexRolloutEntries(entries) {
       // 只显示那一段（displayUserText 同时兜住纯系统注入）。
       const text = raw && !isSyntheticUserEntry(obj, raw) ? displayUserText(raw) : null;
       if (text && !hasNearbyEventUserDuplicate(entries, entryIndex, text)) {
-        flushAssistant();
+        if (!pendingAssistant?.hasTaskStart || pendingAssistant.agentMessages.length || pendingAssistant.toolCalls.length)
+          flushAssistant();
+        else { pendingAssistant.id = null; pendingAssistant.ts = null; }
         turns.push({
           id: _makeTurnId('codex-user', obj, index),
           role: 'user',
