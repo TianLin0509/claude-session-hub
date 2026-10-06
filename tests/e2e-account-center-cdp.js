@@ -84,7 +84,9 @@ async function main() {
     await until('typeof accountCenterPanel!=="undefined"', 'renderer initialized');
 
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await sleep(350);
-    await click('#btn-rail-accounts'); await until('document.querySelectorAll(".ac-company").length===7', 'seven companies');
+    await click('#btn-rail-accounts'); await until('document.querySelectorAll(".ac-company[data-site]").length===7', 'seven AI companies');
+    assert.equal(await cdp.eval('document.querySelectorAll(".ac-codex-quota [data-ac=codex-quota]").length'), 2, 'quota controls coexist with website accounts');
+    assert.match(await text('.ac-codex-quota'), /已打开的会话继续使用原账号/);
     assert.equal(await chrome.running(), false, 'opening the page is passive');
     const main = '.ac-company[data-site="chatgpt"]';
     assert.match(await text(main), /main@example\.com/);
@@ -97,7 +99,7 @@ async function main() {
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account").length'), 2);
     await snap('01-clear-white');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 2560, height: 960, deviceScaleFactor: 1, mobile: false });
-    const wide = await cdp.eval('(()=>{const page=document.querySelector("#account-page").getBoundingClientRect(), card=document.querySelector(".ac-company").getBoundingClientRect(), rail=document.querySelector("#scene-rail").getBoundingClientRect();return {pageWidth:page.width,cardWidth:card.width,left:card.left-page.left,right:page.right-card.right,railWidth:rail.width,pageLeft:page.left,railRight:rail.right}})()');
+    const wide = await cdp.eval('(()=>{const page=document.querySelector("#account-page").getBoundingClientRect(), card=document.querySelector(".ac-company[data-site]").getBoundingClientRect(), rail=document.querySelector("#scene-rail").getBoundingClientRect();return {pageWidth:page.width,cardWidth:card.width,left:card.left-page.left,right:page.right-card.right,railWidth:rail.width,pageLeft:page.left,railRight:rail.right}})()');
     assert.ok(wide.pageWidth > 2000 && wide.cardWidth > wide.pageWidth - 100 && Math.abs(wide.left - wide.right) < 40 && Math.abs(wide.railWidth - 44) < .01 && Math.abs(wide.pageLeft - wide.railRight) < 2, JSON.stringify(wide));
     await snap('01-clear-white-wide');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
