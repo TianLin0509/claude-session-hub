@@ -3072,6 +3072,12 @@ require('./main/ipc/hub-accounts-handlers').registerHubAccountsIpc(ipcMain, hubA
 
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,
+  // 语音「动态背景」：当前会话聊天记录 md 的末尾（昨日之我的数据源），只给本地识别模型
+  getRecentContext: async hubSessionId => {
+    if (!hubSessionId || typeof sessionSearchService?.transcriptFor !== 'function') return '';
+    const found = await sessionSearchService.transcriptFor({ hubSessionId: String(hubSessionId) });
+    return found?.exists ? require('./core/voice-text').recentFromTranscript(found.path) : '';
+  },
 });
 require('./main/ipc/prompt-polish-handlers').registerPromptPolishIpc(ipcMain, { getConfig: getHubConfig });
 

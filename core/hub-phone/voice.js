@@ -26,16 +26,27 @@ async function transcribe(data,{dataDir,safeStorage,chunkDelayMs=0}){
   const local=engine==='local'?require('../local-asr/manager').getLocalAsr(cfg):null;
   // 声纹过滤：电脑上录入的本人声纹同样用于手机语音（剔除旁人说话的段落）。
   const vpProfile=require('../voiceprint').active(dataDir),speaker=vpProfile?require('../local-asr/manager').getSpeakerWorker(cfg):null;
-  const r=await voiceEngine.transcribeRecording(pcm,{engine,planKey,profile:mergedProfile(cfg),local,source:'phone',usage:voiceEngine.usageLogger(dataDir),vp:vpProfile&&speaker?{profile:vpProfile,speaker}:null});
-  return r.text;
+  // 云端只拿词表；本地另加个人背景与最近和助理的对话（不出本机）
+  const voiceText=require('../voice-text'),merged=mergedProfile(cfg);
+  const background=engine==='local'?voiceText.localBackground(merged,cfg.global,recentAssistantDialog(dataDir)):undefined;
+  const r=await voiceEngine.transcribeRecording(pcm,{engine,planKey,profile:voiceText.cloudProfile(merged,cfg.global),background,local,source:'phone',usage:voiceEngine.usageLogger(dataDir),vp:vpProfile&&speaker?{profile:vpProfile,speaker}:null});
+  return voiceText.cleanFillers(r.text);
  }
  if(cfg.encryptedKey)key=safeStorage.decryptString(Buffer.from(cfg.encryptedKey,'base64'));
  if(!key)throw Error('电脑尚未设置语音识别，请在 Hub 输入框的语音设置中配置');
  const {VoiceStream}=require('../voice-input');let finish,fail;const result=new Promise((a,b)=>{finish=a;fail=b;});result.catch(()=>{});
  // 整段一次推完，服务端收尾时间随录音长度增加，等待放宽到 30 秒。
- const stream=new VoiceStream({config:cfg,apiKey:key,sampleRate:16000,timeoutMs:30000,profile:mergedProfile(cfg),onEvent:r=>{if(r.type==='done')finish(r.text);if(r.type==='error')fail(Error(r.message));}});
+ const voiceText=require('../voice-text');
+ const stream=new VoiceStream({config:cfg,apiKey:key,sampleRate:16000,timeoutMs:30000,profile:voiceText.cloudProfile(mergedProfile(cfg),cfg.global),onEvent:r=>{if(r.type==='done')finish(voiceText.cleanFillers(r.text));if(r.type==='error')fail(Error(r.message));}});
  // 录音已完整到手，不再按说话节奏回放（旧做法让 30 秒语音多等约 27 秒）；按 0.1 秒一块连续推送。
  try{await stream.ready;for(let at=0;at<pcm.length;at+=3200){await stream.audio(pcm.subarray(at,at+3200));if(chunkDelayMs)await new Promise(r=>setTimeout(r,chunkDelayMs));}await stream.finish();return await result;}finally{if(!stream.ended)stream.cancel();}
+}
+// 手机语音的动态背景：最近和助理的若干条对话（assistant/dialog/当月.jsonl 末尾），只给本地模型。
+function recentAssistantDialog(dataDir,maxChars=1500){
+ try{const dir=path.join(dataDir,'assistant','dialog');const files=fs.readdirSync(dir).filter(f=>/^\d{4}-\d{2}\.jsonl$/.test(f)).sort();if(!files.length)return'';
+  const lines=fs.readFileSync(path.join(dir,files.at(-1)),'utf8').trim().split(/\r?\n/).slice(-30);
+  const text=lines.map(l=>{try{return String(JSON.parse(l).text||'')}catch{return''}}).filter(Boolean).join(' ').replace(/\s+/g,' ');
+  return [...text].slice(-maxChars).join('');}catch{return'';}
 }
 // 手机按下说话键时先通知电脑：本地模式下趁用户说话把模型装进显卡。
 function prepare({dataDir}){
