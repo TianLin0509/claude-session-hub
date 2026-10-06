@@ -16,6 +16,7 @@ const port=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.
  async function start(){hub=await launchIsolatedHub({dataDir:data,port:await port(),label:'global-account',windowMode:'hidden',extraEnv:{
   CODEX_HOME:a,CLAUDE_HUB_HOME_DIR:path.join(root,'home'),CLAUDE_CONFIG_DIR:path.join(root,'claude'),HUB_CODEX_PROFILE:'',HUB_CODEX_BACKEND:'subscription',
   AI_HUB_WORKSPACE_ROOT:path.join(root,'workspaces'),CLAUDE_HUB_E2E:'1',DEEPSEEK_API_KEY:'',
+  CLAUDE_HUB_ACCOUNT_FIXTURE:path.join(__dirname,'fixtures/account-center-cli.js'),
   CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_CONTEXT:'1',
   CLAUDE_HUB_NATIVE_FIXTURE_STORE_DIR:path.join(root,'threads'),CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR:path.join(root,'writers'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl')}});
   cdp=await connectFirstPage(hub);await until('!!window.WorkspaceController && typeof sessions!=="undefined"','renderer');
@@ -36,23 +37,25 @@ const port=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.
   for(const [key,code,keyCode] of [['End','End',35],['Enter','Enter',13]])for(const type of ['keyDown','keyUp'])await cdp.send('Input.dispatchKeyEvent',{type,key,code,windowsVirtualKeyCode:keyCode,nativeVirtualKeyCode:keyCode});
   await until('document.querySelector("#new-session-account").value==="second" && !document.querySelector("#new-session-account").disabled','saved selection');
   assert.equal(JSON.parse(fs.readFileSync(configFile,'utf8')).providers.codex.subscription_profile,'second');
-  await until(`sessions.get(${JSON.stringify(idle.id)}).codexProfile==='second' && sessions.get(${JSON.stringify(idle.id)}).nativeRuntime.connection==='connected'`,'idle migrated');
+  assert.equal(await cdp.eval(`sessions.get(${JSON.stringify(idle.id)}).codexProfile`),'default');
   assert.equal(await cdp.eval(`sessions.get(${JSON.stringify(idle.id)}).codexSid`),idle.codexSid);
   assert.equal(await cdp.eval(`sessions.get(${JSON.stringify(busy.id)}).codexProfile`),'default');
-  result.checks.push('real launch selector persists global choice immediately; idle thread migrates; busy turn stays on original account');
+  result.checks.push('real launch selector persists future quota choice; idle and busy sessions stay on original account');
   const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'selector.png'),Buffer.from(shot.data,'base64'));
   await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   assert.equal(JSON.parse(fs.readFileSync(configFile,'utf8')).providers.codex.subscription_profile,'second');
   result.checks.push('cancelling launch does not revert the global choice');
   assert((await invoke('codex:native-action',{sessionId:busy.id,action:'interrupt'})).ok);
-  await until(`sessions.get(${JSON.stringify(busy.id)}).codexProfile==='second' && sessions.get(${JSON.stringify(busy.id)}).nativeRuntime.connection==='connected'`,'busy migrates after completion');
+  await until(`sessions.get(${JSON.stringify(busy.id)}).nativeRuntime.state==='interrupted'`,'busy interrupted');
+  assert.equal(await cdp.eval(`sessions.get(${JSON.stringify(busy.id)}).codexProfile`),'default');
+  const restartedBusy=await invoke('restart-session',busy.id);assert.equal(restartedBusy.codexProfile,'second');
   const resumed=await invoke('resume-session',{...sleeping,hubId:sleeping.id});assert(resumed && resumed.codexProfile==='second',JSON.stringify(resumed));
   await until(`sessions.get(${JSON.stringify(sleeping.id)}).nativeRuntime.connection==='connected'`,'sleep resumed');
   assert.equal(await cdp.eval(`sessions.get(${JSON.stringify(sleeping.id)}).codexSid`),sleeping.codexSid);
   const restarted=await invoke('restart-session',idle.id);assert.equal(restarted.codexProfile,'second');assert.equal(restarted.codexSid,idle.codexSid);
   const fresh=await create('fresh B history');assert.equal(fresh.codexProfile,'second');
-  result.checks.push('busy completion, dormant resume, restart and new session all use B; old native IDs retained');
+  result.checks.push('busy completion stays A; explicit restart, dormant resume and new session use B; old native IDs retained');
   await stop();await start();
   await until(`sessions.has(${JSON.stringify(idle.id)})`,'persisted card');
   await cdp.eval(`selectSession(${JSON.stringify(idle.id)})`);

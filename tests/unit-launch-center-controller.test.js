@@ -70,6 +70,8 @@ function fixture() {
   const subtitle = new FakeElement();
   const error = new FakeElement();
   error.hidden = true;
+  const sessionError = new FakeElement();
+  sessionError.hidden = true;
   const groupError = new FakeElement();
   groupError.hidden = true;
   const resumeCancel = new FakeElement();
@@ -83,6 +85,7 @@ function fixture() {
     'launch-split-status': status,
     'launch-center-subtitle': subtitle,
     'launch-center-error': error,
+    'new-session-error': sessionError,
     'launch-center-group-error': groupError,
     'launch-center-resume-cancel': resumeCancel,
   };
@@ -98,8 +101,20 @@ function fixture() {
       return [];
     },
   };
-  return { document, view, menu, trigger, label, more, status, subtitle, error, groupError, resumeCancel, intents, panels, resumes };
+  return { document, view, menu, trigger, label, more, status, subtitle, error, sessionError, groupError, resumeCancel, intents, panels, resumes };
 }
+
+test('login guidance appears in the visible launch panel and scrolls into view', () => {
+  const ui=fixture(),events=new Map();let scrolls=0;
+  ui.sessionError.scrollIntoView=()=>scrolls++;
+  const controller=createLaunchCenterController({document:ui.document,ipcRenderer:{on:(name,handler)=>events.set(name,handler)},
+    openSessionModal:()=>{ui.menu.style.display='flex';},closeSessionModal:()=>{ui.menu.style.display='none';}});
+  controller.open('session');
+  events.get('launch-auth-status')(null,{message:'已打开官方登录界面'});
+  assert.equal(ui.sessionError.hidden,false);assert.equal(ui.sessionError.textContent,'已打开官方登录界面');
+  assert.equal(ui.error.hidden,true);assert.equal(scrolls,1);
+  controller.close();events.get('launch-auth-status')(null,{message:'完成'});assert.equal(scrolls,1);
+});
 
 test('launch intents normalize to the three supported routes', () => {
   assert.deepEqual(LAUNCH_INTENTS, ['session', 'group', 'resume']);

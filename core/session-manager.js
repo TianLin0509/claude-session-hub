@@ -1171,6 +1171,7 @@ class SessionManager extends EventEmitter {
     } finally { driver.accountSyncRequest=null; }
   }
   async syncCodexAccounts() {
+    if (require('./codex-global-account').currentConfig().codexAccountSwitchScope === 'launch') return [];
     const entries=[...this.sessions.values()].filter(s=>s.pty?.options?.resolveAccount && !s.pty.closed);
     return Promise.all(entries.map(async ({pty,info})=>{
       try { return await this._syncCodexAccount(pty,info); }
@@ -1649,6 +1650,11 @@ class SessionManager extends EventEmitter {
         ...(followsGlobalAccount ? {accountId:globalAccount.id,ownershipHome:opts.codexHistoryHome,
           historyStorageHome:opts.codexHistoryStorageHome,
           resolveAccount:()=>{
+            const accounts=require('./codex-global-account');
+            return accounts.resolveRunningAccount(accounts.currentConfig(),{
+              id:ptyProcess.options.accountId,label:info.codexProfileLabel,
+              home:ptyProcess.options.env.CODEX_HOME});
+          },resolveLaunchAccount:()=>{
             const accounts=require('./codex-global-account');
             return accounts.resolveAccount(accounts.currentConfig());
           }} : {}),

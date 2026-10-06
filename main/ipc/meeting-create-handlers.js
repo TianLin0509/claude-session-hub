@@ -89,6 +89,7 @@ function createMeetingSubAdder(deps) {
     sessionManager,
     slotIds,
     workspaceService,
+    ensureLaunchAuth,
   } = deps;
 
   function addCodexMcpEntry(sessionOpts, entry) {
@@ -206,6 +207,7 @@ function createMeetingSubAdder(deps) {
     // room may never use.
     if (meeting?.groupChat && (meeting.mode === 'dev' || meeting.scene === 'dev')
         && ['codex', 'codex-resume', 'claude', 'claude-resume'].includes(kind)) sessionOpts.lazyStart = true;
+    if (ensureLaunchAuth) await ensureLaunchAuth(kind,sessionOpts);
     const session = sessionManager.createSession(kind, sessionOpts);
     if (!session) return null;
     const updated = meetingManager.addSubSession(meetingId, session.id);
@@ -255,6 +257,7 @@ function createMeetingSubAdder(deps) {
 
 function registerMeetingCreateIpc(ipcMain, deps) {
   const {
+    ensureLaunchAuth,
     getHubDataDir,
     groupchat,
     logger = console,
@@ -268,6 +271,11 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     const safe = { ...(opts || {}) };
     safe.groupChat = true;
     const devSlots = Array.isArray(safe.slots) ? safe.slots : safe.slotSpecs;
+    if (ensureLaunchAuth) {
+      for (const slot of (Array.isArray(devSlots)?devSlots:[])) {
+        if (slot?.kind) await ensureLaunchAuth(slot.kind,{model:slot.model});
+      }
+    }
     // @community-strip 社区版：建群前先确认每位成员的 CLI 都在，缺一个就一个都不启动
     // @community-else
     // for (const slot of (Array.isArray(devSlots) ? devSlots : [])) {

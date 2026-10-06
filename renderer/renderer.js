@@ -5828,6 +5828,7 @@ function setShellNavActive(value) {
 
 const launchCenter = createLaunchCenterController({
   document,
+  ipcRenderer,
   openSessionModal: options => window.WorkspaceController.openNewSessionModal(options),
   closeSessionModal: () => window.WorkspaceController.closeNewSessionModal(),
   prepareGroupPanel: () => {
