@@ -97,6 +97,7 @@ fs.writeFileSync(claudeFile, claudeRows.map(JSON.stringify).join('\n') + '\n');
     fs.writeFileSync(path.join(out, 'phone.png'), Buffer.from(phone.data, 'base64'));
     const geometry = await client.eval(`(()=>{const r=document.querySelector('.turn-speed').getBoundingClientRect();return{x:r.x,right:r.right,width:r.width,viewport:innerWidth};})()`);
     assert(geometry.width > 0 && geometry.x >= 0 && geometry.right <= geometry.viewport, JSON.stringify(geometry));
+    assert(await client.eval(`(()=>{const e=document.querySelector('.turn-speed');return Math.abs(e.getBoundingClientRect().y-e.closest('.turn-head').querySelector('.turn-meta').getBoundingClientRect().y)<3;})()`), 'phone rate shares the existing time row');
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 950, deviceScaleFactor: 1, mobile: false });
     await click('[data-display-mode="desktop"]');
     const shot = await client.send('Page.captureScreenshot', { format: 'png' });

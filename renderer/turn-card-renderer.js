@@ -458,7 +458,7 @@ function _renderMetaPills(turn, compact = false) {
 
 function renderTurnSpeed(turn) {
   const display = require('./turn-speed-display').speedDisplay(turn.turnSpeed);
-  return display ? `<span class="turn-speed" title="${escapeHtml(display.title)}" aria-label="${escapeHtml(display.text)}"><span class="turn-speed-detail">${escapeHtml(display.mode ? display.mode + ' · ' : '')}均速 </span>≈${escapeHtml(display.rate)} tok/s</span>` : '';
+  return display ? `<span class="turn-speed" title="${escapeHtml(display.title)}" aria-label="${escapeHtml(display.text)}"><span class="turn-speed-detail">${escapeHtml(display.mode ? display.mode + ' · ' : '')}均速 </span>≈${escapeHtml(display.rate)}<span class="turn-speed-unit"> tok</span>/s</span>` : '';
 }
 
 // === Spec 1 v0.9.0 · turn 卡片渲染 ===

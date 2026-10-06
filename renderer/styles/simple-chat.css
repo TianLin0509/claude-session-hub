@@ -87,6 +87,6 @@
 .session-turn-speed[hidden] { display: none; }
 .turn-speed { flex-shrink: 1; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 @container hub-card-view (max-width: 520px) {
-  .turn-speed-detail { display: none; }
+  .turn-speed-detail, .turn-speed-unit { display: none; }
   .turn-speed { font-size: 10px; }
 }
