@@ -44,11 +44,27 @@ function compareLatestActivityDesc(left, right) {
     || positiveTimestamp(right && right.createdAt) - positiveTimestamp(left && left.createdAt);
 }
 
+// Metadata can be newer while its interaction snapshot is older. Preserve the
+// interaction clock independently; never resurrect runStartedAt / running state.
+function preserveLatestInteraction(target, ...sources) {
+  let at = 0;
+  for (const source of [target, ...sources]) {
+    for (const field of ACTIVITY_FIELDS) {
+      // A restored PTY can have a new process creation time without a new chat.
+      if (field !== 'createdAt') at = Math.max(at, positiveTimestamp(source && source[field]));
+    }
+  }
+  return at > positiveTimestamp(target && target.lastMessageTime)
+    ? { ...target, lastMessageTime: at }
+    : target;
+}
+
 module.exports = {
   ACTIVITY_FIELDS,
   compareLatestActivityDesc,
   latestActivityTime,
   positiveTimestamp,
+  preserveLatestInteraction,
   // 旧名保留为别名：这两个名字散落在侧栏、Ctrl+Tab、历史会话弹窗和 session-manager 里。
   // 语义已从「最后一次回答完成」扩成「最后一次有来往」，新代码请用 latestActivityTime。
   latestReplyTime: latestActivityTime,

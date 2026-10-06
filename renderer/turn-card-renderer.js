@@ -209,6 +209,7 @@ const renderDeliveryGlance = delivery => require('./delivery-summary').renderDel
 function _disclosureKey(element, index) {
   if (!element) return `details:${index}`;
   if (element.dataset && element.dataset.activityId) return `activity:${element.dataset.activityId}`;
+  if (element.classList?.contains('conversation-long-message')) return require('./message-disclosure-state').key(element);
   if (element.classList && element.classList.contains('turn-thinking')) return 'thinking';
   if (element.classList && element.classList.contains('chat-process')) return 'chat-process';
   if (element.classList && element.classList.contains('turn-delivery-summary')) return 'delivery';
@@ -337,6 +338,7 @@ function _postProcessTurnCard(card, sessionId, deferActivity = false) {
   if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId });
   postProcessCardMath(card);
   if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(card);
+  require('./message-disclosure-state').restore(card);
   if (!deferActivity) require('./conversation-message-view').syncResponseNeighbors(card);
 }
 
@@ -370,6 +372,7 @@ function patchTurnCardInPlace(existing, newCard, sessionId) {
   }
   _postProcessTurnCard(existing, sessionId, true);
   const selectionRestored = _restoreCardUiState(existing, snapshot);
+  require('./message-disclosure-state').restore(existing);
   require('./conversation-message-view').syncResponseNeighbors(existing);
   if (!win.__cardRenderMetrics) win.__cardRenderMetrics = { inPlacePatches: 0, rootReplacements: 0 };
   win.__cardRenderMetrics.inPlacePatches += 1;
@@ -643,8 +646,8 @@ function postProcessCardCodeBlocks(cardEl) {
     // wrap pre in .code-block-wrap, add Copy button + fold toggle if long
     const lines = code.textContent.split('\n').length;
     const turnId = cardEl.dataset.turnId || '';
-    const codeKey = `${turnId}:code:${idx}`;
-    const expanded = _foldedCodesState.has(codeKey) ? _foldedCodesState.get(codeKey) : (lines <= _codeFoldThreshold);
+    const codeKey = `${cardEl.dataset.sessionId || ''}:${turnId}:code:${idx}`;
+    const expanded = _foldedCodesState.has(codeKey) ? _foldedCodesState.get(codeKey) : true;
     const wrap = doc.createElement('div');
     wrap.className = 'code-block-wrap';
     wrap.dataset.codeKey = codeKey;
@@ -676,9 +679,8 @@ function postProcessCardCodeBlocks(cardEl) {
   });
 }
 
-// === Spec 3 · 长 markdown 文本默认折叠 ===
-// 在卡片插入 DOM 后调用：检测 turn-body scrollHeight 超过阈值 → 加 .body-foldable.folded
-// + 插入"展开全文"按钮。必须在 mount 后调（detached 元素 scrollHeight=0）。
+// === Spec 3 · 长 markdown 文本默认展开，保留用户主动折叠 ===
+// Mount 后按正文高度提供折叠按钮；只在用户选择后添加 folded。
 const _BODY_FOLD_THRESHOLD_PX = 400;
 function postProcessLongTextFold(cardEl) {
   if (!cardEl) return;
@@ -688,8 +690,8 @@ function postProcessLongTextFold(cardEl) {
   // 已存在折叠按钮（rerender 路径） → 跳过
   if (cardEl.querySelector('.body-fold-toggle')) return;
   if (body.scrollHeight <= _BODY_FOLD_THRESHOLD_PX) return;
-  const turnId = cardEl.dataset.turnId || '';
-  const expanded = turnId && _bodyFoldState.get(turnId) === true;
+  const turnId = `${cardEl.dataset.sessionId || ''}:${cardEl.dataset.turnId || ''}`;
+  const expanded = _bodyFoldState.get(turnId) !== false;
   body.classList.add('body-foldable');
   if (!expanded) body.classList.add('folded');
   const btn = doc.createElement('div');
@@ -708,7 +710,7 @@ listen('click', (e) => {
   if (!card) return;
   const body = card.querySelector('.turn-body');
   if (!body) return;
-  const turnId = card.dataset.turnId || '';
+  const turnId = `${card.dataset.sessionId || ''}:${card.dataset.turnId || ''}`;
   if (btn.dataset.action === 'body-expand') {
     if (turnId) _bodyFoldState.set(turnId, true);
     body.classList.remove('folded');

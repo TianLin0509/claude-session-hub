@@ -15,6 +15,18 @@ const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('./data-dir');
 const { migrateLegacyBranchSessionMeta } = require('./session-title-guards');
+const { positiveTimestamp, preserveLatestInteraction } = require('./session-recency');
+const _activityHighWater = new Map();
+
+function preserveActivity(hubId, data) {
+  // One read per ownership period, not a disk read on every renderer update.
+  if (!_activityHighWater.has(hubId)) {
+    _activityHighWater.set(hubId, positiveTimestamp(preserveLatestInteraction(loadSessionFile(hubId))?.lastMessageTime));
+  }
+  const merged = preserveLatestInteraction(data, { lastMessageTime: _activityHighWater.get(hubId) });
+  _activityHighWater.set(hubId, positiveTimestamp(merged.lastMessageTime));
+  return merged;
+}
 // 2026-05-07 多方审查 fix：markDirty 检查 stateStore.isMarkedRemovedSession 跳过
 //   已被 close-meeting / persist-sessions diff 标记 removed 的 sid，避免 renderer
 //   端因 400ms 防抖窗口"列表还含旧 sid"导致刚删的文件被复活。
@@ -70,6 +82,7 @@ function _sanitizeConnectionIssueAck(value) {
 }
 
 function _buildSessionPayload(hubId, data) {
+  data = preserveActivity(hubId, data);
   data = migrateLegacyBranchSessionMeta(data);
   const now = Date.now();
   return {
@@ -228,6 +241,7 @@ function listSessionFilesWithData() {
 }
 
 function deleteSessionFile(hubId) {
+  _activityHighWater.delete(hubId);
   // 2026-05-07 多方审查 fix：原版吞所有错误。ENOENT（文件本就不存在）静默 OK；
   //   EPERM/EBUSY（杀软/同步盘锁住）记 warn 让运维可见，下次 boot self-heal 才有
   //   线索查为什么有"僵尸"per-session JSON 残留。
@@ -269,6 +283,7 @@ function markDirty(hubId, data) {
   // 2026-05-07 多方审查 fix：被标记 removed 的 sid 不再 markDirty——renderer 防抖
   //   窗口里的 stale list 不应复活已删条目。
   if (_isRemoved(hubId)) return;
+  data = preserveActivity(hubId, data);
   _dirty.set(hubId, data);
   if (_timers.has(hubId)) clearTimeout(_timers.get(hubId));
   const t = setTimeout(() => {
@@ -300,6 +315,7 @@ function markDirtySync(hubId, data) {
 
 function markDirtyImmediate(hubId, data) {
   if (!hubId || _isRemoved(hubId) || _releasedWrites.has(hubId)) return Promise.resolve();
+  data = preserveActivity(hubId, data);
   if (_timers.has(hubId)) { clearTimeout(_timers.get(hubId)); _timers.delete(hubId); }
   _dirty.set(hubId, data);
   return _enqueueWrite(hubId, data);
@@ -335,7 +351,10 @@ async function flushSessionForRelease(hubId, data) {
 }
 
 module.exports = {
-  resumeSessionWrites: hubId => _releasedWrites.delete(hubId),
+  resumeSessionWrites: hubId => {
+    _releasedWrites.delete(hubId);
+    _activityHighWater.delete(hubId);
+  },
   flushSessionForRelease,
   saveSessionFile,
   loadSessionFile,

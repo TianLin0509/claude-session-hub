@@ -21,7 +21,7 @@ function renderMessageBody(text, {isUser=false, plainProgress=false, foldLong=tr
   // Reuse the complete, sanitized rendering: slicing Markdown can cut a fence,
   // link or emphasis delimiter. CSS clips the preview without changing source.
   // Keep block Markdown outside summary so tables/lists/code remain valid HTML.
-  return `<div class="conversation-long-frame"><details class="conversation-long-message"><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · </span><span class="conversation-expand-label">展开全文</span><span class="conversation-collapse-label">收起全文</span></summary>`
+  return `<div class="conversation-long-frame"><details class="conversation-long-message" open><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · </span><span class="conversation-expand-label">展开全文</span><span class="conversation-collapse-label">收起全文</span></summary>`
     + `<div class="conversation-full-text">${body}</div></details>`
     + `<div class="conversation-long-preview" data-copy-exclude>${body}</div></div>`;
 }
@@ -121,14 +121,22 @@ function patchConversationArticle(existing, next) {
   for(const entry of next.querySelectorAll('[data-message-id]')) {
     const old=oldEntries.get(entry.dataset.messageId);
     if(!old)continue;
-    const oldDetails=[...old.querySelectorAll('details')];
-    [...entry.querySelectorAll('details')].forEach((d,i)=>{if(oldDetails[i])d.open=oldDetails[i].open;});
+    const oldDetails=new Map();
+    for(const detail of old.querySelectorAll('details')) {
+      if(!oldDetails.has(detail.className))oldDetails.set(detail.className,[]);
+      oldDetails.get(detail.className).push(detail.open);
+    }
+    for(const detail of entry.querySelectorAll('details')) {
+      const states=oldDetails.get(detail.className);
+      if(states?.length)detail.open=states.shift();
+    }
     if(entry.innerHTML===old.innerHTML)entry.replaceWith(old);
   }
   // Keep the article anchor and unchanged provider items, including disclosure.
   for(const attr of [...existing.attributes])existing.removeAttribute(attr.name);
   for(const attr of [...next.attributes])existing.setAttribute(attr.name,attr.value);
   existing.replaceChildren(...next.childNodes);
+  require('./message-disclosure-state').restore(existing);
   if(savedSelection) {
     const walker=doc.createTreeWalker(existing,4),nodes=[];let node,offset=0;
     while((node=walker.nextNode())){nodes.push({node,start:offset,end:offset+node.textContent.length});offset+=node.textContent.length;}

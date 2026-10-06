@@ -16,6 +16,7 @@ async function main() {
   const sourceAuth = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), '.credentials.json');
   const copiedAuth = path.join(home, '.credentials.json'), beforeAuth = hash(sourceAuth);
   const report = { passed: false, checks: [], out, boundary: 'Real isolated Hub, real Claude PTY and one Haiku response.' };
+  const longReply = process.env.HUB_LONG_REPLY_AUDIT === '1';
   let hub, client, sid;
   const until = async (expression, label, timeout = 90000) => {
     const deadline = Date.now() + timeout;
@@ -26,7 +27,7 @@ async function main() {
     throw Error('timeout: ' + label);
   };
   const click = async selector => {
-    const position = await client.eval(`(()=>{const e=document.querySelector(${j(selector)});if(!e)throw Error('Missing control: '+${j(selector)});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    const position = await client.eval(`(()=>{const e=document.querySelector(${j(selector)});if(!e)throw Error('Missing control: '+${j(selector)});e.scrollIntoView({block:'center',behavior:'instant'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
     for (const type of ['mousePressed', 'mouseReleased']) await client.send('Input.dispatchMouseEvent', { type, ...position, button: 'left', clickCount: 1 });
   };
   const capture = async name => {
@@ -73,7 +74,9 @@ async function main() {
     report.checks.push('CLI/card round trip retains the new-session welcome');
     console.log('PASS: welcome survives CLI round trip; sending first prompt');
     await click('.floating-input-box');
-    await client.send('Input.insertText', { text: '不要调用工具。请只回复 WELCOME_LIVE_OK。' });
+    await client.send('Input.insertText', { text: longReply
+      ? '不要调用工具。请输出40行纯文本，每行写“第N行：这是一条用于核验完整阅读的长消息，应该默认展开。”，N从1到40，不要省略，不要放进代码块。最后单独写 WELCOME_LIVE_OK。'
+      : '不要调用工具。请只回复 WELCOME_LIVE_OK。' });
     await click('.floating-input-send');
     await until('[...document.querySelectorAll("#msg-overlay .turn-card.assistant")].some(e=>e.innerText.includes("WELCOME_LIVE_OK"))', 'real first reply', 120000);
     assert.equal(await client.eval('!!document.querySelector("#msg-overlay>.session-welcome")'), false);
@@ -83,6 +86,20 @@ async function main() {
     assert.equal(await client.eval(`require('../core/session-history-state').isFreshSession(sessions.get(${j(sid)}))`), false,
       'after a real prompt the renderer must no longer classify this as an unused session');
     report.checks.push('first real Haiku reply replaces welcome and is read from its native transcript');
+    if (longReply) {
+      const selector = '#msg-overlay .turn-card.assistant .conversation-long-message';
+      await until(`!!document.querySelector(${j(selector)})`, 'long message disclosure');
+      assert(await client.eval(`document.querySelector(${j(selector)}).open`), 'real long reply defaults expanded');
+      await capture('03-real-long-reply-expanded');
+      await click(selector + ' > summary');
+      assert.equal(await client.eval(`document.querySelector(${j(selector)}).open`), false);
+      await client.eval(`loadSessionHistoryToOverlay(${j(sid)},{incremental:true})`);
+      assert.equal(await client.eval(`document.querySelector(${j(selector)}).open`), false, 'manual collapse survives history refresh');
+      await click(selector + ' > summary');
+      await client.eval(`loadSessionHistoryToOverlay(${j(sid)},{incremental:true})`);
+      assert(await client.eval(`document.querySelector(${j(selector)}).open`), 'manual expansion survives history refresh');
+      report.checks.push('real long Claude reply defaults expanded; explicit collapse and expansion survive history refresh');
+    }
     await capture('02-first-real-reply');
     report.passed = true;
   } catch (error) {

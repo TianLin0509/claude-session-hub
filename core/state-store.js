@@ -19,6 +19,7 @@ const CURRENT_VERSION = 1;
 //   - 锁拿不到时拒绝无锁直写；Windows 原子替换的瞬时 EPERM 则在持锁期内有界重试。
 
 const _removedSessionIds = new Set();
+const { preserveLatestInteraction } = require('./session-recency');
 const _removedMeetingIds = new Set();
 
 function markRemovedSession(hubId) { if (hubId) _removedSessionIds.add(hubId); }
@@ -136,8 +137,10 @@ function loadAndSelfHeal({ sessionStore, meetingStore, canEditSession = () => tr
           if (!data || !data.hubId) continue;
           if (onDisk.has(data.hubId)) {
             const i = disk.sessions.findIndex(s => s.hubId === data.hubId);
-            if (i >= 0 && (data.updatedAt || 0) > (disk.sessions[i].updatedAt || 0)) {
-              disk.sessions[i] = { ...disk.sessions[i], ...data };
+            if (i >= 0) {
+              const prior = disk.sessions[i];
+              const winner = (data.updatedAt || 0) > (prior.updatedAt || 0) ? { ...prior, ...data } : prior;
+              disk.sessions[i] = preserveLatestInteraction(winner, prior, data);
             }
           } else {
             disk.sessions.push({ ...data });
@@ -211,9 +214,8 @@ function mergeState(diskState, memState, removed = { sessions: [], meetings: [] 
     const s = migrateLegacyBranchSessionMeta(raw);
     if (!s || !s.hubId) continue;
     const existing = sessByHubId.get(s.hubId);
-    if (!existing || (s.updatedAt || 0) >= (existing.updatedAt || 0)) {
-      sessByHubId.set(s.hubId, s);
-    }
+    const winner = !existing || (s.updatedAt || 0) >= (existing.updatedAt || 0) ? s : existing;
+    sessByHubId.set(s.hubId, preserveLatestInteraction(winner, existing, s));
   }
   for (const id of removed.sessions || []) sessByHubId.delete(id);
 
