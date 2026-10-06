@@ -41,6 +41,10 @@ async function showSettings(target) {
   const workspace = field('Workspace ID（可选）');
   const terms = field('当前项目术语（每行一个，最多 80 个）', 'textarea'); terms.rows = 4; terms.placeholder = 'Codex\nElectron\nSINR\nSRS';
   const context = field('当前项目领域说明（可选，最多 400 字）', 'textarea'); context.rows = 2; context.placeholder = '例如：普通话夹英文的无线通信技术讨论。';
+  // 所有项目共用：通用热词（云端接力时也会带上前若干个）、个人背景（只给本地模型，不上传）
+  const globalTerms = field('通用热词（所有项目共用，每行一个，最多 300 个）', 'textarea'); globalTerms.rows = 4; globalTerms.placeholder = 'Claude\nCodex\nSuperRAN';
+  const personal = field('个人背景（只给本地识别模型，不上传云端，最多 2000 字）', 'textarea'); personal.rows = 4;
+  personal.placeholder = '例如：我是林田（田哥），华为无线研发。家人：……常提到的人：……';
   // 声纹过滤：录入一次本人声纹，之后旁人说话的段落不进文字（电脑与手机语音都适用）。
   const vpBox = document.createElement('fieldset'); vpBox.className = 'voice-voiceprint';
   const vpTitle = document.createElement('legend'); vpTitle.textContent = '声纹过滤（只识别你的声音）';
@@ -105,6 +109,7 @@ async function showSettings(target) {
     const config = await ipcRenderer.invoke('voice:config', target.project);
     if (!overlay.isConnected) return;
     region.value = config.region; workspace.value = config.workspace; terms.value = config.profile.terms; context.value = config.profile.context;
+    globalTerms.value = config.global?.terms || ''; personal.value = config.global?.personal || '';
     engine.value = config.engine; describe();
     model.textContent = `识别模型：${config.model} · 术语所属：${target.project || '通用项目'}`;
     const plan = config.planReady ? '已找到 Token Plan 套餐 Key。' : '未找到 Token Plan 套餐 Key（在 Hub 的 Token Plan 配置里设置）。';
@@ -118,7 +123,7 @@ async function showSettings(target) {
   save.onclick = async () => {
     save.disabled = true;
     try {
-      await ipcRenderer.invoke('voice:save-config', { project: target.project, engine: engine.value, region: region.value, workspace: workspace.value, apiKey: key.value, clearKey, profile: { terms: terms.value, context: context.value } });
+      await ipcRenderer.invoke('voice:save-config', { project: target.project, engine: engine.value, region: region.value, workspace: workspace.value, apiKey: key.value, clearKey, profile: { terms: terms.value, context: context.value }, global: { terms: globalTerms.value, personal: personal.value } });
       dismiss();
     } catch (error) { status.textContent = cleanError(error); save.disabled = false; }
   };
@@ -263,7 +268,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
       for (const track of r.stream.getTracks()) track.addEventListener('ended', () => { if (!r.stopping) fail(r, '麦克风已断开'); });
       r.started = Date.now(); r.lastSound = r.started; r.captureAt = performance.now();
       setStatus('正在录音（连接识别服务中，可以开始说话）');
-      r.connecting = ipcRenderer.invoke('voice:start', { id: r.id, project: target.project, sampleRate: r.context.sampleRate });
+      r.connecting = ipcRenderer.invoke('voice:start', { id: r.id, project: target.project, sessionId: target.id, sampleRate: r.context.sampleRate });
       await r.connecting;
       if (r.ended) { await ipcRenderer.invoke('voice:cancel', r.id); return; }
       r.live = true; r.readyAt = performance.now();

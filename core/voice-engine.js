@@ -42,8 +42,9 @@ async function screenSafely(pcm16k, vp, state, log) {
 }
 
 // 电脑端每段录音的识别函数（交给 RecordedVoice）。vp = { profile, speaker } 时先做声纹筛查（他人小句静音）再识别。
-function segmentRecognizer({ engine, planKey, profile, local, source, usage = () => {}, log = console.warn, fetchImpl, vp = null }) {
-  const context = localContext(profile);
+// profile：云端用的词表（≤80 个，不含个人信息）；background：只给本地模型的背景文本（个人背景 + 全部热词 + 最近对话），缺省时由 profile 生成。
+function segmentRecognizer({ engine, planKey, profile, background, local, source, usage = () => {}, log = console.warn, fetchImpl, vp = null }) {
+  const context = background ?? localContext(profile);
   const recognizeOne = async (pcm16k, signal) => {
     if (engine === 'local' && local) {
       if (!local.ready && !planKey) await local.prepare();
@@ -71,7 +72,7 @@ function segmentRecognizer({ engine, planKey, profile, local, source, usage = ()
 }
 
 // 手机整段录音：先做声纹筛查（他人小句静音、全是他人的段落去掉），再本地整批送显卡或各段并发走 Token Plan。
-async function transcribeRecording(pcm16k, { engine, planKey, profile, local, source = 'phone', usage = () => {}, log = console.warn, fetchImpl, vp = null }) {
+async function transcribeRecording(pcm16k, { engine, planKey, profile, background, local, source = 'phone', usage = () => {}, log = console.warn, fetchImpl, vp = null }) {
   let parts = plan.speechSegments(pcm16k);
   if (!parts.length) return { text: '', via: {} };
   const sec = parts.reduce((s, p) => s + p.length, 0) / 32000;
@@ -89,7 +90,7 @@ async function transcribeRecording(pcm16k, { engine, planKey, profile, local, so
   if (engine === 'local' && local) {
     if (!local.ready && !planKey) await local.prepare();
     if (local.ready) {
-      try { texts = await local.transcribe(parts, localContext(profile), localTimeout(parts.reduce((s, p) => s + p.length, 0) / 32000 / 3)); route = 'local'; }
+      try { texts = await local.transcribe(parts, background ?? localContext(profile), localTimeout(parts.reduce((s, p) => s + p.length, 0) / 32000 / 3)); route = 'local'; }
       catch (error) {
         if (!planKey) throw error;
         log('[voice] 本地识别失败，改由 Token Plan 接力：', error.message);

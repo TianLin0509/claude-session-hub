@@ -8,6 +8,7 @@ const voiceEngine = require('../../core/voice-engine');
 const { getLocalAsr, getSpeakerWorker } = require('../../core/local-asr/manager');
 const voiceprint = require('../../core/voiceprint');
 const { LiveVoice } = require('../../core/voice-live');
+const voiceText = require('../../core/voice-text');
 // 冷启动接力用的实时识别模型：3.1 流式（免费额度 100 万 token，已开「用完自动停止」）
 const REALTIME_MODEL = 'qwen-audio-3.1-asr-flash-streaming';
 
@@ -15,7 +16,9 @@ const ENGINE_LABEL = { local: '本地 Qwen3-ASR-1.7B（未就绪时 Token Plan �
 
 function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = options => new VoiceStream(options),
   createRecorded = options => new planVoice.RecordedVoice(options), createLive = options => new LiveVoice(options),
-  getLocal = getLocalAsr, getSpeaker = getSpeakerWorker, envStartDelayMs = 20000 }) {
+  getLocal = getLocalAsr, getSpeaker = getSpeakerWorker, envStartDelayMs = 20000,
+  // 动态背景：给定 Hub 会话 id，返回该会话最近的对话文字（只给本地模型）；main.js 注入，测试可替换
+  getRecentContext = async () => '' }) {
   const dataDir = getHubDataDir();
   const usage = voiceEngine.usageLogger(dataDir);
   const filename = path.join(dataDir, 'voice-input.json');
@@ -35,7 +38,7 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
       localInstalled: localReady, localState: local?.state || 'off', model: ENGINE_LABEL[engine],
       voiceprint: { ...voiceprint.status(dataDir), available: !!getSpeaker(c), appliesTo: engine === 'streaming' ? 'none' : 'all' },
       keySet: engine === 'local' ? localReady : engine === 'tokenplan' ? !!planKey : meteredKey, envKey: !c.encryptedKey && !!process.env.DASHSCOPE_API_KEY,
-      profile: c.profiles?.[profileKey(project)] || { terms: '', context: '' } };
+      profile: c.profiles?.[profileKey(project)] || { terms: '', context: '' }, global: c.global || { terms: '', personal: '' } };
   }
   ipcMain.handle('voice:config', (_e, project) => view(project));
   ipcMain.handle('voice:save-config', (_e, patch = {}) => {
@@ -56,6 +59,7 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
     const project = profileKey(patch.project);
     if (project.length > 1000 || ['__proto__', 'constructor', 'prototype'].includes(project)) throw new Error('项目标识无效');
     c.profiles = { ...c.profiles, [project]: normalizeProfile(patch.profile) };
+    if (patch.global !== undefined) c.global = voiceText.normalizeGlobal(patch.global);
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     fs.writeFileSync(`${filename}.tmp`, JSON.stringify(c, null, 2), 'utf8');
     fs.renameSync(`${filename}.tmp`, filename);
@@ -99,17 +103,25 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
       sender.on('did-start-navigation', (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) cancelOwner(sender.id); });
     }
     const id = request.id;
-    const profile = c.profiles?.[profileKey(request.project)] || {};
+    const projectProfile = c.profiles?.[profileKey(request.project)] || {};
+    // 云端只拿词表（项目术语 + 通用热词，≤80 个）；本地另有个人背景与当前会话最近的对话，不出本机
+    const profile = voiceText.cloudProfile(projectProfile, c.global);
+    let background;
+    if (engine === 'local') {
+      const dynamic = await Promise.race([getRecentContext(request.sessionId).catch(() => ''), new Promise(r => setTimeout(() => r(''), 400))]);
+      background = voiceText.localBackground(projectProfile, c.global, dynamic);
+    }
     // 声纹过滤只作用于分段识别（本地 / Token Plan）；按量流式逐字出，无法按段剔除。
     const vpProfile = engine === 'streaming' ? null : voiceprint.active(dataDir);
     const speaker = vpProfile ? getSpeaker(c) : null;
     const vp = vpProfile && speaker ? { profile: vpProfile, speaker } : null;
     const recognizeSegment = engine === 'streaming' ? undefined
-      : voiceEngine.segmentRecognizer({ engine, planKey, profile, local, source: 'desktop', usage, vp });
+      : voiceEngine.segmentRecognizer({ engine, planKey, profile, background, local, source: 'desktop', usage, vp });
     const onEvent = result => {
       if (streams.get(sender.id)?.id !== id) return;
       if (['done', 'error'].includes(result.type)) streams.delete(sender.id);
-      if (!sender.isDestroyed()) sender.send('voice:event', { ...result, id });
+      // 所有识别方式统一去掉独立的语气词（嗯、呃、啊……）
+      if (!sender.isDestroyed()) sender.send('voice:event', { ...result, ...(typeof result.text === 'string' ? { text: voiceText.cleanFillers(result.text) } : {}), id });
     };
     let stream;
     if (engine === 'local') {
@@ -117,7 +129,7 @@ function registerVoiceInputIpc(ipcMain, { safeStorage, app, createStream = optio
       let meteredKey = process.env.DASHSCOPE_API_KEY || '';
       if (c.encryptedKey) { try { meteredKey = safeStorage.decryptString(Buffer.from(c.encryptedKey, 'base64')); } catch { meteredKey = ''; } }
       const openApi = apiEvent => meteredKey ? createStream({ config: c, apiKey: meteredKey, sampleRate: 16000, profile, model: REALTIME_MODEL, onEvent: apiEvent }) : null;
-      stream = createLive({ sampleRate: request.sampleRate, local, recognizeSegment, context: voiceEngine.localContext(profile), openApi, vp, usage, onEvent });
+      stream = createLive({ sampleRate: request.sampleRate, local, recognizeSegment, context: background, openApi, vp, usage, onEvent });
     } else {
       stream = (engine === 'streaming' ? createStream : createRecorded)({ config: c, apiKey, sampleRate: request.sampleRate, profile, recognizeSegment, onEvent });
     }
