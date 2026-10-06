@@ -209,7 +209,11 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
         });
       }
       await releaseAudio(r);
+      if (!r.live) { await r.connecting; r.live = true; for (const pcm of r.pending.splice(0)) r.queue = r.queue.then(() => !r.ended && ipcRenderer.invoke('voice:audio', { id: r.id, data: new Uint8Array(pcm) })); } // 连接中就点了停止：补发已录的声音
       await r.queue;
+      // 诊断记录（写进用量账本）：点击→开始收音、开始收音→第一次听到声音、点击→识别服务就绪
+      void ipcRenderer.invoke('voice:diag', { id: r.id, engine: r.engine, clickToCaptureMs: Math.round(r.captureAt - r.clickAt),
+        captureToSoundMs: r.firstSoundAt == null ? null : Math.round(r.firstSoundAt - r.captureAt), clickToReadyMs: r.readyAt == null ? null : Math.round(r.readyAt - r.clickAt) }).catch(() => {});
       if (!r.ended) await ipcRenderer.invoke('voice:stop', r.id);
     } catch (error) { fail(r, cleanError(error)); }
   }
@@ -217,7 +221,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
     if (activeRecording) { setStatus('已有录音正在进行，请先停止。'); return; }
     const target = getTarget();
     if (!target?.id || !isActive(target) || !input.isContentEditable) { setStatus('请先选择一个可编辑的会话。'); return; }
-    const r = { id: randomUUID(), target, range: selectedRange(input), html: input.innerHTML, queue: Promise.resolve(), queuedBytes: 0, ended: false };
+    const r = { id: randomUUID(), target, range: selectedRange(input), html: input.innerHTML, queue: Promise.resolve(), queuedBytes: 0, ended: false, clickAt: performance.now() };
     recording = r; activeRecording = r; mic.disabled = true;
     setStatus('正在准备麦克风…');
     try {
@@ -234,33 +238,43 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
       r.context = new AudioContext(); await r.context.resume();
       await r.context.audioWorklet.addModule(new URL('voice-pcm-worklet.js', window.location.href).href);
       if (r.ended) { await releaseAudio(r); return; }
-      setStatus('正在连接百炼语音服务…');
-      await ipcRenderer.invoke('voice:start', { id: r.id, project: target.project, sampleRate: r.context.sampleRate });
-      if (r.ended) { await ipcRenderer.invoke('voice:cancel', r.id); return; }
+      // 先开始收音、后连接识别服务：连接期间录到的声音先存在 r.pending，连上后按顺序补发，开口的前几个字不再丢。
+      r.pending = []; r.live = false;
+      const send = pcm => {
+        r.queuedBytes += pcm.byteLength;
+        // 积压上限：流式识别 2 秒（实时上传）；分段识别（本地 / Token Plan）只是交给后台，机器忙时放宽到 15 秒
+        if (r.live && r.queuedBytes > r.context.sampleRate * 2 * (r.engine === 'streaming' ? 2 : 15)) { fail(r, r.engine === 'streaming' ? '网络发送积压，请分段重试' : '电脑忙不过来，录音积压，请分段重试'); return; }
+        r.queue = r.queue.then(async () => {
+          if (!r.ended) await ipcRenderer.invoke('voice:audio', { id: r.id, data: new Uint8Array(pcm) });
+          r.queuedBytes -= pcm.byteLength;
+        }).catch(error => fail(r, cleanError(error)));
+      };
       r.source = r.context.createMediaStreamSource(r.stream);
       r.node = new AudioWorkletNode(r.context, 'hub-voice-pcm', { channelCount: 1, channelCountMode: 'explicit', numberOfInputs: 1, numberOfOutputs: 1 });
       r.node.port.onmessage = ({ data }) => {
         if (data.flushed) { r.flushed?.(); return; }
         if (r.ended || !data.pcm) return;
         if (data.peak > .01) r.lastSound = Date.now();
-        r.queuedBytes += data.pcm.byteLength;
-        // 积压上限：流式识别 2 秒（实时上传）；分段识别（本地 / Token Plan）只是交给后台，机器忙时放宽到 15 秒
-        if (r.queuedBytes > r.context.sampleRate * 2 * (r.engine === 'streaming' ? 2 : 15)) { fail(r, r.engine === 'streaming' ? '网络发送积压，请分段重试' : '电脑忙不过来，录音积压，请分段重试'); return; }
-        r.queue = r.queue.then(async () => {
-          if (!r.ended) await ipcRenderer.invoke('voice:audio', { id: r.id, data: new Uint8Array(data.pcm) });
-          r.queuedBytes -= data.pcm.byteLength;
-        }).catch(error => fail(r, cleanError(error)));
+        if (data.peak > .02 && r.firstSoundAt == null) r.firstSoundAt = performance.now(); // 诊断：开始收音后多久第一次听到声音
+        if (r.live) send(data.pcm); else if (r.pending.length < 1500) r.pending.push(data.pcm);
       };
       r.node.onprocessorerror = () => fail(r, '麦克风音频处理失败');
       r.source.connect(r.node); r.node.connect(r.context.destination);
       for (const track of r.stream.getTracks()) track.addEventListener('ended', () => { if (!r.stopping) fail(r, '麦克风已断开'); });
-      r.started = Date.now(); r.lastSound = r.started;
+      r.started = Date.now(); r.lastSound = r.started; r.captureAt = performance.now();
+      setStatus('正在录音（连接识别服务中，可以开始说话）');
+      r.connecting = ipcRenderer.invoke('voice:start', { id: r.id, project: target.project, sampleRate: r.context.sampleRate });
+      await r.connecting;
+      if (r.ended) { await ipcRenderer.invoke('voice:cancel', r.id); return; }
+      r.live = true; r.readyAt = performance.now();
+      for (const pcm of r.pending.splice(0)) send(pcm);
       mic.disabled = false; mic.textContent = '停止'; mic.setAttribute('aria-label', '停止语音输入'); mic.setAttribute('aria-pressed', 'true');
       r.timer = setInterval(() => {
         const seconds = Math.floor((Date.now() - r.started) / 1000);
         if (!sameTarget(r)) { void cancelRecording(); return; }
         if (seconds >= 295) { void stop(r); return; }
-        setStatus(`录音 ${seconds}s · ${Date.now() - r.lastSound > 5000 ? '未检测到声音，请检查麦克风' : '说完点击停止'} · 最长 5 分钟`);
+        const route = { local: '本地识别', api: '实时 API 接力（本地模型装载中）', plan: 'Token Plan 接力（本地模型装载中）' }[r.route] || '';
+        setStatus(`录音 ${seconds}s · ${Date.now() - r.lastSound > 5000 ? '未检测到声音，请检查麦克风' : (route ? route + ' · ' : '') + '说完点击停止'} · 最长 5 分钟`);
       }, 250);
       setStatus('正在录音 · 说完点击停止');
     } catch (error) {
@@ -310,6 +324,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
     const r = recording;
     if (!r || r.id !== result.id || r.ended || disposed) return;
     if (result.type === 'error') { fail(r, result.message); return; }
+    if (result.route) r.route = result.route;
     if (!updateDraft(r, result.text || '')) return;
     if (result.type !== 'done') return;
     finishUI(r);

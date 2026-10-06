@@ -1,7 +1,7 @@
 'use strict';
 // 边说边出字（「本地识别」模式的电脑端录音）：
-// - 本地模型已在显卡：当前这句约每 0.8 秒整句重识别一次（Qwen3-ASR，带热词）刷新输入框；
-//   说到停顿处定稿：先做声纹筛查（他人小句静音），再识别一次得到最终文字。
+// - 本地模型已在显卡：只重识别「最近一个小停顿（≥0.3 秒）之后」的那一小截（窗口短、刷新快），
+//   小停顿前的半句先识别定下来；说到较长停顿处整段定稿：先做声纹筛查（他人小句静音），再整段识别一次得到最终文字。
 // - 本地模型还在装（冷启动约 4～11 秒）：录音同时推给百炼实时 API（3.1 流式，逐字出），
 //   模型装好后在下一个停顿处切到本地；这段的声纹在收尾时按句比对。
 // - 实时 API 不可用（没配 Key、免费额度用完自动停止、连接失败）：未就绪期间的段落交给 Token Plan，说完一段出一段。
@@ -17,12 +17,14 @@ class LiveVoice {
   // context：本地滚动识别用的热词文本；openApi(onEvent)：开一路实时 API（返回 VoiceStream，不可用时返回 null）；
   // vp：{ profile, speaker } 声纹；usage：用量账本。
   constructor({ sampleRate, onEvent, local, recognizeSegment, context = '', openApi = () => null, vp = null,
-    usage = () => {}, log = console.warn, rollingMs = 800, maxSeconds = 300 }) {
+    usage = () => {}, log = console.warn, rollingMs = 250, maxSeconds = 300 }) {
     if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 96000) throw new Error('麦克风采样率不受支持');
     Object.assign(this, { rate: sampleRate, onEvent, local, recognizeSegment, context, vp, usage, log, maxSeconds });
     this.state = 'recording'; this.carry = Buffer.alloc(0); this.seconds = 0;
     this.all = Buffer.alloc(0); this.segStart = 0; this.levels = [];
     this.parts = []; this.preview = ''; this.rolledBytes = 0; this.rolling = false;
+    // 段内小句：uttFrom 起是正在滚动识别的那一截；committed 是本段里已定下的前半句
+    this.uttFrom = 0; this.committed = []; this.uttScanned = 0; this.uttRun = 0; this.uttSpeech = false;
     this.controller = new AbortController();
     this.api = null;
     this.mode = local?.ready ? 'local' : 'plan';
@@ -88,6 +90,32 @@ class LiveVoice {
     const have = this.levels.length * FRAME_BYTES;
     if (segBytes - have >= FRAME_BYTES) this.levels.push(...plan.frameLevels(this.all.subarray(this.segStart), have));
     for (let f; (f = plan.cutFrame(this.levels)) > 0;) this.cut(this.segStart + f * FRAME_BYTES, f);
+    if (this.mode === 'local') this.scanUtterances();
+  }
+  // 段内找 ≥0.3 秒的小停顿：之前那一截先识别定下来，滚动窗口从停顿处重新开始。
+  scanUtterances() {
+    const voiced = this.levels.filter(v => v > 120).sort((a, b) => a - b);
+    const quiet = Math.max(120, (voiced.length ? voiced[Math.floor(voiced.length * 0.9)] : 0) * 0.12);
+    for (let f = this.uttScanned; f < this.levels.length; f++) {
+      if (this.levels[f] >= quiet) { this.uttSpeech = true; this.uttRun = 0; continue; }
+      if (this.uttSpeech && ++this.uttRun >= 15) {
+        const at = this.segStart + (f - 7) * FRAME_BYTES;
+        if (at - this.uttFrom >= RATE * 2) this.commitUtterance(at);
+        this.uttSpeech = false; this.uttRun = 0;
+      }
+    }
+    this.uttScanned = this.levels.length;
+  }
+  commitUtterance(at) {
+    const pcm = this.all.subarray(this.uttFrom, at);
+    const item = { text: this.preview ? this.preview + '，' : '' };
+    this.committed.push(item);
+    this.uttFrom = at; this.preview = ''; this.rolledBytes = 0;
+    if (!this.local?.ready) return;
+    item.done = this.local.transcribe([pcm], this.context, 3000 + pcm.length / 32000 * 600)
+      // 小停顿多半在句中：句末标点换成逗号，整段定稿时以最终识别为准
+      .then(([text]) => { item.text = text.replace(/[。．.!！?？]+$/, '，'); this.emit(); })
+      .catch(error => this.log('[voice] 本地小句识别失败：', error.message));
   }
   // 在停顿处切段：本地 / Token Plan 模式定稿这一段；实时 API 模式下若本地已就绪，从这里切到本地。
   cut(at, frames) {
@@ -101,8 +129,9 @@ class LiveVoice {
       }
     }
     // 先把当前预览交给定稿段、清空，再显示：避免同一句短暂显示两遍
-    const pcm = this.all.subarray(this.segStart, at), preview = this.preview;
+    const pcm = this.all.subarray(this.segStart, at), preview = plan.joinTexts([...this.committed.map(c => c.text), this.preview]);
     this.segStart = at; this.levels = this.levels.slice(frames); this.preview = ''; this.rolledBytes = 0;
+    this.committed = []; this.uttFrom = at; this.uttScanned = 0; this.uttRun = 0; this.uttSpeech = false;
     if (!coveredByApi) {
       this.finalize(pcm, preview);
       if (this.mode === 'plan' && this.local?.ready) this.mode = 'local';
@@ -120,13 +149,13 @@ class LiveVoice {
   // 本地滚动识别：当前这句从段起点到现在整句重识别，结果只作预览，定稿时以最终识别为准。
   async roll() {
     if (this.state !== 'recording' || this.mode !== 'local' || !this.local?.ready || this.rolling) return;
-    const pcm = this.all.subarray(this.segStart);
-    if (pcm.length - this.rolledBytes < RATE * 2 * 0.4 || !plan.hasSpeech(pcm)) return;
-    this.rolling = true; const segAt = this.segStart; this.rolledBytes = pcm.length;
+    const pcm = this.all.subarray(this.uttFrom);
+    if (pcm.length - this.rolledBytes < RATE * 2 * 0.3 || !plan.hasSpeech(pcm)) return;
+    this.rolling = true; const segAt = this.uttFrom; this.rolledBytes = pcm.length;
     try {
       const [text] = await this.local.transcribe([pcm], this.context, 3000 + pcm.length / 32000 * 600);
       // 预览是半句话：去掉模型习惯性补上的句末标点，免得看起来像已说完
-      if (segAt === this.segStart && !this.ended) { this.preview = text.replace(/[。．.!！?？]+$/, ''); this.emit(); }
+      if (segAt === this.uttFrom && !this.ended) { this.preview = text.replace(/[。．.!！?？]+$/, ''); this.emit(); }
     } catch (error) { this.log('[voice] 本地滚动识别失败：', error.message); }
     finally { this.rolling = false; }
   }
@@ -135,9 +164,10 @@ class LiveVoice {
   kept() { const anyMe = this.parts.some(p => p.me > 0) || this.api?.me > 0; return this.parts.map(p => !(anyMe && p.otherOnly)); }
   text() {
     const keep = this.kept();
-    return plan.joinTexts([this.api?.text || '', ...this.parts.map((p, i) => keep[i] ? (p.final ? p.text : p.preview) : ''), this.preview]);
+    return plan.joinTexts([this.api?.text || '', ...this.parts.map((p, i) => keep[i] ? (p.final ? p.text : p.preview) : ''), ...this.committed.map(c => c.text), this.preview]);
   }
-  emit() { if (!this.ended) this.onEvent({ type: 'partial', text: this.text() }); }
+  // route：当前出字走哪条路（local 本地 / api 实时 API 接力 / plan Token Plan 接力），界面状态栏显示
+  emit() { if (!this.ended) this.onEvent({ type: 'partial', text: this.text(), route: this.mode }); }
 
   // 实时 API 那段的声纹：每句按时间位置取音频比对，确认有本人时去掉他人的句子。
   async screenApi() {
@@ -168,7 +198,7 @@ class LiveVoice {
       this.api.end = this.all.length;
       if (this.api.ready) this.api.stream.finish().catch(error => this.apiFailed(error.message));
       else this.api.finishRequested = true;
-    } else { const preview = this.preview; this.preview = ''; this.finalize(this.all.subarray(this.segStart), preview); }
+    } else { const preview = plan.joinTexts([...this.committed.map(c => c.text), this.preview]); this.preview = ''; this.committed = []; this.finalize(this.all.subarray(this.segStart), preview); }
     this.preview = '';
     void (async () => {
       if (this.api) await this.api.done;
