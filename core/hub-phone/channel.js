@@ -3,13 +3,15 @@ const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:pat
 const {seal,open,credentials,invite}=require('./crypto');
 // 手机协议 v2（App 1.1）：voice_message 识别后直接交给助理，转写只回传显示；hello 声明能力后才下发 profile；set_profile 切换助理模型。
 // 旧 App 只认 text/voice/status/answer/image/transcript，未声明能力前不向它发送新类型。
-const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak','memo_update'];
+const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak','memo_update','voice_prepare'];
+// 本 Hub 能处理的手机消息能力，随 profile 下发；手机据此决定是否发 voice_prepare（老 Hub 不认会回「校验未通过」）。
+const HUB_CAPS=['voice_prepare'];
 const MAX_VOICE_BYTES=16000*2*120;
 const ACTIVE=['dispatching','waiting','unknown'];
 const LONG_POLL_SECONDS=15; // 中继支持长等待时，新消息一到即返回；旧中继忽略该参数、立即返回
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 class PhoneChannel{
- constructor({assistant,journal,renderHtml=null,transcribe,fastLane=null,imageRoots=[],speak=null,inboxRoot=null}){Object.assign(this,{assistant,journal,renderHtml,transcribe,fastLane,imageRoots,speak,inboxRoot});this.closed=false;this.issue=null;this.online=false;this.lastPoll=0;}
+ constructor({assistant,journal,renderHtml=null,transcribe,prepareVoice=null,fastLane=null,imageRoots=[],speak=null,inboxRoot=null}){Object.assign(this,{assistant,journal,renderHtml,transcribe,prepareVoice,fastLane,imageRoots,speak,inboxRoot});this.closed=false;this.issue=null;this.online=false;this.lastPoll=0;}
  status(){const s=this.journal.state;return{ok:true,version:'1.1.0',protocol:2,enabled:s.enabled,connected:this.online,issue:this.issue,paired:!!s.credentials,pending:s.inbox.filter(r=>r.state==='queued').length,unknown:s.inbox.filter(r=>r.state==='unknown').length,voice:true,phoneApp:s.phoneApp||null,backend:this.assistant.overview().backendKind||null};}
  async request(endpoint,{method='GET',body,role='hub',wait=0}={}){const c=this.journal.state.credentials;if(!c)throw Error('请先连接手机');const q=method==='GET'?`?channel=${c.channel}&role=${role}&after=${this.journal.state.cursor}${wait?'&wait='+wait:''}`:'';const headers={Authorization:'Bearer '+c.hubToken,'Content-Type':'application/json'};if(endpoint==='/create'){const file='C:/VibeData/Secrets/aihub-phone-relay-registration.txt';const secret=process.env.HUB_PHONE_REGISTER_KEY||(fs.existsSync(file)?fs.readFileSync(file,'utf8').trim():'');if(!/^[A-Za-z0-9_-]{43}$/.test(secret))throw Error('手机连接服务尚未配置，请先完成手机服务部署');headers['X-Register-Key']=secret;}const r=await fetch(c.url+endpoint+q,{method,headers,body:body&&JSON.stringify({...body,channel:c.channel,role}),signal:AbortSignal.timeout(wait?(wait+15)*1000:20000)});if(!r.ok)throw Error('手机连接服务暂时不可用（'+r.status+'）');return r.json();}
  async pair(){const s=this.journal.state;if(!s.credentials)this.journal.change(x=>{x.credentials=credentials();x.notices=this.assistant.notifications({limit:200}).notifications.map(n=>n.id);x.created=Date.now();});const {channel,hubToken,phoneToken}=s.credentials;await this.request('/create',{method:'POST',body:{channel,hubToken,phoneToken}});this.journal.change(x=>{x.enabled=true;});this.start();return{...this.status(),code:invite(s.credentials)};}
@@ -32,6 +34,8 @@ class PhoneChannel{
  async ingest(messages){const s=this.journal.state;
   for(const packet of messages){if(packet.seq<=s.cursor)continue;if(!s.inbox.some(r=>r.id===packet.id)){try{const m=open(s.credentials.key,s.credentials.channel,packet.id,'phone',packet.payload);this.validate(m);
      if(m.type==='hello'){this.journal.change(x=>{x.cursor=packet.seq;x.lastInbound=Date.now();x.phoneCaps=m.caps.map(String).slice(0,20);x.phoneApp=String(m.app||'').slice(0,20);x.memoSignature=null;x.inbox.push({id:packet.id,type:'hello',state:'done'});});await this.sendProfile(packet.id).catch(e=>console.warn('[phone] profile',e.message));this.sendReminders();continue;}
+     // 按下说话键的提前通知：立即让电脑准备本地识别，不进收件箱、不回执。
+     if(m.type==='voice_prepare'){this.journal.change(x=>{x.cursor=packet.seq;x.lastInbound=Date.now();});try{this.prepareVoice?.();}catch(e){console.warn('[phone] voice_prepare',e.message);}continue;}
      if(m.attachment){const saved=this.saveAttachment(m.attachment);m.text=m.text+'\n\n（我从手机分享了一个文件：'+saved+'）';m.noFast=true;m.shared=require('node:path').basename(saved);delete m.attachment;}
      if(m.to==='assistant')m.noFast=true;
      this.journal.change(x=>{x.inbox.push({...m,id:packet.id,state:'queued',t:{received:Date.now()}});x.cursor=packet.seq;x.lastInbound=Date.now();});if(m.type==='text')this.log({id:packet.id,role:'user',input:'text',text:m.text});}catch{this.journal.change(x=>{x.cursor=packet.seq;});this.emit('invalid-'+packet.id,{type:'status',requestId:packet.id,state:'rejected',text:'消息校验未通过，未提交任务。'});}}else this.journal.change(x=>{x.cursor=packet.seq;});}
@@ -76,7 +80,7 @@ class PhoneChannel{
   if(!this.supports('profile')||!this.assistant.phoneProfile)return;
   const profile=await this.assistant.phoneProfile();
   this.journal.change(x=>{x.profileSignature=this.profileSignature();});
-  this.emit('profile-'+crypto.randomUUID(),{type:'profile',...(requestId?{requestId}:{}),...profile,watching:this.watchingCount(),switching:!!this.assistant.switching});
+  this.emit('profile-'+crypto.randomUUID(),{type:'profile',...(requestId?{requestId}:{}),...profile,hubCaps:HUB_CAPS,watching:this.watchingCount(),switching:!!this.assistant.switching});
  }
  async tick(){const s=this.journal.state;if(this.working||this.closed||!s.enabled||!s.credentials)return;this.working=true;this.lastPoll=Date.now();
  try{

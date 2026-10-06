@@ -48,7 +48,7 @@ async function main() {
   const snap = async name => { const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(shot.data, 'base64')); };
   try {
     hub = await launchIsolatedHub({ dataDir: data, port: await freePort(), windowMode: 'hidden', label: 'voice-tokenplan', entryPath: path.join(__dirname, 'fixtures/voice-tokenplan-hub.js'), extraEnv: {
-      DASHSCOPE_API_KEY: '', HUB_VOICE_TEST_WAV: audioFile, CODEX_HOME: home,
+      DASHSCOPE_API_KEY: '', HUB_VOICE_TEST_WAV: audioFile, CODEX_HOME: home, HUB_LOCAL_ASR_PYTHON: path.join(root, 'no-local.exe'),
       CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.join(__dirname, 'fixtures/codex-app-server.js'),
     } });
     cdp = await connectFirstPage(hub);

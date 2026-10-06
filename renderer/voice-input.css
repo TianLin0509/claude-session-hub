@@ -22,3 +22,7 @@
 .mr-group-composer.voice-enabled .voice-mic{grid-column:2;grid-row:3;align-self:end}
 .mr-group-composer.voice-enabled .mr-workflow-btn{grid-column:3}
 .mr-group-composer.voice-enabled .mr-send-btn{grid-column:4}
+.voice-voiceprint{margin:14px 0;padding:10px 14px;border:1px solid var(--border,#475569);border-radius:8px}
+.voice-voiceprint legend{padding:0 6px;font-size:13px;font-weight:600}
+.voice-settings-dialog .voice-voiceprint input[type=checkbox]{display:inline-block;width:auto;margin:0 6px 0 0;vertical-align:middle}
+.voice-voiceprint-script{padding:8px 10px;border-radius:6px;background:var(--bg-secondary,#253143);font-size:14px!important;line-height:1.8!important}

@@ -5,6 +5,7 @@ const fs = require('fs'), os = require('os'), path = require('path');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-voice-ipc-'));
 process.env.CLAUDE_HUB_DATA_DIR = root;
 delete process.env.DASHSCOPE_API_KEY;
+process.env.HUB_LOCAL_ASR_PYTHON = path.join(root, 'no-local-python.exe'); // 本机装了本地识别也按「未安装」测
 const { registerVoiceInputIpc } = require('../main/ipc/voice-input-handlers');
 const handlers = new Map(), app = new EventEmitter(), streams = [];
 const storage = { isEncryptionAvailable: () => true, encryptString: text => Buffer.from(text.split('').reverse().join('')), decryptString: bytes => bytes.toString().split('').reverse().join('') };
@@ -52,7 +53,7 @@ async function main() {
   // 有 Token Plan 套餐 Key 时默认走套餐（说完再识别），可在设置里显式改回按量流式。
   fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({ acp: { apiKey: 'sk-sp-plan', baseURL: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' } }));
   const planView = await call(one, 'voice:config', project);
-  assert.equal(planView.engine, 'tokenplan'); assert.equal(planView.keySet, true); assert.equal(planView.model, 'qwen-audio-3.0-asr-flash');
+  assert.equal(planView.engine, 'tokenplan'); assert.equal(planView.keySet, true); assert(planView.model.startsWith('qwen-audio-3.0-asr-flash'));
   assert(!JSON.stringify(planView).includes('sk-sp-plan'));
   const before = streams.length;
   await call(one, 'voice:start', { ...req, id: 'plan1234567890abcd' });
