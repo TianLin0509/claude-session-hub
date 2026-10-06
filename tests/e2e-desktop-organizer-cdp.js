@@ -33,19 +33,25 @@ async function click(client, selector) {
     await click(client, '#btn-desktop-organizer');
     await wait(client, "document.querySelectorAll('#desktop-organizer-panel input').length===2");
     assert.equal(await client.eval("document.querySelectorAll('#desktop-organizer-panel input:checked').length"), 1);
+    await click(client, '#desktop-organizer-panel [data-do="arrange"]');
+    await wait(client, "document.querySelector('#desktop-organizer-panel .do-message').textContent.includes('已排齐 2 个图标')");
+    assert.equal(await fs.readFile(path.join(desktop, '桌面报告.pptx'), 'utf8'), 'original report');
+    assert.equal(JSON.parse(await fs.readFile(path.join(testRoot, 'desktop-icon-layout.json'), 'utf8')).simulated, true);
     const screenshotDir = path.join(__dirname, '..', 'artifacts'); await fs.mkdir(screenshotDir, { recursive: true });
     const shot = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
-    await fs.writeFile(path.join(screenshotDir, '20261006-desktop-clean-preview-codex1.png'), Buffer.from(shot.data, 'base64'));
+    await fs.writeFile(path.join(screenshotDir, '20261006-desktop-columns-preview-codex1.png'), Buffer.from(shot.data, 'base64'));
     await click(client, '#desktop-organizer-panel [data-do="execute"]');
     await wait(client, "document.querySelector('#desktop-organizer-panel .do-message').textContent.includes('已收走 1 项')");
+    assert.match(await client.eval("document.querySelector('#desktop-organizer-panel .do-message').textContent"), /已排齐 1 个图标/);
     await assert.rejects(fs.access(path.join(desktop, '桌面报告.pptx')));
     assert.equal(await fs.readFile(path.join(desktop, 'AI Hub.lnk'), 'utf8'), 'launcher');
     await click(client, '#desktop-organizer-panel [data-do="undo"]');
     await wait(client, "document.querySelector('#desktop-organizer-panel .do-message').textContent.includes('已还原 1 项')");
+    assert.match(await client.eval("document.querySelector('#desktop-organizer-panel .do-message').textContent"), /已排齐 2 个图标/);
     assert.equal(await fs.readFile(path.join(desktop, '桌面报告.pptx'), 'utf8'), 'original report');
     await click(client, '#desktop-organizer-panel [data-do="close"]');
     assert.equal(await client.eval("document.getElementById('desktop-organizer-panel').hidden"), true);
-    await fs.writeFile(path.join(screenshotDir, '20261006-desktop-clean-e2e-codex1.json'), JSON.stringify({ ok: true, temp, pid: hub.pid, checks: ['visible navigation', 'scan', 'default launcher retained', 'real mouse archive', 'real mouse undo', 'close'] }, null, 2));
-    console.log('PASS isolated Hub mouse clicks: scan → archive → undo; launcher retained');
+    await fs.writeFile(path.join(screenshotDir, '20261006-desktop-columns-e2e-codex1.json'), JSON.stringify({ ok: true, temp, pid: hub.pid, checks: ['visible navigation', 'scan', 'standalone layout without moving files', 'default launcher retained', 'real mouse archive and automatic layout', 'real mouse undo and automatic layout', 'close'], layout: 'simulated fixture only; native desktop verified separately' }, null, 2));
+    console.log('PASS isolated Hub mouse clicks: standalone layout → archive and layout → restore and layout; launcher retained');
   } finally { if (client) await client.close(); await gracefulQuit(hub); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
