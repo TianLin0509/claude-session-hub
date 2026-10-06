@@ -105,9 +105,16 @@ test('a source final present only in cache is rendered before removing the tempo
  const fn=source.slice(source.indexOf('function _patchGroupChatPendingMessage('),source.indexOf('async function refreshGroupChatPanel(')).trim();
  let rendered=false,removed=false;const article={remove:()=>removed=true},panel={querySelector:()=>({querySelector:()=>article})};
  const state={messages:[{sid:'s',sourceMessage:'native',phase:'final',content:'answer',attemptId:'a'}],_partialBy:{s:{text:'answer',attemptId:'a'}}};
- const patch=require('node:vm').runInNewContext('('+fn+')',{SourceFinal:require('../core/groupchat-source-final'),CSS:{escape:x=>x},
+ const patch=require('node:vm').runInNewContext('('+fn+')',{OrchUI:{messageVisible:()=>true},SourceFinal:require('../core/groupchat-source-final'),CSS:{escape:x=>x},
   _captureGroupChatScroll:()=>({top:25}),_restoreGroupChatScroll:()=>{},_renderGcPanelInto:(_p,_m,s,opts)=>{assert.equal(s,state);assert.equal(opts.scroll.top,25);rendered=true;}});
  assert.equal(patch(panel,{groupChat:true},'s',state),true);assert.equal(rendered,true);assert.equal(removed,false);
+});
+test('hidden worker streaming is handled without DOM work or full-render fallback',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'../renderer/meeting-room.js'),'utf8');
+ const fn=source.slice(source.indexOf('function _patchGroupChatPendingMessage('),source.indexOf('async function refreshGroupChatPanel(')).trim();
+ const patch=require('node:vm').runInNewContext('('+fn+')',{OrchUI:{messageVisible:()=>false}});
+ const panel={querySelector:()=>assert.fail('hidden output must not touch DOM')};
+ assert.equal(patch(panel,{groupChat:true},'worker',{_partialBy:{worker:{text:'new output'}}}),true);
 });
 for(const supplementFirst of [true,false])test('original and supplementary answers remain separate, supplement first='+supplementFirst,()=>{
  const o=fresh();o.beginTurn('goal');const original=o.recordTurnPrompt(1,'a','original',{memberId:'m1'});

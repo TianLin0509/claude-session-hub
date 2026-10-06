@@ -2554,6 +2554,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
+    if (!OrchUI.messageVisible(meeting, message)) return '';
     const sourceSession = typeof sessions !== 'undefined' && sessions.get(message.sid);
     const renderMarkdown = text => _renderMarkdown(text, sourceSession?.cwd || meeting.workspace || _activeMeetingCwd());
     if (!message) return '';
@@ -2868,7 +2869,7 @@ if (typeof document !== 'undefined') (function () {
     }
     const _collapsedSet = _gcCollapsedActs[meeting.id] || (_gcCollapsedActs[meeting.id] = new Set());
     _orchLatestCardId = OrchUI.enabled(meeting) ? OrchUI.latestOrchestratorMessageId(meeting, renderMessages) : '';
-    const messageHtml = renderMessages.map(m => {
+    const messageHtml = renderMessages.filter(m => OrchUI.messageVisible(meeting, m)).map(m => {
       let sep = '';
       const actKey = (m && m.committeeAct) ? `${m.committeeAct}#${m.committeeRound || ''}` : null;
       if (actKey) {
@@ -2899,8 +2900,8 @@ if (typeof document !== 'undefined') (function () {
 
     const emptyHtml = (!messageHtml && !pendingHtml) ? `
       <div class="mr-gc-empty">
-        <div class="mr-gc-empty-title">还没有群聊消息</div>
-        <div class="mr-gc-empty-sub">直接提问会发给当前勾选成员；输入 @m1、@m2 或 @all 可以指定发言成员。</div>
+        <div class="mr-gc-empty-title">${OrchUI.onlyOrchestrator(meeting) ? '还没有你和编排员的消息' : '还没有群聊消息'}</div>
+        <div class="mr-gc-empty-sub">${OrchUI.onlyOrchestrator(meeting) ? '切换到“全员信息”可查看队员消息。' : '直接提问会发给当前勾选成员；输入 @m1、@m2 或 @all 可以指定发言成员。'}</div>
       </div>
     ` : '';
     const dutyHatPanel = _renderDutyHatPanel(meeting, slots);
@@ -3198,6 +3199,9 @@ if (typeof document !== 'undefined') (function () {
   function _patchGroupChatPendingMessage(panel, meeting, sid, state) {
     if (!panel || !meeting || !meeting.groupChat) return false;
     if (!sid || !state) return false;
+    // The cache still receives this output. A hidden member needs no DOM work,
+    // including the caller's full-render fallback on every streaming chunk.
+    if (!OrchUI.messageVisible(meeting, { role: 'assistant', sid })) return true;
     const partial = state._partialBy && state._partialBy[sid];
     if (!partial) return false;
     const messagesEl = panel.querySelector('.mr-gc-messages');
@@ -6510,6 +6514,8 @@ if (typeof document !== 'undefined') (function () {
       const collapsed = _getGroupSideCollapsed();
       return `<button class="mr-header-btn mr-view-btn ${collapsed ? '' : 'active'}" id="mr-btn-group-members" title="${collapsed ? '展开群成员栏' : '收起群成员栏'}">群成员 ${gcSlots.length}</button>`;
     })() : '';
+    const gcMessageScopeHtml = OrchUI.enabled(meeting)
+      ? `<button type="button" class="mr-header-btn${OrchUI.onlyOrchestrator(meeting) ? ' active' : ''}" id="mr-btn-message-scope" aria-pressed="${OrchUI.onlyOrchestrator(meeting)}" title="${OrchUI.onlyOrchestrator(meeting) ? '当前只显示你和编排员的消息，点击查看全员信息' : '点击只看你和编排员的消息'}">${OrchUI.onlyOrchestrator(meeting) ? '只看编排' : '全员信息'}</button>` : '';
 
     el.innerHTML = `
       <div class="mr-header-left">
@@ -6520,7 +6526,7 @@ if (typeof document !== 'undefined') (function () {
       <!-- 2026-06-28 道雪：删 header 进度条（与标题旁 meta 的"已N轮·本轮N/M"文字信息重叠），保留 meta。_updateHeaderProgress 的 progEl 分支会因元素缺失自动跳过。 -->
       <div class="mr-header-right">
         ${layoutButtonsHtml ? `<div class="mr-header-primary-actions">${layoutButtonsHtml}</div>` : ''}
-        <div class="mr-header-primary-actions">${gcMembersBtnHtml}${meeting.groupChat ? `<button type="button" class="mr-header-btn${_gcToolsExpanded[meeting.id] ? ' active' : ''}" id="mr-btn-group-tools" aria-expanded="${!!_gcToolsExpanded[meeting.id]}" aria-controls="mr-gc-tools" title="展开或收起搜索与本轮进度">群聊工具</button>` : ''}${viewToggleHtml}</div>
+        <div class="mr-header-primary-actions">${gcMembersBtnHtml}${gcMessageScopeHtml}${meeting.groupChat ? `<button type="button" class="mr-header-btn${_gcToolsExpanded[meeting.id] ? ' active' : ''}" id="mr-btn-group-tools" aria-expanded="${!!_gcToolsExpanded[meeting.id]}" aria-controls="mr-gc-tools" title="展开或收起搜索与本轮进度">群聊工具</button>` : ''}${viewToggleHtml}</div>
         <div class="mr-header-secondary-actions" aria-label="会议工具">
           <button class="mr-header-btn" id="mr-btn-add-sub" title="${meeting.groupChat ? '添加新的 AI 成员' : '添加子会话'}">${meeting.groupChat ? '+ 成员' : '+ 添加'}</button>
           ${meeting.workspace ? `<button class="btn-zoom btn-file-manager-toggle" id="mr-btn-files" title="打开当前工作目录的文件管理" aria-label="打开当前工作目录的文件管理" aria-pressed="false"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg></button>` : ''}
@@ -6568,6 +6574,15 @@ if (typeof document !== 'undefined') (function () {
     });
     // 2026-06-28 道雪：header 群成员按钮 → toggle 右侧群成员栏（替代原 topbar 里的 data-gc-side-toggle）。
     const groupMembersBtn = document.getElementById('mr-btn-group-members');
+    document.getElementById('mr-btn-message-scope')?.addEventListener('click', () => {
+      OrchUI.toggleMessageScope(meeting);
+      if (memberSplit?.mode() === 'two') setGroupLayout('overview', meeting);
+      const panel = _ensureGcPanel();
+      const scroll = _captureGroupChatScroll(panel, meeting);
+      const state = _gcPanelState[meeting.id];
+      if (state) _renderGcPanelInto(panel, meeting, state, { scroll });
+      renderHeader(meeting);
+    });
     const groupToolsBtn = document.getElementById('mr-btn-group-tools');
     if (groupToolsBtn) groupToolsBtn.addEventListener('click', () => {
       if (memberSplit?.mode() === 'two') setGroupLayout('overview', meeting);
