@@ -24,12 +24,6 @@ function tokenPlanKey(dataDir) {
   } catch { return ''; }
 }
 
-// 识别方式：voice-input.json 的 engine 显式指定时照办；未指定时有套餐 Key 就走套餐（不另计费）。
-function resolveEngine(cfg, dataDir) {
-  const planKey = tokenPlanKey(dataDir);
-  const engine = cfg?.engine === 'streaming' || cfg?.engine === 'tokenplan' ? cfg.engine : (planKey ? 'tokenplan' : 'streaming');
-  return { engine, planKey };
-}
 
 // 16 位单声道 PCM 任意采样率 → 16kHz（区间平均，顺带抑制混叠）。
 function toRate16k(pcm, sampleRate) {
@@ -151,13 +145,21 @@ async function transcribePcm(pcm16k, options) {
   return recognizeParts(splitAtPauses(pcm16k), options);
 }
 
+// 有声的段落（手机整段录音走本地批量识别时用）。
+function speechSegments(pcm16k) { return splitAtPauses(pcm16k).filter(hasSpeech); }
+
 // 电脑端录音：与 VoiceStream 同一接口（ready / audio / finish / cancel / onEvent），
 // 边录边在停顿处切段送识别，partial 事件按段推进。
+// recognizeSegment(pcm16k, signal) → { text, via }：每段走哪条路由调用方决定（本地 / Token Plan），
+// 不传时全部走 Token Plan。事件里的 via 记录各路段数，界面据此说明这次是谁识别的。
 class RecordedVoice {
-  constructor({ apiKey, sampleRate, profile, onEvent, fetchImpl, maxSeconds = 300 }) {
+  constructor({ apiKey, sampleRate, profile, onEvent, fetchImpl, maxSeconds = 300, recognizeSegment }) {
     if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 96000) throw new Error('麦克风采样率不受支持');
-    if (!apiKey) throw new Error('请先在 Hub 配置百炼 Token Plan 套餐 Key');
+    if (!apiKey && !recognizeSegment) throw new Error('请先在 Hub 配置百炼 Token Plan 套餐 Key');
     Object.assign(this, { apiKey, rate: sampleRate, profile, onEvent, fetchImpl, maxSeconds });
+    this.recognizeSegment = recognizeSegment || (async (pcm, signal) => ({
+      text: await recognize(pcm, { apiKey, profile, fetchImpl, signal }), via: 'tokenplan' }));
+    this.via = {};
     this.state = 'recording'; this.pending = Buffer.alloc(0); this.carry = Buffer.alloc(0); this.levels = [];
     this.seconds = 0; this.parts = []; this.controller = new AbortController();
     this.ready = Promise.resolve();
@@ -167,8 +169,11 @@ class RecordedVoice {
   dispatch(pcm16k) {
     if (!hasSpeech(pcm16k)) return;
     const part = { text: '' };
-    part.done = recognize(pcm16k, { apiKey: this.apiKey, profile: this.profile, fetchImpl: this.fetchImpl, signal: this.controller.signal })
-      .then(text => { part.text = text; if (!this.ended) this.onEvent({ type: 'partial', text: this.text() }); })
+    part.done = this.recognizeSegment(pcm16k, this.controller.signal)
+      .then(({ text, via }) => {
+        part.text = text; this.via[via] = (this.via[via] || 0) + 1;
+        if (!this.ended) this.onEvent({ type: 'partial', text: this.text(), via: { ...this.via } });
+      })
       .catch(error => this.fail(error.message));
     this.parts.push(part);
   }
@@ -196,7 +201,7 @@ class RecordedVoice {
     this.pending = Buffer.alloc(0);
     void Promise.all(this.parts.map(p => p.done)).then(() => {
       if (this.ended) return;
-      this.state = 'done'; this.onEvent({ type: 'done', text: this.text() });
+      this.state = 'done'; this.onEvent({ type: 'done', text: this.text(), via: { ...this.via } });
     });
     return true;
   }
@@ -211,4 +216,4 @@ class RecordedVoice {
   }
 }
 
-module.exports = { MODEL, PLAN_BASE, tokenPlanKey, resolveEngine, toRate16k, wav, frameLevels, cutFrame, hasSpeech, splitAtPauses, recognize, transcribePcm, joinTexts, RecordedVoice };
+module.exports = { MODEL, PLAN_BASE, tokenPlanKey, toRate16k, wav, frameLevels, cutFrame, hasSpeech, splitAtPauses, speechSegments, recognize, recognizeParts, transcribePcm, joinTexts, RecordedVoice };

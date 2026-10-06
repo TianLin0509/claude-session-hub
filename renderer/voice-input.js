@@ -26,11 +26,13 @@ async function showSettings(target) {
     const el = document.createElement(tag); wrap.append(el); dialog.append(wrap); return el;
   };
   const engine = field('识别方式', 'select');
-  for (const [value, label] of [['tokenplan', '说完再识别 · Token Plan 套餐内，不另计费'], ['streaming', '边说边出字 · 百炼按量计费']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; engine.append(option); }
+  for (const [value, label] of [['local', '本地识别 · 显卡运行，免费（未就绪时 Token Plan 接力）'], ['tokenplan', '说完再识别 · Token Plan 套餐内，不另计费'], ['streaming', '边说边出字 · 百炼按量计费']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; engine.append(option); }
   const describe = () => {
-    note.textContent = engine.value === 'tokenplan'
-      ? '录音发送至阿里云百炼，从 Token Plan 套餐额度扣除。每说完一句（停顿处）就写入输入框，停止后补上最后一段，由你检查并发送。'
-      : '录音发送至阿里云百炼，按语音服务单独计费。识别文字实时写入输入框，由你检查并发送。';
+    note.textContent = {
+      local: '录音在本机显卡识别，不上传。开始说话时装载模型（约 5 秒），装好前说完的段落交给 Token Plan；空闲 10 分钟自动释放显存。每说完一句（停顿处）就写入输入框。',
+      tokenplan: '录音发送至阿里云百炼，从 Token Plan 套餐额度扣除。每说完一句（停顿处）就写入输入框，停止后补上最后一段，由你检查并发送。',
+      streaming: '录音发送至阿里云百炼，按语音服务单独计费。识别文字实时写入输入框，由你检查并发送。',
+    }[engine.value];
   };
   engine.onchange = describe; describe();
   const key = field('按量识别用的百炼 API Key（留空保留现有密钥）'); key.type = 'password'; key.autocomplete = 'off';
@@ -66,7 +68,9 @@ async function showSettings(target) {
     model.textContent = `识别模型：${config.model} · 术语所属：${target.project || '通用项目'}`;
     const plan = config.planReady ? '已找到 Token Plan 套餐 Key。' : '未找到 Token Plan 套餐 Key（在 Hub 的 Token Plan 配置里设置）。';
     const metered = config.meteredKeySet ? (config.envKey ? '按量识别使用环境变量中的密钥。' : '按量识别密钥已保存（系统加密）。') : '按量识别尚未配置密钥。';
-    status.textContent = `${plan}${metered}`;
+    const localState = { off: '未启动', starting: '运行环境启动中', env: '运行环境就绪（未占显存）', loading: '模型装载中', ready: '模型已在显卡', failed: '启动失败' }[config.localState] || config.localState;
+    const local = config.localInstalled ? `本地识别：${localState}。` : '本地识别未安装。';
+    status.textContent = `${local}${plan}${metered}`;
     save.disabled = false; key.focus();
   } catch (error) { status.textContent = cleanError(error); }
   save.onclick = async () => {
@@ -153,7 +157,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
       if (r.ended) return;
       if (!config.keySet) {
         finishUI(r);
-        setStatus(config.engine === 'tokenplan' ? '未找到 Token Plan 套餐 Key，可在语音设置里改用按量识别。' : '请先在语音设置中填写百炼 API Key。');
+        setStatus({ local: '本地识别未安装，可在语音设置里改用 Token Plan。', tokenplan: '未找到 Token Plan 套餐 Key，可在语音设置里改用按量识别。' }[config.engine] || '请先在语音设置中填写百炼 API Key。');
         await showSettings(target); return;
       }
       r.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
@@ -240,7 +244,10 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
     if (result.type !== 'done') return;
     finishUI(r);
     if (!result.text) { setStatus('未识别到文字，请检查麦克风后重试。'); return; }
-    setStatus('语音输入完成', true);
+    // 说明这次是谁识别的（本地 / Token Plan 各几段），方便核对没有走付费路线。
+    const names = { local: '本地', tokenplan: 'Token Plan' };
+    const via = Object.entries(result.via || {}).filter(([, n]) => n > 0).map(([k, n]) => `${names[k] || k} ${n} 段`).join(' · ');
+    setStatus(via ? `语音输入完成 · ${via}` : '语音输入完成', true);
   }
   ipcRenderer.on('voice:event', onEvent);
   mic.onclick = () => { if (recording && !recording.ended) void stop(recording); else void start(); };
