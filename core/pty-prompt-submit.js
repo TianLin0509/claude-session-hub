@@ -94,6 +94,11 @@ function splitChunks(payload, chunkSize) {
 //   更小的粘贴原样进输入框、不包裹。所以给 Claude 拆成若干小段粘贴依次投喂。
 const INLINE_PASTE_MAX_CHARS = 800;
 const INLINE_PASTE_MAX_NEWLINES = 1; // 规则允许 2；取 1 给终端只有 11 行的窗口也留余量
+// 拆段只用在实测可靠的体积内（2026-10-07 真实 CLI 对照：60 行 2719 字一次提交成功；
+//   160 行 7280 字拆成 160 段后 Claude 迟迟不收、补回车两次仍未提交，旧的整段粘贴则能提交）。
+//   超出就退回整段粘贴：群聊首轮这类带完整规则的长提示会被包进 <pasted_content>，但能送达。
+const INLINE_PASTE_MAX_PIECES = 64;
+const INLINE_PASTE_MAX_TOTAL_CHARS = 3200;
 
 // 按「≤maxChars 字、≤maxNewlines 个换行」切段，尽量在换行后断开；不劈开代理对。
 function splitInlinePastes(text, maxChars = INLINE_PASTE_MAX_CHARS, maxNewlines = INLINE_PASTE_MAX_NEWLINES) {
@@ -122,9 +127,9 @@ function splitInlinePastes(text, maxChars = INLINE_PASTE_MAX_CHARS, maxNewlines 
 // 返回实际写出的分片数（1 表示走了不分块的快路径）。
 async function writeBracketedPaste(sessionManager, sid, text, options = {}) {
   const gapMs = Number.isFinite(options.gapMs) ? options.gapMs : CHUNK_GAP_MS;
-  if (options.inlinePieces) {
+  if (options.inlinePieces && String(text == null ? '' : text).length <= INLINE_PASTE_MAX_TOTAL_CHARS) {
     const pieces = splitInlinePastes(text);
-    if (pieces.length > 1) {
+    if (pieces.length > 1 && pieces.length <= INLINE_PASTE_MAX_PIECES) {
       for (let i = 0; i < pieces.length; i += 1) {
         sessionManager.writeToSession(sid, BP_START + pieces[i] + BP_END);
         if (i < pieces.length - 1) await sleep(gapMs);
@@ -255,6 +260,8 @@ module.exports = {
   waitForPasteSettled,
   snapshotPasteMarker,
   splitInlinePastes,
+  INLINE_PASTE_MAX_PIECES,
+  INLINE_PASTE_MAX_TOTAL_CHARS,
   _private: { splitChunks, safeSliceEnd, extractMarker },
   SETTLE_MIN_MS,
   SETTLE_MAX_MS,
