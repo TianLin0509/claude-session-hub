@@ -568,6 +568,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     //   被当粘贴尾巴吃掉。分片写让队列在最后一片写完时接近空，\r 才可能独立成块。
     const baselineMarker = snapshotPasteMarker(sessionManager, sid);
     if (!usedCodexEditorInput) await writeBracketedPaste(sessionManager, sid, prompt, {
+      inlinePieces: isClaudeFamily(kind), // 不让 Claude 把整段标成 <pasted_content>（见 pty-prompt-submit）
       chunkSize: Number(_deps && _deps.bracketedPasteChunkSize) || undefined,
       gapMs: Number(_deps && _deps.bracketedPasteChunkGapMs) || undefined,
     });
@@ -1058,7 +1059,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
       //   150ms + \r"，正是本次要修掉的那套开环时序。补发是这个 bug 的**恢复路径**，
       //   它自己再踩一次同一个坑就毫无意义，所以改走与主路径同一套分块 + 自适应 settle。
       const baselineMarker = snapshotPasteMarker(sessionManager, sid);
-      await writeBracketedPaste(sessionManager, sid, prompt);
+      await writeBracketedPaste(sessionManager, sid, prompt, { inlinePieces: isClaudeFamily(kind) });
       require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
       noteSubmittedPrompt(sid, kind, prompt);
       await waitForPasteSettled({
