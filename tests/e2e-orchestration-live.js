@@ -117,7 +117,7 @@ const TASKS = {
     report.pid = hub.pid;
     const room = await invoke('create-meeting', { mode: 'general', scene: 'general', groupChat: true, title: `编排实测 · ${SCENARIO}`, workspace: repo,
       slots: [{ index: 0, kind: ORCH.kind, model: ORCH.model, effort: ORCH.effort, mcpProfile: 'lean' }], participants: [0],
-      orchestration: { enabled: true, settings: { requireConfirm: true, roundCap: SCENARIO === 'budget' ? 2 : 8, timeCapMin: 180 } } });
+      orchestration: { enabled: true, settings: { roundCap: SCENARIO === 'budget' ? 2 : 8, timeCapMin: 180 } } });
     meetingId = room.id;
     report.meetingId = meetingId;
     log('room created', { orchestration: room.orchestration });
@@ -127,7 +127,7 @@ const TASKS = {
     log('task sent');
 
     const deadline = Date.now() + MAX_MIN * 60000;
-    let lastKey = '', confirms = 0, grants = 0, decisions = 0, interrupted = null, restarted = false, rescued = false;
+    let lastKey = '', grants = 0, decisions = 0, interrupted = null, restarted = false, rescued = false;
     while (Date.now() < deadline) {
       const ledger = readLedger();
       const run = readRun();
@@ -139,15 +139,13 @@ const TASKS = {
         log('ledger', { status: ledger.status, halt: ledger.halt?.reason || null, plan: ledger.plan?.version || 0, rounds: `${ledger.budget.roundsUsed}/${ledger.budget.roundCap}`, segments: ledger.segments.map(s => `${s.name}:${s.status}:${s.rounds}`), roles: ledger.roles });
         await shot(`ledger-${report.timeline.length}-${ledger.status}`);
       }
-      if (ledger.status === 'awaiting_confirm' && ledger.plan && ledger.plan.confirmedVersion !== ledger.plan.version && confirms < 3) {
-        await delay(4000);   // 让编排员把计划讲完
-        if (await click('.mr-orch-strip [data-orch-action="confirm"]')) { confirms += 1; report.ui.push('点击「确认计划」v' + ledger.plan.version); log('clicked confirm', { version: ledger.plan.version }); }
-      } else if (ledger.status === 'halted' && /^budget_/.test(ledger.halt?.reason || '') && grants < 2) {
+      // 计划提交即生效；额度用满、需要决定都只在输入框用自然语言回复编排员。
+      if (ledger.status === 'halted' && /^budget_/.test(ledger.halt?.reason || '') && grants < 2) {
         await delay(ledger.halt.reported ? 3000 : 60000);   // 先给编排员时间写汇报
         const l2 = readLedger();
         report.haltReport = { reason: l2.halt?.reason, reported: !!l2.halt?.reported, lastReport: l2.reports.at(-1) || null };
         await shot('halt-budget');
-        if (await click('.mr-orch-strip [data-orch-action="grant-rounds"]')) { grants += 1; report.ui.push('点击「再给 3 轮」'); log('clicked grant', { reported: !!l2.halt?.reported }); }
+        await send('可以，再给 3 轮。'); grants += 1; report.ui.push('在输入框回复「可以，再给 3 轮」'); log('granted by words', { reported: !!l2.halt?.reported });
       } else if (ledger.status === 'halted' && decisions < 3) {
         await delay(20000);
         decisions += 1;

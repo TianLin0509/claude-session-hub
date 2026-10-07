@@ -8,10 +8,10 @@ const string = { type: 'string' };
 const presets = { type: 'string', enum: ['development', 'filework', 'research', 'roundtable', 'custom'] };
 const tools = [
   { name: 'orch_status', annotations: { readOnlyHint: true },
-    description: '读取本群计划账本：状态、额度、计划、已有成员、进度与交付证据。currentRun 含派工回执、失败步骤和 recovery（是否允许原地续跑与处理建议）。每次被唤醒先调用；遇到故障按 recovery 给田哥建议。',
+    description: '读取本群计划账本：状态、额度、计划、已有成员（含会话状态）、进度与交付证据。currentRun 含派工回执、失败步骤和 recovery（能否原地续跑与可用手段）。每次被唤醒先调用。',
     inputSchema: schema({}) },
   { name: 'orch_propose_plan',
-    description: '提交或更新计划。team 给已有成员分配角色（memberId 来自 orch_status，不含编排员）；segments 写各段唯一名称、模板、目标和验收标准；custom 段用 steps 写步数。Hub 按模板核算剩余各段至少需要的轮数并对比额度，结果在 budgetCheck 里，不够时向田哥说明并给推荐额度。自然语言额度由 Hub 识别并随计划确认；复杂表达可用 budget 引用田哥原话，未指定的维度保持当前额度。提交后向田哥简述计划与额度，按确认设置执行。',
+    description: '提交或更新计划，提交即生效（跳过成员、换人、调整步骤都直接提交新版本）。team 给已有成员分配角色（memberId 来自 orch_status，不含编排员）；segments 写各段唯一名称、模板、目标和验收标准；custom 段用 steps 写步数。Hub 按模板核算剩余各段至少需要的轮数并对比额度，结果在 budgetCheck 里，不够时向田哥说明并给推荐额度。田哥用自然语言说的额度由 Hub 识别并随计划生效；复杂表达可用 budget 引用田哥原话，未指定的维度保持当前额度。',
     inputSchema: schema({
       summary: string,
       team: { type: 'array', items: schema({ memberId: string, role: string, reason: string }, ['memberId','role']) },
@@ -27,13 +27,19 @@ const tools = [
       rounds: { type: 'array', items: schema({ name: string, prompt: string, members: { type: 'array', items: string }, after: { type: 'string', enum: ['next', 'end', 'review'] } }, ['name', 'prompt', 'members']) },
     }, ['name', 'preset', 'goal', 'acceptance', 'members']) },
   { name: 'orch_control_workflow',
-    description: '控制当前工作段：continue 续跑正常审核返工或用户已授权恢复的任务；remind 提醒未交付成员补交（可带 note）；pause 暂停；cancel 取消。运行故障仅给田哥建议，等待明确恢复；普通询问保持暂停。',
-    inputSchema: schema({ action: { type: 'string', enum: ['continue', 'remind', 'pause', 'cancel'] }, note: string }, ['action']) },
+    description: '控制当前工作段：continue 续跑（故障处理后、额度追加后或返工上限暂停后）；remind 提醒未交付成员补交（可带 note 说明这一步该交什么）；skip 跳过当前步骤里某位未交付的成员（memberId，Hub 记为跳过而非交付；跳过开发/文件段的实现位会结束本段）；pause 暂停；cancel 取消本段，之后可改计划重派。',
+    inputSchema: schema({ action: { type: 'string', enum: ['continue', 'remind', 'skip', 'pause', 'cancel'] }, note: string, memberId: string }, ['action']) },
   { name: 'orch_ask_member',
     description: '单独问某位成员一个问题（澄清、调研、复核），成员把回答写进群聊回答文件，Hub 回答后通知你。回答只作参考，不能当工作段的完成证据。成员正在工作流里干活时不能打断。',
     inputSchema: schema({ memberId: string, question: string }, ['memberId', 'question']) },
+  { name: 'orch_restart_member',
+    description: '重启某位成员的 CLI 会话（接着它原来的会话历史），用于成员报错、卡死或无响应；休眠的成员直接唤醒。之后用 orch_control_workflow 的 continue 或 remind 让它接着干。',
+    inputSchema: schema({ memberId: string }, ['memberId']) },
+  { name: 'orch_grant_budget',
+    description: '田哥在对话里同意追加额度后调用：rounds 追加的工作流轮数、minutes 追加的分钟，sourceQuote 引用他同意的原话（Hub 核对确为他本群发言，同一句只能用一次）。额度暂停随之解除。',
+    inputSchema: schema({ rounds: { type: 'integer', minimum: 1, maximum: 30 }, minutes: { type: 'number', minimum: 1, maximum: 1440 }, sourceQuote: string }, ['sourceQuote']) },
   { name: 'orch_report',
-    description: '记录汇报。progress=阶段进展；need_decision=额度用满、运行故障或需田哥决定，暂停并等待；final=当前完整计划所有段满足验收且有审核或收口证据。用白话说明结果、缺项、阻塞与建议，附交付路径。',
+    description: '记录汇报。progress=阶段进展；need_decision=需要田哥取舍才能往下走，Hub 暂停派活，等他在输入框回话后自动解除；final=当前完整计划所有段满足验收且有审核或收口证据。用白话说明结果、缺项、阻塞与建议，附交付路径。',
     inputSchema: schema({ kind: { type: 'string', enum: ['progress', 'need_decision', 'final'] }, summary: string }, ['kind', 'summary']) },
 ];
 async function handle(request) {

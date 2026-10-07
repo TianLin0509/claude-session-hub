@@ -39,7 +39,7 @@ test('plan budget check counts template steps and flags a plan the budget cannot
 });
 
 test('budget check only counts segments that are not yet done', () => {
-  const l = Ledger.create('m', { requireConfirm: false, roundCap: 8 });
+  const l = Ledger.create('m', { roundCap: 8 });
   Ledger.proposePlan(l, { summary: 'x', segments: [{ name: 'S1', preset: 'research', acceptance: 'a' }, { name: 'S2', preset: 'filework', acceptance: 'a' }] });
   const seg = Ledger.startSegment(l, { name: 'S1', preset: 'research', members: ['a', 'b'], planSegmentId: l.plan.segments[0].id });
   seg.status = 'completed'; seg.verdict = { decision: '通过' }; l.budget.roundsUsed = 3;
@@ -72,7 +72,7 @@ test('filework is a two-step serial template whose review loops back to the edit
 test('ledger counts serial review loops by reviews and reads the closing decision', () => {
   const stages = [{ name: '修改与自查', after: 'next' }, { name: '独立审核', after: 'review' }];
   const st = (index, member, outcome, n) => ({ id: 's' + n, index, members: [member], deliveries: outcome ? { [member]: { memberId: member, outcome, path: `/r/${n}/${member}.md` } } : {} });
-  const l = Ledger.create('m', { requireConfirm: false });
+  const l = Ledger.create('m', {});
   const seg = Ledger.startSegment(l, { name: 'S3', preset: 'filework', members: ['a', 'b'] });
   seg.runId = 'run';
   let notices = Ledger.applyRun(l, { id: 'run', kind: 'serial', status: 'running', stages, steps: [st(0, 'a', 'ready', 1), st(1, 'b', 'rework', 2), st(0, 'a', null, 3)] });
@@ -89,7 +89,7 @@ test('linear segments take the decision line from the closing delivery; 需返�
   const run = { id: 'run', kind: 'serial', status: 'done', stages, steps: [
     { id: 's1', index: 0, members: ['a'], deliveries: { a: { outcome: 'ready', path: '/r/1/a.md' } } },
     { id: 's2', index: 1, members: ['b'], deliveries: { b: { outcome: 'ready', path: '/r/2/b.md' } } }] };
-  const l = Ledger.create('m', { requireConfirm: false });
+  const l = Ledger.create('m', {});
   Ledger.proposePlan(l, { summary: 'x', segments: [{ name: 'S1', preset: 'research', goal: 'g', acceptance: 'a' }] });
   const seg = Ledger.startSegment(l, { name: 'S1', preset: 'research', goal: 'g', acceptance: 'a', members: ['a', 'b'], planSegmentId: l.plan.segments[0].id });
   seg.runId = 'run';
@@ -102,7 +102,7 @@ test('linear segments take the decision line from the closing delivery; 需返�
   assert.equal(Ledger.parseDecision('没有结论'), '');
   // 没写结论时如实提示，而不是默认通过。
   files['/r/2/b.md'] = '结论正文';
-  const l2 = Ledger.create('m', { requireConfirm: false });
+  const l2 = Ledger.create('m', {});
   const seg2 = Ledger.startSegment(l2, { name: 'S1', preset: 'research', members: ['a', 'b'] }); seg2.runId = 'run';
   assert.match(Ledger.applyRun(l2, run, Date.now(), { readText: p => files[p] })[0].text, /没有写明「收口结论」/);
 });

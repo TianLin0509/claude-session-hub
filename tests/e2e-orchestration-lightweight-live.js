@@ -80,7 +80,7 @@ async function open() { await cdp.eval(`selectMeeting(${JSON.stringify(meetingId
     await launch();
     const room = await invoke('create-meeting', { mode: 'general', scene: 'general', groupChat: true, title: 'Codex 编排实测 · ' + scenario, workspace: work,
       slots: [{ index: 0, kind: 'codex', model: 'gpt-6.1-sol', effort: 'high', mcpProfile: 'lean' }, { index: 1, kind: 'codex', model: 'gpt-6-luna', effort: 'low', mcpProfile: 'lean' }, { index: 2, kind: 'codex', model: 'gpt-6-luna', effort: 'low', mcpProfile: 'lean' }], participants: [0],
-      orchestration: { enabled: true, settings: { requireConfirm: true, roundCap: 8, timeCapMin: 180, stuckMin: 5 } } });
+      orchestration: { enabled: true, settings: { roundCap: 8, timeCapMin: 180, stuckMin: 5 } } });
     if (!room?.id) throw Error('create-meeting failed: ' + JSON.stringify(room));
     meetingId = report.meetingId = room.id; await open(); await shot('00-room');
     if(scenario!=='startup') {
@@ -95,7 +95,7 @@ async function open() { await cdp.eval(`selectMeeting(${JSON.stringify(meetingId
     const task=base+members+(scenario==='delivery'?'允许10轮以内迭代，最多半小时。':scenario==='rework'?'本次专门实测返工链路：实现位首轮只实现非空数组，空数组要求留待下一轮；审核位首轮须独立指出此遗漏并交需返工，随后实现位补齐空数组行为，审核通过才能合并。这是受控缺陷注入。':'本次专门实测运行阻塞：实现位在开题阶段遇到受控缺失条件（实验设备登录失效），请按阻塞交付协议写明需要田哥重新登录设备，再将该步文件改名为阻塞文件，保持暂停。无需尝试登录或修复，编排员仅给处理建议。');
     await send(task); log('goal sent via UI');
     const deadline = Date.now() + Number(process.env.MAX_MIN || 25) * 60000;
-    let last = '', confirmed = false, granted = false, restarted = false;
+    let last = '', planned = false, granted = false, restarted = false;
     while (Date.now() < deadline) {
       const l = ledger(), r = run();
       fs.writeFileSync(path.join(art, 'hub-live.log'), hub.log().join('\n'));
@@ -103,17 +103,18 @@ async function open() { await cdp.eval(`selectMeeting(${JSON.stringify(meetingId
       if (hub.log().some(x=>/sendToPty threw.*(?:未确认 Codex 已接收|长文本输入通道未就绪)/.test(x))) throw Error('Default Codex editor input rejected the group prompt; see Hub log and terminal snapshots');
       const key = JSON.stringify([l?.status, l?.plan?.version, l?.budget?.roundsUsed, l?.halt?.reason, l?.segments?.map(s => [s.status, s.steps]), r?.steps?.map(s => [s.index, Object.keys(s.deliveries || {})])]);
       if (key !== last) { last = key; log('state', { status: l?.status, budget: l?.budget?.roundsUsed, halt: l?.halt?.reason, segments: l?.segments, step: r?.steps?.at(-1) }); await shot('state-' + report.timeline.length); }
-      if(scenario==='startup' && l?.status==='awaiting_confirm') { report.checks.push('immediate cold-start group prompt reached real orchestrator'); report.ok=true; break; }
-      if (l?.status === 'awaiting_confirm' && !confirmed) { const expected=scenario==='delivery'?10:8; if(l.plan.budget.roundCap!==expected)throw Error('natural-language plan budget mismatch'); report.checks.push('plan budget '+expected+' rounds'); await sleep(2000); await click('.mr-orch-strip [data-orch-action="confirm"]'); confirmed = true; report.checks.push('UI plan confirmation'); log('plan confirmed via UI'); }
+      if(scenario==='startup' && l?.plan) { report.checks.push('immediate cold-start group prompt reached real orchestrator'); report.ok=true; break; }
+      // 计划提交即生效：不点任何按钮，编排员自行决定是否先问田哥。
+      if (l?.plan && !planned) { const expected=scenario==='delivery'?10:8; if(l.plan.budget.roundCap!==expected)throw Error('natural-language plan budget mismatch'); report.checks.push('plan budget '+expected+' rounds'); planned = true; report.checks.push('plan took effect without UI confirmation'); log('plan submitted'); }
       const rooms=await invoke('get-meetings');
       if(rooms.find(m=>m.id===meetingId).subSessions.length!==3)throw Error('fixed roster changed');
-      if(confirmed && l?.plan?.confirmedVersion===l?.plan?.version && l.budget.roundCap!==(scenario==='delivery'?10:8))throw Error('confirmed budget not enforced');
+      if(planned && l?.plan && !l.budgetIntent?.roundCap && l.budget.grants===0 && l.budget.roundCap!==(scenario==='delivery'?10:8))throw Error('plan budget not enforced');
       if(scenario==='fault' && l?.status==='halted' && l.halt?.reported){
-        if(!/(?:新建|重新开|新开|重开|新).{0,12}任务/.test(l.reports.at(-1)?.summary||''))throw Error('blocking advice does not respect Hub recovery capability');
+        if(!/(?:新建|重新开|新开|重开|新).{0,12}任务|改计划|重新派|取消/.test(l.reports.at(-1)?.summary||''))throw Error('blocking advice does not respect Hub recovery capability');
         report.checks.push('real member reports injected blocking condition; real orchestrator gives advice');
-        const before=JSON.stringify([l.status,r.status,r.steps.length,l.budget.roundsUsed]);
+        const before=JSON.stringify([r.status,r.steps.length,l.budget.roundsUsed]);
         await send('现在卡在哪里，有什么建议？'); await sleep(20000);
-        if(JSON.stringify([ledger().status,run().status,run().steps.length,ledger().budget.roundsUsed])!==before)throw Error('ordinary question resumed blocked work');
+        if(JSON.stringify([run().status,run().steps.length,ledger().budget.roundsUsed])!==before)throw Error('ordinary question resumed blocked work');
         report.checks.push('ordinary follow-up keeps work paused'); report.ok=true; break;
       }
       if (l?.status === 'finished') { if(scenario==='rework' && !(r?.steps?.some(step=>Object.values(step.deliveries||{}).some(d=>d.outcome==='rework'))))throw Error('missing real review rework'); if(scenario==='rework')report.checks.push('real independent review requests rework; corrected implementation passes'); if(scenario==='delivery' && l.budget.timeCapMs!==30*60000)throw Error('time limit not enforced'); report.checks.push('fixed roster unchanged; real orchestrator final accepted'); await sleep(15000); await shot('99-finished'); report.ok = true; break; }

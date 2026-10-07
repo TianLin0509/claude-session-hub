@@ -68,20 +68,6 @@ if (typeof document !== 'undefined') (function () {
   const Delivery = require('../core/delivery-workflow.js');
   const DeliveryControls = require('./delivery-workflow-controls.js');
   const OrchUI = require('./orchestration-ui.js');
-  let _orchLatestCardId = '';
-  // 编排群：把一段文字填进输入框末尾并聚焦（「我要修改」「调整目标」）。
-  function _orchFocusInput(prefix) {
-    const box = document.getElementById('mr-input-box');
-    const m = meetingData[activeMeetingId];
-    if (!box || !m) return;
-    const current = box.innerText.trim();
-    _renderComposerRaw(box, current ? current : prefix);
-    _setInputDraft(m.id, box.innerText);
-    box.dispatchEvent(new Event('input', { bubbles: true }));
-    box.focus();
-    const range = document.createRange(); range.selectNodeContents(box); range.collapse(false);
-    const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-  }
   OrchUI.init(meetingId => {
     const m = meetingData[meetingId];
     if (!m || activeMeetingId !== meetingId) return;
@@ -2548,7 +2534,6 @@ if (typeof document !== 'undefined') (function () {
         <div class="mr-gc-msg-body">
           <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${OrchUI.roleBadge(meeting, message, escapeHtml)}${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${OrchUI.peek(meeting, message, escapeHtml)}${journal.actions({ copy, prompt, retry: text.trim() ? resend : '', submit: text.trim() ? '' : resend, minimize: true })}</div>
           <div class="mr-gc-bubble-row"><div class="mr-gc-bubble"><div class="gc-journal-reading">${journal.disclosure()}<div class="gc-journal-text">${body}</div></div></div></div>
-          ${OrchUI.cardActions(meeting, message, _orchLatestCardId)}
         </div>
       </article>`;
   }
@@ -2868,7 +2853,6 @@ if (typeof document !== 'undefined') (function () {
       }
     }
     const _collapsedSet = _gcCollapsedActs[meeting.id] || (_gcCollapsedActs[meeting.id] = new Set());
-    _orchLatestCardId = OrchUI.enabled(meeting) ? OrchUI.latestOrchestratorMessageId(meeting, renderMessages) : '';
     const messageHtml = renderMessages.filter(m => OrchUI.messageVisible(meeting, m)).map(m => {
       let sep = '';
       const actKey = (m && m.committeeAct) ? `${m.committeeAct}#${m.committeeRound || ''}` : null;
@@ -3906,7 +3890,6 @@ if (typeof document !== 'undefined') (function () {
   async function _handleGcPanelClick(ev, panel) {
     const meeting = _currentGcPanelMeeting(panel);
     if (!meeting) return;
-    if (OrchUI.handleCardClick(ev, meeting, { onError: message => _showGcEscapeNotice(message, 'error'), focusInput: _orchFocusInput })) return;
     const bubble = _closestInPanel(ev.target, '.mr-gc-msg[data-unread-answer="true"] .mr-gc-bubble', panel);
     if (bubble && !_gcViewingTurnN[meeting.id] && document.hasFocus() && !document.hidden) {
       const article = bubble.closest('[data-source-sid]');
@@ -5641,7 +5624,7 @@ if (typeof document !== 'undefined') (function () {
     }
     row.style.display = '';
     if (OrchUI.enabled(current)) {
-      OrchUI.renderStrip(row, current, { escapeHtml, onError: message => _showGcEscapeNotice(message, 'error'), focusInput: _orchFocusInput });
+      OrchUI.renderStrip(row, current, { escapeHtml, onError: message => _showGcEscapeNotice(message, 'error') });
       _updateInputHistoryButton(current);
       return;
     }

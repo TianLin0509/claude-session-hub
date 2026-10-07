@@ -10,15 +10,14 @@
 .mr-orch-bar i { display: block; height: 100%; background: var(--accent, var(--mark-indigo)); }
 .mr-orch-strip.is-halted .mr-orch-bar i { background: var(--status-danger, #d1372b); }
 .mr-orch-muted { color: var(--fg-muted); font-size: 11.5px; }
-.mr-orch-actions, .mr-orch-card-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.mr-orch-actions button, .mr-orch-card-actions button {
+.mr-orch-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mr-orch-actions button {
   padding: 3px 10px; font-size: 12px; white-space: nowrap; cursor: pointer;
   border: 1px solid var(--border-mid, var(--border-subtle)); border-radius: var(--radius-sm, 6px);
   background: var(--surface-card, transparent); color: var(--fg-strong, var(--text));
 }
-.mr-orch-actions button.primary, .mr-orch-card-actions button.primary { background: var(--accent, var(--mark-indigo)); border-color: var(--accent, var(--mark-indigo)); color: #fff; }
-.mr-orch-actions button:focus-visible, .mr-orch-card-actions button:focus-visible { outline: 2px solid var(--accent, var(--mark-indigo)); outline-offset: 2px; }
-.mr-orch-card-actions { margin: 8px 0 2px; }
+.mr-orch-actions button.primary { background: var(--accent, var(--mark-indigo)); border-color: var(--accent, var(--mark-indigo)); color: #fff; }
+.mr-orch-actions button:focus-visible { outline: 2px solid var(--accent, var(--mark-indigo)); outline-offset: 2px; }
 .mr-orch-ledger { flex-basis: 100%; min-width: 0; max-height: 34vh; overflow-y: auto; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border-subtle); font-size: 12px; }
 .mr-orch-ledger-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 6px; }
 .mr-orch-ledger-file { margin-left: auto; font-size: 11px; color: var(--fg-muted); }

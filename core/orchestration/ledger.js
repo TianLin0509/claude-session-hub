@@ -2,9 +2,13 @@
 // AI 编排模式的计划账本（纯函数，便于单测）。
 // 账本是界面展示、中断恢复和编排员换班的唯一依据：编排员只能改计划部分，
 // 工作段的通过与否只由交付工作流的结果（审核位判定）推进。
+// 2026-10-06：田哥只和编排员用自然语言对话。计划提交即生效，何时停下来问田哥由编排员判断；
+// Hub 只保留额度、反复故障、结项证据这几道硬闸，暂停后田哥在输入框回话即解除（额度除外）。
 const crypto = require('node:crypto');
 
-const DEFAULT_SETTINGS = Object.freeze({ requireConfirm: true, roundCap: 8, timeCapMin: 180, maxMembers: 3, stuckMin: 40 });
+const DEFAULT_SETTINGS = Object.freeze({ roundCap: 8, timeCapMin: 180, maxMembers: 3, stuckMin: 40 });
+// 同一步骤里累计这么多次运行故障后，Hub 暂停并请编排员向田哥说明。
+const FAILURE_LIMIT = 4;
 const PRESETS = ['development', 'filework', 'research', 'roundtable', 'custom'];
 const PRESET_LABELS = { development: '开发交付', filework: '文件修改', research: '资料调研', roundtable: '方案圆桌', custom: '自定义' };
 // 每段至少占用的轮数（与 countRounds 同口径）：有审核循环的模板按审核次数计，一次通过 = 1 轮、每次返工 +1；
@@ -16,7 +20,8 @@ const SEGMENT_LABELS = {
 };
 const HALT_LABELS = {
   budget_rounds: '迭代额度用满', budget_time: '时长额度用满', no_progress: '连续两次没有新进展',
-  need_decision: '编排员请你决定', user_pause: '你已暂停', runtime_error: '运行故障，等待你处理',
+  need_decision: '编排员在等你回复', user_pause: '你已暂停', runtime_error: '运行故障，等待你处理',
+  repeated_failure: '同一步骤反复故障',
 };
 const MAX_EVENTS = 80, MAX_SEEN = 400;
 
@@ -27,7 +32,6 @@ const clampInt = (value, min, max, fallback) => {
 function normalizeSettings(input = {}) {
   const s = input && typeof input === 'object' ? input : {};
   return {
-    requireConfirm: s.requireConfirm !== false,
     roundCap: clampInt(s.roundCap, 1, 30, DEFAULT_SETTINGS.roundCap),
     timeCapMin: clampInt(s.timeCapMin, 15, 24 * 60, DEFAULT_SETTINGS.timeCapMin),
     maxMembers: clampInt(s.maxMembers, 1, 3, DEFAULT_SETTINGS.maxMembers),
@@ -38,7 +42,7 @@ function normalizeSettings(input = {}) {
 function create(meetingId, settings, now = Date.now()) {
   const s = normalizeSettings(settings);
   return {
-    version: 1, meetingId, status: s.requireConfirm ? 'planning' : 'running', halt: null, settings: s,
+    version: 1, meetingId, status: 'planning', halt: null, settings: s,
     budget: { roundsUsed: 0, roundCap: s.roundCap, activeMs: 0, timeCapMs: s.timeCapMin * 60000, grants: 0, lastTickAt: now },
     plan: null, roles: {}, segments: [], asks: [], reports: [],
     notices: [], seen: [], progressSeq: 0, lastWakeSeq: 0, wakesWithoutProgress: 0,
@@ -78,16 +82,46 @@ function proposePlan(ledger, input = {}, now = Date.now()) {
   if(new Set(segments.map(s=>s.name)).size!==segments.length)throw Error('计划工作段名称必须唯一');
   for(const seg of segments)seg.id=crypto.createHash('sha256').update(JSON.stringify([seg.name,seg.preset,seg.goal,seg.acceptance])).digest('hex').slice(0,16);
   const version = (ledger.plan?.version || 0) + 1;
-  ledger.plan = { version, summary, team, segments, budget: input.budget || null, estimateRounds: clampInt(input.estimateRounds, 0, 99, 0),
-    proposedAt: now, confirmedAt: ledger.plan?.confirmedAt || null, confirmedVersion: ledger.plan?.confirmedVersion || 0 };
-  if (ledger.settings.requireConfirm) {
-    if (ledger.status !== 'halted') ledger.status = 'awaiting_confirm';
-  } else if (ledger.status === 'planning') ledger.status = 'running';
+  ledger.plan = { version, summary, team, segments, budget: input.budget || null, estimateRounds: clampInt(input.estimateRounds, 0, 99, 0), proposedAt: now };
   event(ledger, `编排员提交计划 v${version}`, now);
-  bump(ledger);
+  activatePlan(ledger, now);
   return ledger.plan;
 }
-// 计划额度核算：未完成的计划段至少要多少轮，对比确认后可用的剩余轮数。只提示不拦截，田哥可以先确认、到时再追加。
+// 计划提交即生效：额度与角色随计划更新；暂停中的群保持暂停，等田哥回话。
+function activatePlan(ledger, now = Date.now()) {
+  const plan = ledger.plan;
+  if (plan.budget) { ledger.budget.roundCap = plan.budget.roundCap; ledger.budget.timeCapMs = plan.budget.timeCapMin * 60000; }
+  for (const member of plan.team || []) if (member.memberId) ledger.roles[member.memberId] = { role: member.role, kind: member.kind };
+  if (['planning', 'awaiting_confirm'].includes(ledger.status)) ledger.status = 'running';
+  // 额度暂停中按田哥新说的额度改了计划、额度已够：随计划恢复，不必再追加。
+  if (ledger.status === 'halted' && /^budget_/.test(ledger.halt?.reason || '') && withinBudget(ledger)) {
+    ledger.status = 'running'; ledger.halt = null;
+    event(ledger, '新计划的额度已够，额度暂停解除', now);
+  }
+  ledger.budget.lastTickAt = now;
+  bump(ledger);
+}
+function withinBudget(ledger) { return ledger.budget.roundsUsed < ledger.budget.roundCap && ledger.budget.activeMs < ledger.budget.timeCapMs; }
+// 旧账本（计划须经田哥确认的年代）：待确认的计划直接生效。
+function migrate(ledger, now = Date.now()) {
+  if (!ledger) return false;
+  let changed = false;
+  if (ledger.settings && 'requireConfirm' in ledger.settings) { delete ledger.settings.requireConfirm; changed = true; }
+  if (ledger.status === 'awaiting_confirm') {
+    if (ledger.plan) activatePlan(ledger, now); else ledger.status = 'planning';
+    event(ledger, '计划改为提交即生效', now);
+    changed = true;
+  }
+  // 暂停中提交、尚未确认的旧版计划：角色与额度随迁移生效（暂停状态保持）。
+  if (ledger.plan && 'confirmedVersion' in ledger.plan) {
+    const pending = ledger.plan.confirmedVersion !== ledger.plan.version;
+    delete ledger.plan.confirmedVersion; delete ledger.plan.confirmedAt;
+    if (pending) activatePlan(ledger, now);
+    changed = true;
+  }
+  return changed;
+}
+// 计划额度核算：未完成的计划段至少要多少轮，对比可用的剩余轮数。只提示不拦截，额度不够时编排员向田哥说明。
 function segmentMinRounds(seg) {
   if (!seg) return 0;
   if (seg.preset === 'custom') return clampInt(seg.steps, 1, 6, 1);
@@ -111,34 +145,16 @@ function budgetCheck(ledger) {
     + (ok ? (tight ? '，没有返工余量。' : '。') : `，不够；建议额度至少 ${ledger.budget.roundsUsed + minRounds} 轮，或缩减计划。`);
   return { minRounds, available, ok, text: message };
 }
-function confirmPlan(ledger, now = Date.now()) {
-  if (!ledger.plan) throw new Error('还没有计划可以确认');
-  if (ledger.budgetError) throw new Error(ledger.budgetError);
-  const plannedBudget=ledger.plan.budget || {roundCap:ledger.budget.roundCap,timeCapMin:ledger.budget.timeCapMs/60000};
-  if (['roundCap','timeCapMin'].some(key=>ledger.budgetIntent?.[key]!=null && ledger.budgetIntent[key]!==plannedBudget[key])) {
-    throw new Error('田哥指定的额度已变化，请编排员更新计划后再确认');
-  }
-  if (ledger.plan.confirmedVersion === ledger.plan.version && ledger.status !== 'awaiting_confirm') return false;
-  ledger.plan.confirmedVersion = ledger.plan.version;
-  ledger.plan.confirmedAt = now;
-  if(ledger.plan.budget){ledger.budget.roundCap=ledger.plan.budget.roundCap;ledger.budget.timeCapMs=ledger.plan.budget.timeCapMin*60000;}
-  for(const member of ledger.plan.team)if(member.memberId)ledger.roles[member.memberId]={role:member.role,kind:member.kind};
-  if (ledger.status === 'awaiting_confirm' || ledger.status === 'planning') ledger.status = 'running';
-  ledger.budget.lastTickAt = now;
-  event(ledger, `田哥确认计划 v${ledger.plan.version}`, now);
-  bump(ledger);
-  return true;
-}
-
-// 能否派活：计划确认（若要求）、未暂停、未结束。查询类工具不受影响。
+// 能否派活：未暂停、未结束。查询类工具不受影响；派工还要匹配当前计划（见 service.startWorkflow）。
 function canDispatch(ledger) {
   if (ledger.status === 'ended') return { ok: false, reason: '编排已结束；田哥恢复编排前不能派活' };
   if (ledger.status === 'finished') return { ok: false, reason: '任务已结项；田哥提出新要求后再提交新计划' };
-  if (ledger.status === 'halted') return { ok: false, reason: `已暂停（${HALT_LABELS[ledger.halt?.reason] || '等待田哥'}）：先用 orch_report 汇报，等田哥决定` };
-  if (ledger.settings.requireConfirm && (!ledger.plan || ledger.plan.confirmedVersion !== ledger.plan.version)) {
-    return { ok: false, reason: '计划还没被田哥确认：先用 orch_propose_plan 提交计划，等田哥确认后再组队派活' };
+  if (ledger.status === 'halted') {
+    const budget = /^budget_/.test(ledger.halt?.reason || '');
+    return { ok: false, reason: `已暂停（${HALT_LABELS[ledger.halt?.reason] || '等待田哥'}）：` + (budget
+      ? '向田哥说明并推荐追加额度，他同意后用 orch_grant_budget 引用他的原话追加'
+      : '向田哥说明现状与建议；他在输入框回话后暂停自动解除') };
   }
-  if (ledger.status === 'awaiting_confirm') return { ok: false, reason: `计划 v${ledger.plan.version} 等待田哥确认，确认前不能派活` };
   return { ok: true };
 }
 
@@ -239,7 +255,7 @@ function applyRun(ledger, run, now = Date.now(), { readText = null } = {}) {
     if (status === 'passed') notices.push({ key, text: `工作段「${seg.name}」审核通过。审核结论：${seg.verdictPath}` });
     else if (status === 'completed') notices.push({ key, text: `工作段「${seg.name}」已完成，${decisionText(seg.verdict?.decision)}。最后交付：${seg.verdictPath}` });
     else if (status === 'rework') notices.push({ key, text: `工作段「${seg.name}」审核判定需返工（已用 ${seg.rounds} 轮），工作流已自动开始下一轮实现。审核结论：${seg.verdictPath}` });
-    else if (status === 'paused') notices.push({ key, text: `工作段「${seg.name}」已暂停：${seg.error || '原因未知'}。可用 orch_control_workflow 选择 continue（续跑）、remind（提醒未交付成员）或 cancel。` });
+    else if (status === 'paused') notices.push({ key, text: `工作段「${seg.name}」已暂停：${seg.error || '原因未知'}。由你判断怎么处理：orch_control_workflow 的 continue（续跑）、remind（提醒未交付成员）、skip（跳过某位成员）、cancel（取消后改计划重派），成员会话出错可先 orch_restart_member 再续跑。` });
     else if (status === 'cancelled') notices.push({ key, text: `工作段「${seg.name}」已取消。` });
   }
   if (notices.length) event(ledger, notices.map(n => n.text).join('；'), now);
@@ -267,8 +283,11 @@ function grant(ledger, { rounds = 0, minutes = 0 } = {}, now = Date.now()) {
   const r = clampInt(rounds, 0, 30, 0), m = clampInt(minutes, 0, 24 * 60, 0);
   if (r) ledger.budget.roundCap = Math.max(ledger.budget.roundCap, ledger.budget.roundsUsed) + r;
   if (m) ledger.budget.timeCapMs = Math.max(ledger.budget.timeCapMs, ledger.budget.activeMs) + m * 60000;
+  // 追加后的额度就是田哥最新的意思：之后改计划沿用它，不被早先说的上限拉回去。
+  if (ledger.budgetIntent && (r || m)) ledger.budgetIntent = { ...ledger.budgetIntent, ...(r ? { roundCap: ledger.budget.roundCap } : {}), ...(m ? { timeCapMin: ledger.budget.timeCapMs / 60000 } : {}) };
   ledger.budget.grants += 1;
-  const wasHalted = ledger.status === 'halted';
+  // 追加额度只解除额度暂停；田哥暂停、等他回话等其他暂停不受影响。不带数额 = 恢复编排，解除任何暂停。
+  const wasHalted = ledger.status === 'halted' && (!(r || m) || /^budget_/.test(ledger.halt?.reason || ''));
   if (wasHalted) { ledger.status = 'running'; ledger.halt = null; }
   ledger.wakesWithoutProgress = 0;
   ledger.budget.lastTickAt = now;
@@ -359,7 +378,7 @@ function view(ledger) {
     settings: ledger.settings,
     budget: { roundsUsed: ledger.budget.roundsUsed, roundCap: ledger.budget.roundCap,
       minutesUsed: fmtMin(ledger.budget.activeMs), minutesCap: fmtMin(ledger.budget.timeCapMs) },
-    plan: ledger.plan ? { version: ledger.plan.version, confirmedVersion: ledger.plan.confirmedVersion, summary: ledger.plan.summary,
+    plan: ledger.plan ? { version: ledger.plan.version, summary: ledger.plan.summary,
       segments: ledger.plan.segments, team: ledger.plan.team, budget: ledger.plan.budget, budgetCheck: budgetCheck(ledger) } : null,
     roles: ledger.roles, segments: progressRows(ledger),
     asks: ledger.asks.slice(-10).map(a => ({ id: a.id, memberId: a.memberId, status: a.status, answerPath: a.answerPath || '' })),
@@ -380,7 +399,7 @@ function renderMarkdown(ledger) {
   const v = view(ledger);
   const lines = [`# 计划账本`, '', `- 状态：${v.status}${v.halt ? '（' + v.halt.label + '）' : ''}`,
     `- 额度：工作流 ${v.budget.roundsUsed}/${v.budget.roundCap} 轮 · ${v.budget.minutesUsed}/${v.budget.minutesCap} 分钟（每完成一步计 1 轮，审核循环按审核次数计）`, ''];
-  if (ledger.plan) lines.push(`## 计划 v${ledger.plan.version}${ledger.plan.confirmedVersion === ledger.plan.version ? '（已确认）' : '（待确认）'}`, '', ledger.plan.summary, '', ...(v.plan.budgetCheck ? [`> ${v.plan.budgetCheck.text}`, ''] : []));
+  if (ledger.plan) lines.push(`## 计划 v${ledger.plan.version}`, '', ledger.plan.summary, '', ...(v.plan.budgetCheck ? [`> ${v.plan.budgetCheck.text}`, ''] : []));
   lines.push('## 工作段', '', markdownTable(ledger), '');
   if (Object.keys(ledger.roles).length) lines.push('## 队伍', '', ...Object.entries(ledger.roles).map(([id, r]) => `- ${id}：${r.role}（${r.label || r.kind || ''}）`), '');
   if (ledger.asks.length) lines.push('## 单独提问', '', ...ledger.asks.slice(-10).map(a => `- ${a.memberId}：${a.status === 'answered' ? '已回答 ' + a.answerPath : '待回答'}`), '');
@@ -390,7 +409,7 @@ function renderMarkdown(ledger) {
 
 module.exports = {
   DEFAULT_SETTINGS, PRESETS, PRESET_LABELS, SEGMENT_LABELS, HALT_LABELS, MIN_ROUNDS,
-  normalizeSettings, create, event, proposePlan, confirmPlan, canDispatch, startSegment, activeSegment,
+  FAILURE_LIMIT, normalizeSettings, create, migrate, event, proposePlan, canDispatch, startSegment, activeSegment,
   segmentMinRounds, budgetCheck, hasReview, parseDecision, countRounds, reviewVerdict, applyRun, tick, overBudget, halt, grant, resume,
   enqueue, pendingNotices, markSending, markSent, markRetry, recoverAfterRestart, noteWake, noteUserMessage,
   finalGate, addReport, progressRows, view, markdownTable, renderMarkdown, newId,
