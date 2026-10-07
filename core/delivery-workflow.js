@@ -57,13 +57,14 @@ function newStep(run,index) {
   return {id:crypto.randomUUID(),number,index,inputHash:hash(JSON.stringify([run.goal,run.stages,inputs])),inputs,
     members:[...run.stages[index].members],deliveries:{},dispatches:[],createdAt:Date.now()};
 }
+function skipperLabel(by) { return by==='orchestrator' ? '编排员' : '用户'; }
 function protocol() { return '按文件交付推进：每位成员只写自己的结果；完成本轮职责及必要验证后，UTF-8 保存并回读，再在同目录将草稿原子改名为已交付文件。聊天回答、CLI 空闲和超时不算交付。不得修改文件头、覆盖已交付结果或代交其他成员的文件。后台验证未结束时保留草稿。阻塞要写清原因，不伪造完成。'; }
 function prompt(base,run,step,members=[],extras={}) {
   const stage=run.stages[step.index], name=id=>members.find(m=>m.memberId===id)?.displayName || members.find(m=>m.memberId===id)?.title || id;
   const lines=[`【文件交付工作流 · 第 ${step.number} 轮 · ${stage.name}】`,`本次目标：${run.goal}`,`项目：${run.workspace || '先核实任务项目'}`,run.projectLocator || '',protocol(),
     '本轮共享职责：',stage.prompt,'本轮每位成员各有交付文件；同轮全部交付后才接续。只处理自己的分工，其他成员的文件只读。',
     ...step.inputs.map(d=>`前序输入（固定交付版本）：${d.path}（sha256 ${d.hash}）`),
-    ...run.steps.slice(0,step.number-1).flatMap(s=>Object.values(s.deliveries || {}).filter(d=>d.outcome==='skipped').map(d=>`前序第 ${s.number} 轮：${name(d.memberId)} 被用户跳过，没有交付。`)),
+    ...run.steps.slice(0,step.number-1).flatMap(s=>Object.values(s.deliveries || {}).filter(d=>d.outcome==='skipped').map(d=>`前序第 ${s.number} 轮：${name(d.memberId)} 被${skipperLabel(d.skippedBy)}跳过，没有交付${d.reason?`（原因：${d.reason}）`:''}。`)),
     ...step.members.flatMap(id=>{const p=paths(base,run,step,id);return [`${name(id)} [${id}]：`,`草稿：${p.draft}`,`完成后改名为：${p.ready}`,`客观阻塞改名为：${p.blocked}`,...(stage.after==='review'?[`确有需返工问题改名为：${p.rework}`]:[]),`文件第一行必须原样保留：${header(run,step,id)}`];})];
   if (run.kind==='file') lines.push(
     '先读真实项目根的 AGENTS.md、.agents/project.json；开题和实现负责人读 .agents/AUTHOR.md，独立审查负责人读 .agents/MERGER.md。核实项目验证、版本、合并入口及后置检查要求，不自行换入口。',
@@ -83,4 +84,4 @@ function prepare(base,run,step) {
     catch(error) { if(error.code!=='EEXIST')throw error; }
   }
 }
-module.exports={VERSION,LIMIT,REVIEW_LIMIT,reviewsInBudget,enabled,hash,directory,paths,ticket,header,readDelivery,newStep,prompt,prepare,protocol};
+module.exports={skipperLabel,VERSION,LIMIT,REVIEW_LIMIT,reviewsInBudget,enabled,hash,directory,paths,ticket,header,readDelivery,newStep,prompt,prepare,protocol};

@@ -128,7 +128,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       const attempt=now.steps.at(-1).dispatches.find(x=>x.id===dispatchId);attempt.state='settled';
       attempt.chatStatus=result?.status || 'unknown';
       const failure=result?.results?.find(x=>['errored','absent','failed','not_sent'].includes(x.status));
-      if(['error','no_subs','no_sent','not_sent'].includes(result?.status) || failure){now.error=String(failure?.reason || result.reason || result.status);now.status='paused';}
+      if(['error','no_subs','no_sent','not_sent'].includes(result?.status) || failure){now.error=failureText(failure,result);now.status='paused';}
       // Completion changes diagnostics only. Files decide advancement, even after errors.
       save(id,now);tick(id);
     },error=>{const now=current(id,run.id,step.id);if(!now || terminal(now))return;now.error=error.message;now.status='paused';save(id,now);logger.error('[delivery] dispatch failed:',error);}).finally(()=>activeDispatches.delete(dispatchId)).catch(error=>{
@@ -227,20 +227,37 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
   // Escape hatch: the user skips a member who has not delivered. The Hub records
   // the skip itself (never a forged delivery). Skipping a development step's
   // owner ends the run without merging; skipping a helper lets the step go on.
-  async function skip(id,memberId) {
+  // by：'user'（田哥在界面跳过）或 'orchestrator'（编排员跳过）；reason 写进下一棒的提示和群聊系统提示。
+  async function skip(id,memberId,{by='user',reason=''}={}) {
     own(id);const r=read(id);if(!r || terminal(r))throw new Error('没有进行中的任务');
     const step=r.steps.at(-1);
     if(!step.members.includes(memberId))throw new Error('该成员不在当前步骤');
     if(step.deliveries[memberId])throw new Error('该成员已交付，无需跳过');
     const who=getMembers(meeting(id)).find(n=>n.memberId===memberId)?.displayName || memberId;
+    const skippedBy=by==='orchestrator'?'orchestrator':'user',why=String(reason || '').trim().slice(0,200);
+    noteSkip(id,`${D.skipperLabel(skippedBy)}跳过了 ${who}${why?`：${why}`:''}`);
     if(r.kind==='file' && step.members[0]===memberId){
       cancel(id);
       const cancelled=read(id);
       cancelled.error=`已跳过 ${who}：本次任务结束，已请求停止成员执行；已开始的合并请核对仓库状态`;
       save(id,cancelled);return status(id);
     }
-    step.deliveries[memberId]={memberId,outcome:'skipped',path:null,hash:null,acceptedAt:Date.now()};
+    step.deliveries[memberId]={memberId,outcome:'skipped',path:null,hash:null,acceptedAt:Date.now(),skippedBy,...(why?{reason:why}:{})};
     save(id,r);await advance(id);return status(id);
+  }
+  // 群聊里留一行系统提示，旁观的人能看到谁被跳过、为什么；写不进去不影响跳过本身。
+  // 刷新用 dev-workbench:progress，与 dispatcher 写系统提示后同一事件，打开的群聊面板会立即重绘。
+  function noteSkip(id,text) {
+    try{const orch=require('../../core/group-chat-orchestrator').getOrchestrator(getHubDataDir(),id);orch.appendSystemNote(orch.state.currentTurn || 1,text,{kind:'warning'});sendToRenderer('dev-workbench:progress',{meetingId:id,revision:orch.state.revision});}
+    catch(error){logger.warn?.('[delivery] skip note failed:',error.message);}
+  }
+  // 成员派工失败的原因：带上成员名、模型/CLI 给出的报错摘要，编排员和群里都能看懂。
+  function failureText(failure,result) {
+    if(!failure)return String(result?.reason || result?.status || '派工失败');
+    if(!failure.failure || typeof failure.failure!=='object')return String(failure.reason || result?.reason || result?.status);
+    const f=failure.failure,code=f.code || failure.reason || failure.status;
+    const detail=String(f.detail || '').replace(/\s+/g,' ').trim().slice(0,240);
+    return `${code}：${failure.label || failure.sid || '成员'} ${f.summary || '本轮异常结束'}${detail?`（${detail}）`:''}`;
   }
   // Explicit user continuation is separate from reconciliation. It never starts a new run.
   async function continueWork(id,text) {
@@ -265,6 +282,6 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
   function startWatching(){suspended=false;if(timer)return;events=require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(),id=>tick(id),logger);timer=setInterval(()=>tick(),2000);timer.unref?.();}
   function freeze(){suspended=true;clearInterval(timer);timer=null;events?.dispose();events=null;}
   function dispose(){freeze();for(const g of gates.values())g.controller.abort();gates.clear();for(const id of owners.keys()){try{release(id);}catch(e){logger.error('[delivery] release owner:',e);}}owners.clear();watching.clear();retiring.clear();ownership?.close();ownership=null;}
-  return {setArmed,skip:(id,memberId)=>action(id,()=>skip(id,memberId)),start:(id,goal)=>action(id,()=>start(id,goal)),status,stop,cancel,retire,resume:id=>action(id,()=>resume(id)),continueWork:(id,text)=>action(id,()=>continueWork(id,text)),tick,registerIpc,startWatching,freeze,dispose,handles:id=>D.enabled(meeting(id)),isBusy:id=>{const r=read(id);return !!r && !terminal(r);}};
+  return {setArmed,skip:(id,memberId,opts)=>action(id,()=>skip(id,memberId,opts)),start:(id,goal)=>action(id,()=>start(id,goal)),status,stop,cancel,retire,resume:id=>action(id,()=>resume(id)),continueWork:(id,text)=>action(id,()=>continueWork(id,text)),tick,registerIpc,startWatching,freeze,dispose,handles:id=>D.enabled(meeting(id)),isBusy:id=>{const r=read(id);return !!r && !terminal(r);}};
 }
 module.exports={createDeliveryEngine};

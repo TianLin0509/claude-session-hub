@@ -41,7 +41,7 @@ function fixture(t, { settings = {}, dataDir } = {}) {
     resume: async () => { engineCalls.push(['resume']); return { status: 'running' }; },
     cancel: async () => { engineCalls.push(['cancel']); },
     continueWork: async () => { engineCalls.push(['remind']); return {}; },
-    skip: async (id, memberId) => { engineCalls.push(['skip', memberId]); return { status: 'running' }; },
+    skip: async (id, memberId, opts) => { engineCalls.push(['skip', memberId, opts]); return { status: 'running' }; },
   };
   const restarts = [];
   let restartResult = sid => ({ id: sid, status: 'idle' });
@@ -443,9 +443,9 @@ test('the orchestrator can restart or wake a member and skip one that cannot rec
   await assert.rejects(x.call('orch_control_workflow',{action:'skip',memberId:'m2'}),/没有进行中的工作段/);
   await x.call('orch_start_workflow',{name:'调研',preset:'research',goal:'g',acceptance:'a',members:['m2','m3']});
   await assert.rejects(x.call('orch_control_workflow',{action:'skip'}),/memberId/);
-  const skipped=await x.call('orch_control_workflow',{action:'skip',memberId:'m2'});
-  assert.equal(skipped.ok,true);assert.deepEqual(x.engineCalls.at(-1),['skip','m2']);
-  assert.ok(x.service.ledgerFor('mt1').events.some(e=>/跳过 m2/.test(e.text)));
+  const skipped=await x.call('orch_control_workflow',{action:'skip',memberId:'m2',note:'模型不存在，重启无效'});
+  assert.equal(skipped.ok,true);assert.deepEqual(x.engineCalls.at(-1),['skip','m2',{by:'orchestrator',reason:'模型不存在，重启无效'}]);
+  assert.ok(x.service.ledgerFor('mt1').events.some(e=>/跳过 m2：模型不存在/.test(e.text)));
 });
 
 test('review: a changed natural-language budget applies with the next plan version',async t=>{
@@ -531,6 +531,17 @@ test('review: a start failure is handed to the orchestrator; repeated start fail
     } else assert.equal(ledger.halt?.reason, 'repeated_failure');
   }
   assert.equal(starts, L.FAILURE_LIMIT);
+});
+
+test('a provider error that mentions quota still counts as a runtime failure', async t => {
+  const x = fixture(t);
+  await x.addExisting({ role: '实现', kind: 'codex' }); await x.addExisting({ role: '审核', kind: 'claude' });
+  const args = { name: 'PF', preset: 'development', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] };
+  await x.call('orch_propose_plan', { summary: 'PF', segments: [args] }); await x.call('orch_start_workflow', args);
+  const stages = x.meetingObj.serialWorkflow.deliveryStages;
+  x.writeRun({ id: 'run-1', kind: 'file', status: 'paused', error: 'quota_exceeded：Claude 2 额度已用尽（You have hit your limit）', stages, steps: [{ id: 's', index: 1, members: ['m2'], deliveries: {} }] });
+  x.service.reconcile('mt1');
+  assert.equal(x.service.ledgerFor('mt1').segments[0].failures, 1);
 });
 
 test('review: continuing into an immediate failure still counts toward the repeated-failure limit', async t => {
