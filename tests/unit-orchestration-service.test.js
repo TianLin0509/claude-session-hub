@@ -547,4 +547,7 @@ test('review: continuing into an immediate failure still counts toward the repea
   x.service.userMessage('mt1', { text: '换个人做吧' });
   assert.equal(ledger.status, 'running');
   assert.equal(ledger.segments[0].failures, 0, 'the count restarts after the user replies');
+  for (let i = 0; i < 4; i += 1) await x.call('orch_control_workflow', { action: 'continue' });
+  assert.equal(ledger.halt?.reason, 'repeated_failure');
+  assert.equal(ledger.notices.filter(n => /已故障 4 次/.test(n.text)).length + x.dispatches.filter(d => /已故障 4 次/.test(d.userInput || '')).length >= 2, true, 'the second repeated-failure halt also reaches the orchestrator');
 });

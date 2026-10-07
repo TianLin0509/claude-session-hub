@@ -259,7 +259,7 @@ function createOrchestrationService(deps) {
     seg.failures = (seg.failures || 0) + 1;
     if (seg.failures < Ledger.FAILURE_LIMIT) return;
     haltRun(meetingId, ledger, 'repeated_failure', `「${seg.name}」同一步骤已故障 ${seg.failures} 次：${run.error || '原因未知'}`);
-    Ledger.enqueue(ledger, `repeated:${run.id}:${stepId}:${seg.failures}`, `工作段「${seg.name}」在同一步骤已故障 ${seg.failures} 次（最近一次：${run.error || '原因未知'}），Hub 已暂停。请向田哥说明试过的办法、当前判断和下一步建议，他回话后暂停自动解除。`, now());
+    Ledger.enqueue(ledger, `repeated:${run.id}:${stepId}:${seg.failures}:${ledger.budget.grants}`, `工作段「${seg.name}」在同一步骤已故障 ${seg.failures} 次（最近一次：${run.error || '原因未知'}），Hub 已暂停。请向田哥说明试过的办法、当前判断和下一步建议，他回话后暂停自动解除。`, now());
   }
   function checkBudget(meetingId, ledger, run = readRun(meetingId)) {
     const reason = Ledger.overBudget(ledger);
