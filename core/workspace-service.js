@@ -19,7 +19,9 @@ const RENAME_SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
 const DEFAULT_RECOMMENDED_CATEGORIES = [
   { id: 'ai', directory: 'AI', label: 'AI', description: 'Agent / 应用开发' },
   { id: 'wireless', directory: 'Wireless', label: 'Wireless', description: '无线通信研究' },
+  // @community-strip 私人投研目录
   { id: 'research', directory: 'Stock', label: '投研', description: '股票与策略研究' },
+  // @community-end
 ];
 
 // ── 平铺工作根（2026-08-31 用户决策）────────────────────────────────────────────

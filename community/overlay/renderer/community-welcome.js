@@ -12,7 +12,9 @@
       const controls = document.getElementById('controls-layer');
       if (controls) controls.before(link); else document.head.append(link);
     }
-    const host = document.querySelector('.home-welcome-foot');
+    // Sits under the two "new session / new group" cards on the home page.
+    // tests/unit-community-export.test.js checks this anchor exists in the exported page.
+    const host = document.querySelector('.home-welcome-body');
     if (!host || document.getElementById('community-setup')) return;
     const section = document.createElement('section');
     section.id = 'community-setup';
@@ -24,7 +26,7 @@
       + '<button id="community-refresh" type="button">重新检测</button>'
       + '<button id="community-guide" type="button">安装说明</button></div>'
       + '<p id="community-advisory" class="community-setup-note" hidden></p>';
-    host.before(section);
+    host.append(section);
     section.querySelector('#community-accounts').onclick = () => document.getElementById('btn-rail-accounts')?.click();
     section.querySelector('#community-guide').onclick = () => shell.openExternal(GUIDE);
     async function refresh() {

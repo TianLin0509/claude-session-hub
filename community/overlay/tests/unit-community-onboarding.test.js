@@ -82,13 +82,14 @@ test('native-only installs: detection, account check and login all start the sam
     terminal: async (command, args) => { calls.push({ command, args }); return {}; } });
   const codexRow = { provider: 'codex', home: path.join(root, '.codex') };
   const claudeRow = { provider: 'claude', home: path.join(root, '.claude') };
+  // Codex sign-in goes through the official app-server, which resolves the executable the same
+  // way as sessions; it opens a browser, so only its resolution is checked here.
   assert.equal((await adapters.check(codexRow)).state, 'login_required');
-  await adapters.login(codexRow);
+  assert.equal(require('../main/codex-windows-command').resolveWindowsCodex(env).command, codex);
   assert.equal((await adapters.check(claudeRow)).state, 'login_required');
   await adapters.login(claudeRow);
   assert.deepEqual(calls, [
     { command: codex, args: ['login', 'status'] },
-    { command: codex, args: ['login'] },
     { command: claude, args: ['auth', 'status', '--json'] },
     { command: claude, args: ['auth', 'login'] },
   ]);

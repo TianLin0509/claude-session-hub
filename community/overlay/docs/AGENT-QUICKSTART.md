@@ -1,4 +1,4 @@
-# 公司 Agent：安装并交付可用的 AI Hub
+# Agent 安装手册：替用户装好并交付可用的 AI Hub
 
 适用：Windows 10/11 x64。固定发布版：**@@COMMUNITY_TAG@@**。先选择「直接使用」或「借鉴开发」，不要把装好文件当成账号已经可用。
 
@@ -62,7 +62,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-release.ps1 -Versi
 | CLI 安装完成但不能工作 | 执行官方 `--version`，再检查登录；企业策略、旧版本、模型权限分别定位 |
 | 账号未登录 | 打开官方登录让本人完成；不复制其他机器凭据 |
 | 模型拒绝/额度不足 | 明确报告提供方错误，由用户选择其可用模型或处理账户 |
-| 公司 agent 只能访问内部模型 | 进入 [CUSTOMIZE.md](CUSTOMIZE.md)，接入内部 provider；不能把内部账号当作 Claude/Codex 授权 |
+| 公司 agent 只能访问内部模型 | 进入 [COMPANY-CODE-AGENT.md](COMPANY-CODE-AGENT.md)，给 Hub 加内部 Agent 会话种类；不能把内部账号当作 Claude/Codex 授权 |
+
+## 装不上时的诊断报告
+
+任何一步失败，不要反复重试同一条命令。按顺序收集下面的证据，整理成报告交给用户（用户会转给分享者远程定位）：
+
+1. 安装回执：重跑一次安装并加 `-NoLaunch -NoShortcut -ResultPath "$env:TEMPi-hub-install-result.json"`，记录退出码和该 JSON 全文。
+2. 环境：`[Environment]::OSVersion.VersionString`、`$env:PROCESSOR_ARCHITECTURE`、`$PSVersionTable.PSVersion`、`$ExecutionContext.SessionState.LanguageMode`（公司策略常把它设成受限模式）。
+3. 网络：对失败的下载地址执行 `Invoke-WebRequest -UseBasicParsing -Method Head <URL>`，记录 HTTP 状态或错误原文；记录是否设置了 `HTTPS_PROXY`。
+4. CLI：对每个要用的 CLI 执行 `where.exe <名字>` 与 `<名字> --version`；登录状态只用官方状态命令查询（Claude `claude auth status --json`，Codex `codex login status`）。
+5. Hub 自检：源码安装执行 `node scripts/doctor.js`；便携安装启动后截一张首页「连接你的 AI」区域的图（截图前确认没有账号邮箱、token 等私人信息）。
+
+报告模板：
+
+```text
+AI Hub 版本：（窗口标题或 installation.json 里的版本）
+卡在哪一步：下载 / 校验 / 解压 / 启动 / CLI 安装 / 登录 / 发送消息
+错误原文：
+已收集的证据：（上面 1–5 的结果，去掉私人信息）
+判断：（已验证的原因 与 推断 分开写）
+建议下一步：（谁来做什么：换网络 / 装 CLI / 本人登录 / 联系分享者）
+```
+
+不要为了让安装「看起来成功」去关闭校验、拷贝别人的凭据、改系统策略或换成作者的账号与网关。
 
 ## 路线 C：借鉴或定制
 

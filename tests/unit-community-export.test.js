@@ -107,6 +107,13 @@ test('the current tree exports to a clean, loadable community edition', { timeou
     const edition = JSON.parse(fs.readFileSync(path.join(out, 'community-edition.json'), 'utf8')).version;
     assert.match(fs.readFileSync(path.join(out, 'scripts', 'install-release.ps1'), 'utf8'),
       new RegExp(`\\$Version = 'v${edition.replace(/\./g, '\\.')}'`), 'installer defaults to this release');
+    // The first-run panel mounts into the home page by class; an upstream home redesign
+    // once removed its anchor and the panel silently disappeared.
+    const welcome = fs.readFileSync(path.join(out, 'renderer', 'community-welcome.js'), 'utf8');
+    const anchor = /const host = document\.querySelector\('\.([\w-]+)'\)/.exec(welcome);
+    assert.ok(anchor, 'community-welcome.js names its home page anchor');
+    assert.match(fs.readFileSync(path.join(out, 'renderer', 'index.html'), 'utf8'), new RegExp(`class="[^"]*\\b${anchor[1]}\\b`),
+      `home page still has .${anchor[1]} for the community first-run panel`);
   } finally {
     fs.rmSync(path.dirname(out), { recursive: true, force: true });
   }
