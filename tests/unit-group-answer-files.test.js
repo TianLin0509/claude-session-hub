@@ -132,12 +132,47 @@ async function deliverySkip() {
     assert.deepEqual(e.status(m.id).missingIds, ['b']);
     await e.skip(m.id, 'b');
     assert.equal(calls.length, 2, 'skipping a helper lets the flow continue'); assert.deepEqual(calls[1].targetMemberIds, ['c']);
-    assert.match(calls[1].userInput, /B 被用户跳过，没有交付/);
+    assert.match(calls[1].userInput, /B 被用户跳过，没有交付。/);
+    const notes = require('../core/group-chat-orchestrator').getOrchestrator(dir, m.id).state.messages.filter(x => x.systemNote);
+    assert.ok(notes.some(x => x.content === '用户跳过了 B'), 'the skip is visible in the group chat');
     await assert.rejects(e.skip(m.id, 'a'), /不在当前步骤/);
     // A file handed in after the skip does not reopen the step.
     const r = read(), first = r.steps[0], p = D.paths(D.directory(dir, m.id), r, first, 'b');
     fs.writeFileSync(p.draft, D.header(r, first, 'b') + '\n\nlate', 'utf8'); fs.renameSync(p.draft, p.ready);
     e.tick(m.id); await flush(); await flush(); assert.equal(e.status(m.id).paused, false);
+  } finally { e.dispose(); fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function deliverySkipByOrchestratorAndFailureReason() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'answers-skip-orch-'));
+  const people = ['a', 'b', 'c'].map(memberId => ({ memberId, title: memberId, displayName: memberId.toUpperCase() }));
+  const draft = S.createPreset('custom', people);
+  draft.rounds = [{ name: '分头提案', members: ['a', 'b'], prompt: 'propose', after: 'next' }, { name: '汇总', members: ['c'], prompt: 'sum', after: 'end' }];
+  const m = { id: 'room2', groupChat: true, subSessions: ['sa', 'sb', 'sc'], slotSpecs: people, serialWorkflow: S.toDeliveryConfig({}, draft, ['a', 'b', 'c']) };
+  const calls = [], settle = [];
+  const deps = { meetingManager: { getMeeting: () => m, setParticipants() {} }, sessionManager: { getSession: () => ({ status: 'idle' }) }, getHubDataDir: () => dir, getMembers: () => people,
+    ensureMemberReady: async () => {}, logger: { error() {}, warn() {} },
+    getDispatcher: () => ({ dispatchGroupChatTurn: (_id, args) => { calls.push(args); return new Promise(resolve => settle.push(resolve)); } }) };
+  const e = createDeliveryEngine(deps);
+  const read = () => JSON.parse(fs.readFileSync(path.join(D.directory(dir, m.id), 'run.json'), 'utf8'));
+  const deliver = member => { const r = read(), s = r.steps.at(-1), p = D.paths(D.directory(dir, m.id), r, s, member); fs.writeFileSync(p.draft, D.header(r, s, member) + '\n\nok', 'utf8'); fs.renameSync(p.draft, p.ready); };
+  try {
+    await e.start(m.id, 'goal'); deliver('a');
+    // B 的模型调用报错：暂停原因带上成员名和报错原文，编排员与群里都能看懂。
+    settle[0]({ status: 'completed', results: [{ sid: 'sb', label: 'B', status: 'errored', reason: 'provider_error',
+      failure: { code: 'provider_error', summary: 'Agent 本轮异常结束', detail: 'API Error 404:\n model claude-x not found' } }] });
+    await flush(); await flush();
+    const paused = read();
+    assert.equal(paused.status, 'paused');
+    assert.match(paused.error, /^provider_error：B Agent 本轮异常结束（API Error 404: model claude-x not found）$/);
+    await e.skip(m.id, 'b', { by: 'orchestrator', reason: '模型不存在，重启无效' });
+    const r = read();
+    assert.deepEqual({ by: r.steps[0].deliveries.b.skippedBy, reason: r.steps[0].deliveries.b.reason }, { by: 'orchestrator', reason: '模型不存在，重启无效' });
+    await e.resume(m.id);
+    assert.equal(calls.length, 2); assert.deepEqual(calls[1].targetMemberIds, ['c']);
+    assert.match(calls[1].userInput, /B 被编排员跳过，没有交付（原因：模型不存在，重启无效）。/, 'the next member learns who skipped and why');
+    const notes = require('../core/group-chat-orchestrator').getOrchestrator(dir, m.id).state.messages.filter(x => x.systemNote);
+    assert.ok(notes.some(x => x.content === '编排员跳过了 B：模型不存在，重启无效' && x.noteKind === 'warning'));
   } finally { e.dispose(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -166,12 +201,17 @@ function answerCardRendering() {
     escapeHtml: esc, sessions: new Map(), _renderMarkdown: t => t, _activeMeetingCwd: () => '', _formatGroupChatTime: () => '', _renderGroupAvatar: () => '',
     // 编排群的标签由 renderer/orchestration-ui.js 提供；普通群聊下它们都返回空。
     OrchUI: { roleBadge: () => '', peek: () => '', defaultMinimized: () => false },
+    _gcFailReasonLabel: reason => ((reason && reason.code) || reason) === 'provider_error' ? 'Agent 本轮异常结束' : '',
   });
   const meeting = { id: 'g', groupChat: true }, members = { s: { slotIndex: 0, kind: 'claude', displayLabel: 'Claude 1' } };
   const old = render({ id: 'a1-m1', sid: 's', role: 'assistant', content: '升级前的历史回答' }, meeting, members);
   assert(old.includes('升级前的历史回答') && !old.includes('还没交'), 'history keeps its text');
   const missing = render({ id: 'a2-m1', sid: 's', role: 'assistant', content: '' }, meeting, members);
   assert(missing.includes('还没交') && !missing.includes('undefined'));
+  const failed = render({ id: 'a4-m1', sid: 's', role: 'assistant', content: '', status: 'errored',
+    failure: { code: 'provider_error', summary: 'Agent 本轮异常结束', detail: 'API Error: model claude-x\n not found' } }, meeting, members);
+  assert(failed.includes('这一轮没完成：Agent 本轮异常结束') && failed.includes('报错原文：API Error: model claude-x not found') && !failed.includes('还没交'),
+    'a member whose turn errored shows the error instead of "not handed in"');
   const draft = render({ id: 'a3-m1', sid: 's', role: 'assistant', content: '写了一半', answer: { state: 'draft' } }, meeting, members);
   assert(draft.includes('草稿') && draft.includes('写了一半'));
   // Resend: a visible button while nothing is handed in, tucked into 更多 once it is.
@@ -203,5 +243,5 @@ async function resendMemberIpc() {
 }
 
 (async () => {
-  for (const fn of [modeRules, readStates, cardsOnlyShowFiles, acceptedCardsKeepTheirVersion, answerCardRendering, resendMemberIpc, deliverySkip, deliveryOwnerSkipEnds]) { await fn(); console.log('PASS ' + fn.name); }
+  for (const fn of [modeRules, readStates, cardsOnlyShowFiles, acceptedCardsKeepTheirVersion, answerCardRendering, resendMemberIpc, deliverySkip, deliverySkipByOrchestratorAndFailureReason, deliveryOwnerSkipEnds]) { await fn(); console.log('PASS ' + fn.name); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

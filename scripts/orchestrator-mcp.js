@@ -27,7 +27,7 @@ const tools = [
       rounds: { type: 'array', items: schema({ name: string, prompt: string, members: { type: 'array', items: string }, after: { type: 'string', enum: ['next', 'end', 'review'] } }, ['name', 'prompt', 'members']) },
     }, ['name', 'preset', 'goal', 'acceptance', 'members']) },
   { name: 'orch_control_workflow',
-    description: '控制当前工作段：continue 续跑（故障处理后、额度追加后或返工上限暂停后）；remind 提醒未交付成员补交（可带 note 说明这一步该交什么）；skip 跳过当前步骤里某位未交付的成员（memberId，Hub 记为跳过而非交付；跳过开发/文件段的实现位会结束本段）；pause 暂停；cancel 取消本段，之后可改计划重派。',
+    description: '控制当前工作段：continue 续跑（故障处理后、额度追加后或返工上限暂停后）；remind 提醒未交付成员补交（可带 note 说明这一步该交什么）；skip 跳过当前步骤里某位未交付的成员（memberId，note 写跳过原因，会显示在群里并告诉后续成员；Hub 记为跳过而非交付；跳过开发/文件段的实现位会结束本段）；pause 暂停；cancel 取消本段，之后可改计划重派。',
     inputSchema: schema({ action: { type: 'string', enum: ['continue', 'remind', 'skip', 'pause', 'cancel'] }, note: string, memberId: string }, ['action']) },
   { name: 'orch_ask_member',
     description: '单独问某位成员一个问题（澄清、调研、复核），成员把回答写进群聊回答文件，Hub 回答后通知你。回答只作参考，不能当工作段的完成证据。成员正在工作流里干活时不能打断。',

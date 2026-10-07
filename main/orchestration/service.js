@@ -248,7 +248,8 @@ function createOrchestrationService(deps) {
   }
   // 运行故障交给编排员自行处理（工作段暂停通知里已列出可用手段）；同一步骤反复故障才暂停等田哥。
   function noteRuntimeFailure(meetingId, ledger, run) {
-    if (run?.status !== 'paused' || ledger.status !== 'running' || /已完成 \d+ 轮审查仍需返工|用户已暂停|额度/.test(run.error || '')) return;
+    // 只排除 Hub 自己的暂停（审查轮数上限、田哥/额度暂停走 stop 写的「用户已暂停」）；模型报错原文里出现「额度」也照常计数。
+    if (run?.status !== 'paused' || ledger.status !== 'running' || /^已完成 \d+ 轮审查仍需返工|^用户已暂停/.test(run.error || '')) return;
     const seg = ledger.segments.find(s => s.runId === run.id);
     if (!seg) return;
     const stepId = run.steps?.at(-1)?.id || '';
@@ -480,10 +481,11 @@ function createOrchestrationService(deps) {
     if (args.action === 'skip') {
       const memberId = String(args.memberId || '');
       if (!memberId) throw new Error('skip 要写 memberId');
-      const s = await e.skip(meetingId, memberId);
-      Ledger.event(ledger, `编排员跳过 ${memberId}`, now());
+      const reason = String(args.note || '').trim();
+      const s = await e.skip(meetingId, memberId, { by: 'orchestrator', reason });
+      Ledger.event(ledger, `编排员跳过 ${memberId}${reason ? '：' + reason.slice(0, 120) : ''}`, now());
       reconcile(meetingId);
-      return { ok: true, status: s?.status || null, note: '已记录跳过（不是伪造交付）。后续步骤若仍安排了该成员，请改计划后重派。' };
+      return { ok: true, status: s?.status || null, note: '已记录跳过（不是伪造交付），原因会写进群聊和下一位成员的提示。后续步骤若仍安排了该成员，请改计划后重派。' };
     }
     throw new Error('action 只能是 continue / remind / skip / pause / cancel');
   }

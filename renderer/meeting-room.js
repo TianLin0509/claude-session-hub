@@ -2510,6 +2510,14 @@ if (typeof document !== 'undefined') (function () {
   // it wrote, or that it has not handed one in yet. No transcript states here —
   // problems show on the member's session in the sidebar.
   function _renderAnswerCard(message, meeting, memberBySid) {
+    // 回答卡片还没有内容、但这一轮已报错：直接写出报错摘要（如模型不存在、额度用尽），旁观时能看懂为什么没交。
+    function _gcAnswerFailureText(message) {
+      const failure = message && message.failure && typeof message.failure === 'object' ? message.failure : null;
+      if (!failure && message?.status !== 'errored') return '';
+      const label = _gcFailReasonLabel(failure || message.statusReason) || '本轮异常结束';
+      const detail = String(failure?.detail || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      return `这一轮没完成：${label}${detail ? `。报错原文：${detail}` : ''}`;
+    }
     const slot = memberBySid[message.sid];
     const session = typeof sessions !== 'undefined' && sessions.get(message.sid);
     // Unregistered messages (history before the switch, legacy fallbacks) keep their stored text;
@@ -2519,7 +2527,7 @@ if (typeof document !== 'undefined') (function () {
     const body = text.trim()
       ? `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(text, { isUser: false, escapeHtml,
         renderMarkdown: t => _renderMarkdown(t, session?.cwd || meeting.workspace || _activeMeetingCwd()), foldLong: false })}</div>`
-      : '<div class="mr-gc-md mr-gc-empty-placeholder">还没交</div>';
+      : `<div class="mr-gc-md mr-gc-empty-placeholder">${escapeHtml(_gcAnswerFailureText(message) || '还没交')}</div>`;
     const journal = require('./groupchat-journal');
     const copy = text.trim() ? '<button type="button" class="mr-gc-copy-btn" data-gc-copy-message="1" title="复制此条消息" aria-label="复制此条消息">📋</button>' : '';
     const prompt = message.sourcePrompt ? `<button type="button" class="mr-gc-prompt-btn" data-gc-view-prompt="${escapeHtml(message.id || '')}" title="查看本轮发给该 AI 的 prompt">查看本轮输入</button>` : '';
