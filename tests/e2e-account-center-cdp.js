@@ -90,8 +90,8 @@ async function main() {
     assert.equal(await chrome.running(), false, 'opening the page is passive');
     const main = '.ac-company[data-site="chatgpt"]';
     assert.match(await text(main), /main@example\.com/);
-    assert.match(await text(main), /访问过网页/);
-    assert.match(await text('.ac-image-status'),/生图可用.*Codex 订阅/);
+    assert.match(await text(main), /未确认 · .*打开过/);
+    assert.match(await text('.ac-image-status'),/生图 MCP：.*现在走 Codex/);
     assert.ok(!(await text(main)).includes('已登录'),'subscription readiness does not claim website login');
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-tabs [role=tab]").length'), 6);
     assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#account-page")).backgroundColor'), 'rgb(255, 255, 255)');
@@ -132,7 +132,7 @@ async function main() {
     await until('document.querySelector(".ac-company[data-site=claude] [data-identity=alt] .ac-default")', 'default persisted');
     assert.equal(JSON.parse(fs.readFileSync(path.join(chromeRoot, 'accounts.json'), 'utf8')).sites.claude.preferred, 'alt');
     await click('.ac-company[data-site="claude"] [data-ac="open"][data-identity="alt"]');
-    await until('document.querySelector(".ac-company[data-site=claude] [data-identity=alt]").textContent.includes("打开过网页")', 'opened only, not validated login');
+    await until('document.querySelector(".ac-company[data-site=claude] [data-identity=alt]").textContent.includes("打开过")', 'opened only, not validated login');
     assert.ok(!(await text('.ac-company[data-site="claude"]')).includes('已登录'));
     assert.deepEqual(fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)[0], { site: 'claude', identity: 'alt', url: 'https://claude.ai/' });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: '1', code: 'Digit1', modifiers: 1, windowsVirtualKeyCode: 49 });
@@ -141,10 +141,14 @@ async function main() {
     assert.equal(fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).at(-1).site, 'chatgpt');
     const activity = require('../core/hub-account-activity');
     activity.recordActivity(chromeRoot, { site: 'google', source: 'roundtable', outcome: 'success' });
-    await until('document.querySelector(".ac-company[data-site=google]").textContent.includes("使用成功")', 'tool result refreshes without check', 12000);
+    await until('document.querySelector(".ac-company[data-site=google]").textContent.includes("网页圆桌调用成功")', 'tool result refreshes without check', 12000);
+    assert.match(await text('.ac-company[data-site="google"]'), /正常 · 刚刚同步/);
+    const badgeBefore = Number(await cdp.eval('document.querySelector("#accounts-attention").hidden ? 0 : document.querySelector("#accounts-attention").textContent'));
     activity.recordActivity(chromeRoot, { site: 'google', source: 'roundtable', outcome: 'login_required' });
-    await until('document.querySelector(".ac-company[data-site=google] [data-ac=login]")', 'real use login error actionable', 12000);
-    assert.match(await text('.ac-company[data-site="google"]'), /上次成功/);
+    await until('document.querySelector(".ac-company[data-site=google] .ac-open[data-ac=login]")', 'real use login error actionable', 12000);
+    assert.match(await text('.ac-company[data-site="google"]'), /需要重新登录\s+刚刚 网页圆桌提示需要登录/);
+    await until('Number(document.querySelector("#accounts-attention").textContent) === ' + (badgeBefore + 1) + ' && !document.querySelector("#accounts-attention").hidden', 'red sidebar badge counts the lost login', 12000);
+    assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#accounts-attention")).backgroundColor'), 'rgb(229, 72, 77)');
     result.checks.push('更多菜单添加/默认账号、鼠标和 Alt+1 打开正确身份；夹具工具事件被动刷新并提示登录异常');
     const blockedId='web-account-recovery-fixture';
     write(path.join(data,'web-roundtable',blockedId+'.json'),{id:blockedId,kind:'web',state:'needs_attention',updatedAt:new Date().toISOString(),input:{provider:'deepseek',prompt:'PRIVATE-NOT-IN-UI'},submissionAttempted:true,recovery:{reason:'login_required'}});

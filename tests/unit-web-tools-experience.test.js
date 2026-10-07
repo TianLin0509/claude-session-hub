@@ -31,7 +31,7 @@ test('Codex health and recent success remain separate from ChatGPT website ident
   write(path.join(pool,'codex-lane-health.json'),{pid:process.pid,beat:now/1000,version:'0.7.32',private:'SECRET'});
   let images=imageStatus(root,{CLAUDE_HUB_DATA_DIR:root},now);assert.equal(images.codex.ready,true);assert.equal(JSON.stringify(images).includes('SECRET'),false);
   const state={identities:[{id:'main',sites:[{key:'chatgpt',state:'unknown'}]}],webTools:{images}};
-  const html=aiHtml(state,'',esc,now);assert.match(html,/生图可用.*Codex 订阅/);assert.doesNotMatch(html,/已登录|data-ac="recover"/);
+  const html=aiHtml(state,'',esc,now);assert.match(html,/生图 MCP：Codex 优先、网页兜底 · 现在走 Codex/);assert.doesNotMatch(html,/已登录|data-ac="recover"/);
   assert.equal(imageStatus(root,{CLAUDE_HUB_DATA_DIR:root},now+31000).codex.ready,false);
   write(path.join(pool,'stop-codex'),'stop');assert.equal(imageStatus(root,{CLAUDE_HUB_DATA_DIR:root},now).codex.ready,false);
 });

@@ -48,32 +48,29 @@ async function main() {
     await until('typeof accountCenterPanel!=="undefined"', 'renderer initialized');
     // Session-first B keeps the directory behind the left hover strip.
     await cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved',x:6,y:240 });
-    await until('document.querySelector("#scene-rail").getBoundingClientRect().width > 70', 'navigation drawer expanded');
+    await sleep(350);
     await click('#btn-rail-accounts');
     await until('document.querySelector(".ac-handoff")', 'handoff banner');
-    await until('document.querySelector(".ac-network")', 'network route banner');
-    assert.match(await text('.ac-network'), /国外 AI 使用 Hub 代理，国内 AI 直连/);
+    assert.equal(await cdp.eval('!!document.querySelector(".ac-network")'), false, 'a working network route needs no banner');
     assert.match(await text('.ac-handoff'), /网页工具已暂停并断开/);
     const alt = '.ac-company[data-site="chatgpt"] .ac-account[data-identity="alt"]';
-    await until(`document.querySelector('${alt} .ac-risk')`, 'paused row');
-    assert.match(await text(alt), /自动化已暂停到/);
-    assert.match(await text(alt), /第 2 次/);
-    assert.match(await text(alt + ' [data-ac="open"]'), /去验证/);
-    assert.equal(await cdp.eval(`document.querySelectorAll('.ac-company[data-site="chatgpt"] .ac-account[data-identity="main"] .ac-risk').length`), 0, 'the other login is untouched');
+    await until(`document.querySelector('${alt} [data-health="attention"]')`, 'paused row');
+    assert.match(await text(alt), /需要人机验证\s+网页自动化已暂停到/);
+    assert.match(await text(alt + ' .ac-open'), /去验证/);
     const main = '.ac-company[data-site="chatgpt"] .ac-account[data-identity="main"]';
-    assert.match(await text(main + ' .ac-tools'), /^中转 1[23] 分钟前需验证$/);
-    assert.match(await text(alt + ' .ac-tools'), /^中转 [56] 分钟前正常$/);
-    assert.match(await text(main + ' [data-ac="open"]'), /去验证/, 'a tool blocked by a check offers a clean window, not a new sign-in');
+    assert.match(await text(main + ' .ac-usage'), /^需要人机验证\s+1[23] 分钟前 中转遇到人机验证$/);
+    assert.match(await text(main + ' .ac-open'), /去验证/, 'a tool blocked by a check offers a clean window, not a new sign-in');
+    assert.equal(await text('#accounts-attention'), '2', 'both logins need the person: the sidebar badge says 2');
     await snap('01-paused-and-handoff');
-    result.checks.push('账号页显示接管横幅；副号 ChatGPT 显示「自动化已暂停到」「第 2 次」和「去验证」；主号不受影响');
-    result.checks.push('账号行显示使用它的网页工具及最近结果：主号「中转 12 分钟前需验证」，副号「中转 5 分钟前正常」');
-    result.checks.push('账号页显示国外 AI 使用 Hub 代理、国内 AI 直连');
+    result.checks.push('账号页显示接管横幅；副号 ChatGPT 显示「需要人机验证 / 网页自动化已暂停到」和「去验证」');
+    result.checks.push('主号一行写明来源：「12 分钟前 中转遇到人机验证」；侧栏红色角标为 2');
+    result.checks.push('网络路由正常时不再显示代理横幅');
 
     guard.endHandoff(chromeRoot, lease.id);
     await until('!document.querySelector(".ac-handoff")', 'banner gone after handoff ends', 20000);
     result.checks.push('接管结束后横幅自动消失（页面 5 秒轮询）');
 
-    await click(alt + ' [data-ac="open"]');
+    await click(alt + ' .ac-open');
     await until('document.querySelector("#account-page")', 'still on account page');
     for (const end = Date.now() + 15000; Date.now() < end && !fs.existsSync(path.join(home, 'accounts-open.jsonl'));) await sleep(200);
     const opened = fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);

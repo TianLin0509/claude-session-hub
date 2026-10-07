@@ -2,22 +2,32 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),os=require('os'),path=require('path');
 const {HubChrome}=require('../core/hub-chrome');
 const guard=require('../core/web-risk-guard');
-function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-human-mode-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const hub=new HubChrome({root,env:{}});hub.lifecycle=fn=>fn();hub.assertAvailable=()=>{};return hub;}
-test('opening an account website from an idle automated Chrome uses ordinary Chrome',async t=>{
- const hub=fixture(t),calls=[];hub.endpoint=async()=>({port:1});hub.workTabs=async()=>0;
- hub._openVisible=async()=>{throw Error('The account website must use ordinary Chrome');};
- hub._openOrdinary=async(identity,url)=>{calls.push({identity,url});return{identity,mode:'ordinary'};};
+function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-human-mode-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const hub=new HubChrome({root,env:{}});hub.lifecycle=fn=>fn();hub.waitForCheck=async()=>{};return hub;}
+test('打开 in a running Hub Chrome adds a window to it and never closes the browser',async t=>{
+ const hub=fixture(t),calls=[];hub.endpoint=async()=>({port:1});hub.workTabs=async()=>1;
+ hub.close=async()=>assert.fail('Tools keep their pages');
+ hub._openOrdinary=async()=>assert.fail('No switch to ordinary mode for a plain visit');
+ hub._openVisible=async(identity,url)=>{calls.push({identity,url});return{targetId:'T1'};};
  const result=await hub.openWebsite('main','claude');
- assert.equal(result.mode,'ordinary');assert.deepEqual(calls,[{identity:'main',url:'https://claude.ai/'}]);
+ assert.equal(result.mode,'shared');assert.deepEqual(calls,[{identity:'main',url:'https://claude.ai/'}]);
 });
-test('a website or draft prevents an ordinary switch without closing or resetting anything',async t=>{
- const hub=fixture(t);hub.endpoint=async()=>({port:1});hub.workTabs=async()=>1;
+test('an orphaned headless Chrome is closed instead of refusing the click',async t=>{
+ const hub=fixture(t),calls=[];let running=true;
+ hub.endpoint=async()=>running?{port:1,headless:true}:null;hub.workTabs=async()=>0;hub.profileHeld=()=>false;
+ hub.close=async()=>{calls.push('close');running=false;};
+ hub._openVisible=async()=>{calls.push('visible');return{targetId:'T'};};
+ await hub.openWebsite('main','chatgpt');
+ assert.deepEqual(calls,['close','visible']);
+});
+test('去登录/去验证 with tool pages open use a window in the running Chrome, nothing closed',async t=>{
+ const hub=fixture(t),visible=[];hub.endpoint=async()=>({port:1});hub.workTabs=async()=>1;
  hub.close=async()=>assert.fail('Must preserve the existing page');
- hub.launch=async()=>assert.fail('Must not launch while busy');
- hub.browser=async()=>assert.fail('Must not reset cookies while busy');
- await assert.rejects(hub.openWebsite('main','claude'),{code:'HUB_BROWSER_BUSY'});
- await assert.rejects(guard.openForHuman(hub,{identity:'main',url:'https://claude.ai/'}),{code:'HUB_BROWSER_BUSY'});
- assert.equal(guard.handoff(hub.root),null);
+ hub.browser=async()=>{throw Error('no cookie reset in this unit');};
+ hub._openVisible=async(identity,url)=>{visible.push(url);return{targetId:'T'+visible.length};};
+ const login=await hub.openLogin('main',['claude']);
+ assert.equal(login.mode,'shared');assert.deepEqual(visible,['https://claude.ai/']);
+ const {lease}=await guard.openForHuman(hub,{identity:'main',url:'https://claude.ai/'});
+ assert.equal(lease.mode,'shared');assert.equal(guard.handoff(hub.root).targetId,'T2');
 });
 test('ordinary handoff survives expiry while the profile is held and releases only on close',async t=>{
  const hub=fixture(t);guard.recordChallenge(hub.root,{identity:'main',site:'claude'});
@@ -43,13 +53,14 @@ test('a starting ordinary process retains its handoff before the profile lock ap
  assert.ok(await guard.settleHandoff(hub));assert.ok(guard.handoff(hub.root));
 });
 
-test('subsequent ordinary account visits keep the requested profile and reuse its window',async t=>{
+test('visits while an ordinary window is open keep the requested profile and reuse its window',async t=>{
  const hub=fixture(t),launches=[];hub.endpoint=async()=>null;hub.profileHeld=()=>true;
  hub.launch=async(identity,options)=>{launches.push({identity,options});hub.lastLaunchPid=process.pid;};
  await hub.openWebsite('main','chatgpt');await hub.openWebsite('main','claude');await hub.openWebsite('alt','chatgpt');
  assert.deepEqual(launches.map(l=>l.identity),['main','main','alt']);
  assert.ok(launches.every(l=>l.options.debug===false&&l.options.newWindow===false));
  for(const l of launches)assert.ok(!hub.launchArgs(l.identity,l.options).includes('--new-window'));
- hub.profileHeld=()=>false;await hub.openWebsite('main','claude');
- assert.equal(launches.at(-1).options.newWindow,false,'Chrome creates the first window naturally, including clicks during startup');
+ hub.profileHeld=()=>false;hub.ensure=async()=>({port:1});
+ hub._openVisible=async()=>({targetId:'T'});
+ assert.equal((await hub.openWebsite('main','claude')).mode,'shared','Nothing running: the Hub Chrome starts so tools can work alongside');
 });
