@@ -149,9 +149,9 @@ async function deliverySkipByOrchestratorAndFailureReason() {
   const draft = S.createPreset('custom', people);
   draft.rounds = [{ name: '分头提案', members: ['a', 'b'], prompt: 'propose', after: 'next' }, { name: '汇总', members: ['c'], prompt: 'sum', after: 'end' }];
   const m = { id: 'room2', groupChat: true, subSessions: ['sa', 'sb', 'sc'], slotSpecs: people, serialWorkflow: S.toDeliveryConfig({}, draft, ['a', 'b', 'c']) };
-  const calls = [], settle = [];
+  const calls = [], settle = [], pushes = [];
   const deps = { meetingManager: { getMeeting: () => m, setParticipants() {} }, sessionManager: { getSession: () => ({ status: 'idle' }) }, getHubDataDir: () => dir, getMembers: () => people,
-    ensureMemberReady: async () => {}, logger: { error() {}, warn() {} },
+    ensureMemberReady: async () => {}, logger: { error() {}, warn() {} }, sendToRenderer: (channel, payload) => pushes.push([channel, payload]),
     getDispatcher: () => ({ dispatchGroupChatTurn: (_id, args) => { calls.push(args); return new Promise(resolve => settle.push(resolve)); } }) };
   const e = createDeliveryEngine(deps);
   const read = () => JSON.parse(fs.readFileSync(path.join(D.directory(dir, m.id), 'run.json'), 'utf8'));
@@ -173,6 +173,7 @@ async function deliverySkipByOrchestratorAndFailureReason() {
     assert.match(calls[1].userInput, /B 被编排员跳过，没有交付（原因：模型不存在，重启无效）。/, 'the next member learns who skipped and why');
     const notes = require('../core/group-chat-orchestrator').getOrchestrator(dir, m.id).state.messages.filter(x => x.systemNote);
     assert.ok(notes.some(x => x.content === '编排员跳过了 B：模型不存在，重启无效' && x.noteKind === 'warning'));
+    assert.ok(pushes.some(([channel, p]) => channel === 'dev-workbench:progress' && p.meetingId === m.id && p.revision > 0), 'the open group chat panel redraws right away');
   } finally { e.dispose(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 

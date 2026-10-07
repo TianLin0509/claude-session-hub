@@ -246,8 +246,9 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     save(id,r);await advance(id);return status(id);
   }
   // 群聊里留一行系统提示，旁观的人能看到谁被跳过、为什么；写不进去不影响跳过本身。
+  // 刷新用 dev-workbench:progress，与 dispatcher 写系统提示后同一事件，打开的群聊面板会立即重绘。
   function noteSkip(id,text) {
-    try{const orch=require('../../core/group-chat-orchestrator').getOrchestrator(getHubDataDir(),id);orch.appendSystemNote(orch.state.currentTurn || 1,text,{kind:'warning'});sendToRenderer('groupchat-history-updated',{meetingId:id,revision:orch.state.revision});}
+    try{const orch=require('../../core/group-chat-orchestrator').getOrchestrator(getHubDataDir(),id);orch.appendSystemNote(orch.state.currentTurn || 1,text,{kind:'warning'});sendToRenderer('dev-workbench:progress',{meetingId:id,revision:orch.state.revision});}
     catch(error){logger.warn?.('[delivery] skip note failed:',error.message);}
   }
   // 成员派工失败的原因：带上成员名、模型/CLI 给出的报错摘要，编排员和群里都能看懂。
