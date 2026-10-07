@@ -3064,6 +3064,10 @@ hubAccountsService = new (require('./core/hub-accounts').HubAccounts)({
   recovery: new (require('./core/web-roundtable/recovery').AccountRecovery)({ dataDir: getHubDataDir() }),
 });
 require('./main/ipc/hub-accounts-handlers').registerHubAccountsIpc(ipcMain, hubAccountsService);
+// About twice a day the logins are confirmed in the background; the sidebar shows how many
+// accounts need the person.
+hubAccountsService.startAuto({ onAttention: count => sendToRenderer('hub-accounts:attention', count) });
+app.on('before-quit', () => hubAccountsService.stopAuto());
 
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,

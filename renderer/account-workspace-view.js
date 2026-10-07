@@ -55,57 +55,59 @@ function codexQuotaHtml(state, esc) {
 function usageHtml(value, esc, tools = '', detail = '') {
   return `<div class="ac-usage ${value.tone}" title="${esc(value.title || '')}"><span>${esc(value.text)}</span>${value.note ? `<small>${esc(value.note)}</small>` : ''}${toolsHtmlLine(tools, esc)}${detail}</div>`;
 }
-// A site that challenged automation is paused (core/web-risk-guard.js); a person's handoff
-// pauses every web tool. Both are shown so nobody wonders why a tool is waiting.
-function riskHtml(entry, esc, tools = '', detail = '') {
-  if (!entry) return '';
-  const until = new Date(entry.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  return `<div class="ac-usage warn ac-risk" title="网站要求人机验证，自动化不再重试，避免累积失败次数"><span>${esc('自动化已暂停到 ' + until)}</span><small>${esc('网站要求人机验证' + (entry.strikes > 1 ? '（第 ' + entry.strikes + ' 次）' : '') + '，点「去验证」')}</small>${toolsHtmlLine(tools, esc)}${detail}</div>`;
-}
+// A person handoff pauses every web tool (core/web-risk-guard.js); say so, so nobody wonders why.
 function handoffHtml(risk, esc) {
   const lease = risk?.handoff;
   if (!lease) return '';
   const until = new Date(lease.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   return `<p class="ac-connection-notice ac-handoff" role="status">${esc('网页工具已暂停并断开，你正在专属 Chrome 里验证或登录；完成后关闭那个窗口，再复核并继续原任务。接管记录到 ' + until + '，窗口仍开着时工具不会接管。')}</p>`;
 }
-function imageServiceHtml(images, esc, now) {
+// The image MCP in one sentence: which route draws right now.
+function imageServiceHtml(images, esc) {
   if (!images) return '';
-  const webReady = images.web?.some(w => w.ready), ready = images.codex?.ready || webReady;
-  const source = images.codex?.ready && (images.codex.preferred || !webReady) ? 'Codex 订阅' : webReady ? 'ChatGPT 网页' : '';
-  const last = images.codex?.lastSuccessAt ? '；Codex 最近成功：' + relativeTime(images.codex.lastSuccessAt, now) : '';
-  return `<p class="ac-connection-notice ac-image-status" role="status">${esc((ready ? '生图可用 · 当前通道：' + source : '生图通道待确认') + last + (images.codex?.version ? ' · MCP v' + images.codex.version : '') + '。网页账号状态单独显示。')}</p>`;
+  const webReady = images.web?.some(w => w.ready), codexReady = !!images.codex?.ready;
+  const order = images.codex?.preferred ? 'Codex 优先、网页兜底' : '网页优先、Codex 兜底';
+  const now = webReady && !(images.codex?.preferred && codexReady) ? '现在走 ChatGPT 网页' : codexReady ? '现在走 Codex' + (images.web?.length && !webReady ? '（网页账号暂不可用）' : '') : '暂时没有可用通道';
+  return `<p class="ac-connection-notice ac-image-status" role="status">${esc('生图 MCP：' + order + ' · ' + now)}</p>`;
 }
-function accountToolHtml(state, card, account, esc, now) {
-  const waiting = account.identity === 'main' ? (state.webTools?.roundtable?.waiting || []).filter(t => t.provider === card.site) : [];
-  const web = card.site === 'chatgpt' ? (state.webTools?.images?.web || []).filter(w => w.identity === account.identity) : [];
-  const lines = [];
-  if (web.length) {
-    const latest = [...web].sort((a,b) => b.checkedAt - a.checkedAt)[0];
-    const label = web.some(w=>w.ready) ? '可用' : web.every(w=>!w.enabled) ? '已停用' : ({ browser_challenge:'上次需验证', login_required:'上次需登录', rate_limited:'上次限流' }[latest.state] || '待复核');
-    lines.push('网页生图兜底：' + label + (latest.checkedAt ? ' · ' + relativeTime(latest.checkedAt, now) : '') + (web.reduce((n,w)=>n+w.pending,0) ? ' · 在原 Claude/Codex 会话检查账号后继续原任务' : ''));
+// One line per account: the verdict, then where it came from.
+const PROOF = { check: '后台确认已登录', images: '生图调用成功', roundtable: '网页圆桌调用成功', bridge: '中转调用成功', opened: '你打开过网页' };
+const BY = { check: '后台检查', images: '生图', roundtable: '网页圆桌', bridge: '中转', paused: '网页工具' };
+function healthView(health, now = Date.now()) {
+  const h = health || { state: 'unknown' };
+  const when = at => relativeTime(at, now);
+  if (h.state === 'attention') {
+    const p = h.problem, verify = p.kind === 'verification';
+    const detail = p.by === 'paused' ? '网页自动化已暂停到 ' + new Date(p.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      : when(p.at) + ' ' + BY[p.by] + (verify ? '遇到人机验证' : p.by === 'check' ? '发现已退出登录' : '提示需要登录');
+    return { tone: 'warn', text: verify ? '需要人机验证' : '需要重新登录', detail, action: verify ? 'open' : 'login', button: verify ? '去验证' : '去登录' };
   }
-  if (waiting.length) lines.push('圆桌待恢复 ' + waiting.length + ' 个任务 · ' + (waiting.every(t=>t.submitted) ? '只补收原回答' : '保留原任务继续'));
-  return { waiting, html: lines.map(text=>`<small class="ac-tools">${esc(text)}</small>`).join('') };
+  const synced = h.syncedAt ? when(h.syncedAt) + '同步' : '';
+  if (h.state === 'ok') return { tone: 'ok', text: '正常' + (synced ? ' · ' + synced : ''), detail: PROOF[h.syncedBy] || '', action: 'open', button: '打开' };
+  if (h.state === 'off') return { tone: 'idle', text: '未登录', detail: when(h.problem.at) + ' 后台检查', action: 'login', button: '登录' };
+  return { tone: 'idle', text: '未确认' + (synced ? ' · ' + when(h.syncedAt) + '打开过' : ''), detail: '', action: 'open', button: '打开' };
+}
+function accountToolHtml(state, card, account, esc) {
+  const waiting = account.identity === 'main' ? (state.webTools?.roundtable?.waiting || []).filter(t => t.provider === card.site) : [];
+  const html = waiting.length ? `<small class="ac-tools">${esc('网页圆桌有 ' + waiting.length + ' 个任务等这个账号 · ' + (waiting.every(t => t.submitted) ? '只补收原回答' : '保留原任务继续'))}</small>` : '';
+  return { waiting, html };
 }
 function aiHtml(state, query, esc, now = Date.now()) {
-  const network=state.chrome?.network;
-  const networkHtml=network?`<p class="ac-connection-notice ac-network" role="status">${esc(network.message)}</p>`:'';
-  return networkHtml + imageServiceHtml(state.webTools?.images, esc, now) + handoffHtml(state.risk, esc) + (companyCards(state).map(card => {
+  const network = state.chrome?.network;
+  const networkHtml = network && !['applied', 'next_launch'].includes(network.state) ? `<p class="ac-connection-notice ac-network" role="status">${esc(network.message)}</p>` : '';
+  const progress = state.progress?.status === 'running' ? state.progress : null;
+  return networkHtml + imageServiceHtml(state.webTools?.images, esc) + handoffHtml(state.risk, esc) + (companyCards(state).map(card => {
     const accounts = card.accounts.filter(a => matches([card.company, card.product, a.label, a.account], query));
     if (!accounts.length) return '';
     return `<article class="ac-company" data-site="${card.site}"><header>${brandIcon(card, esc)}<h2>${esc(card.company)}</h2><span class="ac-count">${card.accounts.length} 个账号</span><kbd title="账号页内打开默认账号">Alt+${card.shortcut}</kbd></header>
       ${accounts.map(a => {
-        const entry = state.activity?.entries?.[a.identity + ':' + card.site];
-        const activity = usage(entry, now), tools = toolsNote(entry, now);
-        const detail = accountToolHtml(state, card, a, esc, now);
-        const proof = a.checkedAt ? `<small class="ac-tools">${esc('网页上次检查：' + relativeTime(a.checkedAt, now) + ' · ' + a.status + (a.stale ? '；当前待复核' : ''))}</small>` : '';
+        const view = healthView(a.health, now), detail = accountToolHtml(state, card, a, esc);
+        const checking = progress?.current?.identity === a.identity && progress.current.site === card.site;
         const canRecover = detail.waiting.some(t => t.canResume);
-        const paused = state.risk?.sites?.[a.identity + ':' + card.site];
-        if (paused) activity.login = true;
         return `<div class="ac-account" data-identity="${a.identity}"><div class="ac-account-title">${brandIcon(card, esc, true)}<strong>${esc(card.product)}</strong><span class="ac-account-name">${esc(a.account === '账号待确认' ? a.label : a.account)}</span>${a.preferred ? '<span class="ac-default">默认</span>' : ''}</div>
-          ${paused ? riskHtml(paused, esc, tools, proof + detail.html) : usageHtml(activity, esc, tools, proof + detail.html)}<div class="ac-row-actions"><button class="ac-open" data-ac="${paused || activity.verify ? 'open' : activity.login ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${paused || activity.verify ? '去验证' : activity.login ? '去登录' : '打开'} ↗</button>
+          <div class="ac-usage ${checking ? 'idle' : view.tone}" data-health="${esc(a.health?.state || 'unknown')}"><span>${esc(checking ? '正在后台确认登录…' : view.text)}</span>${view.detail ? `<small>${esc(view.detail)}</small>` : ''}${detail.html}</div><div class="ac-row-actions"><button class="ac-open" data-ac="${view.action}" data-site="${card.site}" data-identity="${a.identity}" aria-label="${esc(view.button)} ${esc(card.product)} ${esc(a.label)}">${view.button} ↗</button>
           ${canRecover ? `<button class="ac-text-btn" data-ac="recover" data-site="${card.site}" data-identity="${a.identity}">复核并继续原任务</button>` : ''}
-          <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div>${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : '<span>当前默认账号</span>'}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
+          <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div><button data-ac="recheck" data-site="${card.site}" data-identity="${a.identity}">立即确认登录</button>${view.action !== 'login' ? `<button data-ac="login" data-site="${card.site}" data-identity="${a.identity}">重新登录</button>` : ''}${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : ''}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
       }).join('')}</article>`;
   }).join('') || '<p class="ac-empty">没有匹配的账号</p>');
 }
@@ -137,4 +139,4 @@ function toolConnections(data, esc, activity, now = Date.now()) {
   if (!data) return '';
   return data.services.filter(s => ['images', 'bridge', 'roundtable'].includes(s.id)).map(s => `<div class="ac-connection"><span>${esc(s.name)}</span><span>${esc(BINDING[s.status])}</span><small>${s.identities.map(i => (i.identity === 'main' ? '账号 1' : '账号 2')).join('、')}${lastToolStep(activity, s.id, now) ? ' · ' + esc(lastToolStep(activity, s.id, now)) : ''}${s.id === 'roundtable' ? ' · 支持 DeepSeek、Kimi、千问；Claude/Codex 新会话选「浏览器」或「全部」加载 MCP，运行中的旧会话需重新创建' : ''}</small></div>`).join('');
 }
-module.exports = { TABS, relativeTime, usage, toolsNote, aiHtml, cliHtml, servicesHtml, toolConnections, codexQuotaHtml };
+module.exports = { TABS, relativeTime, usage, toolsNote, healthView, imageServiceHtml, aiHtml, cliHtml, servicesHtml, toolConnections, codexQuotaHtml };

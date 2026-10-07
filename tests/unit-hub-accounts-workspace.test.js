@@ -30,24 +30,29 @@ test('all companies can independently choose two accounts; browser profiles are 
   assert.throws(() => updatePreferences(root, { site: 'google', identity: 'alt' }), /先添加/);
   assert.throws(() => updatePreferences(root, { site: '__proto__', identity: 'main' }), /无效/);
 });
-test('progress is available mid-check, clicks coalesce, cancellation keeps completed results', async t => {
-  let release, entered;
-  const started = new Promise(r => { entered = r; }), gate = new Promise(r => { release = r; });
+test('progress is available mid-check, clicks coalesce, and 打开 makes the check yield', async t => {
+  let entered;
+  const started = new Promise(r => { entered = r; });
   let calls = 0;
-  const { acc } = setup(t, async ({ items, signal, onStage, onResult }) => {
+  const { acc, chrome } = setup(t, async ({ items, signal, onStage, onResult }) => {
     calls++;
     onStage(items[0], '正在确认官网账号');
     await onResult(items[0], { state: 'signed_in', account: 'first@example.com', live: true });
-    entered(); await gate;
-    assert.equal(signal.aborted, true);
+    entered();
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
   });
   await Promise.all([acc.startCheck(), acc.startCheck()]); await started;
   const progress = await acc.state();
   assert.equal(calls, 1); assert.equal(progress.progress.done, 1); assert.equal(progress.progress.status, 'running');
   progress.progress.done = 99;
   assert.equal((await acc.state()).progress.done, 1, 'public state is detached');
-  await assert.rejects(acc.open({ site: 'chatgpt' }), /等待检查/);
-  acc.cancelCheck(); release(); await acc.checking;
+  let opened;
+  chrome.openWebsite = async (...args) => { opened = args; return { mode: 'shared' }; };
+  const t0 = Date.now();
+  await acc.open({ site: 'chatgpt' });
+  assert.ok(Date.now() - t0 < 5000, 'the click does not wait for the check to finish on its own');
+  assert.deepEqual(opened, ['main', 'chatgpt']);
+  assert.equal(acc.checking, null);
   const final = await acc.state();
   assert.equal(final.progress.status, 'cancelled'); assert.equal(final.progress.done, 1);
   assert.equal(acc.readCache().identities.main.sites.chatgpt.account, 'first@example.com');
@@ -83,14 +88,45 @@ test('corrupt preferences and cache are reported, never silently overwritten', a
   fs.writeFileSync(acc.cacheFile(), '{');
   await assert.rejects(acc.state(), /检查记录无法读取/);
 });
-test('busy shared Chrome and another Hub check cannot be hijacked', async t => {
+test('a running Hub Chrome is checked in place; an ordinary window or another Hub check is left alone', async t => {
   const { chrome } = setup(t);
-  chrome.running = async () => true;
-  const options = { chrome, items: [{ identity: 'main', site: 'chatgpt' }], signal: new AbortController().signal, onStage() {}, onResult() {} };
-  await assert.rejects(inspectAccounts(options), /正在使用中/);
+  const results = [], seen = [];
+  const options = { chrome, items: [{ identity: 'main', site: 'chatgpt' }, { identity: 'main', site: 'kimi' }], signal: new AbortController().signal,
+    onStage() {}, onResult: async (item, r) => results.push([item.site, r.state]) };
+  chrome.endpoint = async () => ({ ws: 'tools', headless: false });
+  chrome.chatgptAccount = async identity => { seen.push('chatgpt:' + identity); return 'me@example.com'; };
+  chrome.liveStatus = async (identity, site) => { seen.push(site + ':' + identity); return { state: 'signed_in' }; };
+  chrome.close = async () => assert.fail('the tools keep their browser');
+  await inspectAccounts({ ...options, createInspector: () => assert.fail('no second browser while one runs') });
+  assert.deepEqual(seen, ['chatgpt:main', 'kimi:main']);
+  assert.deepEqual(results, [['chatgpt', 'signed_in'], ['kimi', 'signed_in']]);
+  assert.equal(acquire('account-check', path.join(chrome.root, 'locks'))?.(), undefined, 'checking in place takes no exclusive lease');
+  chrome.endpoint = async () => null; chrome.profileHeld = () => true;
+  await assert.rejects(inspectAccounts(options), /普通窗口开着/);
+  chrome.profileHeld = () => false;
   const release = acquire('account-check', path.join(chrome.root, 'locks'));
   try { await assert.rejects(inspectAccounts(options), /另一个 Hub/); }
   finally { release(); }
+});
+test('a headless check yields when a click or a tool asks for the browser', async t => {
+  const { chrome } = setup(t);
+  chrome.endpoint = async () => null;
+  let closed = 0, done = [];
+  const inspector = { ensure: async () => ({ ws: 'owned', headless: true }), endpoint: async () => ({ ws: 'owned', headless: true }),
+    close: async () => { closed++; },
+    liveStatus: async (identity, site, { signal }) => {
+      if (site === 'kimi') { await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true })); return { state: 'unknown' }; }
+      return { state: 'signed_in' };
+    } };
+  const run = inspectAccounts({ chrome, items: ['claude', 'kimi', 'qwen'].map(site => ({ identity: 'main', site })), signal: new AbortController().signal,
+    createInspector: () => inspector, onStage() {}, onResult: async item => done.push(item.site) });
+  const waiter = new HubChrome({ root: chrome.root, env: { CLAUDE_HUB_HOME_DIR: chrome.root } });
+  await new Promise(r => setTimeout(r, 100));
+  await waiter.waitForCheck(5000);
+  assert.deepEqual(await run, { yielded: true });
+  assert.deepEqual(done, ['claude'], 'finished results are kept; nothing after the yield is visited');
+  assert.equal(closed, 1, 'the headless browser is closed before the lease is released');
+  assert.equal(fs.existsSync(chrome.yieldFile()), false);
 });
 test('company presentation never borrows another website identity; queued checks are neutral', async t => {
   const { acc } = setup(t);
@@ -163,14 +199,18 @@ test('paused sites and a person handoff reach the account page and turn the row 
   await acc.preference({ site: 'chatgpt', identity: 'alt', add: true });
   const { aiHtml } = require('../renderer/account-workspace-view');
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-  const html = aiHtml(await acc.passiveState(), '', esc);
+  const paused = await acc.passiveState();
+  assert.equal(paused.attention, 1, 'the paused login counts once in the sidebar badge');
+  const html = aiHtml(paused, '', esc);
   assert.match(html, /网页工具已暂停并断开/);
-  assert.match(html, /自动化已暂停到/);
-  assert.match(html, /第 2 次/);
+  assert.match(html, /需要人机验证/);
+  assert.match(html, /网页自动化已暂停到/);
   assert.match(html, /data-ac="open" data-site="chatgpt" data-identity="alt"[^>]*>去验证/);
   assert.doesNotMatch(html, /data-identity="main"[^>]*>去验证/);
   guard.endHandoff(root, lease.id); guard.clearSite(root, 'alt', 'chatgpt');
-  assert.doesNotMatch(aiHtml(await acc.passiveState(), '', esc), /自动化已暂停|网页工具已暂停/);
+  const cleared = await acc.passiveState();
+  assert.doesNotMatch(aiHtml(cleared, '', esc), /自动化已暂停|网页工具已暂停/);
+  assert.equal(cleared.attention, 0);
 });
 test('account rows name the tools on that login and how their last step went', () => {
   const { toolsNote, toolConnections } = require('../renderer/account-workspace-view');

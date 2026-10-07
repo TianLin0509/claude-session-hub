@@ -6,6 +6,7 @@ function registerHubAccountsIpc(ipcMain, accounts) {
     catch (e) { return { ok: false, error: e.message || '账号操作失败' }; }
   };
   ipcMain.handle('hub-accounts:state', wrap(() => accounts.passiveState()));
+  ipcMain.handle('hub-accounts:attention', wrap(async () => (await accounts.passiveState()).attention));
   ipcMain.handle('hub-accounts:check', wrap(() => accounts.check()));
   const selection = p => {
     if (!p || typeof p !== 'object' || Array.isArray(p)) throw Error('账号参数无效');

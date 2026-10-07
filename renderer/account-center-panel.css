@@ -4,7 +4,7 @@
 .accounts-open #session-sidebar{visibility:hidden}
 .accounts-open #btn-rail-accounts{color:#6398ff;background:rgba(33,106,255,.12)}
 #btn-rail-accounts{position:relative}
-#accounts-attention{position:absolute;right:7px;top:3px;padding:0 4px;border-radius:8px;font-size:10px;background:#f0bd73;color:#241a09}
+#accounts-attention{position:absolute;right:6px;top:3px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;font:600 10px/16px system-ui;text-align:center;background:#e5484d;color:#fff}
 .ac-head{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:30px 36px 20px}
 .ac-head h1{margin:0;font-size:27px;letter-spacing:-.6px;color:#14213b}
 .ac-head p{margin:8px 0 0;line-height:1.6;color:#7e889d;font-size:12px}
