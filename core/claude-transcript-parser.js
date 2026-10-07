@@ -99,9 +99,12 @@ function toMs(timestamp) {
 // (origin.kind task-notification, text <task-notification>...) and answers it
 // in a fresh assistant run. It is not a prompt; the reply continues the
 // previous turn's card, as the live projection does (claude-native-transcript).
+function isTaskNotificationText(text) {
+  return String(text || '').trimStart().startsWith('<task-notification>');
+}
+
 function isTaskNotificationEntry(entry, text) {
-  return entry.origin?.kind === 'task-notification'
-    || String(text || '').trimStart().startsWith('<task-notification>');
+  return entry.origin?.kind === 'task-notification' || isTaskNotificationText(text);
 }
 
 function _entryToTurn(entry) {
@@ -465,4 +468,5 @@ module.exports = {
   extractToolResults,
   parseClaudeTranscriptText,
   parseClaudeTranscriptEntries,
+  isTaskNotificationText,
 };

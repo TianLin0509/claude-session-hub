@@ -153,7 +153,7 @@ function isCodexBaseKind(kind) {
 }
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { readTranscriptTail } = require('./core/session-manager');
-const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
+const { parseClaudeTranscriptToTurns, isTaskNotificationText } = require('./core/claude-transcript-parser.js');
 const { TranscriptParserService } = require('./core/transcript-parser-service.js');
 const { CodexJsonlUsageService } = require('./main/usage/codex-jsonl-usage-service.js');
 const {
@@ -421,6 +421,8 @@ async function readLastUserMessage(transcriptPath) {
           if (hasTool) continue;
           text = msg.content.filter(c => c && c.type === 'text').map(c => c.text || '').join(' ').trim();
         }
+        // 后台任务 / Monitor 的续跑由引擎注入，不是用户说的话，继续往前找真正的提问。
+        if (entry.origin?.kind === 'task-notification' || isTaskNotificationText(text)) continue;
         if (text) return text;
       }
       tail = firstFragment == null ? '' : firstFragment;
@@ -2649,7 +2651,10 @@ const hookServer = http.createServer((req, res) => {
         // payload) fall back to reading the transcript JSONL tail (async —
         // long transcripts used to block the main-process event loop).
         let latestUserMessage = null;
-        if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
+        // Claude Code 在后台任务结束或 Monitor 出事件时自己注入 <task-notification> 续跑，
+        // 也会发 UserPromptSubmit。它不是用户发言：不当预览、不起标题、不算已读。
+        const injectedContinuation = event === 'prompt' && isTaskNotificationText(parsed.prompt);
+        if (!injectedContinuation && typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
           latestUserMessage = parsed.prompt;
         } else if (event === 'stop' && parsed.transcriptPath) {
           latestUserMessage = await readLastUserMessage(parsed.transcriptPath);
@@ -2716,6 +2721,7 @@ const hookServer = http.createServer((req, res) => {
           cwd: parsed.cwd,
           latestUserMessage,
           backgroundTasks: Array.isArray(parsed.backgroundTasks) ? parsed.backgroundTasks : [],
+          injectedContinuation,
           sessionCrons: Array.isArray(parsed.sessionCrons) ? parsed.sessionCrons : [],
           error: parsed.error || null,
           errorDetails: parsed.errorDetails || null,
