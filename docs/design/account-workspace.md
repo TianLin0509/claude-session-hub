@@ -1,5 +1,14 @@
 # 账号与 AI 网页
 
+## 2026-10-08 夜 · 自动化像一个克制的真人（用户要求「别触发风控、别封号」）
+
+依据：调研 `D:/AI-Artifacts/20261008-网页自动化风控调研-claude1-notes.md`、代码盘点 `D:/AI-Artifacts/20261008-网页自动化路径盘点-claude1.md`。
+
+- **每小时页面加载上限**（`web-risk-guard.js` `takeVisit`）：按「身份:站点」滚动一小时计数，ChatGPT 30、Claude 10、Gemini 30、其他 60。只有真正加载页面时计数（Hub 开标签、BrowserTool / 生图守护进程的 `goto`、网页圆桌开页，调用方传 `navigate: true`），已打开页面里的操作不计。超额抛 `Rate limited by Hub`（`HUB_RATE_LIMITED`），工具按「稍后再试」处理，生图期间由 Codex 出图。
+- **人过验证后的冷静期**：人工接管结束后，ChatGPT、Claude、Gemini 自动化等 20 分钟再回来（`coolSite`，抛 `Hub cooldown`）；国内站人过了滑块立即恢复。冷静期不影响人自己点「打开」，也不显示在账号行。
+- **复核只用正常的专属 Chrome**：「复核并继续原任务」不再起无头 Chrome，Chrome 没开就以屏幕外窗口启动；ChatGPT 只加载一个页面，页面显示已登录后最多读两次会话接口，不再开第二个标签。`loginStatus` 默认只读 cookie，`scripts/hub-chrome.js status` 也不访问网站。
+- 生图 0.7.35 同步：人过验证后只派一个车道复检；服务端进度核对推迟到 150 秒、间隔 120/240/480 秒并加抖动；Hub 的冷静期和限速映射为 `rate_limited`，不再误判成新的人工关卡。
+
 ## 2026-10-08 · 不再自动访问网站（覆盖下节的后台确认方式）
 
 事故：10-07 版的后台确认在用户刚重启 Hub、正手动使用 ChatGPT 时，在同一个专属 Chrome 里自动打开 chatgpt.com 与 claude.ai，两站都被 Cloudflare 拦截（ChatGPT 主号第 3 次），自动化失败把 `cf_chl_rc_ni` 等验证失败计数 cookie 累积在用户的资料里，用户点「Verify you are human」3 分钟内循环 10 余次。另外 `resetChallengeCookies` 用 `Storage.getCookies` 读主资料的 context 一直报错且被吞掉，此前「去验证」清计数从未生效。

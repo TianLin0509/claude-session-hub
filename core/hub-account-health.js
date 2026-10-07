@@ -29,7 +29,7 @@ function accountHealth({ site = {}, activity, paused, now = Date.now() } = {}) {
     if (step.outcome === 'login_required') lost.push({ at: step.at, by: source, kind: 'signed_out' });
     else if (step.outcome === 'verification_required') walls.push({ at: step.at, by: source });
   }
-  if (paused && paused.until > now && !QUIET_PAUSE.has(paused.source) && paused.kind !== 'safety_hold') walls.push({ at: paused.at || paused.since || now, by: 'paused', until: paused.until });
+  if (paused && paused.until > now && !QUIET_PAUSE.has(paused.source) && !['safety_hold', 'cooldown'].includes(paused.kind)) walls.push({ at: paused.at || paused.since || now, by: 'paused', until: paused.until });
   const latest = list => list.reduce((a, b) => (b.at > (a?.at || 0) ? b : a), null);
   const proof = latest(proofs), problem = latest(lost);
   // A cookie says the login is there, not that automation gets past the site's check.

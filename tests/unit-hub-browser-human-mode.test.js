@@ -37,7 +37,11 @@ test('ordinary handoff survives expiry while the profile is held and releases on
  assert.equal((await guard.settleHandoff(hub)).id,lease.id);
  assert.ok(guard.blocked(hub.root,'main','claude'));
  hub.profileHeld=()=>false;assert.equal(await guard.settleHandoff(hub),null);
- assert.equal(guard.read(hub.root).handoff,null);assert.equal(guard.blocked(hub.root,'main','claude'),null);
+ assert.equal(guard.read(hub.root).handoff,null);
+ const cool=guard.blocked(hub.root,'main','claude');
+ assert.equal(cool.kind,'cooldown','after a person passed, automation waits a cool-down instead of returning at once');
+ assert.ok(cool.until-Date.now()>19*60000&&cool.until-Date.now()<=20*60000);
+ assert.throws(()=>guard.assertAutomationAllowed(hub.root,{identity:'main',url:'https://claude.ai/'}),e=>e.code==='HUB_COOLDOWN'&&/^Hub cooldown: .*冷静到/.test(e.message));
  assert.equal(guard.read(hub.root).sites['main:claude'].strikes,1,'Retain escalation history');
 });
 test('a failed ordinary launch ends its handoff',async t=>{
@@ -63,4 +67,11 @@ test('visits while an ordinary window is open keep the requested profile and reu
  hub.profileHeld=()=>false;hub.ensure=async()=>({port:1});
  hub._openVisible=async()=>({targetId:'T'});
  assert.equal((await hub.openWebsite('main','claude')).mode,'shared','Nothing running: the Hub Chrome starts so tools can work alongside');
+});
+test('a cool-down holds the tools back but a person just opens the site',async t=>{
+ const hub=fixture(t),calls=[];hub.endpoint=async()=>({port:1});hub.workTabs=async()=>0;
+ guard.coolSite(hub.root,'main','chatgpt');
+ hub._openVisible=async(identity,url)=>{calls.push(url);return{targetId:'T'};};
+ const r=await hub.openWebsite('main','chatgpt');
+ assert.equal(r.mode,'shared');assert.equal(r.handoff,undefined);assert.equal(guard.handoff(hub.root),null);
 });

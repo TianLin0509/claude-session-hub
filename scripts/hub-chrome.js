@@ -19,7 +19,7 @@ async function main() {
   if (command === 'status') {
     console.log('Hub 浏览器目录：' + hub.root + (await hub.running() ? '（运行中）' : '（未运行）'));
     for (const id of hub.identities.map(i => i.id)) {
-      const s = await hub.loginStatus(id);
+      const s = await hub.loginStatus(id, { live: false });  // never opens a website
       const parts = Object.entries(s.sites).map(([k, v]) => {
         const name = SITES[k].name;
         if (v.state === 'signed_in') return `${name} ✓${v.expiresAt ? ' 至 ' + new Date(v.expiresAt).toLocaleDateString('zh-CN') : ''}`;

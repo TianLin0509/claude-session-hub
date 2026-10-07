@@ -66,8 +66,9 @@ async function runWeb(job,save,mode,runtime={}){
     for(;guard;){
       if(typeof guard.read==='function'&&typeof guard.settleHandoff==='function'&&guard.read(hubRoot).handoff)
         await guard.settleHandoff(new (require('../hub-chrome').HubChrome)({root:hubRoot})).catch(()=>{});
-      try{guard.assertAutomationAllowed(hubRoot,{identity:'main',url});break;}
+      try{guard.assertAutomationAllowed(hubRoot,{identity:'main',url,navigate:true});break;}
       catch(e){
+        if(e.code==='HUB_RATE_LIMITED'||e.code==='HUB_COOLDOWN')throw Object.assign(Error('这个网站本小时的自动访问次数已用完，稍后再试；不影响你自己使用'),{attention:true,recovery:'rate_limited'});
         if(e.code==='HUB_SITE_CHALLENGED')throw Object.assign(Error('此网站刚遇到人机验证，自动化已暂停；请从 Hub 账号页打开此网站完成验证后再处理任务'),{attention:true,recovery:'human_verification'});
         if(e.code!=='HUB_HUMAN_HANDOFF')throw e;
         checkCancel();if(Date.now()>queuedUntil)throw Error('Hub browser stayed with a person for ten minutes');await store.sleep(1000);
