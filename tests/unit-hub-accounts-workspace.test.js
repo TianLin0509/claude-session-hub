@@ -88,45 +88,23 @@ test('corrupt preferences and cache are reported, never silently overwritten', a
   fs.writeFileSync(acc.cacheFile(), '{');
   await assert.rejects(acc.state(), /检查记录无法读取/);
 });
-test('a running Hub Chrome is checked in place; an ordinary window or another Hub check is left alone', async t => {
+test('an explicit website check runs in the normal Hub Chrome, never a headless one', async t => {
   const { chrome } = setup(t);
   const results = [], seen = [];
   const options = { chrome, items: [{ identity: 'main', site: 'chatgpt' }, { identity: 'main', site: 'kimi' }], signal: new AbortController().signal,
     onStage() {}, onResult: async (item, r) => results.push([item.site, r.state]) };
-  chrome.endpoint = async () => ({ ws: 'tools', headless: false });
-  chrome.chatgptAccount = async identity => { seen.push('chatgpt:' + identity); return 'me@example.com'; };
+  let ep = null, ensured = [];
+  chrome.endpoint = async () => ep;
+  chrome.ensure = async (o = {}) => { ensured.push(o.headless ? 'headless' : 'normal'); ep = { ws: 'hub', headless: false }; return ep; };
+  chrome.chatgptCheck = async identity => { seen.push('chatgpt:' + identity); return { state: 'signed_in', account: 'me@example.com' }; };
   chrome.liveStatus = async (identity, site) => { seen.push(site + ':' + identity); return { state: 'signed_in' }; };
   chrome.close = async () => assert.fail('the tools keep their browser');
-  await inspectAccounts({ ...options, createInspector: () => assert.fail('no second browser while one runs') });
+  await inspectAccounts(options);
+  assert.deepEqual(ensured, ['normal'], 'a closed Hub Chrome is started the normal way (off screen), not headless');
   assert.deepEqual(seen, ['chatgpt:main', 'kimi:main']);
   assert.deepEqual(results, [['chatgpt', 'signed_in'], ['kimi', 'signed_in']]);
-  assert.equal(acquire('account-check', path.join(chrome.root, 'locks'))?.(), undefined, 'checking in place takes no exclusive lease');
-  chrome.endpoint = async () => null; chrome.profileHeld = () => true;
+  ep = null; chrome.profileHeld = () => true;
   await assert.rejects(inspectAccounts(options), /普通窗口开着/);
-  chrome.profileHeld = () => false;
-  const release = acquire('account-check', path.join(chrome.root, 'locks'));
-  try { await assert.rejects(inspectAccounts(options), /另一个 Hub/); }
-  finally { release(); }
-});
-test('a headless check yields when a click or a tool asks for the browser', async t => {
-  const { chrome } = setup(t);
-  chrome.endpoint = async () => null;
-  let closed = 0, done = [];
-  const inspector = { ensure: async () => ({ ws: 'owned', headless: true }), endpoint: async () => ({ ws: 'owned', headless: true }),
-    close: async () => { closed++; },
-    liveStatus: async (identity, site, { signal }) => {
-      if (site === 'kimi') { await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true })); return { state: 'unknown' }; }
-      return { state: 'signed_in' };
-    } };
-  const run = inspectAccounts({ chrome, items: ['claude', 'kimi', 'qwen'].map(site => ({ identity: 'main', site })), signal: new AbortController().signal,
-    createInspector: () => inspector, onStage() {}, onResult: async item => done.push(item.site) });
-  const waiter = new HubChrome({ root: chrome.root, env: { CLAUDE_HUB_HOME_DIR: chrome.root } });
-  await new Promise(r => setTimeout(r, 100));
-  await waiter.waitForCheck(5000);
-  assert.deepEqual(await run, { yielded: true });
-  assert.deepEqual(done, ['claude'], 'finished results are kept; nothing after the yield is visited');
-  assert.equal(closed, 1, 'the headless browser is closed before the lease is released');
-  assert.equal(fs.existsSync(chrome.yieldFile()), false);
 });
 test('company presentation never borrows another website identity; queued checks are neutral', async t => {
   const { acc } = setup(t);
@@ -150,17 +128,6 @@ test('new IPC validates selection before mutation and legacy web adapters use th
   await browser.open('gemini'); assert.deepEqual(opened, { site: 'google', identity: 'main' });
   assert.equal(new HubAccountBrowser({ dataDir: root, env: {} }).accounts.chrome.root, path.join(root, 'hub-chrome'));
 });
-test('failed persistence still closes the exact inspection browser and releases ownership', async t => {
-  const { chrome } = setup(t);
-  let closed = 0, stage;
-  const inspector = { ensure: async () => ({ ws: 'owned', headless: true }), endpoint: async () => ({ ws: 'owned', headless: true }),
-    liveStatus: async () => ({ state: 'signed_in' }), close: async () => { closed++; } };
-  await assert.rejects(inspectAccounts({ chrome, items: [{ identity: 'main', site: 'kimi' }], signal: new AbortController().signal,
-    createInspector: () => inspector, onStage: (_item, value) => { stage = value; }, onResult: async () => { throw Error('disk full'); } }), /disk full/);
-  assert.equal(closed, 1); assert.equal(stage, '正在释放检查资源');
-  const release = acquire('account-check', path.join(chrome.root, 'locks'));
-  assert.equal(typeof release, 'function'); release();
-});
 test('an aborted later check cannot resume websites from a previous successful check', async t => {
   let run = 0;
   const { acc } = setup(t, async ({ items, onResult, signal }) => {
@@ -173,13 +140,13 @@ test('an aborted later check cannot resume websites from a previous successful c
   await acc.check(); assert.deepEqual(resumed, ['kimi']);
 });
 
-test('website security gates are reported as restricted background checks, not sign-outs', async t => {
+test('website security gates are reported as restricted checks, not sign-outs', async t => {
   const { chrome } = setup(t), results = [];
-  const inspector = { ensure: async () => ({ ws: 'owned', headless: true }), endpoint: async () => ({ ws: 'owned', headless: true }),
-    chatgptAccount: async () => { throw Object.assign(Error('gate'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' }); },
-    liveStatus: async () => ({ state: 'needs_attention', reason: 'challenge' }), close: async () => {} };
+  chrome.endpoint = async () => ({ ws: 'hub', headless: false });
+  chrome.chatgptCheck = async () => { throw Object.assign(Error('gate'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' }); };
+  chrome.liveStatus = async () => ({ state: 'needs_attention', reason: 'challenge' });
   await inspectAccounts({ chrome, items: [{ identity: 'main', site: 'chatgpt' }, { identity: 'main', site: 'claude' }],
-    signal: new AbortController().signal, createInspector: () => inspector, onStage() {}, onResult: async (_item, result) => results.push(result) });
+    signal: new AbortController().signal, onStage() {}, onResult: async (_item, result) => results.push(result) });
   for (const result of results) {
     assert.equal(result.state, 'needs_attention'); assert.equal(result.reason, 'headless_challenge');
     assert.match(result.error, /不代表登录失效/);

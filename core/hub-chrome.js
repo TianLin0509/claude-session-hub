@@ -211,7 +211,8 @@ class HubChrome {
   // the live store when it is open; the answer has the same shape either way.
   // Sites without a login cookie get a quick look in a background tab, but only when Chrome
   // is already running — checking never starts the browser.
-  async loginStatus(identityId, { live = true } = {}) {
+  // Cookie-only unless a caller explicitly asks to look at the websites (live: true).
+  async loginStatus(identityId, { live = false } = {}) {
     const identity = this.identity(identityId);
     const running = await this.running();
     const loginOpen = () => ({ identity: identity.id, running: false, loginOpen: true, sites: Object.fromEntries(identity.sites.map(k => [k, { state: 'login_open' }])) });
@@ -235,9 +236,12 @@ class HubChrome {
   }
   // Which ChatGPT account this identity is signed in as, from the site's own session
   // endpoint. Only the email leaves the page; the session's token is never read here.
-  async chatgptAccount(identityId, { signal } = {}) {
+  async chatgptAccount(identityId, options = {}) { return (await this.chatgptCheck(identityId, options)).account || ''; }
+  // One page load; the session endpoint is read at most twice, only once the page itself shows
+  // a signed-in account (2026-10-08: the old loop could call it about 15 times per check).
+  async chatgptCheck(identityId, { signal } = {}) {
     const { targetId } = await this.openTab(identityId, 'https://chatgpt.com/');
-    let page;
+    let page, reads = 0;
     try {
       page = await this.page(targetId);
       for (const end = Date.now() + 15000; Date.now() < end;) {
@@ -249,15 +253,18 @@ class HubChrome {
           require('./web-risk-guard').recordChallenge(this.root, { identity: identityId, site: 'chatgpt', kind: 'cloudflare', source: 'account-check' });
           throw Object.assign(Error('网站安全验证拦截了后台检查'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' });
         }
-        if (probe?.host === 'chatgpt.com' && probe.login) return '';
+        if (probe?.host === 'chatgpt.com' && probe.login) return { state: 'signed_out', account: '' };
+        if (!(probe?.host === 'chatgpt.com' && probe.profile)) { await sleep(1000); continue; }
+        if (reads >= 2) return { state: 'signed_in', account: '' };
+        reads++;
         const email = await page.evaluate(`(async()=>{if(location.hostname!=='chatgpt.com')return '';try{const r=await fetch('/api/auth/session',{credentials:'include',signal:AbortSignal.timeout(4000)});if(!r.ok)return '';const j=await r.json();return (j&&j.user&&j.user.email)||'';}catch{return ''}})()`).catch(e => {
           if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e;
           return '';
         });
-        if (email) return String(email).slice(0, 120);
-        await sleep(800);
+        if (email) return { state: 'signed_in', account: String(email).slice(0, 120) };
+        await sleep(2000);
       }
-      return '';
+      return { state: 'unknown', account: '' };
     } finally { page?.close(); await this.closeTab(targetId); }
   }
   offlineStatus(identityId) {
@@ -505,7 +512,7 @@ class HubChrome {
     return this.lifecycle(() => this._openTab(identityId, url, { visible }));
   }
   async _openTab(identityId, url, { visible = false } = {}) {
-    if (!visible) require('./web-risk-guard').assertAutomationAllowed(this.root, { identity: identityId, url });
+    if (!visible) require('./web-risk-guard').assertAutomationAllowed(this.root, { identity: identityId, url, navigate: true });
     const { ep, cdp } = await this.browser();
     try {
       const mark = await this.marker(identityId, cdp);
@@ -583,7 +590,8 @@ class HubChrome {
         await this.close();ep=null;
       }
       const guard = require('./web-risk-guard');
-      if (guard.blocked(this.root, identityId, guard.siteOf(site.url))) {
+      // A cool-down only holds the tools back; the person simply opens the site.
+      if (guard.blocked(this.root, identityId, guard.siteOf(site.url))?.kind !== 'cooldown' && guard.blocked(this.root, identityId, guard.siteOf(site.url))) {
         const { lease, cleared } = await guard.openForHuman(this, { identity: identityId, url: site.url, by: 'account-tab' });
         return { mode: lease.mode, handoff: true, until: lease.until, cleared };
       }

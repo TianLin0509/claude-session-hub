@@ -1,7 +1,7 @@
 'use strict';
 // Real Chrome on a throw-away profile; websites are local fixtures; every window stays off
 // screen. Proves the three ways a login check no longer blocks anyone (2026-10-07):
-//   1. a headless check yields when a tool needs the browser, keeping finished results;
+//   1. an explicit check never starts a headless Chrome: it uses the normal, off-screen one;
 //   2. with the Hub Chrome running, a check runs in background tabs beside the tools;
 //   3. a headless Chrome left behind with no check running is closed, not obeyed.
 const fs = require('fs'), os = require('os'), path = require('path'), http = require('http'), assert = require('node:assert/strict');
@@ -23,19 +23,16 @@ try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}
   const evidence = { passed: false, root, checks: [] };
   const results = [];
   const run = signal => inspectAccounts({ chrome, items: ['deepseek', 'kimi', 'qwen'].map(site => ({ identity: 'main', site })), signal,
-    createInspector: options => fixtureSites(new HubChrome({ ...options, proxy: '' })), onStage() {}, onResult: async (item, r) => results.push([item.site, r.state]) });
+    onStage() {}, onResult: async (item, r) => results.push([item.site, r.state]) });
   try {
-    // 1. Headless check, then a tool asks for the browser while kimi is still being read.
+    // 1. Nothing running: an explicit check starts the normal Hub Chrome (off screen), not headless.
     const checking = run(new AbortController().signal);
-    for (const end = Date.now() + 30000; !results.length && Date.now() < end;) await new Promise(r => setTimeout(r, 200));
-    assert.deepEqual(results, [['deepseek', 'signed_in']], 'the first site was confirmed headless');
-    assert.equal((await chrome.endpoint()).headless, true);
-    const tool = make(), t0 = Date.now();
-    const ep = await tool.ensure();
-    assert.equal(ep.headless, false, 'the tool got a normal Hub Chrome');
-    assert.deepEqual(await checking, { yielded: true });
-    assert.deepEqual(results, [['deepseek', 'signed_in']], 'nothing after the yield was concluded');
-    evidence.checks.push(`tool waited ${Date.now() - t0} ms; the headless check kept deepseek, stopped at kimi, closed its browser`);
+    await checking;
+    const ep = await chrome.endpoint();
+    assert.equal(ep.headless, false, 'a person-requested check uses the normal Hub Chrome');
+    assert.equal(results[0][1], 'signed_in');
+    evidence.checks.push('closed Hub Chrome: the explicit check started the normal one off screen and read ' + JSON.stringify(results));
+    const tool = make();
     // 2. The Hub Chrome is running for tools: the next check looks in background tabs there.
     results.length = 0;
     const before = await tool.workTabs();

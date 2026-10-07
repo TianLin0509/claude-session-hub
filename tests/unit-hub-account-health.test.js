@@ -163,3 +163,18 @@ test('the routine check reads login cookies only and never opens a website', asy
   chrome.endpoint = async () => null; chrome.profileHeld = () => true;
   await assert.rejects(inspectCookies({ chrome, items: [{ identity: 'main', site: 'chatgpt' }], signal: new AbortController().signal, onStage() {}, onResult() {} }), /普通窗口开着/);
 });
+test('a ChatGPT check loads one page and reads the session endpoint at most twice', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-gpt-check-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const chrome = new HubChrome({ root, env: {}, proxy: '' });
+  let opened = 0, sessionReads = 0, closed = 0;
+  chrome.openTab = async () => { opened++; return { targetId: 'T' }; };
+  chrome.closeTab = async () => { closed++; };
+  chrome.page = async () => ({ close() {}, evaluate: async expr => {
+    if (/api\/auth\/session/.test(expr)) { sessionReads++; return ''; }
+    return { host: 'chatgpt.com', profile: true };
+  } });
+  const r = await chrome.chatgptCheck('main');
+  assert.deepEqual(r, { state: 'signed_in', account: '' });
+  assert.equal(opened, 1); assert.equal(sessionReads, 2); assert.equal(closed, 1);
+});

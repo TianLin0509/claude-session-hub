@@ -154,7 +154,7 @@ class BrowserTool {
       return { managedBy: 'hub-chrome', exported: false };
     }
     if (command === 'goto') return this.withPage(async page => {
-      guard.assertAutomationAllowed(root, { identity, url: args[0] });
+      guard.assertAutomationAllowed(root, { identity, url: args[0], navigate: true });
       await page.goto(args[0], { waitUntil: 'domcontentloaded' });
       if (await guard.inspectAndLeave(root, { identity, page, url: args[0], source: this.binding.id }))
         throw Error('Site challenged: the page asked for human verification; left it and paused this site');

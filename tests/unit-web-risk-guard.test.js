@@ -170,3 +170,24 @@ test('the account page opens a window in the running Chrome, and a paused site w
   assert.equal(r.handoff, true);
   assert.equal(guard.handoff(dir).mode, 'ordinary');
 });
+
+test('page loads count against an hourly budget per login and site; steps on an open page do not', t => {
+  const dir = root(t), now = Date.now();
+  for (let i = 0; i < 10; i++) guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://claude.ai/new', navigate: true, now: now + i });
+  assert.throws(() => guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://claude.ai/', navigate: true, now: now + 20 }), e => e.code === 'HUB_RATE_LIMITED' && /一小时内自动打开网页已达 10 次/.test(e.message));
+  for (let i = 0; i < 50; i++) guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://claude.ai/', now: now + 30 + i });  // run-code steps
+  guard.assertAutomationAllowed(dir, { identity: 'alt', url: 'https://claude.ai/', navigate: true, now: now + 40 });  // the other login has its own budget
+  for (let i = 0; i < 30; i++) guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://chatgpt.com/', navigate: true, now: now + i });
+  assert.throws(() => guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://chatgpt.com/', navigate: true, now: now + 50 }), { code: 'HUB_RATE_LIMITED' });
+  guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://chatgpt.com/', navigate: true, now: now + 3600100 });  // an hour later it is allowed again
+  assert.equal(guard.read(dir).visits['main:chatgpt'].length, 1, 'old visits are dropped');
+});
+test('after a person passes a Cloudflare check automation cools down; a domestic site resumes at once', t => {
+  const dir = root(t), now = Date.now();
+  guard.coolSite(dir, 'main', 'chatgpt', now);
+  assert.throws(() => guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://chatgpt.com/', now: now + 60000 }), e => e.cooldown === true);
+  guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://chatgpt.com/', now: now + guard.COOLDOWN_MS + 1 });
+  guard.recordChallenge(dir, { identity: 'main', site: 'kimi', now });
+  guard.coolSite(dir, 'main', 'kimi', now + 1000);
+  guard.assertAutomationAllowed(dir, { identity: 'main', url: 'https://www.kimi.com/', now: now + 2000 });
+});
