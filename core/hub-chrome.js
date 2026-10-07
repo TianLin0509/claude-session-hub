@@ -95,6 +95,9 @@ class HubChrome {
     throw new Error('未知的网站：' + key);
   }
   async lifecycle(fn) {
+    // The headless inspector holds the exclusive account-check lease for its whole run, and
+    // a person's click or a tool may wait for it to yield while holding this lock.
+    if (this.inspectionOwner) return fn();
     const { acquire } = require('./web-roundtable/store');
     for (const end = Date.now() + 45000; ; ) {
       const release = acquire('lifecycle', path.join(this.root, 'locks'));
@@ -182,8 +185,8 @@ class HubChrome {
     const { RESEARCH_SITES } = require('./external-accounts');
     if (!RESEARCH_SITES.includes(siteKey)) throw Error('这个网站的登录不允许导出');
     const site = this.site(siteKey), identity = this.identity(identityId);
+    await this.waitForCheck();
     return this.lifecycle(async () => {
-      this.assertAvailable();
       const wasRunning = await this.running();
       if (!wasRunning && this.profileHeld()) throw Object.assign(Error('专属 Chrome 的登录窗口还开着：登录完成后关掉那个窗口，再同步'), { loginOpen: true });
       const ep = wasRunning ? await this.endpoint() : await this.ensure({ headless: true, identityId });
@@ -366,16 +369,39 @@ class HubChrome {
     if (!this.profileHeld()) return [];
     return [{ automated: !!(await this.endpoint()) }];
   }
-  assertAvailable() {
+  yieldFile() { return path.join(this.root, 'locks', 'account-check.yield'); }
+  // A background login check never blocks anyone: a person's click or a tool asks it to
+  // yield (a file, so it works across Hub processes) and waits for it to let go.
+  async waitForCheck(timeoutMs = 30000) {
     if (this.inspectionOwner) return;
-    const { acquire } = require('./web-roundtable/store');
-    const release = acquire('account-check', path.join(this.root, 'locks'));
-    if (!release) throw Error('正在后台检查登录，请等待检查结束或在账号页取消检查');
-    release();
+    const { acquire } = require('./web-roundtable/store'), dir = path.join(this.root, 'locks');
+    for (let asked = false, end = Date.now() + timeoutMs; ; ) {
+      const release = acquire('account-check', dir);
+      if (release) { release(); return; }
+      if (!asked) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(this.yieldFile(), String(Date.now()), 'utf8'); asked = true; }
+      if (Date.now() > end) throw Error('后台登录确认没有及时让出浏览器，请稍后再试');
+      await sleep(200);
+    }
+  }
+  yieldRequested() { return fs.existsSync(this.yieldFile()); }
+  clearYield() { try { fs.unlinkSync(this.yieldFile()); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
+  // A headless Chrome exists only for a login check. One left behind with no check running
+  // (seen 2026-10-07: alive a whole day, refusing every click with "正在后台检查登录") is
+  // closed when it holds nothing but Hub markers.
+  async closeOrphanHeadless(ep) {
+    if (!ep?.headless || this.inspectionOwner) return false;
+    const busy = await this.workTabs();
+    if (busy) throw Error(`后台无头浏览器里还有 ${busy} 个任务页面，等它们结束后再打开`);
+    await this.close();
+    return true;
   }
   async ensure({ headless = false, identityId = this.identities[0].id } = {}) {
-    this.assertAvailable();
-    const existing = await this.endpoint();
+    await this.waitForCheck();
+    let existing = await this.endpoint();
+    if (existing?.headless && !headless && !this.inspectionOwner && !(await this.workTabs())) {
+      await this.close();
+      existing = null;
+    }
     if (existing) {
       routing.assertCurrent(this.root,routing.policy(this.proxyServer()),this.profileHeld());
       if (headless && !existing.headless) throw Error('专属 Chrome 正在使用中，请关闭网页窗口后检查');
@@ -535,33 +561,37 @@ class HubChrome {
   // debugging port — observed 2026-09-25 in this Hub Chrome, as the Gemini flow found before.
   // Cookies live in the profile, so the next debugging-mode start sees the login.
   async openLogin(identityId, siteKeys) {
+    await this.waitForCheck();
     return this.lifecycle(() => this._openLogin(identityId, siteKeys));
   }
+  // The account page's 打开. It always opens: a background check yields, an orphaned
+  // headless Chrome is closed, and a running Hub Chrome gets a window of its own on screen
+  // (no debugger attached to it) so web tools keep working alongside the person.
   async openWebsite(identityId, siteKey) {
+    this.identity(identityId);
+    const site = this.site(siteKey);
+    await this.waitForCheck();
     return this.lifecycle(async () => {
-      this.assertAvailable();
-      this.identity(identityId);
-      const site = this.site(siteKey);let ep = await this.endpoint();
-      if (ep?.headless) throw Error('正在后台检查登录，请等待结束或取消检查');
-      // This explicit account-page action owns the lifecycle lock. A browser
-      // containing only Hub markers has no website or draft to interrupt.
+      let ep = await this.endpoint();
+      if (await this.closeOrphanHeadless(ep)) ep = null;
+      // A browser containing only Hub markers has no website or draft to interrupt.
       if(ep&&this.routingStatus().state==='restart_required'&&!require('./web-risk-guard').handoff(this.root)&&!(await this.workTabs())){
         await this.close();ep=null;
       }
       const guard = require('./web-risk-guard');
       if (guard.blocked(this.root, identityId, guard.siteOf(site.url))) {
         const { lease, cleared } = await guard.openForHuman(this, { identity: identityId, url: site.url, by: 'account-tab' });
-        return { mode: 'ordinary', handoff: true, until: lease.until, cleared };
+        return { mode: lease.mode, handoff: true, until: lease.until, cleared };
       }
-      // A visible page in a debugging process still has the debugging port. Account-page
-      // visits use the same ordinary Chrome as login, with the same profile and proxy.
-      return this._openOrdinary(identityId, site.url);
+      // A person's ordinary window is open: Chrome adds the page to it.
+      if (!ep && this.profileHeld()) return this._openOrdinary(identityId, site.url);
+      return { identity: identityId, mode: 'shared', ...await this._openVisible(identityId, site.url) };
     });
   }
   async assertOrdinaryAvailable() {
-    this.assertAvailable();
-    const ep = await this.endpoint();
-    if (ep?.headless) throw Error('正在后台检查登录，请等待结束或取消检查');
+    await this.waitForCheck();
+    let ep = await this.endpoint();
+    if (await this.closeOrphanHeadless(ep)) ep = null;
     if (ep) {
       const busy = await this.workTabs();
       if (busy > 0) throw Object.assign(Error(`专属 Chrome 中还有 ${busy} 个网页或任务；请先保存并关闭这些标签页，再打开账号网站或去验证，登录记录会保留`), { code: 'HUB_BROWSER_BUSY' });
@@ -582,13 +612,20 @@ class HubChrome {
     await this.launch(identityId, { debug: false, visible: true, newWindow: false, urls: [].concat(urls) });
     return { identity: identityId, mode: 'ordinary', pid: routing.read(this.root)?.pid || this.lastLaunchPid };
   }
+  // 去登录 prefers an ordinary window: Google sign-in refuses a browser with a debugging port.
+  // While web tools have pages open, closing the browser would break their work, so the
+  // login page opens in the running Hub Chrome instead of refusing the click.
   async _openLogin(identityId, siteKeys) {
-    this.assertAvailable();
     const identity = this.identity(identityId);
     const keys = [].concat(siteKeys || identity.sites).filter(Boolean);
     for (const k of keys) if (!identity.sites.includes(k) && !Object.hasOwn(require('./external-accounts').EXTERNAL_SITES, k)) throw new Error(`身份「${identity.label}」不负责 ${this.site(k).name}`);
     const urls = keys.map(k => this.site(k).url);
-    return { ...await this._openOrdinary(identity.id, urls), sites: keys };
+    try { return { ...await this._openOrdinary(identity.id, urls), sites: keys }; }
+    catch (e) {
+      if (e.code !== 'HUB_BROWSER_BUSY') throw e;
+      for (const url of urls) await this._openVisible(identity.id, url);
+      return { identity: identity.id, mode: 'shared', sites: keys };
+    }
   }
   // Any non-marker page may still belong to a task or the user, irrespective of placement.
   async workTabs() {

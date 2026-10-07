@@ -81,8 +81,10 @@ function combine(rows) {
     const sources = { ...previous?.sources };
     if (!['website', 'history'].includes(row.source) && !(sources[row.source]?.at > row.at))
       sources[row.source] = { outcome: row.outcome, at: row.at, lastSuccessAt: Math.max(sources[row.source]?.lastSuccessAt || 0, row.lastSuccessAt || (row.outcome === 'success' ? row.at : 0)) };
+    // The person's own use of the page: opened from the account page or seen in Chrome history.
+    const openedAt = Math.max(previous?.openedAt || 0, ['website', 'history'].includes(row.source) ? row.at : 0);
     entries[key] = { identity: chosen.identity, site: chosen.site, source: chosen.source, outcome: chosen.outcome, at: chosen.at,
-      lastSuccessAt, ...(issue && issue.at > lastSuccessAt ? { issue } : {}), ...(Object.keys(sources).length ? { sources } : {}) };
+      lastSuccessAt, ...(openedAt ? { openedAt } : {}), ...(issue && issue.at > lastSuccessAt ? { issue } : {}), ...(Object.keys(sources).length ? { sources } : {}) };
   }
   return entries;
 }

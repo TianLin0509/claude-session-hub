@@ -29,7 +29,7 @@ try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}
       const result = await hub.liveStatus(identity, 'deepseek', { timeoutMs: 5000 });
       assert.equal(result.state, 'signed_in');
       hub.site = realSite;
-      await assert.rejects(new HubChrome({ root }).openTab(identity, url), /后台检查/);
+      await assert.rejects(new HubChrome({ root }).waitForCheck(1000), /没有及时让出/);
       assert.equal(await hub.closeIfIdle(), true);
       assert.equal(await hub.running(), false);
       evidence.checks.push(identity + ': headless confirmed, correct isolated cookie jar, probe completed, resources released');

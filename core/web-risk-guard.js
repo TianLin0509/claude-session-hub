@@ -197,16 +197,21 @@ async function resetChallengeCookies(hub, identity, site) {
 // state for that site, then a visible window on screen with no debugger attached to it.
 async function openForHuman(hub, { identity, url, by = '', reset = true }) {
   const root = hub.root, site = siteOf(url);
-  // Do not reset cookies, pause another task, or close a page with a draft when busy.
-  await hub.assertOrdinaryAvailable();
+  // An ordinary window when the browser is free. While tools have pages open, closing it
+  // would break their work: the person gets a window in the running Hub Chrome instead,
+  // with no debugger attached, and the lease ends when that window's page is closed.
+  let shared = false;
+  try { await hub.assertOrdinaryAvailable(); }
+  catch (e) { if (e.code !== 'HUB_BROWSER_BUSY') throw e; shared = true; }
   const lease = startHandoff(root, { identity, site, url, by });
   let cleared = 0;
   try { if (site && reset) cleared = await resetChallengeCookies(hub, identity, site); } catch {}
   let opened;
-  try { opened = await hub._openOrdinary(identity, url); }
+  try { opened = shared ? { mode: 'shared', ...await hub._openVisible(identity, url) } : await hub._openOrdinary(identity, url); }
   catch (e) { endHandoff(root, lease.id); throw e; }
-  update(root, state => { if (state.handoff?.id === lease.id) Object.assign(state.handoff, { mode: opened.mode, browserPid: opened.pid }); });
-  return { lease: { ...lease, mode: opened.mode, browserPid: opened.pid }, cleared, site };
+  const extra = shared ? { mode: 'shared', targetId: opened.targetId } : { mode: opened.mode, browserPid: opened.pid };
+  update(root, state => { if (state.handoff?.id === lease.id) Object.assign(state.handoff, extra); });
+  return { lease: { ...lease, ...extra }, cleared, site };
 }
 
 // The person closed the window we gave them: they are done, automation may resume. Check the
