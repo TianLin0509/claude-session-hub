@@ -9,7 +9,7 @@
 3. 启动后检查首页安装检测；源码路线额外执行 `node scripts/doctor.js`。不要把 `ready` 或安装 JSON `ok` 解释成模型可用。
 4. 复用本机已经安装的 CLI；缺失时运行 `scripts/install-provider.ps1 -Provider codex|claude|gemini`。这是官方工具安装，会联网。
 5. 启动 Hub，打开账号中心的官方登录入口；用户自己完成身份确认。密码、验证码、token 不进 prompt、日志、仓库或截图。
-6. 核实窗口和 hook listener，然后在用户允许的项目中发一条测试消息。最后报告已验证、未验证、失败原因；不要自动改模型、换账号、反复重发未知提交。
+6. 核实窗口和 hook listener，然后在用户允许的项目中发一条测试消息。最后报告已验证、未验证、失败原因；不要自动改模型、换账号、反复重发未知提交。装不上时按 docs/AGENT-QUICKSTART.md 的「装不上时的诊断报告」整理证据交给用户。
 
 无 Node 时可使用组织认可方式安装 Node.js LTS（例如已可用的 winget），保留操作结果。下载受网络策略限制时如实报告，不用作者账号或私人网关兜底。
 
@@ -25,4 +25,4 @@
 
 ## 给公司平台的接入顺序
 
-先移植 provider 驱动和生命周期契约，再移植 IPC 与 UI，最后接入你们自己的认证/网关。禁止把本机单用户桌面 Hub 直接当成多租户服务。看 docs/ARCHITECTURE.md 的路径表和 docs/DISTRIBUTION.md 的差异说明。
+内网只有公司自研编码 CLI 时，按 docs/COMPANY-CODE-AGENT.md 先探测再新增会话种类。其他平台化改造：先移植 provider 驱动和生命周期契约，再移植 IPC 与 UI，最后接入你们自己的认证/网关。禁止把本机单用户桌面 Hub 直接当成多租户服务。看 docs/ARCHITECTURE.md 的路径表和 docs/DISTRIBUTION.md 的差异说明。

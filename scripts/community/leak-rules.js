@@ -16,7 +16,7 @@ const path = require('path');
 const RULES = [
   { id: 'identity-name', re: /立花道雪|道雪|田哥|林田/ },
   { id: 'identity-login', re: /lintian|TianLin0509\/claude-session-hub|lt17210720082|17210720082|fudan\.edu/i },
-  { id: 'private-gateway', re: /3\.142\.133\.116|packyapi|packycode|lthub\.xyz|meridian/i },
+  { id: 'private-gateway', re: /3\.142\.133\.116|packyapi|packycode|lthub\.xyz|stockpartner|meridian/i },
   { id: 'personal-project', re: /chuxin|初心|lindang/i },
   // 已删除模块在通用代码里留下的死分支与注释（不含个人数据）：只统计、不拦截，逐步清理。
   { id: 'module-residue', re: /agent-league|投资联赛|投委会|research-mcp|arena-research/i, severity: 'residue' },

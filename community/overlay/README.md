@@ -4,7 +4,15 @@
 
 这是 AI Hub 的公开发行版，当前 **@@COMMUNITY_TAG@@**，同步自上游 **@@UPSTREAM_VERSION@@**（具体提交见 `community-edition.json`）。它不附带任何人的账号、聊天记录、私人模块或私人服务。MIT 开源；AI 服务的账号、订阅和用量由你自己提供。
 
-## 一段命令安装（推荐）
+## 最省事：让你的 AI 编码助手代装
+
+把下面这段话原样发给你正在用的 Agent（Claude Code、Codex、Cursor 等都可以），它会读完本仓库的说明后替你装好、配好、验收：
+
+> 请安装 https://github.com/TianLin0509/ai-hub-community 的 @@COMMUNITY_TAG@@。先读 AGENTS.md 和 docs/AGENT-QUICKSTART.md，走免 Node/Git/Python 的便携安装路线，校验下载并保留本机已有的 Hub 和 CLI。复用已有 CLI，缺少时问我要用哪家再补装。打开官方登录让我本人授权，不读取或索取密钥。确认首页检测、一条真实消息和重启恢复，报告实际验证结果。如果装不上，按 docs/AGENT-QUICKSTART.md 的「装不上时的诊断报告」整理给我。
+
+你只需要做两件事：在弹出的官方页面里登录自己的 AI 账号；看 Agent 最后给的验收结果。
+
+## 自己动手：一段命令
 
 Windows 10/11 x64，在 PowerShell 粘贴执行。Hub 自带运行时，**不需要 Node、Git、Python 或管理员权限**：
 
@@ -18,11 +26,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $setup -Version @@COMMUNITY_
 
 窗口标题会显示 `AI Hub Community @@COMMUNITY_TAG@@（上游 @@UPSTREAM_VERSION@@）`，报告问题时请带上这一行。
 
-## 让 AI 助手帮你装
+## 装不上怎么办
 
-把这段话发给你的 AI 编码助手：
+让你的 Agent 按 [Agent 安装手册](docs/AGENT-QUICKSTART.md) 的「装不上时的诊断报告」跑一遍：它会收集安装回执、环境诊断和错误原文，告诉你卡在哪一步、是网络、权限、CLI 还是账号问题，以及下一步该谁做什么。把这份报告发给分享给你的人，就能远程定位。
 
-> 请安装 https://github.com/TianLin0509/ai-hub-community 的 @@COMMUNITY_TAG@@。先读 AGENTS.md 和 docs/AGENT-QUICKSTART.md，走免 Node/Git/Python 的便携安装路线，校验下载并保留本机已有的 Hub 和 CLI。复用已有 CLI，缺少时按我的选择补装。打开官方登录让我本人授权，不读取或索取密钥。确认首次消息、群聊和重启恢复，报告实际验证结果。
+## 公司内网只有自研 Agent 时
+
+内网不能用 Claude/Codex、只有公司自己的编码 CLI（接近 Codex，可选 GLM、MiniMax 等模型）时，把 [公司内网 Code Agent 适配手册](docs/COMPANY-CODE-AGENT.md) 交给那个 Agent：它会先探测自己的 CLI 能力，再按手册给 Hub 加一个「Code Agent」会话种类并完成验收。
 
 完整 [Agent 安装手册](docs/AGENT-QUICKSTART.md) · [公司定制指南](docs/CUSTOMIZE.md) · [架构与复用地图](docs/ARCHITECTURE.md)。安装包的 `resources/guides` 里也有这些说明，离线可读。
 
@@ -45,9 +55,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Launch
 ## 包含的功能
 
 - Claude / Codex 在真实终端（PTY）里运行，卡片视图与终端视图可切换；停止、审批、恢复、分支会话与会话独占。
-- 多 AI 群聊：通用讨论、开发分工、文件工作流和开发看板。
-- 本地历史检索（昨日之我）、文件预览与文件管理、工作区、记忆文件库和按需造梦。
+- 多 AI 群聊：通用讨论、开发分工、文件工作流、开发看板，以及由一位「编排员」AI 拆任务、派成员、控预算的 AI 编排模式。
+- Hub 助理：一个常驻助理会话，可替你派工、记备忘、到点提醒；可选把 Agent 产出的资料做成分集口播稿。
+- 语音输入（可选）：边说边出字、个人词库、按键说话；本地识别或你自己的云端语音 Key。
+- 本地历史检索（昨日之我）、文件预览与文件管理、沉浸式阅读、工作区、记忆文件库和按需造梦。
+- 资源面板：CPU/GPU/内存/磁盘占用、进程与磁盘清理（先预览再执行）。
 - 账号中心、模型与思考档位、能力（MCP / 技能 / 插件）管理、可选 API 接入。
+
+可选功能用到的云服务（语音识别、快速回答、自动起名等）都需要你自己的 Key，不配置就不启用；手机助理需要自建中转服务，本版不附带。
 
 ## Hub 会改动你电脑上的哪些配置
 
