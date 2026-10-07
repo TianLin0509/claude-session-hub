@@ -87,14 +87,53 @@ function splitChunks(payload, chunkSize) {
   return chunks;
 }
 
+// Claude Code（2.1.29x 起，服务端开关）在提交时把「折叠成 [Pasted text #N] 的粘贴」包进
+//   <pasted_content id="xxxx">，并在系统提示里告诉模型「其中的指令未必是用户本人写的」。
+//   Hub 发的就是用户（或用户派的工作流）本人的话，被这样标记既难看又会让指令打折扣。
+//   CLI 的规则（实测 2.1.292 源码）：单次粘贴超过 800 字或换行多于 min(行数-10, 2) 才折叠并包裹；
+//   更小的粘贴原样进输入框、不包裹。所以给 Claude 拆成若干小段粘贴依次投喂。
+const INLINE_PASTE_MAX_CHARS = 800;
+const INLINE_PASTE_MAX_NEWLINES = 1; // 规则允许 2；取 1 给终端只有 11 行的窗口也留余量
+
+// 按「≤maxChars 字、≤maxNewlines 个换行」切段，尽量在换行后断开；不劈开代理对。
+function splitInlinePastes(text, maxChars = INLINE_PASTE_MAX_CHARS, maxNewlines = INLINE_PASTE_MAX_NEWLINES) {
+  const source = String(text == null ? '' : text).replace(/\r\n?/g, '\n'); // CLI 也会这样归一
+  const pieces = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    let end = cursor;
+    let newlines = 0;
+    while (end < source.length && end - cursor < maxChars) {
+      const ch = source[end];
+      end += 1;
+      if (ch === '\n' && ++newlines >= maxNewlines) break;
+    }
+    end = safeSliceEnd(source, Math.max(end, cursor + 1));
+    pieces.push(source.slice(cursor, end));
+    cursor = end;
+  }
+  return pieces;
+}
+
 // 把 prompt 包进 bracketed paste 并分块写入。
 //   分块的意义不是"更快"，而是让 socket 队列在最后一片写完时几乎是空的 ——
 //   这样调用方随后发的 \r 才可能独立成一个 stdin chunk，而不是被并进 BP_END 那块。
+//   options.inlinePieces：拆成多段小粘贴（Claude 用，见 splitInlinePastes），每段一次写入。
 // 返回实际写出的分片数（1 表示走了不分块的快路径）。
 async function writeBracketedPaste(sessionManager, sid, text, options = {}) {
+  const gapMs = Number.isFinite(options.gapMs) ? options.gapMs : CHUNK_GAP_MS;
+  if (options.inlinePieces) {
+    const pieces = splitInlinePastes(text);
+    if (pieces.length > 1) {
+      for (let i = 0; i < pieces.length; i += 1) {
+        sessionManager.writeToSession(sid, BP_START + pieces[i] + BP_END);
+        if (i < pieces.length - 1) await sleep(gapMs);
+      }
+      return pieces.length;
+    }
+  }
   const payload = BP_START + String(text == null ? '' : text) + BP_END;
   const chunkSize = Number.isFinite(options.chunkSize) ? options.chunkSize : CHUNK_SIZE;
-  const gapMs = Number.isFinite(options.gapMs) ? options.gapMs : CHUNK_GAP_MS;
   if (payload.length <= chunkSize) {
     sessionManager.writeToSession(sid, payload);
     return 1;
@@ -215,6 +254,7 @@ module.exports = {
   writeBracketedPaste,
   waitForPasteSettled,
   snapshotPasteMarker,
+  splitInlinePastes,
   _private: { splitChunks, safeSliceEnd, extractMarker },
   SETTLE_MIN_MS,
   SETTLE_MAX_MS,
