@@ -504,13 +504,13 @@ function renderTurnCard(turn) {
   const isProgress = !isUser && turn.phase === 'commentary';
   // inherited = 从父会话补进来的「分支前」对话（见 core/branch-transcript-inheritance.js）。
   const cls = (isUser ? 'turn-card user' : 'turn-card assistant') + (turn.inherited ? ' inherited' : '');
-  const who = isUser ? '你' : (turn.model || (turn.source==='acp' ? require('../core/ai-kinds').getKindLabel(turn.kind) : turn.kind) || 'Claude');
+  const who = isUser ? '田哥' : (turn.model || (turn.source==='acp' ? require('../core/ai-kinds').getKindLabel(turn.kind) : turn.kind) || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
 
   // 头像分支
   let avatarHtml;
   if (isUser) {
-    avatarHtml = `<span class="turn-avatar av-logo av-user"><img src="${USER_AVATAR_SRC}" alt="你 · AI Hub"></span>`;
+    avatarHtml = `<span class="turn-avatar av-logo av-user"><img src="${USER_AVATAR_SRC}" alt="田哥 · AI Hub"></span>`;
   } else {
     const logo = chatAvatarSrc(turn.kind, { assistant: turn.assistantIdentity });
     avatarHtml = logo
