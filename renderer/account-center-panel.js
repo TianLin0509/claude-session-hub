@@ -186,7 +186,8 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     else if (a === 'tab') selectTab(b.dataset.tab);
     else if (a === 'open') void action('open', args);
     else if (a === 'login') void action('login', args);
-    else if (a === 'recover' || a === 'recheck') void action('check-start', args);
+    else if (a === 'recover') void action('check-start', { ...args, live: true });
+    else if (a === 'recheck') void action('check-start', args);
     else if (a === 'check-cancel') void action('check-cancel', {});
     else if (a === 'add' || a === 'preferred') void action('preference', { ...args, add: a === 'add' });
     else if (a === 'authorize') void authorize(b.dataset.id);

@@ -71,21 +71,27 @@ function imageServiceHtml(images, esc) {
   return `<p class="ac-connection-notice ac-image-status" role="status">${esc('生图 MCP：' + order + ' · ' + now)}</p>`;
 }
 // One line per account: the verdict, then where it came from.
-const PROOF = { check: '后台确认已登录', images: '生图调用成功', roundtable: '网页圆桌调用成功', bridge: '中转调用成功', opened: '你打开过网页' };
-const BY = { check: '后台检查', images: '生图', roundtable: '网页圆桌', bridge: '中转', paused: '网页工具' };
+const PROOF = { check: '网页确认已登录', cookie: '本机登录记录有效', images: '生图调用成功', roundtable: '网页圆桌调用成功', bridge: '中转调用成功', opened: '你打开过网页' };
+const BY = { check: '网页检查', cookie: '本机登录记录', images: '生图', roundtable: '网页圆桌', bridge: '中转', paused: '网页工具' };
+// A verification wall a tool met: a note about the tools, not a task for the person.
+function automationNote(wall, now) {
+  if (!wall) return '';
+  if (wall.by === 'paused') return '网页工具遇到网站验证，自动化暂停到 ' + new Date(wall.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) + '；你自己使用不受影响';
+  return relativeTime(wall.at, now) + ' ' + BY[wall.by] + '遇到网站验证；你自己使用不受影响';
+}
 function healthView(health, now = Date.now()) {
   const h = health || { state: 'unknown' };
   const when = at => relativeTime(at, now);
+  const note = automationNote(h.automation, now);
   if (h.state === 'attention') {
-    const p = h.problem, verify = p.kind === 'verification';
-    const detail = p.by === 'paused' ? '网页自动化已暂停到 ' + new Date(p.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-      : when(p.at) + ' ' + BY[p.by] + (verify ? '遇到人机验证' : p.by === 'check' ? '发现已退出登录' : '提示需要登录');
-    return { tone: 'warn', text: verify ? '需要人机验证' : '需要重新登录', detail, action: verify ? 'open' : 'login', button: verify ? '去验证' : '去登录' };
+    const p = h.problem;
+    const detail = when(p.at) + ' ' + BY[p.by] + (p.by === 'cookie' ? '已失效' : p.by === 'check' ? '发现已退出登录' : '提示需要登录');
+    return { tone: 'warn', text: '需要重新登录', detail, action: 'login', button: '去登录' };
   }
   const synced = h.syncedAt ? when(h.syncedAt) + '同步' : '';
-  if (h.state === 'ok') return { tone: 'ok', text: '正常' + (synced ? ' · ' + synced : ''), detail: PROOF[h.syncedBy] || '', action: 'open', button: '打开' };
-  if (h.state === 'off') return { tone: 'idle', text: '未登录', detail: when(h.problem.at) + ' 后台检查', action: 'login', button: '登录' };
-  return { tone: 'idle', text: '未确认' + (synced ? ' · ' + when(h.syncedAt) + '打开过' : ''), detail: '', action: 'open', button: '打开' };
+  if (h.state === 'ok') return { tone: 'ok', text: '正常' + (synced ? ' · ' + synced : ''), detail: note || PROOF[h.syncedBy] || '', action: 'open', button: '打开' };
+  if (h.state === 'off') return { tone: 'idle', text: '未登录', detail: '', action: 'login', button: '登录' };
+  return { tone: 'idle', text: '未确认' + (synced ? ' · ' + when(h.syncedAt) + '打开过' : ''), detail: note, action: 'open', button: '打开' };
 }
 function accountToolHtml(state, card, account, esc) {
   const waiting = account.identity === 'main' ? (state.webTools?.roundtable?.waiting || []).filter(t => t.provider === card.site) : [];
