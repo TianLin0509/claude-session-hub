@@ -118,6 +118,15 @@ const port = () => new Promise(r => { const s = net.createServer(); s.listen(0, 
     check('结项', l?.status === 'finished');
     check('故障处理：编排员用了重启/跳过/改计划之一', /重启|唤醒|跳过|提交计划 v[2-9]|已取消/.test(events));
     check('田哥只用输入框回复（次数 ≤ 3）', report.replies.length <= 3);
+    // 跳过与报错要在群里看得见：系统提示写明谁跳过、为什么；故障成员的消息带报错原文。
+    const chat = read(path.join(DATA, 'arena-prompts', `${meetingId}-groupchat.json`)) || {};
+    const msgs = Array.isArray(chat.messages) ? chat.messages : [];
+    report.skipNotes = msgs.filter(m => m.systemNote && /跳过了/.test(m.content || '')).map(m => m.content);
+    report.failureDetails = msgs.filter(m => m.failure && m.failure.detail).map(m => ({ speaker: m.speaker, code: m.failure.code, detail: String(m.failure.detail).slice(0, 160) }));
+    if (/跳过/.test(events)) check('群里有跳过的系统提示（含谁跳过）', report.skipNotes.some(t => /^编排员跳过了/.test(t)));
+    check('故障成员的消息带报错原文', report.failureDetails.length > 0);
+    report.cardText = await cdp.eval("[...document.querySelectorAll('.mr-gc-empty-placeholder')].map(e=>e.textContent).filter(t=>/这一轮没完成/.test(t)).slice(0,3)").catch(() => []);
+    check('卡片上显示「这一轮没完成」与报错', (report.cardText || []).length > 0);
     const summary = [];
     const walk = dir => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if (/summary\.md$/i.test(e.name) || /汇总/.test(e.name)) summary.push(p); } };
     for (const dir of [WORK, path.join(DATA, 'task-docs', meetingId)]) if (fs.existsSync(dir)) walk(dir);
