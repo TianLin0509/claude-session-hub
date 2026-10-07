@@ -26,7 +26,10 @@ function globalRuleFiles(home) {
 // proof of native injection. A separate launch contract suppresses equivalent
 // native-covered bodies; unknown coverage keeps the existing supplementation.
 function sharedWorkspaceRules({ session, workspaceService, homeDir, nativeCoverage = [] }) {
-  const cwd = session.cwd, root = workspaceService.getWorkspaceRoot();
+  // 旧工作根（AI_HUB_LEGACY_WORKSPACE_ROOTS）里的存量会话按它自己所在的根收集规则。
+  const cwd = session.cwd;
+  const root = (typeof workspaceService.workspaceRootFor === 'function' && workspaceService.workspaceRootFor(cwd))
+    || workspaceService.getWorkspaceRoot();
   const relative = path.relative(root,cwd);
   if (!relative || relative === '..' || relative.startsWith('..'+path.sep) || path.isAbsolute(relative)) return [];
   const read = file => { if(fs.statSync(file).size>65536) throw new Error('共享规则核对超过 64 KB，请先拆分：'+file); return fs.readFileSync(file,'utf8'); };

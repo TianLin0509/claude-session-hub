@@ -9,7 +9,16 @@ const { projectRoot } = require('./hub-memory-service');
 const { projectPathKey } = require('./session-search-projects');
 const { classifyRule, globalRuleFiles } = require('./memory-rule-files');
 
-function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions, workspaces = [] }) {
+function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions, workspaces = [], legacyWorkspaceRoots = [] }) {
+  // 旧工作根（AI_HUB_LEGACY_WORKSPACE_ROOTS）里的会话按自己所在的根截断规则链。
+  const knownRoots = [workspaceRoot, ...legacyWorkspaceRoots].filter(Boolean);
+  const rootFor = cwd => {
+    for (const root of knownRoots) {
+      const rel = path.relative(path.resolve(root), path.resolve(cwd));
+      if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return root;
+    }
+    return workspaceRoot;
+  };
   const files = new Map(), projects = new Map(), directories = new Set(), warnings = [];
   const roots = new Map();
   const warn = (p, e) => { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') warnings.push(`${p}：${e.message}`); };
@@ -64,8 +73,10 @@ function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions, workspac
       catch (e) { warn(file,e); }
     }
   }
-  if (workspaceRoot && projectPathKey(workspaceRoot) !== projectPathKey(homeDir))
-    seeds.push(...['claude', 'codex', 'kimi', 'gemini'].map(kind => ({ kind, cwd: workspaceRoot })));
+  for (const root of knownRoots) {
+    if (projectPathKey(root) !== projectPathKey(homeDir))
+      seeds.push(...['claude', 'codex', 'kimi', 'gemini'].map(kind => ({ kind, cwd: root })));
+  }
   const providers = new Set(), codexHomes = new Set([path.join(homeDir, '.codex')]);
   for (const s of [...seeds, ...sessions]) {
     if (!s.cwd || s.purpose === 'memory-dream') continue;
@@ -79,7 +90,7 @@ function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions, workspac
     providers.add(providerKey);
     try {
       if (s.codexSessionsRoot) codexHomes.add(path.dirname(s.codexSessionsRoot));
-      const view = inspector.getSessionFiles({ ...s, homeDir, workspaceRoot: workspaceRoot || homeDir, rulesOnly: true });
+      const view = inspector.getSessionFiles({ ...s, homeDir, workspaceRoot: rootFor(s.cwd) || homeDir, rulesOnly: true });
       for (const f of view.files || []) if (f.exists) add(f.path, '原生规则', p?.id);
     } catch (e) { warnings.push(`${s.cwd}：${e.message}`); }
   }

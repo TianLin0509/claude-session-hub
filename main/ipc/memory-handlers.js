@@ -54,8 +54,13 @@ function registerMemoryIpc(ipcMain, deps) {
     const codexSessionsRoot = typeof payload === 'object' && payload ? payload.codexSessionsRoot : '';
     const codexProfile = typeof payload === 'object' && payload ? payload.codexProfile : '';
     const meetingId = typeof payload === 'object' && payload ? payload.meetingId : '';
+    const base = ctx();
+    // 旧工作根里的会话：规则链按它自己所在的根截断与核对。
+    const ownRoot = cwd && typeof workspaceService.workspaceRootFor === 'function'
+      ? workspaceService.workspaceRootFor(cwd)
+      : null;
     return memoryInspector.getSessionFiles({
-      ...ctx(), cwd, kind, runtimeKind, codexSessionsRoot, codexProfile, meetingId,
+      ...base, ...(ownRoot ? { workspaceRoot: ownRoot } : {}), cwd, kind, runtimeKind, codexSessionsRoot, codexProfile, meetingId,
     });
   });
 

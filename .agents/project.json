@@ -20,7 +20,7 @@
     "author": ".agents/AUTHOR.md",
     "merger": ".agents/MERGER.md"
   },
-  "worktreeRoot": "C:/AIWork",
+  "worktreeRoot": "D:/AIWork",
   "$comment_notes": "worktree 里禁止 npm install/ci/dist——node_modules 是指向生产依赖的 junction，装包会写坏它。",
   "notes": [
     "worktree 的 node_modules 用 junction 复用主目录，禁止在 worktree 里装包",
@@ -28,5 +28,5 @@
     "不碰生产 Hub 进程，验证一律用隔离数据目录 + 独立 CDP 端口"
   ],
   "protectedBranches": [],
-  "worktreeHint": "再 cmd /c mklink /J <新目录>\\node_modules C:\\Users\\lintian\\claude-session-hub\\node_modules  —— worktree 里禁止 npm install / ci / dist"
+  "worktreeHint": "worktree 建在 D:/AIWork/日期-任务-席位（2026-10-07 起；C:/AIWork 下的存量 worktree 按完整路径继续可用），再 cmd /c mklink /J <新目录>\\node_modules C:\\Users\\lintian\\claude-session-hub\\node_modules  —— worktree 里禁止 npm install / ci / dist"
 }

@@ -5,13 +5,13 @@
 ## 工作环境
 
 - 主工作目录 `C:\Users\lintian\claude-session-hub` 正在运行生产 Hub，禁止在其中实现或提交功能改动。
-- worktree 放在 `C:/AIWork/日期-任务-席位`；分支用 `feat/`、`fix/` 或 `chore/` 前缀。
+- worktree 放在 `D:/AIWork/日期-任务-席位`（2026-10-07 起；`C:/AIWork` 下的存量 worktree 按完整路径继续可用）；分支用 `feat/`、`fix/` 或 `chore/` 前缀。
 - 用 junction 复用主目录 `node_modules`；创建后确认成功。禁止在共享依赖的 worktree 中运行 `npm install`、`npm ci`、`npm prune`、`npm run dist`。
 - 版本由 `scripts/merge_task.py` 自动抬升；实现分支不提前修改版本号。
 
 ```text
-git worktree add C:/AIWork/日期-任务-席位 -b feat/任务-日期 master
-cmd /c mklink /J C:\AIWork\日期-任务-席位\node_modules C:\Users\lintian\claude-session-hub\node_modules
+git worktree add D:/AIWork/日期-任务-席位 -b feat/任务-日期 master
+cmd /c mklink /J D:\AIWork\日期-任务-席位\node_modules C:\Users\lintian\claude-session-hub\node_modules
 node scripts/run_unit_tests.js
 ```
 
