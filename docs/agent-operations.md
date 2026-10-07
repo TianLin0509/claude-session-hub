@@ -9,7 +9,7 @@ Codex / Kimi 等直接读本文件，Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导
 ## 生产目录与 worktree
 
 - 主工作目录 `C:\Users\lintian\claude-session-hub` 就是生产：桌面快捷方式直接运行它，且 `main-bootstrap.js` 不装单实例锁，在这里改到一半，下次重启就生效。仓库只有 `master` 一条线。
-- 改 Hub 先开 worktree：`git worktree add C:\AIWork\<YYYYMMDD>-<任务>-<席位> -b <分支>`，再 `cmd /c mklink /J <worktree>\node_modules <主目录>\node_modules`（检查返回码）。席位（`-claude1` / `-codex1`）必带，这是并发时区分谁改了什么的唯一信号。
+- 改 Hub 先开 worktree：`git worktree add D:\AIWork\<YYYYMMDD>-<任务>-<席位> -b <分支>`（2026-10-07 起在 D:；C:\AIWork 下存量按完整路径可用），再 `cmd /c mklink /J <worktree>\node_modules <主目录>\node_modules`（检查返回码）。席位（`-claude1` / `-codex1`）必带，这是并发时区分谁改了什么的唯一信号。
 - 在 worktree 提交后，报告改了什么、测了什么，用户同意才合入 master；不在主目录 commit 功能改动。例外：纯文档、用户当次明说直接在主干改的小修、紧急修复（事后说明）。
 - 双席位开发群聊中，用户亲自发送开题提示词即授权开题范围内实现，并由独立合并位验证后按项目入口合并；本项目的环境、验证与合并入口在 `.agents/AUTHOR.md`、`.agents/MERGER.md`。
 - 主目录出现别人的未提交改动时，先查清归属；不 `git add -A` 扫进自己的提交，也不 `git checkout --` 冲掉。

@@ -4,7 +4,7 @@ Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导入本文件；Codex / Kimi 等直接
 
 ## 开发、依赖与合入
 
-- `C:/Users/lintian/claude-session-hub` 是生产目录，只有 `master` 主干。实现先开 `C:/AIWork/YYYYMMDD-<任务>-<席位>` 的独立 worktree；席位必带。保留其他人的未提交改动，按路径提交，不在主目录提交功能开发。
+- `C:/Users/lintian/claude-session-hub` 是生产目录，只有 `master` 主干。实现先开 `D:/AIWork/YYYYMMDD-<任务>-<席位>` 的独立 worktree（2026-10-07 起新任务在 D:；`C:/AIWork` 下存量目录按完整路径继续可用）；席位必带。保留其他人的未提交改动，按路径提交，不在主目录提交功能开发。
 - 日常 worktree 的 `node_modules` junction 指向生产；禁止安装、裁剪、打包或删改依赖。动依赖须用户同意并用独立依赖目录。清理先仅摘 junction、核验链接消失，再清目录；不用强制 worktree 删除或递归穿透链接。依赖缺失、EBUSY、smoke、打包按操作手册「node_modules 完整性」。
 - 不关闭、重启或 kill 生产 Hub，不改生产 state/config。开发合同见 `.agents/AUTHOR.md`，独立审核与合并见 `.agents/MERGER.md`、`.agents/project.json`。用户已授权合入或双席位开题范围内独立合并时，按项目入口执行；其他情形先报告、取得合入授权。
 - 分支不改版本：`scripts/merge_task.py` 在合并时抬 patch、同步 package 与 lock、跑全量测试。minor/major 须同意；窗口标题 PID 与版本用于辨认实际实例。fixture 里的版本字面量保持原样。
@@ -24,7 +24,7 @@ Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导入本文件；Codex / Kimi 等直接
 
 ## 产物位置
 
-- 2026-10-06 用户确认：电脑桌面只保留关键启动入口。Agent 产物默认写当前项目 `artifacts/` 或 `output/`；跨项目重要交付写 `C:/Users/lintian/AI-Artifacts/`，文件名使用 `YYYYMMDD-<任务>-<席位>`。未经用户当次明确指定，不把文件、截图、报告、临时目录或归档放到 Desktop（含旧 `claude-artifacts`）。交付提供实际绝对路径。
+- 2026-10-06 用户确认：电脑桌面只保留关键启动入口。Agent 产物默认写当前项目 `artifacts/` 或 `output/`；跨项目重要交付写 `D:/AI-Artifacts/`（Hub 内为 `AI_HUB_ARTIFACTS_ROOT`；旧 `C:/Users/lintian/AI-Artifacts/` 存量按完整路径可读），文件名使用 `YYYYMMDD-<任务>-<席位>`。未经用户当次明确指定，不把文件、截图、报告、临时目录或归档放到 Desktop（含旧 `claude-artifacts`）。交付提供实际绝对路径。
 
 ## UI、记忆与专项入口
 

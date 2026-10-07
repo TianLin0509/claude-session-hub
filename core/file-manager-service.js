@@ -111,7 +111,8 @@ async function fileOperation(payload, shell) {
         if (action === 'copy') {
           await fs.promises.cp(source, target, { recursive: true, errorOnExist: true, force: false, dereference: false,
             filter: async value => { if ((await fs.promises.lstat(value)).isSymbolicLink()) throw new Error('复制中遇到链接，已停止；请检查目标中的部分文件'); return true; } });
-        } else await fs.promises.rename(source, target);
+        } else if (action === 'move') await require('./cross-volume-move').moveEntry(source, target);
+        else await fs.promises.rename(source, target);
       }
       results.push({ path: source, ok: true });
     } catch (error) { results.push({ path: source, ok: false, error: error.message }); }

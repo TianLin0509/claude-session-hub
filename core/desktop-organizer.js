@@ -5,6 +5,8 @@ const os = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const storageRoots = require('./storage-roots');
+const { copyThenRemove } = require('./cross-volume-move');
 const run = promisify(execFile);
 const launcher = name => /\.(lnk|url|bat|cmd)$/i.test(name);
 const inside = (root, value) => { const rel = path.relative(root, value); return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel); };
@@ -14,9 +16,10 @@ async function windowsDesktopEntries() {
   const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
   return JSON.parse(stdout.trim() || '[]');
 }
-function createDesktopOrganizer({ home = os.homedir(), testRoot } = {}) {
-  const archive = testRoot ? path.join(testRoot, 'Desktop-Archive') : process.platform === 'win32' ? path.resolve('C:/VibeData/Artifacts/Desktop-Archive') : path.join(home, 'Desktop-Archive');
-  const artifacts = path.join(testRoot || home, 'AI-Artifacts');
+// 归档与历史产物都落在产物根（AI_HUB_ARTIFACTS_ROOT，默认 ~/AI-Artifacts）下；它可能与桌面不在同一盘。
+function createDesktopOrganizer({ home = os.homedir(), testRoot, artifactsRoot } = {}) {
+  const artifacts = testRoot ? path.join(testRoot, 'AI-Artifacts') : path.resolve(artifactsRoot || storageRoots.artifactsRoot({ home }));
+  const archive = testRoot ? path.join(testRoot, 'Desktop-Archive') : path.join(artifacts, 'Desktop-Archive');
   const roots = testRoot ? [path.join(testRoot, 'Desktop'), path.join(testRoot, 'PublicDesktop')] : null;
   let plan = null, desktopRoots = roots;
   async function entries() {
@@ -66,11 +69,16 @@ function createDesktopOrganizer({ home = os.homedir(), testRoot } = {}) {
     if (stat.isSymbolicLink()) throw new Error('目录链接已保留');
     await fs.mkdir(path.dirname(target), { recursive: true });
     // Files use an exclusive hard link; folder destinations have a unique batch UUID.
+    // Desktop (C:) and the artifacts root (may be D:) can sit on different volumes:
+    // hard links and rename then fail with EXDEV, so fall back to an exclusive copy + delete.
     if (stat.isFile()) {
-      await fs.link(source, target);
+      try { await fs.link(source, target); }
+      catch (e) { if (e.code !== 'EXDEV') throw e; await copyThenRemove(source, target); return; }
       try { await fs.unlink(source); } catch (e) { await fs.unlink(target); throw e; }
-    } else if (stat.isDirectory()) await fs.rename(source, target);
-    else throw new Error('此项目不是普通文件或文件夹');
+    } else if (stat.isDirectory()) {
+      try { await fs.rename(source, target); }
+      catch (e) { if (e.code !== 'EXDEV') throw e; await copyThenRemove(source, target); }
+    } else throw new Error('此项目不是普通文件或文件夹');
   }
   async function execute({ id, keys } = {}) {
     if (!plan || id !== plan.id) throw new Error('预览已过期，请重新扫描');

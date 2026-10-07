@@ -128,7 +128,7 @@ async function main() {
     // 读工作区产物 + 晨报
     let wsFiles = []; try { wsFiles = fs.readdirSync(WS); } catch (e) {}
     rec('工作区产物: ' + JSON.stringify(wsFiles));
-    let report = []; try { report = fs.readdirSync(path.join(os.homedir(), 'Desktop', 'claude-artifacts')).filter(f => f.startsWith('loop-report-')); } catch (e) {}
+    let report = []; try { report = fs.readdirSync(require('../core/storage-roots.js').artifactsRoot()).filter(f => /^\d{8}-loop-report-/.test(f)); } catch (e) {}
     rec('晨报文件: ' + JSON.stringify(report.slice(-2)));
 
     cdp.close();

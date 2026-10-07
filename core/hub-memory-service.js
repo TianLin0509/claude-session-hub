@@ -254,6 +254,7 @@ class HubMemoryService {
     const flight = new Promise((resolve, reject) => {
       const worker = new Worker(path.join(__dirname, 'hub-memory-catalog.js'), { workerData: {
         homeDir: this.homeDir, workspaceRoot: this.workspaceService.getWorkspaceRoot(), memoryRoot: this.root, sessions: seeds, workspaces,
+        legacyWorkspaceRoots: typeof this.workspaceService.getLegacyWorkspaceRoots === 'function' ? this.workspaceService.getLegacyWorkspaceRoots() : [],
       }});
       let settled = false;
       const finish = (error, data) => {

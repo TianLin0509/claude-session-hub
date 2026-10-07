@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const { getHubDataDir, isIsolatedHub } = require('./data-dir.js');
 const { acquireLock, releaseLock } = require('./file-lock.js');
+const storageRoots = require('./storage-roots.js');
 
 const REGISTRY_VERSION = 1;
 const REGISTRY_LOCK_RETRIES = 300;
@@ -39,6 +40,13 @@ const DEFAULT_RECOMMENDED_CATEGORIES = [
 // 标记是文件而不是配置项，因为它跟着目录走：把 AI_HUB_WORKSPACE_ROOT 指回
 // C:\Vibe 时守卫自动恢复，不需要记得改任何开关。
 const WORK_ROOT_MARKER = '.aiwork-root';
+
+// ── 旧工作根（2026-10-07，C: 盘满、新工作根迁到 D:）─────────────────────────────────
+// AI_HUB_WORKSPACE_ROOT 换成 D:\AIWork 后，存量会话的 cwd 仍是 C:\AIWork 或 C:\AIWork\<任务>。
+// AI_HUB_LEGACY_WORKSPACE_ROOTS 列出的旧根只要**也带 .aiwork-root 标记**，就按平铺工作根对待：
+// 分层、常驻根标签、AGENTS.md 播种源（用旧根自己的 AGENTS.md）、scratch 判定都与当前根一致。
+// 新会话、默认路径、推荐目录、归档分类仍只看当前根。没有标记的旧根不参与（与 C:\Vibe
+// 那类组织根同理：标记跟着目录走）。未设置该 env 时行为与之前完全相同。
 
 function normalizeKey(value) {
   return path.resolve(String(value || '')).replace(/[\\/]+$/, '').toLowerCase();
@@ -85,6 +93,10 @@ class WorkspaceService {
     this.randomId = opts.randomId || (() => crypto.randomBytes(3).toString('hex'));
     this.logger = opts.logger || console;
     this.workspaceRoot = opts.workspaceRoot || null;
+    // 注入 workspaceRoot 的调用方（单测）默认不读 env 里的旧根，避免用户环境变量渗进测试。
+    this.legacyWorkspaceRoots = Array.isArray(opts.legacyWorkspaceRoots)
+      ? opts.legacyWorkspaceRoots
+      : (this.workspaceRoot ? [] : null);
     this.acquireRegistryLock = opts.acquireRegistryLock || acquireLock;
     this.releaseRegistryLock = opts.releaseRegistryLock || releaseLock;
     // 注册表落盘位置必须和 workspaceRoot 一样可注入。原先只有 workspaceRoot 能注入，
@@ -104,14 +116,70 @@ class WorkspaceService {
 
   getWorkspaceRoot() {
     if (this.workspaceRoot) return this.path.resolve(this.workspaceRoot);
-    const override = process.env.AI_HUB_WORKSPACE_ROOT;
-    if (override && override.trim()) return this.path.resolve(override.trim());
+    const override = storageRoots.workspaceRoot();
+    if (override) return this.path.resolve(override);
     if (this.isIsolatedHub()) return this.path.join(this.getHubDataDir(), 'workspaces', 'user');
     return this.path.join(this.os.homedir(), 'Workspaces');
   }
 
+  // 仍按平铺工作根对待的旧根：来自 AI_HUB_LEGACY_WORKSPACE_ROOTS，且必须带 .aiwork-root 标记。
+  getLegacyWorkspaceRoots() {
+    const current = this.getWorkspaceRoot();
+    const configured = this.legacyWorkspaceRoots === null
+      ? storageRoots.legacyWorkspaceRoots({ current })
+      : this.legacyWorkspaceRoots;
+    const currentKey = normalizeKey(current);
+    const seen = new Set([currentKey]);
+    const roots = [];
+    for (const item of configured || []) {
+      if (!item || typeof item !== 'string' || !item.trim()) continue;
+      const resolved = this.path.resolve(item.trim());
+      const key = normalizeKey(resolved);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        if (!this.fs.existsSync(this.path.join(resolved, WORK_ROOT_MARKER))) continue;
+      } catch { continue; }
+      roots.push(resolved);
+    }
+    return roots;
+  }
+
+  // cwd 归属哪个工作根：先看当前根，再看旧根。返回 { root, legacy } 或 null（工作区之外）。
+  _rootMatch(cwd) {
+    if (!cwd || typeof cwd !== 'string') return null;
+    const resolved = this.path.resolve(cwd);
+    const current = this.getWorkspaceRoot();
+    const within = root => normalizeKey(resolved) === normalizeKey(root) || isPathInside(root, resolved);
+    if (within(current)) return { root: current, legacy: false };
+    for (const root of this.getLegacyWorkspaceRoots()) {
+      if (within(root)) return { root, legacy: true };
+    }
+    return null;
+  }
+
+  // 给 memory 规则链等调用方用：cwd 所在的工作根（当前根或旧根），工作区之外返回 null。
+  workspaceRootFor(cwd) {
+    const match = this._rootMatch(cwd);
+    return match ? match.root : null;
+  }
+
+  // cwd 本身就是一个平铺工作根（当前根带标记，或任一旧根）——常驻容器，不随会话改名。
+  _isPermanentRootPath(cwd) {
+    const resolved = this.path.resolve(cwd);
+    const key = normalizeKey(resolved);
+    if (key === normalizeKey(this.getWorkspaceRoot())) return this.isFlatWorkRoot();
+    return this.getLegacyWorkspaceRoots().some(root => normalizeKey(root) === key);
+  }
+
   getScratchRoot() {
     return this.path.join(this.getWorkspaceRoot(), '_scratch');
+  }
+
+  // cwd 所属工作根的 _scratch（当前根或旧根）；工作区之外返回 null。
+  _scratchRootFor(cwd) {
+    const match = this._rootMatch(cwd);
+    return match ? this.path.join(match.root, '_scratch') : null;
   }
 
   // 工作根是「可以直接在上面干活的根」还是「只能当组织根的根」？看标记文件。
@@ -270,7 +338,8 @@ class WorkspaceService {
   isScratchWorkspace(cwd) {
     if (!cwd || typeof cwd !== 'string') return false;
     const resolved = this.path.resolve(cwd);
-    return isPathInside(this.getScratchRoot(), resolved);
+    const scratchRoot = this._scratchRootFor(resolved);
+    return !!scratchRoot && isPathInside(scratchRoot, resolved);
   }
 
   // workspace 分层（2026-07-29 第五轮，用户决策 2）。
@@ -289,20 +358,27 @@ class WorkspaceService {
   //   scratch  C:\Vibe\_scratch\*    —— 允许，走归档提示
   //   project  其余                  —— 常规项目
   //   external 工作区之外            —— 允许（Hub 自己的仓库就在外面）
+  // 旧工作根（见文件头 legacy 说明）按同样规则分层：旧根本身 root、其下 _scratch 为 scratch，
+  // 其余为 category / project。
   classifyWorkspace(cwd) {
     if (!cwd || typeof cwd !== 'string') return 'external';
     const resolved = this.path.resolve(cwd);
-    const root = this.getWorkspaceRoot();
+    const match = this._rootMatch(resolved);
+    if (!match) return 'external';
+    const root = match.root;
     if (normalizeKey(resolved) === normalizeKey(root)) return 'root';
-    if (!isPathInside(root, resolved)) return 'external';
-    if (normalizeKey(resolved) === normalizeKey(this.getScratchRoot()) || this.isScratchWorkspace(resolved)) return 'scratch';
+    const scratchRoot = this.path.join(root, '_scratch');
+    if (normalizeKey(resolved) === normalizeKey(scratchRoot) || isPathInside(scratchRoot, resolved)) return 'scratch';
     return normalizeKey(this.path.dirname(resolved)) === normalizeKey(root) ? 'category' : 'project';
   }
 
   // 只有聚合根本身不能当 workspace。返回 null 表示可用，否则是给用户看的理由。
   // 例外：带 .aiwork-root 标记的根是专门的平铺工作根，本来就该在上面干活。
+  // 旧根只有带标记才会被认出来，所以旧根本身总是可用。
   workspaceRejectReason(cwd) {
     if (this.classifyWorkspace(cwd) !== 'root') return null;
+    const match = this._rootMatch(cwd);
+    if (match && match.legacy) return null;
     if (this.isFlatWorkRoot()) return null;
     return `${this.getWorkspaceRoot()} 是组织根，不能直接当工作目录`
       + '——在这里搜索会扫穿所有领域、产物会落在根上。请选具体项目、领域目录或新建临时任务。';
@@ -373,10 +449,12 @@ class WorkspaceService {
 
     const parent = this.path.resolve(String(opts.parent || ''));
     if (!this._isDirectory(parent)) throw new Error(`archive parent does not exist: ${parent}`);
-    if (normalizeKey(parent) === normalizeKey(this.getWorkspaceRoot())) {
+    const parentMatch = this._rootMatch(parent);
+    if (parentMatch && normalizeKey(parent) === normalizeKey(parentMatch.root)) {
       throw new Error('请选择 Vibe 下的分类目录，不要把项目直接放在 Vibe 根目录');
     }
-    if (normalizeKey(parent) === normalizeKey(this.getScratchRoot()) || isPathInside(this.getScratchRoot(), parent)) {
+    const parentScratch = parentMatch ? this.path.join(parentMatch.root, '_scratch') : null;
+    if (parentScratch && (normalizeKey(parent) === normalizeKey(parentScratch) || isPathInside(parentScratch, parent))) {
       throw new Error('归档目标不能仍在 _scratch 内');
     }
 
@@ -428,8 +506,7 @@ class WorkspaceService {
     if (!cwd || typeof cwd !== 'string') throw new Error('workspace path is required');
     const resolved = this.path.resolve(cwd);
     if (!this._isDirectory(resolved)) throw new Error(`workspace directory does not exist: ${resolved}`);
-    const permanentRoot = this.isFlatWorkRoot()
-      && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot());
+    const permanentRoot = this._isPermanentRootPath(resolved);
     return this._mutateRegistry(registry => {
       const key = normalizeKey(resolved);
       let item = registry.workspaces.find(entry => normalizeKey(entry.path) === key);
@@ -526,8 +603,8 @@ class WorkspaceService {
   // Kimi 无 .git 时只读 cwd 自己，Codex 又会被配套 .vibe-root 收口到 cwd，所以深层
   // seed 必须是一份「从工作区根到 cwd 父目录」的完整合并规则，不能只复制根规则。
   // 否则 parent/AGENTS.md 的项目规则会被 Hub 自己新建的边界挡掉。
-  _collectInheritedAgents(cwd, rootSource) {
-    const workspaceRoot = this.path.resolve(this.getWorkspaceRoot());
+  _collectInheritedAgents(cwd, rootSource, rootDir = null) {
+    const workspaceRoot = this.path.resolve(rootDir || this.getWorkspaceRoot());
     const resolved = this.path.resolve(cwd);
     const dirs = [];
     for (let cur = this.path.dirname(resolved);;) {
@@ -657,7 +734,9 @@ class WorkspaceService {
   }
 
   seedScratchAgentsFile(cwd) {
-    const source = this.path.join(this.getWorkspaceRoot(), 'AGENTS.md');
+    // 旧根下的存量 scratch 继续用旧根自己的 AGENTS.md：副本 header 里记的就是那个源路径，
+    // 换源会让 _seedAgentsFile 把它当成「别处生成的文件」而不再刷新。
+    const source = this.path.join(this.workspaceRootFor(cwd) || this.getWorkspaceRoot(), 'AGENTS.md');
     const header = `由 AI Hub 在新建临时 workspace 时自动复制自 ${source}，并随源文件自动刷新。\n`
       + `     Codex / Kimi / Gemini 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
       + `     改了正文即视为本项目自己的规则，Hub 不再覆盖。\n`
@@ -675,13 +754,17 @@ class WorkspaceService {
   seedUngovernedAgentsFile(cwd) {
     const resolved = this.path.resolve(String(cwd || ''));
     // 只补工作区内的目录——工作区外的 cwd 不该被塞进 C:\Vibe 的规则。
-    if (!isPathInside(this.getWorkspaceRoot(), resolved)) return false;
+    // 旧工作根内的目录同样算工作区内，规则源是该旧根自己的 AGENTS.md。
+    const match = this._rootMatch(resolved);
+    if (!match || normalizeKey(resolved) === normalizeKey(match.root)) return false;
+    const governingRoot = match.root;
+    const scratchRoot = this.path.join(governingRoot, '_scratch');
     // Hub 创建的 scratch 会先 seed、再 git init。存量 scratch 因而天然已有 .git；
     // 如果先走下面的 git 守卫，旧副本就永远不会补 hash / .vibe-root，也不会随源刷新。
-    if (normalizeKey(resolved) === normalizeKey(this.getScratchRoot()) || this.isScratchWorkspace(resolved)) {
+    if (normalizeKey(resolved) === normalizeKey(scratchRoot) || isPathInside(scratchRoot, resolved)) {
       return this.seedScratchAgentsFile(resolved);
     }
-    const source = this.path.join(this.getWorkspaceRoot(), 'AGENTS.md');
+    const source = this.path.join(governingRoot, 'AGENTS.md');
     const baseHeader = `由 AI Hub 在启动会话时自动复制自 ${source}，并随源文件自动刷新。\n`
       + `     这个目录不在任何 git 仓库内，Kimi 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
       + `     同目录的 .vibe-root 会把 Codex 收集边界收在这一层，因此 Codex 也只读这一份，不会叠加上级副本。\n`
@@ -689,7 +772,7 @@ class WorkspaceService {
       + `     归档后可保留；若改用项目自己的 AGENTS.md，请连同 .vibe-root 一起按项目需要处理。`;
     const target = this.path.join(resolved, 'AGENTS.md');
     const seed = () => {
-      const inherited = this._collectInheritedAgents(resolved, source);
+      const inherited = this._collectInheritedAgents(resolved, source, governingRoot);
       const sourceNote = inherited.sources.length > 1
         ? `\n     本副本还合并了沿途项目规则：${inherited.sources.slice(1).join('；')}`
         : '';
@@ -746,8 +829,7 @@ class WorkspaceService {
   updateSuggestedName(cwd, title) {
     if (!cwd || !title) return null;
     const resolved = this.path.resolve(cwd);
-    const permanentRoot = this.isFlatWorkRoot()
-      && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot());
+    const permanentRoot = this._isPermanentRootPath(resolved);
     return this._mutateRegistry(registry => {
       const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(resolved));
       if (!item) return { value: null, changed: false };
@@ -771,8 +853,7 @@ class WorkspaceService {
     const clean = String(label || '').trim().slice(0, 60);
     if (!clean) throw new Error('workspace label is required');
     const resolved = this.path.resolve(String(cwd || ''));
-    if ((this.isFlatWorkRoot() && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot()))
-        || (this.getWorkspace(resolved) || {}).permanentRoot) {
+    if (this._isPermanentRootPath(resolved) || (this.getWorkspace(resolved) || {}).permanentRoot) {
       throw new Error('平铺工作根名称固定为目录名，不能按单个任务重命名');
     }
     return this.touchWorkspace(cwd, { label: clean, select: true });
@@ -780,14 +861,14 @@ class WorkspaceService {
 
   listWorkspaces(extraPaths = []) {
     this.ensureRoot();
+    const legacyRoots = this.getLegacyWorkspaceRoots();
     const updateRegistry = registry => {
       let changed = false;
       for (const cwd of extraPaths) {
         if (!cwd || typeof cwd !== 'string' || !this._isDirectory(cwd)) continue;
         const resolved = this.path.resolve(cwd);
         if (!registry.workspaces.some(entry => normalizeKey(entry.path) === normalizeKey(resolved))) {
-          const permanentRoot = this.isFlatWorkRoot()
-            && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot());
+          const permanentRoot = this._isPermanentRootPath(resolved);
           registry.workspaces.push({
             id: this.randomId(),
             path: resolved,
@@ -802,8 +883,11 @@ class WorkspaceService {
           changed = true;
         }
       }
-      if (this.isFlatWorkRoot()) {
-        const rootKey = normalizeKey(this.getWorkspaceRoot());
+      const permanentRootKeys = [
+        ...(this.isFlatWorkRoot() ? [normalizeKey(this.getWorkspaceRoot())] : []),
+        ...legacyRoots.map(root => normalizeKey(root)),
+      ];
+      for (const rootKey of permanentRootKeys) {
         const rootItem = registry.workspaces.find(entry => entry && normalizeKey(entry.path) === rootKey);
         if (rootItem) {
           const stableLabel = this._defaultLabel(rootItem.path);
@@ -834,6 +918,8 @@ class WorkspaceService {
       scratchRoot: this.getScratchRoot(),
       // UI 靠这个决定「默认」那一档显示成工作根还是临时目录。
       flatRoot: this.isFlatWorkRoot(),
+      // 仍被认作平铺工作根的旧根（存量会话所在），只读信息。
+      legacyRoots,
       selectedPath: registry.selectedPath,
       recommended: this.listRecommendedWorkspaces(),
       items,

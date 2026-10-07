@@ -1575,16 +1575,8 @@ try {
     // invoked after startup, when the provider-native resume handler exists.
     resumeSession: (meta) => resumeSession(meta),
     loadSessionMeta: (sid) => stateStore.isMarkedRemovedSession(sid) ? null : sessionStore.loadSessionFile(sid),
-    writeReport: (html) => {
-      try {
-        const fsx = require('fs'), pathx = require('path'), osx = require('os');
-        const dir = pathx.join(osx.homedir(), 'Desktop', 'claude-artifacts');
-        fsx.mkdirSync(dir, { recursive: true });
-        const f = pathx.join(dir, 'loop-report-' + Date.now() + '.html');
-        fsx.writeFileSync(f, html, 'utf8');
-        return f;
-      } catch (e) { return null; }
-    },
+    // 循环报告写到产物根（AI_HUB_ARTIFACTS_ROOT，默认 ~/AI-Artifacts），不再落桌面。
+    writeReport: (html) => require('./core/loop-report-file.js').writeLoopReport(html),
     logger: console,
   });
   require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine, deliveryEngine:()=>global.__deliveryEngine });
