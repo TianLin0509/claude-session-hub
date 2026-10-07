@@ -388,20 +388,24 @@ class HubChrome {
   // A headless Chrome exists only for a login check. One left behind with no check running
   // (seen 2026-10-07: alive a whole day, refusing every click with "正在后台检查登录") is
   // closed when it holds nothing but Hub markers.
-  async closeOrphanHeadless(ep) {
+  // Holds the check lease while closing, so a check starting this very moment is never hit.
+  async closeOrphanHeadless(ep, { strict = true } = {}) {
     if (!ep?.headless || this.inspectionOwner) return false;
-    const busy = await this.workTabs();
-    if (busy) throw Error(`后台无头浏览器里还有 ${busy} 个任务页面，等它们结束后再打开`);
-    await this.close();
-    return true;
+    const release = require('./web-roundtable/store').acquire('account-check', path.join(this.root, 'locks'));
+    if (!release) { if (strict) throw Error('后台登录确认刚刚开始，请稍后再试'); return false; }
+    try {
+      const now = await this.endpoint();
+      if (!now?.headless || now.ws !== ep.ws) return !now;
+      const busy = await this.workTabs();
+      if (busy) { if (strict) throw Error(`后台无头浏览器里还有 ${busy} 个任务页面，等它们结束后再打开`); return false; }
+      await this.close();
+      return true;
+    } finally { release(); }
   }
   async ensure({ headless = false, identityId = this.identities[0].id } = {}) {
     await this.waitForCheck();
     let existing = await this.endpoint();
-    if (existing?.headless && !headless && !this.inspectionOwner && !(await this.workTabs())) {
-      await this.close();
-      existing = null;
-    }
+    if (!headless && await this.closeOrphanHeadless(existing, { strict: false })) existing = null;
     if (existing) {
       routing.assertCurrent(this.root,routing.policy(this.proxyServer()),this.profileHeld());
       if (headless && !existing.headless) throw Error('专属 Chrome 正在使用中，请关闭网页窗口后检查');

@@ -111,7 +111,7 @@ class HubAccounts {
     const guard = require('./web-risk-guard'), now = this.now(), risk = guard.read(this.chrome.root);
     if (risk.handoff) guard.settleHandoff(this.chrome).catch(() => {});
     return { handoff: guard.handoff(this.chrome.root, now),
-      sites: Object.fromEntries(Object.entries(risk.sites).filter(([, e]) => e.until > now).map(([k, e]) => [k, { until: e.until, strikes: e.strikes, kind: e.kind }])) };
+      sites: Object.fromEntries(Object.entries(risk.sites).filter(([, e]) => e.until > now).map(([k, e]) => [k, { at: e.at, until: e.until, strikes: e.strikes, kind: e.kind, source: e.source || '' }])) };
   }
   publicState(value = this.lastState) {
     const risk = this.riskState(), activity = require('./hub-account-activity').readActivity(this.chrome.root, this.env);
@@ -294,6 +294,10 @@ class HubAccounts {
       const site = state.identities.find(i => i.id === r.identity)?.sites.find(s => s.key === r.site);
       if (!site) { this.rechecks.delete(key); continue; }
       if (site.checkedAt > r.from && site.health?.state === 'ok') { this.rechecks.delete(key); continue; }
+      // Still signed out: the person may still be signing in, keep looking. A site whose
+      // background check stays inconclusive (blocked by its own check) is left after 3 tries.
+      if (site.checkedAt > (r.seenAt || r.from)) { r.seenAt = site.checkedAt; if (!site.verified) r.misses = (r.misses || 0) + 1; }
+      if ((r.misses || 0) >= 3) { this.rechecks.delete(key); continue; }
       const last = Math.max(site.checkedAt > r.from ? site.checkedAt : 0, r.lastTry || 0);
       if (now - r.from >= auto.recheckAfterMs && now - last >= auto.recheckEveryMs) due.push(r);
     }

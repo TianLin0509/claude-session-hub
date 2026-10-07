@@ -123,3 +123,19 @@ test('a tool asking for the browser closes an orphaned headless Chrome and start
   assert.equal((await chrome.ensure()).ws, 'new');
   assert.deepEqual(calls, ['close', 'launch:normal']);
 });
+test('rechecks stop after three inconclusive looks; pauses caused by the check itself raise no badge', async t => {
+  const { acc, chrome, clock } = setup(t, async ({ items, onResult }) => {
+    for (const item of items) await onResult(item, { state: 'needs_attention', reason: 'headless_challenge', live: true, verified: false });
+  });
+  acc.auto = { tickMs: 60000, firstMs: 0, dueMs: 1000 * H, retryMs: 30 * 60000, recheckAfterMs: 90000, recheckEveryMs: 5 * 60000, recheckForMs: H, badgeEveryMs: 0 };
+  acc.onAttention = () => {};
+  acc.writeCache(fresh(NOW, ['chatgpt', 'google', 'claude', 'doubao', 'deepseek', 'kimi', 'qwen'].map(k => [k, 'unknown'])));
+  chrome.openWebsite = async () => ({ mode: 'shared' });
+  await acc.open({ site: 'claude' });
+  let checks = 0; const inspect = acc.inspect; acc.inspect = async o => { checks++; return inspect(o); };
+  for (let m = 2; m <= 60; m++) { clock.set(NOW + m * 60000); await acc.autoTick(); }
+  assert.equal(checks, 3, 'three looks, then the site is left alone');
+  assert.equal(acc.rechecks.size, 0);
+  assert.equal(accountHealth({ paused: { at: NOW, until: NOW + H, source: 'account-check' }, now: NOW }).state, 'unknown');
+  assert.equal(accountHealth({ paused: { at: NOW, until: NOW + H, source: 'images-primary' }, now: NOW }).state, 'attention');
+});

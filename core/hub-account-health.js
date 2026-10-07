@@ -24,7 +24,8 @@ function accountHealth({ site = {}, activity, paused, now = Date.now() } = {}) {
     if (step.outcome === 'login_required') problems.push({ at: step.at, by: source, kind: 'signed_out' });
     else if (step.outcome === 'verification_required') problems.push({ at: step.at, by: source, kind: 'verification' });
   }
-  if (paused && paused.until > now) problems.push({ at: paused.at || paused.since || now, by: 'paused', kind: 'verification', until: paused.until });
+  // A pause caused by the background check itself says nothing the person must act on.
+  if (paused && paused.until > now && paused.source !== 'account-check') problems.push({ at: paused.at || paused.since || now, by: 'paused', kind: 'verification', until: paused.until });
   const latest = list => list.reduce((a, b) => (b.at > (a?.at || 0) ? b : a), null);
   const proof = latest(proofs), problem = latest(problems);
   const openedAt = activity?.openedAt || 0;
