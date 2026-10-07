@@ -140,6 +140,9 @@ async function run() {
     await shot('05-final');
 
     // Display scope is independent of routing and incoming snapshots.
+    // 暂停改为在输入框回话后，没有「恢复」那次立即投递；先等排队的 Hub 通知送完，免得真实快照中途覆盖夹具。
+    const ledgerJson = () => JSON.parse(fs.readFileSync(path.join(DATA, 'task-docs', meeting.id, 'orchestration', 'ledger.json'), 'utf8'));
+    await wait(() => !ledgerJson().notices.length, 'orchestrator notices delivered', 30000);
     await wait(async () => (await invoke('groupchat:get-state', { meetingId: meeting.id }))?.currentMode === 'idle', 'dispatch idle');
     const fixture = { ...await invoke('groupchat:get-state', { meetingId: meeting.id }), currentMode: 'idle', currentTurn: 1, messages: [
       { id: 'scope-user', role: 'user', content: '我的筛选测试问题', turnNum: 1 },
