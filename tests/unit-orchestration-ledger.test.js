@@ -134,3 +134,28 @@ test('orchestrator rules describe the role and the enforced limits; goal text fo
   assert.match(goal, /验收标准/); assert.match(goal, /审查位独立验证候选通过后/); assert.match(goal, /验证不通过不得合并/);
   assert.match(Ledger.renderMarkdown(Ledger.create('m', {})), /计划账本/);
 });
+
+test('review: a plan with enough budget lifts a budget halt; old halted pending plans activate on load', () => {
+  const l = running({ roundCap: 2 });
+  l.budget.roundsUsed = 2;
+  Ledger.halt(l, 'budget_rounds');
+  Ledger.proposePlan(l, plan({ budget: { roundCap: 2, timeCapMin: 180 } }));
+  assert.equal(l.status, 'halted', 'still over budget');
+  Ledger.proposePlan(l, plan({ budget: { roundCap: 20, timeCapMin: 180 } }));
+  assert.equal(l.status, 'running'); assert.equal(l.budget.roundCap, 20, 'exactly the cap the user named, no extra grant needed');
+  const old = running({});
+  old.plan = { version: 2, confirmedVersion: 1, confirmedAt: 1, summary: '暂停中改的计划', team: [{ memberId: 'm4', role: '收口' }], segments: [], budget: { roundCap: 6, timeCapMin: 60 } };
+  Ledger.halt(old, 'need_decision');
+  assert.equal(Ledger.migrate(old), true);
+  assert.equal(old.status, 'halted'); assert.equal(old.roles.m4.role, '收口'); assert.equal(old.budget.roundCap, 6);
+  assert.equal('confirmedVersion' in old.plan, false);
+});
+
+test('review: a grant with amounts lifts only budget halts; a plain resume lifts any halt', () => {
+  const l = running({ roundCap: 2 });
+  Ledger.halt(l, 'user_pause');
+  assert.equal(Ledger.grant(l, { rounds: 3 }), false);
+  assert.equal(l.status, 'halted'); assert.equal(l.budget.roundCap, 5);
+  assert.equal(Ledger.resume(l), true);
+  assert.equal(l.status, 'running');
+});

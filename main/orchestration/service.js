@@ -250,9 +250,11 @@ function createOrchestrationService(deps) {
   function noteRuntimeFailure(meetingId, ledger, run) {
     if (run?.status !== 'paused' || ledger.status !== 'running' || /已完成 \d+ 轮审查仍需返工|用户已暂停|额度/.test(run.error || '')) return;
     const seg = ledger.segments.find(s => s.runId === run.id);
+    if (!seg) return;
     const stepId = run.steps?.at(-1)?.id || '';
-    if (!seg || seg.failureMark === `${stepId}:${seg.pauses || 0}`) return;
-    seg.failureMark = `${stepId}:${seg.pauses || 0}`;
+    const mark = `${stepId}:${seg.pauses || 0}:${seg.resumes || 0}`;   // 续跑后立刻再失败也算一次
+    if (seg.failureMark === mark) return;
+    seg.failureMark = mark;
     if (seg.failureStep !== stepId) { seg.failureStep = stepId; seg.failures = 0; }
     seg.failures = (seg.failures || 0) + 1;
     if (seg.failures < Ledger.FAILURE_LIMIT) return;
@@ -445,7 +447,16 @@ function createOrchestrationService(deps) {
       const l = ledgerFor(meetingId);
       const s = l?.segments.find(x => x.id === seg.id);
       if (s && s.status === 'starting') { s.status = 'failed'; s.error = String(error.message || error).slice(0, 600); s.endedAt = now(); }
-      if (l) { haltRun(meetingId,l,'runtime_error',String(error.message||error)); Ledger.enqueue(l, `start-failed:${seg.id}`, `工作段「${seg.name}」启动失败：${error.message}。仅提供处理建议，等待田哥恢复。`, now()); persist(meetingId, l); }
+      if (l) {
+        // 启动失败交给编排员处理；同一计划段反复启动失败才暂停等田哥。
+        const failures = l.startFailures = { ...(l.startFailures || {}) };
+        failures[planned.id] = (failures[planned.id] || 0) + 1;
+        if (failures[planned.id] >= Ledger.FAILURE_LIMIT) {
+          haltRun(meetingId, l, 'repeated_failure', `「${seg.name}」已启动失败 ${failures[planned.id]} 次：${error.message}`);
+          Ledger.enqueue(l, `start-failed:${seg.id}`, `工作段「${seg.name}」已启动失败 ${failures[planned.id]} 次（最近一次：${error.message}），Hub 已暂停。请向田哥说明试过的办法和建议，他回话后暂停自动解除。`, now());
+        } else Ledger.enqueue(l, `start-failed:${seg.id}`, `工作段「${seg.name}」启动失败：${error.message}。由你处理：成员会话有问题先 orch_restart_member，再重新 orch_start_workflow；也可以改计划换人。`, now());
+        persist(meetingId, l);
+      }
     });
     // 首次派工可能要唤醒成员，较慢；最多等几秒拿到运行编号，不阻塞工具调用。
     await Promise.race([started.catch(() => {}), new Promise(resolve => { const t = setTimeout(resolve, 8000); t.unref?.(); })]);
@@ -462,6 +473,8 @@ function createOrchestrationService(deps) {
     if (args.action === 'cancel') { await e.cancel(meetingId); reconcile(meetingId); return { ok: true }; }
     requireDispatch(ledger);
     if (Ledger.overBudget(ledger)) { checkBudget(meetingId, ledger, run); persist(meetingId, ledger); throw new Error('额度已用满，已暂停；请用 orch_report(need_decision) 汇报'); }
+    const seg = ledger.segments.find(s => s.runId === run.id);
+    if (seg && (args.action === 'continue' || args.action === 'remind')) { seg.resumes = (seg.resumes || 0) + 1; persist(meetingId, ledger); }
     if (args.action === 'continue') { const s = await e.resume(meetingId); reconcile(meetingId); return { ok: true, status: s?.status || null }; }
     if (args.action === 'remind') { const s = await e.continueWork(meetingId, String(args.note || '').trim() || undefined); return { ok: true, status: s?.status || null }; }
     if (args.action === 'skip') {
@@ -542,6 +555,7 @@ function createOrchestrationService(deps) {
     if (!member) throw new Error(`没有成员 ${memberId}`);
     if (member.orchestrator) throw new Error('不能重启自己');
     const session = sessionManager.getSession(member.sid);
+    const wasBusy = !!(session && sessionManager.isAgentTurnActive(member.sid));
     let action;
     if (!session || session.status === 'dormant') {
       await ensureMemberReady(meeting(meetingId), memberId);
@@ -555,7 +569,7 @@ function createOrchestrationService(deps) {
     Ledger.event(ledger, `编排员${action === 'restarted' ? '重启' : '唤醒'}了 ${memberId} 的会话`, now());
     ledger.progressSeq += 1;
     persist(meetingId, ledger);
-    return { ok: true, action, note: '会话已就绪（接着原会话历史）。工作流若仍暂停，用 orch_control_workflow(continue) 续跑或 remind 提醒补交。' };
+    return { ok: true, action, note: (wasBusy ? '重启时该成员正在回合中，这一轮被中断。' : '') + '会话已就绪（接着原会话历史）。工作流若仍暂停，用 orch_control_workflow(continue) 续跑或 remind 提醒补交。' };
   }
   // 按田哥原话追加额度：原话必须出自他在本群亲手发的消息，同一句话只能用一次。
   function grantBudget(meetingId, ledger, args) {
@@ -563,9 +577,12 @@ function createOrchestrationService(deps) {
     const rounds = Number(args.rounds) || 0, minutes = Number(args.minutes) || 0;
     if (!rounds && !minutes) throw new Error('rounds 或 minutes 至少写一项');
     BudgetIntent.validate({ ...(rounds ? { roundCap: rounds } : {}), ...(minutes ? { timeCapMin: minutes } : {}) });
-    if (!quote || !(ledger.userMessages || []).some(m => m.includes(quote))) throw new Error('sourceQuote 要引用田哥在本群同意追加额度的原话');
-    if ((ledger.grantQuotes || []).includes(quote)) throw new Error('这句原话已经用来追加过额度；需要再追加请先征得田哥同意');
-    ledger.grantQuotes = [...(ledger.grantQuotes || []), quote].slice(-20);
+    if (quote.length < 2) throw new Error('sourceQuote 要引用田哥在本群同意追加额度的原话');
+    const since = ledger.status === 'halted' && /^budget_/.test(ledger.halt?.reason || '') ? ledger.halt.at : 0;
+    const used = ledger.grantMessages || [];
+    const source = [...(ledger.userLog || [])].reverse().find(m => m.at >= since && m.text.includes(quote) && !used.includes(m.at));
+    if (!source) throw new Error(since ? 'sourceQuote 要引用田哥在额度用满之后同意追加的原话；每条消息只能用一次' : 'sourceQuote 要引用田哥在本群同意追加额度的原话；每条消息只能用一次');
+    ledger.grantMessages = [...used, source.at].slice(-20);
     Ledger.grant(ledger, { rounds, minutes }, now());
     persist(meetingId, ledger);
     return { ok: true, status: ledger.status, budget: Ledger.view(ledger).budget, note: '额度已追加。工作流若仍暂停，用 orch_control_workflow(continue) 续跑。' };
@@ -658,6 +675,7 @@ function createOrchestrationService(deps) {
         ledger.budgetIntent=null;ledger.budgetError=null;
       }
       ledger.userMessages=[...(ledger.userMessages||[]),String(text)].slice(-8);
+      ledger.userLog=[...(ledger.userLog||[]),{at:now(),text:String(text)}].slice(-8);
       try{
         if(/按默认额度|使用默认额度|恢复默认额度/.test(String(text))){ledger.budgetIntent={roundCap:ledger.settings.roundCap,timeCapMin:ledger.settings.timeCapMin};ledger.budgetError=null;}
         else{const intent=BudgetIntent.extract(text);if(intent){ledger.budgetIntent={...ledger.budgetIntent,...intent};ledger.budgetError=null;}}
@@ -667,6 +685,8 @@ function createOrchestrationService(deps) {
     // 结项后田哥提出新要求：重新开放编排（新计划仍需确认）。
     if (ledger.status === 'finished' && !direct.length) { ledger.status = 'running'; Ledger.event(ledger, '田哥在结项后提出新要求，重新开放编排', now()); }
     if (ledger.status === 'halted' && !/^budget_/.test(ledger.halt?.reason||'') && !direct.length) {
+      // 反复故障暂停解除后，故障计数重新开始。
+      if (ledger.halt?.reason === 'repeated_failure') { for (const s of ledger.segments) s.failures = 0; ledger.startFailures = {}; }
       Ledger.resume(ledger, now());
       Ledger.event(ledger, '田哥回话，暂停解除，由编排员据此决定下一步', now());
     }

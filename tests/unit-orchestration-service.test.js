@@ -78,7 +78,7 @@ function fixture(t, { settings = {}, dataDir } = {}) {
     service.ledgerFor('mt1').roles[memberId]={role:args.role,kind:args.kind};
     return {memberId,session:made.session};
   };
-  return { dir, service, call, addExisting, meetingObj, dispatches, engineCalls, busy, writeRun, sent, sessions, restarts,
+  return { dir, service, call, addExisting, meetingObj, dispatches, engineCalls, engine, busy, writeRun, sent, sessions, restarts,
     advance: ms => { clock += ms; }, setDispatchResult: r => { dispatchResult = r; }, setRestartResult: fn => { restartResult = fn; } };
 }
 const planArgs = { summary: '调研并实现', team: [{ memberId:'m2', role: '开发位' }, { memberId:'m3', role: '审核位' }],
@@ -165,7 +165,8 @@ test('review verdicts reach the orchestrator, budget exhaustion pauses the workf
   const granted = await x.call('orch_grant_budget', { rounds: 2, sourceQuote: '再给两轮' });
   assert.equal(granted.status, 'running');
   assert.equal(granted.budget.roundCap, 4);
-  await assert.rejects(x.call('orch_grant_budget', { rounds: 2, sourceQuote: '再给两轮' }), /已经用来追加过/);
+  await assert.rejects(x.call('orch_grant_budget', { rounds: 2, sourceQuote: '再给两轮' }), /每条消息只能用一次/);
+  await assert.rejects(x.call('orch_grant_budget', { rounds: 2, sourceQuote: '两轮' }), /每条消息只能用一次/, 'another slice of the same message is not a new approval');
   await x.call('orch_control_workflow', { action: 'continue' });
   assert.ok(x.engineCalls.some(c => c[0] === 'resume'));
 });
@@ -488,4 +489,62 @@ test('plan tool reports the Hub round check, and a filework segment runs edit th
   assert.equal(y.meetingObj.serialWorkflow.deliveryKind, 'serial');
   const goal = y.engineCalls.find(c => c[0] === 'start')[1];
   assert.match(goal, /不合并、不推送/); assert.doesNotMatch(goal, /合并到主干/);
+});
+
+test('review: granting budget only lifts budget halts and needs words said after the budget ran out', async t => {
+  const x = fixture(t);
+  const L = require('../core/orchestration/ledger');
+  const ledger = x.service.ledgerFor('mt1');
+  x.service.userMessage('mt1', { text: '额度不够就再加 5 轮' });
+  ledger.status = 'running';
+  L.halt(ledger, 'user_pause');
+  const granted = await x.call('orch_grant_budget', { rounds: 5, sourceQuote: '再加 5 轮' });
+  assert.equal(granted.status, 'halted', 'a grant never lifts the user\'s own pause');
+  assert.equal(ledger.budget.roundCap, 8);
+  ledger.status = 'running'; ledger.halt = null;
+  x.service.userMessage('mt1', { text: '以后也可以再加 5 轮' });
+  x.advance(1000);
+  ledger.budget.roundsUsed = ledger.budget.roundCap;
+  L.halt(ledger, 'budget_rounds', '', x.service.ledgerFor('mt1').budget.lastTickAt + 1_000_000);
+  ledger.halt.at = 2_000_000;
+  await assert.rejects(x.call('orch_grant_budget', { rounds: 5, sourceQuote: '再加 5 轮' }), /额度用满之后/);
+  x.advance(1_000_000);
+  x.service.userMessage('mt1', { text: '好，再加 5 轮' });
+  assert.equal((await x.call('orch_grant_budget', { rounds: 5, sourceQuote: '再加 5 轮' })).status, 'running');
+  await assert.rejects(x.call('orch_grant_budget', { rounds: 1, sourceQuote: '轮' }), /原话/);
+});
+
+test('review: a start failure is handed to the orchestrator; repeated start failures halt', async t => {
+  const x = fixture(t);
+  await x.addExisting({ role: '调研', kind: 'claude' }); await x.addExisting({ role: '收口', kind: 'claude' });
+  const args = { name: '调研', preset: 'research', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] };
+  await x.call('orch_propose_plan', { summary: '调研', segments: [args] });
+  const L = require('../core/orchestration/ledger');
+  let starts = 0;
+  x.engine.start = async () => { starts += 1; throw new Error('成员会话没有起来'); };
+  for (let i = 1; i <= L.FAILURE_LIMIT; i += 1) {
+    await assert.rejects(x.call('orch_start_workflow', args), /启动失败/);
+    const ledger = x.service.ledgerFor('mt1');
+    if (i < L.FAILURE_LIMIT) {
+      assert.equal(ledger.status, 'running', 'a start failure does not lock the room');
+      assert.ok(ledger.notices.some(n => /orch_restart_member/.test(n.text)));
+    } else assert.equal(ledger.halt?.reason, 'repeated_failure');
+  }
+  assert.equal(starts, L.FAILURE_LIMIT);
+});
+
+test('review: continuing into an immediate failure still counts toward the repeated-failure limit', async t => {
+  const x = fixture(t);
+  await x.addExisting({ role: '实现', kind: 'codex' }); await x.addExisting({ role: '审核', kind: 'claude' });
+  const args = { name: 'PF', preset: 'development', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] };
+  await x.call('orch_propose_plan', { summary: 'PF', segments: [args] }); await x.call('orch_start_workflow', args);
+  const stages = x.meetingObj.serialWorkflow.deliveryStages;
+  x.writeRun({ id: 'run-1', kind: 'file', status: 'paused', error: 'provider_error', stages, steps: [{ id: 's', index: 1, members: ['m2'], deliveries: {} }] });
+  x.service.reconcile('mt1');
+  for (let i = 0; i < 3; i += 1) await x.call('orch_control_workflow', { action: 'continue' });   // 每次续跑都立刻再失败
+  const ledger = x.service.ledgerFor('mt1');
+  assert.equal(ledger.halt?.reason, 'repeated_failure');
+  x.service.userMessage('mt1', { text: '换个人做吧' });
+  assert.equal(ledger.status, 'running');
+  assert.equal(ledger.segments[0].failures, 0, 'the count restarts after the user replies');
 });

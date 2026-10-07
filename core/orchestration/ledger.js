@@ -93,9 +93,15 @@ function activatePlan(ledger, now = Date.now()) {
   if (plan.budget) { ledger.budget.roundCap = plan.budget.roundCap; ledger.budget.timeCapMs = plan.budget.timeCapMin * 60000; }
   for (const member of plan.team || []) if (member.memberId) ledger.roles[member.memberId] = { role: member.role, kind: member.kind };
   if (['planning', 'awaiting_confirm'].includes(ledger.status)) ledger.status = 'running';
+  // 额度暂停中按田哥新说的额度改了计划、额度已够：随计划恢复，不必再追加。
+  if (ledger.status === 'halted' && /^budget_/.test(ledger.halt?.reason || '') && withinBudget(ledger)) {
+    ledger.status = 'running'; ledger.halt = null;
+    event(ledger, '新计划的额度已够，额度暂停解除', now);
+  }
   ledger.budget.lastTickAt = now;
   bump(ledger);
 }
+function withinBudget(ledger) { return ledger.budget.roundsUsed < ledger.budget.roundCap && ledger.budget.activeMs < ledger.budget.timeCapMs; }
 // 旧账本（计划须经田哥确认的年代）：待确认的计划直接生效。
 function migrate(ledger, now = Date.now()) {
   if (!ledger) return false;
@@ -104,6 +110,13 @@ function migrate(ledger, now = Date.now()) {
   if (ledger.status === 'awaiting_confirm') {
     if (ledger.plan) activatePlan(ledger, now); else ledger.status = 'planning';
     event(ledger, '计划改为提交即生效', now);
+    changed = true;
+  }
+  // 暂停中提交、尚未确认的旧版计划：角色与额度随迁移生效（暂停状态保持）。
+  if (ledger.plan && 'confirmedVersion' in ledger.plan) {
+    const pending = ledger.plan.confirmedVersion !== ledger.plan.version;
+    delete ledger.plan.confirmedVersion; delete ledger.plan.confirmedAt;
+    if (pending) activatePlan(ledger, now);
     changed = true;
   }
   return changed;
@@ -273,7 +286,8 @@ function grant(ledger, { rounds = 0, minutes = 0 } = {}, now = Date.now()) {
   // 追加后的额度就是田哥最新的意思：之后改计划沿用它，不被早先说的上限拉回去。
   if (ledger.budgetIntent && (r || m)) ledger.budgetIntent = { ...ledger.budgetIntent, ...(r ? { roundCap: ledger.budget.roundCap } : {}), ...(m ? { timeCapMin: ledger.budget.timeCapMs / 60000 } : {}) };
   ledger.budget.grants += 1;
-  const wasHalted = ledger.status === 'halted';
+  // 追加额度只解除额度暂停；田哥暂停、等他回话等其他暂停不受影响。不带数额 = 恢复编排，解除任何暂停。
+  const wasHalted = ledger.status === 'halted' && (!(r || m) || /^budget_/.test(ledger.halt?.reason || ''));
   if (wasHalted) { ledger.status = 'running'; ledger.halt = null; }
   ledger.wakesWithoutProgress = 0;
   ledger.budget.lastTickAt = now;
