@@ -9,7 +9,8 @@ const path = require('node:path');
 const { applyPromptSubmitted, applyReplyCompleted, sessionHasCompletedUnread } = require('../core/session-attention-state');
 const { isTaskNotificationText } = require('../core/claude-transcript-parser');
 
-const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+// 主目录按 core.autocrlf 检出为 CRLF，worktree 里可能是 LF：先统一换行再比对源码。
+const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8').replace(/\r\n/g, '\n');
 
 test('task-notification text is recognised, user text is not', () => {
   assert.equal(isTaskNotificationText('<task-notification>\n<task-id>b1</task-id>\n</task-notification>'), true);
