@@ -469,7 +469,6 @@ function _ensureModal() {
           <label class="mcm-orch-switch"><input type="checkbox" id="mcm-orch-toggle" role="switch"><span class="mcm-orch-track" aria-hidden="true"></span><strong>编排员</strong></label>
           <span class="mcm-orch-hint" id="mcm-orch-hint">打开后成员 1 当编排员：你只和它对话，它使用你选好的成员，自主分工、设计工作流并汇报进展；通过与否由审核位决定。</span>
           <div class="mcm-orch-options" id="mcm-orch-options" hidden>
-            <label><input type="checkbox" id="mcm-orch-confirm" checked> 计划先给我确认</label>
             <label>迭代上限 <input type="number" id="mcm-orch-rounds" min="2" max="30" value="8"> 轮</label>
             <label>时长上限 <input type="number" id="mcm-orch-hours" min="0.5" max="24" step="0.5" value="3"> 小时</label>
             <span class="mcm-orch-note">关掉开关 = 和现在完全一样</span>
@@ -510,7 +509,7 @@ function _setOrchestration(on) {
   }
   const hint = _modalEl.querySelector('#mcm-orch-hint');
   if (hint) hint.textContent = _orchestrationOn
-    ? '已开启：成员 1 当编排员。你只和它对话，它使用你选好的成员，自主分工、设计工作流并汇报进展；通过与否由审核位决定。运行故障先给你处理建议。'
+    ? '已开启：成员 1 当编排员。你只和它用自然语言对话，它使用你选好的成员自主分工、推进到结项，处理成员故障；需要你取舍时它会在对话里问。通过与否由审核位决定。'
     : '打开后成员 1 当编排员：你只和它对话，它使用你选好的成员，自主分工、设计工作流并汇报进展；通过与否由审核位决定。';
   _renderSlots();
 }
@@ -519,10 +518,7 @@ function _orchestrationPayload() {
   if (!_orchestrationOn || !_modalEl) return null;
   const rounds = Number(_modalEl.querySelector('#mcm-orch-rounds')?.value) || 8;
   const hours = Number(_modalEl.querySelector('#mcm-orch-hours')?.value) || 3;
-  return { enabled: true, settings: {
-    requireConfirm: !!_modalEl.querySelector('#mcm-orch-confirm')?.checked,
-    roundCap: Math.round(rounds), timeCapMin: Math.round(hours * 60),
-  } };
+  return { enabled: true, settings: { roundCap: Math.round(rounds), timeCapMin: Math.round(hours * 60) } };
 }
 
 function _bindEvents() {

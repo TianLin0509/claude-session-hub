@@ -2037,6 +2037,8 @@ try {
     getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
     addMeetingSubInternal,
     ensureMemberReady: (meeting, memberId) => global.__loopEngine?.ensureMemberReady(meeting, memberId),
+    // 编排员处理成员故障：重启该成员的 CLI 会话（接着原会话历史）。
+    restartSession: id => sessionOperations.restartSession(id),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
   });
   require('./main/ipc/orchestration-handlers').registerOrchestrationIpc(ipcMain, () => global.__orchestrationService);
