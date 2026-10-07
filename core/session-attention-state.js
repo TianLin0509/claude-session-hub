@@ -162,7 +162,9 @@ function applyPromptSubmitted(session, event = {}) {
     session.runStartedAt = at;
   }
   // Submitting the next prompt acknowledges the previous completed reply.
-  clearSessionAttention(session, { clearUnread: true });
+  // An engine-injected continuation (background task / Monitor event) is not
+  // the user: the unread reply stays unread until they actually look.
+  if (event.acknowledgesReply !== false) clearSessionAttention(session, { clearUnread: true });
   if (session.status !== 'dormant') session.status = 'running';
   return { applied: true, at, turnId, version: clock.version };
 }
