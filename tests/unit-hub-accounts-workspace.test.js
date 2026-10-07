@@ -200,12 +200,11 @@ test('paused sites and a person handoff reach the account page and turn the row 
   const { aiHtml } = require('../renderer/account-workspace-view');
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const paused = await acc.passiveState();
-  assert.equal(paused.attention, 1, 'the paused login counts once in the sidebar badge');
+  assert.equal(paused.attention, 0, 'a site check the tools met is no lost login: no badge');
   const html = aiHtml(paused, '', esc);
   assert.match(html, /网页工具已暂停并断开/);
-  assert.match(html, /需要人机验证/);
-  assert.match(html, /网页自动化已暂停到/);
-  assert.match(html, /data-ac="open" data-site="chatgpt" data-identity="alt"[^>]*>去验证/);
+  assert.match(html, /自动化暂停到 \d\d:\d\d；你自己使用不受影响/);
+  assert.match(html, /data-ac="open" data-site="chatgpt" data-identity="alt"[^>]*>打开/);
   assert.doesNotMatch(html, /data-identity="main"[^>]*>去验证/);
   guard.endHandoff(root, lease.id); guard.clearSite(root, 'alt', 'chatgpt');
   const cleared = await acc.passiveState();

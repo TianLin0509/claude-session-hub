@@ -3,7 +3,7 @@ const fs = require('fs'), path = require('path');
 const { HubChrome, SITES } = require('./hub-chrome');
 const { cliAuthStatus } = require('./cli-auth');
 const { readPreferences, updatePreferences } = require('./hub-account-preferences');
-const { inspectAccounts } = require('./hub-login-check');
+const { inspectAccounts, inspectCookies, cookieSite } = require('./hub-login-check');
 const ROUNDTABLE_PROVIDER = { chatgpt: 'chatgpt', google: 'gemini', deepseek: 'deepseek', doubao: 'doubao', kimi: 'kimi', qwen: 'qwen' };
 // Background confirmation: about twice a day, when nobody needs the browser. An account the
 // person opened while it needed attention is looked at again soon, so the badge clears by
@@ -11,9 +11,9 @@ const ROUNDTABLE_PROVIDER = { chatgpt: 'chatgpt', google: 'gemini', deepseek: 'd
 const AUTO = { tickMs: 60000, firstMs: 3 * 60000, dueMs: 12 * 3600000, retryMs: 30 * 60000, recheckAfterMs: 90000, recheckEveryMs: 5 * 60000, recheckForMs: 3600000 };
 
 class HubAccounts {
-  constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectAccounts, getToolCatalog } = {}) {
+  constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectCookies, inspectLive = inspectAccounts, getToolCatalog } = {}) {
     this.chrome = hubChrome || new HubChrome({ env, proxy: () => getConfig().proxy });
-    Object.assign(this, { getConfig, env, recovery, now, inspect, getToolCatalog });
+    Object.assign(this, { getConfig, env, recovery, now, inspect, inspectLive, getToolCatalog });
     this.checking = null; this.progress = null; this.lastState = null;
     this.rechecks = new Map(); this.autoTried = 0; this.attention = null;
     this.setup = new (require('./hub-browser-setup').HubBrowserSetup)({ root: this.chrome.root, env });
@@ -147,7 +147,9 @@ class HubAccounts {
     return { chrome: { running, loginOpen: passive ? null : !running && this.chrome.profileHeld(), root: this.chrome.root, network }, identities, clis, preferences,
       tools: require('./hub-browser-tool').integrationStatus(this.chrome.root), checkedAt: cache.checkedAt || 0 };
   }
-  async startCheck({ identity, site, only, auto = false } = {}) {
+  // Routine checks read login cookies only. `live` (the person's 复核并继续原任务) visits that
+  // one website to prove a fresh login before a waiting web task is resumed.
+  async startCheck({ identity, site, only, auto = false, live = false } = {}) {
     if (this.setup.flight) throw Error('正在接入网页工具，请等待完成后检查');
     if (this.checking) return this.publicState();
     if (this.startingCheck) return this.startingCheck;
@@ -155,8 +157,10 @@ class HubAccounts {
       await this.state();
       const items = this.lastState.identities.flatMap(i => i.sites.map(s => ({ identity: i.id, site: s.key, state: 'queued' })))
         .filter(item => (!identity || item.identity === identity) && (!site || item.site === site)
-          && (!only || only.some(o => o.identity === item.identity && o.site === item.site)));
-      if (!items.length) throw Error('没有可检查的账号');
+          && (!only || only.some(o => o.identity === item.identity && o.site === item.site))
+          && (live || this.inspect !== inspectCookies || cookieSite(item.site)));
+      if (live && items.length > 1) throw Error('复核只针对一个账号');
+      if (!items.length) throw Error('这个网站的登录无法从本机记录读取，打开网页即可确认');
       this.abort = new AbortController();
       // Only observations produced by this run may release waiting website tasks.
       for (const row of this.lastState.identities) for (const observed of row.sites) {
@@ -165,7 +169,7 @@ class HubAccounts {
       }
       this.progress = { id: require('crypto').randomUUID(), status: 'running', auto, done: 0, total: items.length, startedAt: this.now(), current: null, stage: '准备检查', items };
       const progress = this.progress;
-      this.checking = Promise.resolve().then(() => this.inspect({ chrome: this.chrome, items, signal: this.abort.signal, fixture: this.fixture(),
+      this.checking = Promise.resolve().then(() => (live ? this.inspectLive : this.inspect)({ chrome: this.chrome, items, signal: this.abort.signal, fixture: this.fixture(),
         onStage: (item, stage) => { progress.current = item ? { identity: item.identity, site: item.site } : null; progress.stage = stage; if (item) item.state = 'checking'; },
         onResult: async (item, result) => {
           const cache = this.readCache();
@@ -302,7 +306,7 @@ class HubAccounts {
       if (now - r.from >= auto.recheckAfterMs && now - last >= auto.recheckEveryMs) due.push(r);
     }
     if (due.length) return due;
-    const oldest = Math.min(...state.identities.flatMap(i => i.sites.map(s => s.checkedAt || 0)));
+    const oldest = Math.min(...state.identities.flatMap(i => i.sites.filter(s => cookieSite(s.key)).map(s => s.checkedAt || 0)));
     if (now - oldest >= auto.dueMs && now - this.autoTried >= auto.retryMs) return null;  // null = everything
     return [];
   }

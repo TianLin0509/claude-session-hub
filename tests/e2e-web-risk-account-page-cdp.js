@@ -54,16 +54,16 @@ async function main() {
     assert.equal(await cdp.eval('!!document.querySelector(".ac-network")'), false, 'a working network route needs no banner');
     assert.match(await text('.ac-handoff'), /网页工具已暂停并断开/);
     const alt = '.ac-company[data-site="chatgpt"] .ac-account[data-identity="alt"]';
-    await until(`document.querySelector('${alt} [data-health="attention"]')`, 'paused row');
-    assert.match(await text(alt), /需要人机验证\s+网页自动化已暂停到/);
-    assert.match(await text(alt + ' .ac-open'), /去验证/);
+    await until(`document.querySelector('${alt} .ac-usage')?.textContent.includes('自动化暂停到')`, 'paused row');
+    assert.match(await text(alt), /正常 · [56] 分钟前同步\s+网页工具遇到网站验证，自动化暂停到 \d\d:\d\d；你自己使用不受影响/);
+    assert.match(await text(alt + ' .ac-open'), /打开/);
     const main = '.ac-company[data-site="chatgpt"] .ac-account[data-identity="main"]';
-    assert.match(await text(main + ' .ac-usage'), /^需要人机验证\s+1[23] 分钟前 中转遇到人机验证$/);
-    assert.match(await text(main + ' .ac-open'), /去验证/, 'a tool blocked by a check offers a clean window, not a new sign-in');
-    assert.equal(await text('#accounts-attention'), '2', 'both logins need the person: the sidebar badge says 2');
+    assert.match(await text(main + ' .ac-usage'), /^正常 · 1 小时前同步\s+1[23] 分钟前 中转遇到网站验证；你自己使用不受影响$/);
+    assert.match(await text(main + ' .ac-open'), /打开/);
+    assert.equal(await cdp.eval('document.querySelector("#accounts-attention").hidden'), true, 'a verification wall the tools met is no lost login: no badge');
     await snap('01-paused-and-handoff');
-    result.checks.push('账号页显示接管横幅；副号 ChatGPT 显示「需要人机验证 / 网页自动化已暂停到」和「去验证」');
-    result.checks.push('主号一行写明来源：「12 分钟前 中转遇到人机验证」；侧栏红色角标为 2');
+    result.checks.push('账号页显示接管横幅；副号 ChatGPT 显示「正常」并注明网页工具暂停、你自己使用不受影响');
+    result.checks.push('主号写明「12 分钟前 中转遇到网站验证；你自己使用不受影响」；验证拦截不计红色角标');
     result.checks.push('网络路由正常时不再显示代理横幅');
 
     guard.endHandoff(chromeRoot, lease.id);
@@ -76,7 +76,7 @@ async function main() {
     const opened = fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.deepEqual(opened[0], { identity: 'alt', site: 'chatgpt', url: 'https://chatgpt.com/' });
     await snap('02-after-verify-click');
-    result.checks.push('点「去验证」走打开网站入口（真实环境即人工接管），参数为副号 ChatGPT');
+    result.checks.push('点「打开」走打开网站入口（站点暂停中时即人工接管），参数为副号 ChatGPT');
     result.passed = true;
   } finally {
     fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify(result, null, 2));

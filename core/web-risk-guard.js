@@ -172,17 +172,22 @@ async function runProtected(root, options, fn) {
 
 // Delete challenge-state cookies of one identity's site (partitioned ones included). Runs
 // through the identity's own local marker page, never through a website tab.
-async function resetChallengeCookies(hub, identity, site) {
+// Storage.getCookies with the marker's context id fails for the default profile ("Failed to
+// find browser context", 2026-10-08), which left every earlier reset silently undone; the
+// marker page's own cookie store is that identity's profile, partitioned cookies included.
+async function resetChallengeCookies(hub, identity, site, { countersOnly = false } = {}) {
   const hosts = SITES[site] || [];
   const { cdp } = await hub.browser();
   try {
     const marker = await hub.marker(identity, cdp);
-    const { cookies } = await cdp.call('Storage.getCookies', { browserContextId: marker.browserContextId });
+    const reader = await hub.page(marker.targetId);
+    let cookies;
+    try { ({ cookies } = await reader.call('Network.getAllCookies')); } finally { reader.close(); }
     const ofSite = host => hosts.some(h => host === h || host.endsWith('.' + h));
     const partitionHost = c => { try { return new URL(c.partitionKey?.topLevelSite || '').hostname; } catch { return ''; } };
     // Only this site's check state: its own cookies, and Cloudflare's challenge cookies that are
     // partitioned under this site. Another site's check state and every login cookie stay.
-    const doomed = cookies.filter(c => CHALLENGE_COOKIE.test(c.name) && hosts.length
+    const doomed = cookies.filter(c => CHALLENGE_COOKIE.test(c.name) && (!countersOnly || /^cf_chl_/.test(c.name)) && hosts.length
       && (ofSite(c.domain.replace(/^\./, '')) || (c.domain.replace(/^\./, '').endsWith('cloudflare.com') && ofSite(partitionHost(c)))));
     if (!doomed.length) return 0;
     const page = await hub.page(marker.targetId);

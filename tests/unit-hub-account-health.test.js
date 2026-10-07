@@ -26,12 +26,17 @@ test('the newer of proof and trouble wins; opening the page moves sync time but 
   const ok = accountHealth({ site: checked, activity: fixed, now: NOW });
   assert.equal(ok.state, 'ok'); assert.equal(ok.syncedBy, 'images');
 });
-test('verification walls and paused sites need the person; a check blocked by a challenge does not', () => {
+test('verification walls are a note about the tools, never a lost login or a badge', () => {
   const challenge = combine([{ identity: 'main', site: 'chatgpt', source: 'bridge', outcome: 'verification_required', at: NOW - H }])['main:chatgpt'];
-  assert.equal(accountHealth({ activity: challenge, now: NOW }).problem.kind, 'verification');
+  const seen = accountHealth({ site: { state: 'signed_in', source: 'cookie', checkedAt: NOW, verified: true }, activity: challenge, now: NOW });
+  assert.equal(seen.state, 'ok', 'the login cookie is there: the person is fine');
+  assert.equal(seen.automation.by, 'bridge', 'a cookie does not prove automation gets past the check');
   const paused = accountHealth({ paused: { at: NOW - 60000, until: NOW + H }, now: NOW });
-  assert.equal(paused.state, 'attention'); assert.equal(paused.problem.by, 'paused');
-  assert.equal(accountHealth({ paused: { at: NOW - 2 * H, until: NOW - H }, now: NOW }).state, 'unknown', 'an expired pause is over');
+  assert.equal(paused.state, 'unknown'); assert.equal(paused.automation.by, 'paused');
+  assert.equal(accountHealth({ paused: { at: NOW - 2 * H, until: NOW - H }, now: NOW }).automation, undefined, 'an expired pause is over');
+  const cookieGone = accountHealth({ site: { state: 'signed_out', source: 'cookie', checkedAt: NOW, verified: true },
+    activity: combine([{ identity: 'main', site: 'chatgpt', source: 'images', outcome: 'success', at: NOW - 5 * H, lastSuccessAt: NOW - 5 * H }])['main:chatgpt'], now: NOW });
+  assert.equal(cookieGone.state, 'attention'); assert.equal(cookieGone.problem.by, 'cookie');
   const restricted = { state: 'needs_attention', reason: 'headless_challenge', checkedAt: NOW - H, verified: true };
   assert.equal(accountHealth({ site: restricted, now: NOW }).state, 'unknown');
   // Network trouble or a rate limit says nothing about the login.
@@ -49,9 +54,10 @@ test('a site never seen signed in is just "not signed in" and raises no badge', 
 test('row wording: one verdict, one source, and the matching button', () => {
   assert.deepEqual(healthView({ state: 'ok', syncedAt: NOW - 2 * H, syncedBy: 'images' }, NOW), { tone: 'ok', text: '正常 · 2 小时前同步', detail: '生图调用成功', action: 'open', button: '打开' });
   const login = healthView({ state: 'attention', problem: { kind: 'signed_out', by: 'check', at: NOW - 3 * H } }, NOW);
-  assert.equal(login.text, '需要重新登录'); assert.equal(login.detail, '3 小时前 后台检查发现已退出登录'); assert.equal(login.button, '去登录'); assert.equal(login.action, 'login');
-  const verify = healthView({ state: 'attention', problem: { kind: 'verification', by: 'roundtable', at: NOW - 6 * H } }, NOW);
-  assert.equal(verify.text, '需要人机验证'); assert.equal(verify.detail, '6 小时前 网页圆桌遇到人机验证'); assert.equal(verify.button, '去验证');
+  assert.equal(login.text, '需要重新登录'); assert.equal(login.detail, '3 小时前 网页检查发现已退出登录'); assert.equal(login.button, '去登录'); assert.equal(login.action, 'login');
+  const wall = healthView({ state: 'ok', syncedAt: NOW - H, syncedBy: 'cookie', automation: { by: 'roundtable', at: NOW - 6 * H } }, NOW);
+  assert.equal(wall.text, '正常 · 1 小时前同步'); assert.equal(wall.detail, '6 小时前 网页圆桌遇到网站验证；你自己使用不受影响'); assert.equal(wall.button, '打开');
+  assert.equal(healthView({ state: 'attention', problem: { kind: 'signed_out', by: 'cookie', at: NOW - H } }, NOW).detail, '1 小时前 本机登录记录已失效');
   assert.equal(healthView({ state: 'unknown' }, NOW).text, '未确认');
   const esc = s => String(s);
   assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ ready: false }] }, esc), /网页优先、Codex 兜底 · 现在走 Codex（网页账号暂不可用）/);
@@ -137,5 +143,23 @@ test('rechecks stop after three inconclusive looks; pauses caused by the check i
   assert.equal(checks, 3, 'three looks, then the site is left alone');
   assert.equal(acc.rechecks.size, 0);
   assert.equal(accountHealth({ paused: { at: NOW, until: NOW + H, source: 'account-check' }, now: NOW }).state, 'unknown');
-  assert.equal(accountHealth({ paused: { at: NOW, until: NOW + H, source: 'images-primary' }, now: NOW }).state, 'attention');
+  const wall = accountHealth({ paused: { at: NOW, until: NOW + H, source: 'images-primary' }, now: NOW });
+  assert.equal(wall.state, 'unknown', 'a tool meeting a site check is not a lost login');
+  assert.equal(wall.automation.by, 'paused');
+  assert.equal(accountHealth({ paused: { at: NOW, until: NOW + H, kind: 'safety_hold', source: 'safety-hold' }, now: NOW }).automation, undefined);
+});
+test('the routine check reads login cookies only and never opens a website', async t => {
+  const { inspectCookies } = require('../core/hub-login-check');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-cookie-check-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const chrome = new HubChrome({ root, env: {}, proxy: '' }), results = [];
+  chrome.endpoint = async () => ({ port: 1, ws: 'tools', headless: false });
+  chrome.openTab = async () => assert.fail('no website may be opened');
+  chrome.chatgptAccount = async () => assert.fail('no session endpoint may be fetched');
+  chrome.liveCookieRows = async () => [{ host: '.chatgpt.com', name: '__Secure-next-auth.session-token.0', expiresAt: Date.now() + H }];
+  await inspectCookies({ chrome, items: ['chatgpt', 'claude', 'kimi'].map(site => ({ identity: 'main', site })), signal: new AbortController().signal,
+    onStage() {}, onResult: async (item, r) => results.push([item.site, r.state, r.source, r.live]) });
+  assert.deepEqual(results, [['chatgpt', 'signed_in', 'cookie', false], ['claude', 'signed_out', 'cookie', false]], 'kimi keeps its login elsewhere: skipped, not guessed');
+  chrome.endpoint = async () => null; chrome.profileHeld = () => true;
+  await assert.rejects(inspectCookies({ chrome, items: [{ identity: 'main', site: 'chatgpt' }], signal: new AbortController().signal, onStage() {}, onResult() {} }), /普通窗口开着/);
 });

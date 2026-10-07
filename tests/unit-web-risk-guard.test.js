@@ -134,11 +134,15 @@ test('the check-state reset removes only this site\'s challenge cookies, never l
     { name: 'cf_clearance', domain: '.claude.ai', path: '/' },
     { name: '__Secure-next-auth.session-token.0', domain: '.chatgpt.com', path: '/' },
   ];
-  const cdp = { call: async (m) => m === 'Storage.getCookies' ? { cookies } : {}, close() {} };
+  // Read through the marker page: Storage.getCookies fails for the default profile's context.
+  const cdp = { call: async m => { if (m === 'Storage.getCookies') throw Error('Failed to find browser context'); return {}; }, close() {} };
   const hub = { browser: async () => ({ cdp }), marker: async () => ({ targetId: 'M', browserContextId: 'C' }),
-    page: async () => ({ call: async (m, p) => { deleted.push(p.domain + ' ' + p.name + (p.partitionKey ? ' @' + p.partitionKey.topLevelSite : '')); }, close() {} }) };
+    page: async () => ({ call: async (m, p) => { if (m === 'Network.getAllCookies') return { cookies }; deleted.push(p.domain + ' ' + p.name + (p.partitionKey ? ' @' + p.partitionKey.topLevelSite : '')); }, close() {} }) };
   assert.equal(await guard.resetChallengeCookies(hub, 'alt', 'chatgpt'), 3);
   assert.deepEqual(deleted.sort(), ['.chatgpt.com cf_clearance @https://chatgpt.com', '.cloudflare.com cf_clearance @https://chatgpt.com', 'chatgpt.com cf_chl_rc_ni @https://chatgpt.com']);
+  deleted.length = 0;
+  assert.equal(await guard.resetChallengeCookies(hub, 'alt', 'chatgpt', { countersOnly: true }), 1);
+  assert.deepEqual(deleted, ['chatgpt.com cf_chl_rc_ni @https://chatgpt.com'], 'a plain visit keeps clearance, drops only failure counters');
 });
 
 test('a failed record still takes the page off the check', async t => {

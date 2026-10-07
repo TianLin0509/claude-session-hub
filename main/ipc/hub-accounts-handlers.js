@@ -14,7 +14,7 @@ function registerHubAccountsIpc(ipcMain, accounts) {
     if (p.site !== undefined && !require('../../core/hub-account-catalog').companyFor(p.site)) throw Error('公司标识无效');
     return { identity: p.identity, site: p.site };
   };
-  ipcMain.handle('hub-accounts:check-start', wrap(p => accounts.startCheck(selection(p))));
+  ipcMain.handle('hub-accounts:check-start', wrap(p => accounts.startCheck({ ...selection(p), live: p.live === true })));
   ipcMain.handle('hub-accounts:check-cancel', wrap(() => accounts.cancelCheck()));
   ipcMain.handle('hub-accounts:tools', wrap(() => accounts.setup.discover()));
   ipcMain.handle('hub-accounts:tool-accounts', wrap(p => accounts.toolAccounts(p.refresh === true)));

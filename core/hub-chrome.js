@@ -589,6 +589,10 @@ class HubChrome {
       }
       // A person's ordinary window is open: Chrome adds the page to it.
       if (!ep && this.profileHeld()) return this._openOrdinary(identityId, site.url);
+      const recent = guard.read(this.root).sites[identityId + ':' + guard.siteOf(site.url)];
+      if (recent && Date.now() - (recent.at || 0) < 24 * 3600000) {
+        try { await guard.resetChallengeCookies(this, identityId, guard.siteOf(site.url), { countersOnly: true }); } catch { /* the visit matters more */ }
+      }
       return { identity: identityId, mode: 'shared', ...await this._openVisible(identityId, site.url) };
     });
   }
