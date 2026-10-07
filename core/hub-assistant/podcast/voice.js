@@ -55,8 +55,16 @@ async function encode(parts, out, t = tools()) {
 async function synthesize(text, out, { credentials, t = tools() } = {}) {
   const tmp = out.replace(/\.ogg$/i, '');
   let parts, voice;
-  try { parts = await edge(text, tmp + '.edge.mp3', { t }); voice = '微软 曉臻'; }
+  try { parts = await edgeAll(text, tmp, { t }); voice = '微软 曉臻'; }
   catch (e) { if (!credentials) throw e; parts = await qwen(text, tmp + '.qwen', { credentials }); voice = '千问 龙安风悦'; }
   return { ...(await encode(parts, out, t)), voice };
 }
-module.exports = { synthesize, edge, qwen, encode, chunks, tools, EDGE_VOICE, QWEN_VOICE };
+// 长课程分段连接，任一段失败就整批失败，绝不把半截音频当成完整课程。
+async function edgeAll(text, prefix, { t = tools(), edgeImpl = edge } = {}) {
+  const parts = chunks(text, 1200), files = [];
+  try {
+    for (const [i, part] of parts.entries()) { const f = `${prefix}.edge-${i}.mp3`; files.push(f); await edgeImpl(part, f, { t }); }
+    return files;
+  } catch (e) { for (const f of files) fs.rmSync(f, { force: true }); throw e; }
+}
+module.exports = { synthesize, edge, edgeAll, qwen, encode, chunks, tools, EDGE_VOICE, QWEN_VOICE };

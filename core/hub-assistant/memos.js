@@ -127,7 +127,7 @@ class AssistantMemos {
   }
   // 每晚 21:00 推一次；Hub 当时没开，当晚 24 点前启动会补推，过了就不补。
   fireDigest() {
-    if (!this.isOwner()) return null;
+    if (!this.isOwner() || this.store.get('workbench.config')?.enabled === true) return null;
     const now = this.now(), today = bjDay(now), slot = today * DAY - BJ + this.digestHour * 3600000;
     if (now < slot || this.store.get('memoDigestDay') === today) return null;
     this.store.set('memoDigestDay', today);

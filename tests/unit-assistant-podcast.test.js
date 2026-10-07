@@ -6,6 +6,29 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const { chapters, markdownBlocks } = require('../core/hub-assistant/podcast/extract');
 const { buildPrompt, writeScript, tidy } = require('../core/hub-assistant/podcast/script');
 const { PodcastStudio } = require('../core/hub-assistant/podcast/studio');
+const { edgeAll } = require('../core/hub-assistant/podcast/voice');
+
+test('long voice synthesis splits at sentences, preserves all text and removes every partial file on failure', async () => {
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lesson-voice-')), prefix = path.join(dir, 'lesson');
+ const text = ('完整讲解一段技术原理。').repeat(400), seen = [];
+ try {
+  const files = await edgeAll(text, prefix, { edgeImpl: async (part, file) => { seen.push(part); fs.writeFileSync(file, 'audio'); }, t: {} });
+  assert.equal(seen.join(''), text); assert.ok(files.length > 1); assert.ok(seen.every(p => p.length <= 1200));
+  let calls = 0; await assert.rejects(edgeAll(text, prefix, { edgeImpl: async (_part, file) => { fs.writeFileSync(file, 'partial'); if (++calls === 2) throw Error('connection lost'); }, t: {} }), /connection lost/);
+  assert.equal(fs.existsSync(files[0]), false); assert.equal(fs.existsSync(files[1]), false);
+ } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+test('a failed lesson can be retried by a new request; duplicate current calls do not synthesize twice', async () => {
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lesson-retry-')); let calls = 0;
+ const studio = new PodcastStudio({ dataDir: dir, synthesize: async (_text, out) => { if (++calls === 1) throw Error('network interrupted'); fs.writeFileSync(out, 'verified audio'); return { seconds: 720, bytes: 14, voice: 'fixture' }; } });
+ const b = { id: 'lesson-20261007-retry', title: '课程', script: '公开知识', markdown: '公开知识', requestId: 'one' };
+ try {
+  await studio.startLesson(b); await studio.running.get(b.id); assert.equal(studio.read(b.id).status, 'failed');
+  await studio.startLesson(b); assert.equal(calls, 1);
+  await studio.startLesson({ ...b, requestId: 'two' }); await studio.running.get(b.id); assert.equal(calls, 2); assert.equal(studio.read(b.id).status, 'done'); assert.equal(studio.read(b.id).retryCount, 1);
+  await studio.startLesson({ ...b, requestId: 'three' }); assert.equal(calls, 2);
+ } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 const para = (n, ch = '说') => ch.repeat(n);
 test('chapters split on the repeated top heading; long chapters become parts; reference chapters are reading-only', () => {
