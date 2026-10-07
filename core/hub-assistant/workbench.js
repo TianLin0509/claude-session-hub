@@ -4,6 +4,9 @@ const BJ = 8 * 3600000, DAY = 86400000;
 const dayOf = now => new Date(now + BJ).toISOString().slice(0, 10);
 const slotAt = (day, time) => Date.parse(day + 'T' + time + ':00+08:00');
 const DEFAULTS = Object.freeze({ enabled: true, morning: '08:00', evening: '21:00', lesson: true, timezone: 'Asia/Shanghai' });
+// 状态页排序：先放需要田哥的（等你、异常），再放在跑、有新回复、就绪。
+const RANK = { wait: 0, error: 1, run: 2, unread: 3, idle: 4, dorm: 5 };
+const rank = s => (s.hasReply && !['wait', 'error', 'run'].includes(s.state) ? 3 : RANK[s.state] ?? 6);
 const text = (v, max) => typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : (() => { throw Error('内容为空或过长'); })();
 
 class AssistantWorkbench {
@@ -17,12 +20,25 @@ class AssistantWorkbench {
     const c = { ...this.config(), ...input }; this.store.set('workbench.config', c); this.changed(); this.a.secretary?.schedule(); return this.snapshot();
   }
   read(day = dayOf(this.now())) { return this.store.get('workbench.day.' + day) || { day, plan: null, summary: null, lesson: null }; }
+  recentLessons(days = 14) {
+    const out = []; for (let i = 1; i <= days; i++) { const l = this.read(dayOf(this.now() - i * DAY)).lesson; if (l?.title) out.push(l.title); } return out;
+  }
   save(value) { this.store.set('workbench.day.' + value.day, value); this.changed(); return value; }
   refresh() {
-    const sessions = this.a.sessions().filter(s => s.isOpen).map(s => ({ id: s.id, title: String(s.title || s.name || '未命名会话').slice(0, 120), kind: s.kind, state: s.hubState?.state || 'unknown', label: s.hubState?.label || '未知', isOpen: !!s.isOpen,
-      // unread 是收到新回复，不能据此宣称业务已交付。
-      hasReply: !!s.hubState?.hasUnread, updatedAt: Number(s.lastActiveAt || s.updatedAt || 0) || null }));
+    const sessions = this.a.sessions().filter(s => s.isOpen).map(s => {
+      const latest = this.latest(s.id);
+      return { id: s.id, title: String(s.title || s.name || '未命名会话').slice(0, 120), kind: s.kind, state: s.hubState?.state || 'unknown', label: s.hubState?.label || '未知', isOpen: !!s.isOpen,
+        // unread 是收到新回复，不能据此宣称业务已交付。
+        hasReply: !!s.hubState?.hasUnread, last: latest.text, updatedAt: latest.at || Number(s.lastActiveAt || s.updatedAt || 0) || null };
+    }).sort((x, y) => rank(x) - rank(y) || (y.updatedAt || 0) - (x.updatedAt || 0));
     const snapshot = { at: this.now(), sessions }; this.store.set('workbench.sessions', snapshot); this.changed(); return this.snapshot();
+  }
+  // 「最近一句」直接截原会话最后一条回答，读本地记录，不调用模型；读不到就留空。
+  latest(id) {
+    try { const r = this.a.readLiveFinal?.(id)?.records?.at(-1); if (!r?.text) return { text: '', at: null };
+      const line = String(r.text).replace(/[#*`>|]/g, ' ').replace(/\s+/g, ' ').trim();
+      return { text: line.length > 90 ? line.slice(0, 89) + '…' : line, at: Number(r.timestamp) || null };
+    } catch { return { text: '', at: null }; }
   }
   snapshot() {
     const cached = this.store.get('workbench.sessions') || { at: null, sessions: [] };

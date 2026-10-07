@@ -25,3 +25,7 @@ for (const type of ['text', 'voice_message']) test(type + ' carries exact select
  const x = setup(); x.channel.fastLane = { eligible: () => true, answer: () => { throw Error('must not call fast lane'); } };
  x.incoming({ type, ...(type === 'text' ? { text: '请看进展' } : { pcm: 'AQI=' }), context: { kind: 'session', id: 's1' } }); await x.channel.tick(); assert.equal(x.calls.length, 1); assert.match(x.calls[0].text, /精确原会话=s1\n请看进展/);
 });
+test('daily notices are tagged so the phone replaces its own 08:00 alarm instead of ringing twice', async () => {
+ const x = setup(); x.assistant.notifications = () => ({ notifications: [{ id: 'secretary:2026-10-07:plan:due', kind: 'daily-plan', title: '今日计划', text: '今天先定参数', createdAt: 5 }, { id: 'r1', kind: 'reminder', title: '提醒', text: '开会', createdAt: 5 }] });
+ await x.channel.tick(); const answers = x.packets('answer'); assert.equal(answers.find(a => /先定参数/.test(a.text)).daily, 'plan'); assert.equal(answers.find(a => /开会/.test(a.text)).daily, undefined);
+});

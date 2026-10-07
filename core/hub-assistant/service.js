@@ -332,6 +332,8 @@ class AssistantService {
     return this._podcasts||null;
   }
   podcastDone(m){
+    // 每日一档不单独推「做好了」：08:00 的计划通知里已带上它，避免一早连响几次。
+    if(m.source==='daily-secretary')return;
     const done=m.episodes.filter(e=>e.status==='done'),failed=m.episodes.filter(e=>e.status==='failed').length,mins=Math.round(done.reduce((s,e)=>s+(e.seconds||0),0)/60);
     const text=done.length?`田哥，《${m.title}》的口播做好了：${done.length} 集，约 ${mins} 分钟${failed?`（另有 ${failed} 集没做成，可以让我重做）`:''}。手机左侧菜单「资料口播」里可以听，也能看阅读版。`:`田哥，《${m.title}》的口播没做成：${m.error||m.episodes.find(e=>e.error)?.error||'原因未知'}`;
     this.watches.addNotice({id:'podcast:'+m.id,title:'口播',kind:'podcast',label:'资料口播',text});
