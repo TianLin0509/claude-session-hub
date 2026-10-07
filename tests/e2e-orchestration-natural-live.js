@@ -3,11 +3,11 @@
 // 复刻田哥的原场景：3 位队员轮流自我介绍、最后一位汇总成文件；其中一位故意配了不存在的模型，必然故障。
 // 看编排员能否自己开工、自己处理故障（重启 / 提醒 / 跳过 / 改计划），需要田哥时用对话问，田哥只在输入框用一句话回复。
 //   node tests/e2e-orchestration-natural-live.js
-// 编排员默认 Claude Haiku（ORCH_MODEL 可改）；队员用 Haiku。凭据复制到临时目录，结束时删除。
+// 编排员默认 Claude Opus 5.5（田哥实际用最强模型当编排员；ORCH_MODEL 可改）；队员用 Haiku。凭据复制到临时目录，结束时删除。
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher'), { connectFirstPage } = require('./helpers/cdp-client');
 
-const ORCH_MODEL = process.env.ORCH_MODEL || 'claude-haiku-4-5-20251001';
+const ORCH_MODEL = process.env.ORCH_MODEL || 'claude-opus-5-5';
 const MEMBER_MODEL = 'claude-haiku-4-5-20251001';
 const BROKEN_MODEL = 'claude-no-such-model-for-fault-test';
 const MAX_MIN = Number(process.env.MAX_MIN || 35);
