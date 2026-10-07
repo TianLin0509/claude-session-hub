@@ -139,11 +139,53 @@ async function run() {
     ok('可以恢复编排', true);
     await shot('05-final');
 
+    // Display scope is independent of routing and incoming snapshots.
+    await wait(async () => (await invoke('groupchat:get-state', { meetingId: meeting.id }))?.currentMode === 'idle', 'dispatch idle');
+    const fixture = { ...await invoke('groupchat:get-state', { meetingId: meeting.id }), currentMode: 'idle', currentTurn: 1, messages: [
+      { id: 'scope-user', role: 'user', content: '我的筛选测试问题', turnNum: 1 },
+      { id: 'scope-dispatch', role: 'user', content: '自动派发测试', dispatch: { stepIndex: 0, kind: 'orchestration' }, turnNum: 1 },
+      { id: 'scope-lead', role: 'assistant', sid: room.subSessions[0], content: '编排员测试回复', turnNum: 1 },
+      { id: 'scope-worker', role: 'assistant', sid: room.subSessions[1], content: '工作成员测试回复', turnNum: 1 },
+    ] };
+    const renderFixture = state => cdp.eval(`window.MeetingRoom.debugRenderGroupChatState(${JSON.stringify(meeting.id)},${JSON.stringify(state)})`);
+    // Earlier routing checks left optimistic user prompts, which correctly stay visible.
+    const visibleIds = () => cdp.eval("[...document.querySelectorAll('.mr-gc-messages [data-gc-msg-id]')].map(e=>e.dataset.gcMsgId).filter(id=>!id.startsWith('pending-user-'))");
+    await renderFixture(fixture);
+    ok('群成员旁默认全员信息', await cdp.eval("document.getElementById('mr-btn-group-members').nextElementSibling.id==='mr-btn-message-scope' && document.getElementById('mr-btn-message-scope').textContent==='全员信息'"));
+    ok('全员视图显示四条消息', (await visibleIds()).length === 4);
+    await cdp.eval("document.getElementById('mr-input-box').textContent='尚未发送的草稿'");
+    const routesBefore = JSON.stringify((await invoke('get-meetings')).find(m=>m.id===meeting.id).participants);
+    const callsBefore = calls().length;
+    await click('#mr-btn-message-scope');
+    ok('只看编排保留本人和编排员', JSON.stringify(await visibleIds()) === JSON.stringify(['scope-user', 'scope-lead']));
+    ok('切换保留输入草稿', await cdp.eval("document.getElementById('mr-input-box').textContent==='尚未发送的草稿'"));
+    ok('筛选按群保存', await cdp.eval(`localStorage.getItem('hub:group-message-scope:${meeting.id}')==='orchestrator'`));
+    const streaming = { ...fixture, currentMode: 'parallel', messages: fixture.messages.slice(0, 3), _partialBy: { [room.subSessions[1]]: { text: '工作成员正在输出', status: 'streaming' } } };
+    await renderFixture(streaming);
+    ok('过滤期间的新流式卡片不泄漏队员信息', !(await visibleIds()).some(id=>id.includes(room.subSessions[1])));
+    await renderFixture(fixture);
+    ok('完整消息刷新后仍只显示本人和编排员', JSON.stringify(await visibleIds()) === JSON.stringify(['scope-user', 'scope-lead']));
+    await shot('06-orchestrator-only');
+    await click('#mr-btn-message-scope');
+    ok('切回全员恢复全部历史卡片', (await visibleIds()).length === 4);
+    await renderFixture(streaming);
+    ok('全员视图仍显示队员流式卡片', (await visibleIds()).includes('pending-' + room.subSessions[1]));
+    ok('切换未改变收件人或触发派发', JSON.stringify((await invoke('get-meetings')).find(m=>m.id===meeting.id).participants) === routesBefore && calls().length === callsBefore);
+    await renderFixture(fixture);
+    await shot('07-all-members');
+
     // 7. 关掉开关建群 = 现在的群聊（不带编排）
     await cdp.eval("document.getElementById('btn-new-more').click()");
     await click('#launch-intent-group');
     await wait(() => cdp.eval("!!document.querySelector('#new-session-menu #mcm-orch-toggle') && !document.getElementById('mcm-orch-toggle').checked"), 'toggle reset');
     ok('重新打开建群页时开关恢复关闭', true);
+    await click('#new-session-menu [data-mcm-scene="general"]');
+    await click('#new-session-menu [data-mcm-workspace-mode="default"]');
+    await cdp.eval("[...document.querySelectorAll('#new-session-menu button')].find(b=>b.textContent.trim()==='创建群聊').click()");
+    const plainRoom = await wait(async () => (await invoke('get-meetings')).find(m => m.id !== meeting.id && !m.orchestration?.enabled), 'plain room created');
+    await cdp.eval(`selectMeeting(${JSON.stringify(plainRoom.id)})`);
+    await wait(() => cdp.eval("!!document.getElementById('mr-btn-group-members')"), 'plain group header');
+    ok('普通群聊不显示编排筛选按钮', await cdp.eval("!document.getElementById('mr-btn-message-scope')"));
     evidence.ok = true;
   } catch (error) {
     evidence.error = error.stack;

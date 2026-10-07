@@ -3,8 +3,10 @@
 // 回答卡片的标签。状态只读主进程推送的账本视图，操作都走 orchestration:* 接口。
 // 2026-10-06：确认计划、恢复、追加额度都改为在输入框对编排员说；界面只留旁观信息与急停。
 const { ipcRenderer } = require('electron');
+const { isDispatchCard } = require('./dispatch-card');
 
 const views = new Map();
+const messageScopes = new Map();
 const expanded = new Set();
 const loading = new Set();
 let onChange = () => {};
@@ -24,6 +26,30 @@ ipcRenderer.on('orchestration:changed', (_event, payload = {}) => {
 });
 
 function enabled(meeting) { return !!(meeting && meeting.groupChat && meeting.orchestration && meeting.orchestration.enabled === true); }
+// Display preference only: never change participants, messages or dispatch routes.
+function onlyOrchestrator(meeting) {
+  if (!enabled(meeting)) return false;
+  if (!messageScopes.has(meeting.id)) {
+    let selected = false;
+    try { selected = localStorage.getItem(`hub:group-message-scope:${meeting.id}`) === 'orchestrator'; }
+    catch (error) { console.warn('[orchestration-ui] Cannot read message scope:', error); }
+    messageScopes.set(meeting.id, selected);
+  }
+  return messageScopes.get(meeting.id);
+}
+function toggleMessageScope(meeting) {
+  if (!enabled(meeting)) return;
+  const selected = !onlyOrchestrator(meeting);
+  messageScopes.set(meeting.id, selected);
+  try { localStorage.setItem(`hub:group-message-scope:${meeting.id}`, selected ? 'orchestrator' : 'all'); }
+  catch (error) { console.warn('[orchestration-ui] Cannot save message scope:', error); }
+}
+function messageVisible(meeting, message) {
+  if (!message) return false;
+  if (!onlyOrchestrator(meeting)) return true;
+  if (message.systemNote || isDispatchCard(message)) return false;
+  return message.role === 'user' || (message.role === 'assistant' && isOrchestratorMessage(meeting, message));
+}
 function view(meeting) {
   if (!enabled(meeting)) return null;
   if (!views.has(meeting.id) && !loading.has(meeting.id)) {
@@ -192,5 +218,5 @@ function headerTag(meeting) {
 module.exports = {
   init, enabled, active, view, resolveRecipients, noteUserMessage, renderStrip, roleBadge,
   defaultMinimized, peek, dispatchLabel, headerTag,
-  orchestratorSid, isOrchestratorMessage, STATUS_LABELS,
+  orchestratorSid, isOrchestratorMessage, onlyOrchestrator, toggleMessageScope, messageVisible, STATUS_LABELS,
 };

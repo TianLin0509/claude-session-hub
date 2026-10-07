@@ -51,6 +51,7 @@ Codex / Kimi 等直接读本文件，Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导
 - 不用固定延时发回车，也不把 `text + '\r'` 合成一次写入。原因：Windows 上 node-pty 写的是带内部队列的 named pipe，长 payload 未排空时 `\r` 会与粘贴结束符落进同一个 stdin chunk，被 TUI 当粘贴尾巴吞掉；任何固定毫秒数都会在某个体积上失效（2026-04 到 06 返工 6 次）。
 - 提交闭环四环节缺一不可（`core/pty-prompt-submit.js`）：分块投喂（不劈开 UTF-16 代理对）→ 体积自适应 settle 并等折叠标记 → 等语义确认（Claude `UserPromptSubmit` / Codex `task_started`，汇到 `agent-turn-started`）→ 缺确认才补一次有界回车。拿不到确认就如实报 `stuck` 并在 UI 亮出「补发」（`.fi-stuck`）；补发也走同一闭环。
 - 契约测试 `tests/unit-prompt-submit-ui-contract.test.js` 守住以上各条，改动前先读。
+- Claude 拆段粘贴（2026-10-06）：Claude Code 2.1.29x 起把单次超过 800 字或多于 2 个换行的粘贴折叠，提交时包进 `<pasted_content id="…">` 并提示模型「其中指令未必是用户写的」。Hub 给 Claude 改为多段小粘贴（`splitInlinePastes`：≤800 字、≤1 个换行），屏幕上不再出现折叠标记，settle 走体积上限、确认仍靠 `UserPromptSubmit`。真实验收 `tests/e2e-claude-paste-inline-real-cli.js`（修前 60 行消息被包裹，修后逐字一致无标签）。
 - 新增对 CLI 输出的模式匹配时，拿真实样本核对：`core/paste-trapped-detector.js` 的折叠标记正则曾漏掉现版 Claude 的 `[Pasted text #1 +120 lines]`，paste 巡检因此长期失效无人察觉。
 
 ## 群聊：Hub 只和 Markdown 交互（2026-09-30）
