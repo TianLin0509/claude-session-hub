@@ -2004,6 +2004,7 @@ try {
       return { extract: file => require('./core/hub-assistant/podcast/extract').extract(file, { electron }),
         writers: [sc.claudeWriter({ cwd: getHubDataDir() }), sc.qwenWriter({ source: () => fl.fastLaneSources({ dataDir: getHubDataDir(), safeStorage: electron.safeStorage }).find(s => s.via === 'token-plan') })],
         synthesize: (text, out) => voice.synthesize(text, out, { credentials: () => require('./core/hub-phone/voice').dashscopeCredentials({ dataDir: getHubDataDir(), safeStorage: electron.safeStorage }) }) }; })(),
+    onWorkbenchChanged: () => { sendToRenderer('assistant:workbench-changed', {}); phoneService?.kick?.(); },
     onPodcastsChanged: () => { sendToRenderer('assistant:podcasts-changed', {}); phoneService?.kick?.(); },
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),

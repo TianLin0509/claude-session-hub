@@ -3,7 +3,7 @@
 // 助理会话（Claude 等）的回答、提醒——都在这一条对话里。助理会话内部过程留在工作台的会话里，这里只放结论。
 // 2026-10-04 田哥确认：助理 Tab 是虚拟的「助理」，不是某个 CLI 会话的另一个视图。
 function createAssistantPage({ document, window, ipcRenderer, openSession, closeOtherPanels = () => {}, showMessage, onOpenChange = () => {} }) {
-  let page = null, entries = [], desk = null, frontDesk = null, profile = null, sending = false, forceAssistant = false, statusOpen = false, memoView = null, view = 'chat';
+  let page = null, entries = [], desk = null, frontDesk = null, profile = null, sending = false, forceAssistant = false, statusOpen = false, memoView = null, workView = null, view = 'chat';
   const TZ = 'Asia/Shanghai';
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const time = at => new Date(at).toLocaleTimeString('zh-CN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
@@ -28,7 +28,7 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     page.innerHTML = `<header class="ap-head">
         <img class="ap-avatar" src="assets/assistant/penguin.png" alt="">
         <div class="ap-title"><h1>助理</h1><p class="ap-sub"></p></div>
-        <nav class="ap-tabs" aria-label="助理页视图"><button type="button" data-ap="view-chat" aria-pressed="true">对话</button><button type="button" data-ap="view-memos" aria-pressed="false">备忘<b class="ap-memo-count"></b></button></nav>
+        <nav class="ap-tabs" aria-label="助理页视图"><button type="button" data-ap="view-today" aria-pressed="false">今日</button><button type="button" data-ap="view-chat" aria-pressed="true">对话</button><button type="button" data-ap="view-memos" aria-pressed="false">备忘<b class="ap-memo-count"></b></button></nav>
         <button type="button" class="ap-chip" data-ap="front" aria-label="回答方式"></button>
         <button type="button" class="ap-chip" data-ap="engine" aria-label="助理会话设置"></button>
         <button type="button" class="ap-chip ap-status-toggle" data-ap="status" aria-label="助理状态" aria-pressed="false">状态</button>
@@ -43,6 +43,8 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     memoView = require('./assistant-memos').createMemoView({ document, ipcRenderer, showMessage: m => showMessage?.(m),
       onCount: n => { const b = page.querySelector('.ap-memo-count'); b.textContent = n ? String(n) : ''; } });
     page.querySelector('.ap-main').prepend(memoView.el);
+    workView = require('./assistant-workbench').createAssistantWorkbench({document,ipcRenderer,showMessage,onTalk:text=>{setView('chat');page.querySelector('textarea').value=text;forceAssistant=true;paintRoute();page.querySelector('textarea').focus();}});
+    page.querySelector('.ap-main').prepend(workView.el);
     require('./composer-collapse').mountComposerCollapse({ document, host: page.querySelector('.ap-composer'),
       before: page.querySelector('.ap-send'), input: page.querySelector('textarea') });
     page.addEventListener('click', event => {
@@ -158,15 +160,17 @@ function createAssistantPage({ document, window, ipcRenderer, openSession, close
     document.body.append(m); return m;
   }
   function setView(next) {
-    view = next === 'memos' ? 'memos' : 'chat';
+    view = ['memos','today'].includes(next) ? next : 'chat';
     try { localStorage.setItem('hub.assistant.view', view); } catch {}
     page.querySelector('[data-ap="view-chat"]').setAttribute('aria-pressed', String(view === 'chat'));
     page.querySelector('[data-ap="view-memos"]').setAttribute('aria-pressed', String(view === 'memos'));
-    page.querySelector('.ap-scroll').hidden = view === 'memos';
+    page.querySelector('[data-ap="view-today"]').setAttribute('aria-pressed',String(view==='today'));
+    page.querySelector('.ap-scroll').hidden = view !== 'chat';
+    if(view==='today')workView.show();else workView.hide();
     if (view === 'memos') memoView.show(); else { memoView.hide(); render(); }
   }
   async function action(name, button) {
-    if (name === 'view-chat' || name === 'view-memos') { setView(name.slice(5)); return; }
+    if (['view-chat','view-memos','view-today'].includes(name)) { setView(name.slice(5)); return; }
     if (name === 'route') { forceAssistant = !forceAssistant; paintRoute(); page.querySelector('textarea').focus(); return; }
     if (name === 'status') { statusOpen = !statusOpen; page.querySelector('.ap-status').hidden = !statusOpen; button.setAttribute('aria-pressed', String(statusOpen)); try { localStorage.setItem('hub.assistant.statusOpen', statusOpen ? '1' : '0'); } catch {} if (statusOpen) await paintStatus(); return; }
     if (name === 'session') return openSession();

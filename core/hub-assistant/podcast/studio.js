@@ -48,6 +48,21 @@ class PodcastStudio {
     const speak = m.episodes.filter(e => !e.readOnly);
     return { id, title: m.title, episodes: m.episodes.length, audio: speak.length, minutes: Math.round(speak.reduce((s, e) => s + Math.min(10, Math.max(4, e.chars / 900)), 0)) };
   }
+  async startLesson({ id, title, script, markdown, requestId }) {
+    const previous = fs.existsSync(path.join(this.dir(id), 'manifest.json')) ? this.read(id) : null;
+    if (previous && (['working', 'done'].includes(previous.status) || this.running.has(id) || requestId && previous.sourceRequestId === requestId)) return { id, duplicate: true };
+    const m = { id, title, createdAt: Date.now(), status: 'working', source: 'daily-secretary', sourceRequestId: requestId || '', retryCount: previous ? (previous.retryCount || 0) + 1 : 0, previousError: previous?.error || '', episodes: [{ n: 1, title, status: 'voicing', readOnly: false, chars: script.length }] };
+    this.save(m);
+    for (const [suffix, content] of [['.md', markdown], ['-稿.md', script]]) fs.writeFileSync(path.join(this.dir(id), '01' + suffix), content, 'utf8');
+    const job = (async () => {
+      try {
+        const r = await this.synthesize(script, path.join(this.dir(id), '01.ogg'));
+        const done = this.update(id, x => { x.status = 'done'; x.finishedAt = Date.now(); Object.assign(x.episodes[0], { status: 'done', seconds: r.seconds, bytes: r.bytes, voice: r.voice }); x.voice = r.voice; if (r.seconds < 600 || r.seconds > 900) x.durationNote = '实际时长未落在 10–15 分钟，请调整课程稿后重做'; });
+        try { this.onDone(done); } catch (e) { console.warn('[assistant] lesson completion notice', e.message); }
+      } catch (e) { this.update(id, x => { x.status = 'failed'; x.error = e.message; x.episodes[0].status = 'failed'; }); console.warn('[assistant] lesson synthesis', e.message); }
+    })().finally(() => this.running.delete(id));
+    this.running.set(id, job); return { id };
+  }
   async produce(m, doc) {
     const { buildPrompt, writeScript } = require('./script');
     const todo = m.episodes.filter(e => !e.readOnly);

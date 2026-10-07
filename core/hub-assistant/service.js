@@ -38,6 +38,9 @@ class AssistantService {
     if(!deps.noReminderTimer)setTimeout(()=>{try{this.reminders.schedule();this.memos.schedule();}catch(e){console.warn('[assistant] reminders',e.message);}},3000).unref?.();
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
     this.ledger=new (require('./ledger').AssistantLedger)(path.join(deps.dataDir,'assistant','ledger'),{read:(meta,options)=>this.liveHistory.read(meta,options)});
+    this.workbench=new (require('./workbench').AssistantWorkbench)({assistant:this});
+    this.secretary=new (require('./daily-secretary').DailySecretary)({assistant:this});
+    if(!deps.noReminderTimer)setTimeout(()=>this.secretary.schedule(),4000).unref?.();
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>{try{this.logDialog({id:'notice:'+notice.id,role:'assistant',lane:'notice',by:notice.title||'提醒',text:notice.text||''});}catch{}this.deps.onAssistantNotification?.(notice);}});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
@@ -84,6 +87,7 @@ class AssistantService {
     if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleCheckpoint(at);
       // 助理答完立刻让手机通道取答案推送，不等下一次定时处理。
       try{this.deps.onAssistantTurnComplete?.(sessionId);}catch{}
+      this.secretary?.schedule();
       if(this._desk){setTimeout(()=>this._desk.check(),300).unref?.();}return;}
     const meta=this.sessionMetadata(sessionId);if(!meta||meta.purpose==='hub-assistant')return;
     try{this.ledger.record({...meta,id:sessionId});}catch(error){console.warn('[assistant] ledger',error.message);}
@@ -328,6 +332,8 @@ class AssistantService {
     return this._podcasts||null;
   }
   podcastDone(m){
+    // 每日一档不单独推「做好了」：08:00 的计划通知里已带上它，避免一早连响几次。
+    if(m.source==='daily-secretary')return;
     const done=m.episodes.filter(e=>e.status==='done'),failed=m.episodes.filter(e=>e.status==='failed').length,mins=Math.round(done.reduce((s,e)=>s+(e.seconds||0),0)/60);
     const text=done.length?`田哥，《${m.title}》的口播做好了：${done.length} 集，约 ${mins} 分钟${failed?`（另有 ${failed} 集没做成，可以让我重做）`:''}。手机左侧菜单「资料口播」里可以听，也能看阅读版。`:`田哥，《${m.title}》的口播没做成：${m.error||m.episodes.find(e=>e.error)?.error||'原因未知'}`;
     this.watches.addNotice({id:'podcast:'+m.id,title:'口播',kind:'podcast',label:'资料口播',text});
@@ -483,6 +489,14 @@ class AssistantService {
     // bridge always supplies its host identity and never falls back to it.
     const hasCaller=callerSessionId!==undefined;
     if(hasCaller&&!this.isAssistantSession(callerSessionId))throw new Error('调用方不是固定助理会话，未授予专属工具');
+    if(name==='workbench_status')return this.workbench.refresh();
+    if(name==='publish_daily_brief'){
+      const current=this.currentRequest;
+      if(!hasCaller||!current||args.requestToken!==current.token||Date.now()-current.createdAt>30*60000)throw new Error('日稿不属于当前回合');
+      requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
+      return this.workbench.publish(args,current);
+    }
+    if(String(this.currentRequest?.id||'').startsWith('daily-')&&!['list_sessions','session_evidence','history_context','list_podcasts','list_memos','list_reminders'].includes(name))throw new Error('每日秘书任务只允许读取资料和登记日稿，不能派工或更改其他数据');
     if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen,hubState:s.hubState,nativeSessionId:nativeId(s)}));
     if(name==='session_evidence')return this.readLiveFinal(args.sessionId);
     if(name==='history_context'){
@@ -607,6 +621,6 @@ class AssistantService {
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};
     } catch(error) {this.store.finish(requestId,'unknown',{sessionId,error:error.message});return{ok:false,state:'unknown',sessionId,error:error.message};}
   }
-  close(){this.reminders?.stop();this.memos?.stop();for(const timer of [this.startupTimer,this.dailyTimer,this.idleTimer])clearTimeout(timer);clearInterval(this.reconcileTimer);clearInterval(this.safetyTimer);this.bridge.close();this.store.close();}
+  close(){this.secretary?.close();this.reminders?.stop();this.memos?.stop();for(const timer of [this.startupTimer,this.dailyTimer,this.idleTimer])clearTimeout(timer);clearInterval(this.reconcileTimer);clearInterval(this.safetyTimer);this.bridge.close();this.store.close();}
 }
 module.exports={AssistantService};

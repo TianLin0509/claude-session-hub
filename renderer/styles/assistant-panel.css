@@ -211,3 +211,7 @@ body.assistant-session-active .assistant-backend{display:block}
 .apm-empty{flex:1}
 .apm-empty h2{margin:0 0 6px;color:#1b2942;font-size:18px;font-weight:600}
 @media (max-width:980px){.apm{grid-template-columns:1fr;overflow-y:auto}.apm-left,.apm-detail{overflow:visible}}
+
+/* 工作台 A：使用本页浅色内容区，保留现有聊天入口。 */
+.ap-workbench{flex:1;overflow:auto;padding:22px;color:#1e293b;background:#f7f9fd}.ap-workbench[hidden]{display:none}.aw-head,.aw-session{display:flex;justify-content:space-between;align-items:center;gap:16px}.ap-workbench h2{margin:0 0 6px;font-size:24px}.ap-workbench p,.ap-workbench small{color:#64748b}.ap-workbench section{background:white;border:1px solid #e5eaf2;border-radius:18px;padding:20px;margin:16px 0}.ap-workbench button{background:#edf3ff;border:1px solid #d8e5ff;color:#2563eb;border-radius:10px;padding:10px 14px;min-height:44px;cursor:pointer}.ap-workbench button:focus-visible{outline:2px solid #2563eb}.ap-workbench label{display:block;padding:10px 0}.ap-workbench small{display:block;margin-top:6px}.ap-workbench input{width:20px;height:20px;vertical-align:middle}.aw-session{padding:12px 0;border-top:1px solid #f1f5f9}.aw-text{white-space:pre-wrap;line-height:1.7}
+.aw-session small.aw-last{display:block;margin-top:3px;color:#475569;font-size:12.5px;line-height:1.5}
