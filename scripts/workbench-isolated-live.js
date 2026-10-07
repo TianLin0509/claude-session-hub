@@ -24,11 +24,13 @@ async function main() {
  const { AssistantStore } = require('../core/hub-assistant/store'); const store = new AssistantStore(path.join(dataDir, 'assistant'));
  store.set('assistantDefaultsVersion', 2); store.set('backendKind', 'claude'); store.set('profile:claude', { model: 'claude-sonnet-5-5', effort: 'low' });
  // 自动定时器的单测另行覆盖；此真实验收不随墙钟触发额外任务。
- store.set('workbench.config', { enabled: false, lesson: true, morning: '08:00', evening: '21:00', timezone: 'Asia/Shanghai' }); store.close();
+ // WORKBENCH_SECRETARY_MORNING=HH:mm 时让真实早间秘书在几分钟后跑一遍（验证 08:00 只响一次）；默认不随墙钟触发。
+ const morning = process.env.WORKBENCH_SECRETARY_MORNING;
+ store.set('workbench.config', morning ? { enabled: true, lesson: process.env.WORKBENCH_SECRETARY_LESSON !== '0', morning, evening: '23:58', timezone: 'Asia/Shanghai' } : { enabled: false, lesson: true, morning: '08:00', evening: '21:00', timezone: 'Asia/Shanghai' }); store.close();
  const port = await new Promise(resolve => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
  let hub, cdp; const result = { passed: false, scope: '真实隔离 Hub UI + 真云中继 + Android 正式签名候选 + Claude Sonnet 5.5；定时时钟另由单测验证', root, checks: [] };
  try {
-  hub = await launchIsolatedHub({ dataDir, port, windowMode: 'background', label: 'workbenchA-codex2', allowExternalState: true, extraEnv: { CLAUDE_HUB_HOME_DIR: home, CLAUDE_CONFIG_DIR: claude, AI_HUB_WORKSPACE_ROOT: workspace, CLAUDE_HUB_AGENT_RUNTIME: 'pty', CLAUDE_HUB_NO_FAST: '1', CLAUDE_HUB_E2E: '1', ANTHROPIC_API_KEY: '', DEEPSEEK_API_KEY: '', HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_CODEX_ROOTS: path.join(root, 'empty') } });
+  hub = await launchIsolatedHub({ dataDir, port, windowMode: 'background', label: process.env.WORKBENCH_LABEL || 'workbenchA-codex2', allowExternalState: true, extraEnv: { CLAUDE_HUB_HOME_DIR: home, CLAUDE_CONFIG_DIR: claude, AI_HUB_WORKSPACE_ROOT: workspace, CLAUDE_HUB_AGENT_RUNTIME: 'pty', CLAUDE_HUB_NO_FAST: '1', CLAUDE_HUB_E2E: '1', ANTHROPIC_API_KEY: '', DEEPSEEK_API_KEY: '', HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_CODEX_ROOTS: path.join(root, 'empty') } });
   cdp = await connectFirstPage(hub); const j = JSON.stringify;
   const until = async (label, fn, ms = 120000) => { for (let end = Date.now() + ms; Date.now() < end;) { const v = await fn(); if (v) return v; await sleep(250); } throw Error(label + ' timeout'); };
   const invoke = (name, arg = {}) => cdp.eval(`ipcRenderer.invoke(${j('assistant:' + name)},${j(arg)})`);
