@@ -25,6 +25,8 @@
 .msg-overlay .turn-card[data-chat-style='message'] .turn-head {
   margin: 0 4px 6px; gap: 8px; min-height: 19px; align-items: center; flex-wrap: wrap;
 }
+.msg-overlay .turn-card.user[data-chat-style='message'] .turn-head { justify-content: flex-end; }
+.msg-overlay .turn-card.user[data-chat-style='message'] .turn-actions { order: -1; margin: 0 auto 0 0; }
 .msg-overlay .turn-card[data-chat-style='message'] .turn-who { font-size: 12px; font-weight: 650; }
 .msg-overlay .turn-card[data-chat-style='message'] .turn-meta { font-size: 10px; color: var(--fg-muted); }
 .msg-overlay .turn-card[data-chat-style='message'] .conversation-phase { display: none; }
