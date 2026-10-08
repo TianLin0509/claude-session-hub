@@ -1753,7 +1753,6 @@ const chuxinBridge = require('./main/ipc/chuxin-handlers.js').registerChuxinIpc(
   registerSessionForTap,
   sendToRenderer,
   sessionManager,
-  transcriptTap,
 });
 
 // 初心 Agent 投资联赛：每个参赛者绑定一个可见的普通 Hub Session，

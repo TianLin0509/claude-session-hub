@@ -65,7 +65,7 @@ test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原�
   const atRoot = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss', workspace: { atWorkRoot: true, projects: [{ name: 'X', path: 'C:\\repo\\x' }] } });
   assert(/先定位项目根/.test(atRoot.projectLocator) && atRoot.projectLocator.includes('X → C:\\repo\\x'));
   assert(!build.projectLocator, '不在工作根就不带');
-  // 主进程逐轮追加讨论块（和英雄块同一位置），不能塞 systemPrompt——那只发一次
+  // 主进程逐轮追加讨论块（接在 prompt 末尾），不能塞 systemPrompt——那只发一次
   const dispatcher = read('main/groupchat/dispatcher.js');
   assert(/DevDiscuss\.appendDiscussBlock\(/.test(dispatcher) && /DevDiscuss\.discussBlockFor\(meeting, member\.memberId\)/.test(dispatcher),
     'dispatcher 普通群聊路径必须逐轮追加讨论块');

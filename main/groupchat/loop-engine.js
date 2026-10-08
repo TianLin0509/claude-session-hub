@@ -745,7 +745,6 @@ function createLoopEngine(deps) {
             dispatchMode: 'serial',
             turnTimeoutMs: timeoutMs,
             allowActiveExtend: false,
-            heroIdBySid: runOptions.heroIdBySid || {},
             workflowRun: {
               runId: state.runId,
               kind: 'serial',
@@ -1013,7 +1012,6 @@ function createLoopEngine(deps) {
                 // 到点强杀会把「在验证」误判成「没给结果」。延期由 dispatcher 封顶
                 //（最近 150 秒内有输出才延，总共最多 +8 分钟），不会拖成永久等待。
                 allowActiveExtend: true,
-                heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: builderStepIndex, attempt: transportAttempt, targetMemberIds: [builderId] },
               });
               if (bRes && bRes.turnNum) state.currentTurnNum = bRes.turnNum;
@@ -1173,7 +1171,6 @@ function createLoopEngine(deps) {
                 turnTimeoutMs: reviewerTimeoutMs,
                 // 同上：评审跑两遍全量时转录会长时间只有工具输出，不能按死墙钟砍。
                 allowActiveExtend: true,
-                heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerIds },
               });
               if (rRes && rRes.turnNum) reviewerTurnNum = rRes.turnNum;
@@ -1629,7 +1626,7 @@ function createLoopEngine(deps) {
     if (require('../../core/dev-file-workflow').enabled(meetingManager.getMeeting(meetingId))) return { ok: false, reason: 'dev_file_workflow_uses_composer' };
     const outcome = await _kickoffPhase(meetingId, options);
     if (outcome && outcome.ok && outcome.autoStart) {
-      runLoop(meetingId, outcome.goal, null, { heroIdBySid: options.heroIdBySid || {} })
+      runLoop(meetingId, outcome.goal, null)
         .catch(error => logError('[loop-engine] 开题后自动开工失败:', error));
     }
     return outcome;

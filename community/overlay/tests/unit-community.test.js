@@ -37,8 +37,7 @@ test('private module entry points are absent from the page and the tree', () => 
   assert.doesNotMatch(html, /data-action="sync-(?:chatgpt|company)"/);
   assert.doesNotMatch(html, /@community-/);
   assert.match(html, /<script src="community-welcome\.js"><\/script>/);
-  for (const rel of ['main/ipc/study-handlers.js', 'renderer/study.js', 'main/ipc/committee-handlers.js', 'core/hero-prompts.js']) {
-    if (rel === 'core/hero-prompts.js') { assert.deepEqual(require('../core/hero-prompts').listHeroes(), []); continue; }
+  for (const rel of ['main/ipc/study-handlers.js', 'renderer/study.js', 'main/ipc/committee-handlers.js']) {
     assert.equal(fs.existsSync(path.join(root, rel)), false, rel);
   }
   const main = read('main.js');

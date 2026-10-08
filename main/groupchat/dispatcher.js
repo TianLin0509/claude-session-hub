@@ -4,7 +4,6 @@ const groupChatWatcher = require('../../core/group-chat-watcher.js');
 const { createTurnCompletionWatcher } = require('../../core/turn-completion-watcher.js');
 const pasteTrappedDetector = require('../../core/paste-trapped-detector.js');
 const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js');
-const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
 const DevFile = require('../../core/dev-file-workflow');
 const OrchestrationRules = require('../../core/orchestration/rules');
@@ -1313,7 +1312,6 @@ function createGroupChatDispatcher(deps) {
     turnTimeoutMs,
     targetMemberIds,
     recipientSids,
-    heroIdBySid,
     silent,
     allowActiveExtend,
     appendUserMessage,
@@ -1345,13 +1343,6 @@ function createGroupChatDispatcher(deps) {
       const interruptedSinceStart = () => (meetingInterruptSeq.get(interruptKey) || 0) !== interruptSeqAtStart;
       const members = groupMembersForMeeting(meeting);
       if (members.length === 0) return { status: 'no_subs', turnNum: null };
-      // 轻量英雄只接受内置 hero id，不接收 renderer 传来的任意 Prompt 文本。
-      // 这样每家 AI 仍可独立选英雄，同时主进程保有最终 Prompt 的可信边界。
-      const normalizedHeroIdBySid = normalizeHeroAssignments(
-        heroIdBySid,
-        members.map(member => member.sid)
-      );
-
       if(recipientSids!==undefined)targetMemberIds=require('../../core/groupchat-recipients').memberIds(meeting,recipientSids);
       const explicitTargetIds = Array.isArray(targetMemberIds)
         ? targetMemberIds.map(x => String(x || '').toLowerCase()).filter(Boolean)
@@ -1541,13 +1532,7 @@ function createGroupChatDispatcher(deps) {
           supplementSeqs: pendingSupplements.map(item => item.seq),
           fileProtocolKey: needsFileProtocol ? fileProtocolKey : null,
           runId,
-          heroId: normalizedHeroIdBySid[member.sid] || null,
-          // 英雄块每轮都追加在最终 Prompt 末尾；不能塞进 systemPromptText，后者只在
-          // 该 sid 首次进入群聊时发送，无法满足“下一轮一次性注入”。
-          prompt: appendHeroPrompt(
-            supplementBlock ? `${basePrompt}\n\n${supplementBlock}` : basePrompt,
-            normalizedHeroIdBySid[member.sid],
-          ),
+          prompt: supplementBlock ? `${basePrompt}\n\n${supplementBlock}` : basePrompt,
         };
       });
 

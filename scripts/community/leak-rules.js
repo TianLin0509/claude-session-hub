@@ -21,7 +21,7 @@ const RULES = [
   // 已删除模块在通用代码里留下的死分支与注释（不含个人数据）：只统计、不拦截，逐步清理。
   { id: 'module-residue', re: /agent-league|投资联赛|投委会|research-mcp|arena-research/i, severity: 'residue' },
   { id: 'personal-research-sites', re: /雪球|韭研|问财|xueqiu|jiuyangongshe|iwencai|kline-screener|Stock_test|Stock_top10|funtop10|tushare/i },
-  { id: 'personal-preference', re: /昇腾|华为|huawei|英灵|spirit-lens|spirit-registry/i },
+  { id: 'personal-preference', re: /昇腾|华为|huawei/i },
   { id: 'personal-tools', re: /chatgpt-bridge|chatgpt_bridge|company-drop|company_drop|公司中转|公司 ChatGPT|同步到公司|语雀|yuque|tiange-voice|kongkou|superran|channel-sim|xiaobei/i },
   { id: 'personal-machine-layout', re: /C:[\\/]{1,2}(?:Vibe(?:Data)?|DevTools|AIWork)\b|VibeData|CodexWebGPT/i },
   { id: 'secret-openai-anthropic', re: /\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{24,}\b/ },
@@ -31,7 +31,7 @@ const RULES = [
 ];
 
 // 按文件名判断的私人模块（即使内容被改干净，文件名本身也不该出现）。
-const NAME_RULE = /(?:^|\/)[^/]*(?:chuxin|study|agent-league|committee|lindang|research-mcp|spirit|screener|chatgpt-bridge|company-drop)[^/]*$/i;
+const NAME_RULE = /(?:^|\/)[^/]*(?:chuxin|study|agent-league|committee|lindang|research-mcp|screener|chatgpt-bridge|company-drop)[^/]*$/i;
 
 const TEXT_EXT = /\.(?:js|cjs|mjs|json|md|html|css|ps1|bat|cmd|py|yml|yaml|txt|svg|toml)$/i;
 

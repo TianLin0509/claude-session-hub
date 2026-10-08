@@ -314,7 +314,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       m => m && m.id === `u${turnNum}` && m.role === 'user'
     );
     // Prefer the exact durable prompt prepared by the dispatcher (system
-    // instructions + incremental context + optional hero).  A historical
+    // instructions + incremental context).  A historical
     // settled message also carries sourcePrompt.  Raw user text is only the
     // final legacy fallback; resending it alone silently changes semantics.
     const activePrompt = typeof orch.getActivePrompt === 'function'

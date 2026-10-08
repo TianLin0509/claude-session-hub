@@ -39,8 +39,6 @@
     "core/lindang-bridge.js",
     "core/research-mcp-server.js",
     "core/screener-score.js",
-    "core/spirit-registry.js",
-    "core/hero-prompts.js",
     "core/committee-*",
     "core/agent-league-*",
     "core/league-keepalive-policy.js",

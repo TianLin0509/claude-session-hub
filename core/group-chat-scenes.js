@@ -11,10 +11,6 @@ function arenaPromptsDir(hubDataDir) {
 }
 
 // @community-strip 投研场景工具与本机 ai-team
-function spiritRegistryRoot() {
-  return process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry');
-}
-
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
@@ -39,7 +35,6 @@ function writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKi
           ARENA_HOOK_TOKEN: hookToken,
           ARENA_AI_KIND: aiKind || 'unknown',
           ARENA_HUB_DATA_DIR: hubDataDir,
-          SPIRIT_REGISTRY_ROOT: spiritRegistryRoot(),
           ...(options.enableChuxin ? { ARENA_CHUXIN_ENABLED: '1' } : {}),
         },
       },
@@ -67,7 +62,6 @@ function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken, hubDataDi
       ARENA_HOOK_TOKEN: hookToken,
       ARENA_AI_KIND: 'codex',
       ARENA_HUB_DATA_DIR: hubDataDir || process.env.CLAUDE_HUB_DATA_DIR || '',
-      SPIRIT_REGISTRY_ROOT: spiritRegistryRoot(),
       ...(options.enableChuxin ? { ARENA_CHUXIN_ENABLED: '1' } : {}),
     },
   };

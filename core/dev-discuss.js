@@ -12,7 +12,7 @@
  * 阶段字段放在 meeting.serialWorkflow.devPhase 里（和 devWorkbenchManual 同层）：
  * meeting-store 只持久化白名单字段，serialWorkflow 整个对象在白名单里，塞顶层会在重启后丢。
  *
- * 讨论提示词逐轮追加在 prompt 末尾（和英雄块一样），不能塞进 systemPrompt ——
+ * 讨论提示词逐轮追加在 prompt 末尾，不能塞进 systemPrompt ——
  * 后者只在成员首次进群时发一次，群聊从开工切回讨论时就没机会再告诉它「现在别改代码」。
  */
 (function (root, factory) {

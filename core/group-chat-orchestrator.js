@@ -236,7 +236,6 @@ const RESEARCH_SCENE_PROMPT = [
   '涉及具体 A 股、板块或买卖时机时，优先主动调用已注入的 stock_market(symbol)、stock_news(symbol)，stock_static(symbol) 仅在单只核心标的需要估值/基本面画像时再补。不要在同一轮对多只股票批量发 static+market；多股对比先 news 或至多 1-3 个 market，避免 MCP 客户端 120s 工具超时。',
   '涉及用户当前持仓、个股/板块旧记录、投资理念或交易纪律时，先调用 chuxin_context(topic) 读取初心个人上下文；它是用户历史记录，不是实时事实，当前价格、公告、财报和消息仍需用 stock_* 核验。',
   '只有问题涉及过去的加减仓、历史成本或曾经持有时才调用 chuxin_portfolio_history；只在用户明确说“记入初心/保存到初心/归档到初心”时调用 chuxin_inbox_add，并压缩成一条研究胶囊，禁止自动保存普通对话。',
-  '用户写“@英灵”、点名巴菲特/利弗莫尔镜头或要求英灵对抗时：先用 stock_* 补齐与该镜头有关的证据，再调用 spirit_prepare 生成统一 Lens Packet；所有席位按同一 rule_id 与 manifest_hash 发言。英灵只是有边界的方法论，禁止自称历史人物本人，也不得把英灵建议当成交易执行。',
   '只引用工具返回中能改变判断的关键字段；工具不可用或数据缺失时明确说未查到，不要凭记忆补数字。',
   'stock_static 返回的估值/基本面字段带 `confidence` 标签（HIGH/MEDIUM/LOW/CONFLICT/UNAVAILABLE，详细措辞规则见该工具 description），引用前先看 `_meta.warnings` 扫一眼非 HIGH 字段；CONFLICT/UNAVAILABLE 时 value=null，禁止编数值或填默认值。',
   '结论说明关键事实怎样改变判断；有数字用已核查的数字，无可靠量化时明确证据与限制。',
@@ -317,7 +316,7 @@ class GroupChatOrchestrator {
       attemptEvents: [],
       // Exact prompts prepared for the current in-flight turn.  Keeping this
       // durable makes a post-crash/manual resend faithful to the original
-      // system+delta+hero prompt instead of degrading to the raw user line.
+      // system+delta prompt instead of degrading to the raw user line.
       pendingPrompts: {},
       // 真实用户补充（群聊插话）的逐成员投递账本。见 appendUserSupplement 的注释。
       userSupplements: { pendingBySid: {}, deliveredBySid: {} },

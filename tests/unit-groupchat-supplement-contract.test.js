@@ -27,7 +27,7 @@ test('循环在跑时输入框不再调 loop:start，改走插话路径', () => 
   const branch = room.slice(room.indexOf('async function _routeLoopInput'), room.indexOf('function _startLoopWithGoal'));
   assert(/invoke\('loop:status'/.test(branch), '在不在跑要问主进程，不能信 renderer 缓存');
   assert(/_sendUserSupplement\(m, finalText, recipientSids\)/.test(branch), '在跑 → 按头像快照插话');
-  assert(/_startLoopWithGoal\(m, finalText, heroIdBySid\)/.test(branch), '没在跑 → 才是新任务');
+  assert(/_startLoopWithGoal\(m, finalText\)/.test(branch), '没在跑 → 才是新任务');
   assert(!/loop:start/.test(branch), '插话路径里不许再出现 loop:start');
 });
 test('普通串行执行期间的新输入也走插话，查询失败保留原文', () => {
