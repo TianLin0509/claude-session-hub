@@ -1,5 +1,13 @@
 # 账号与 AI 网页
 
+## 2026-10-08 凌晨 · 你的浏览器与 AI 浏览器分开（当前契约）
+
+实测（2026-10-08 02:30）：同一资料、同一 cookie、同一出口 IP（38.246.239.122），Hub 以调试端口加三个防后台降速参数启动时，人点「Verify you are human」无限循环；同一资料以普通方式启动（只带代理），不弹验证、直接是登录状态。没有任何调试客户端附着在那个页面上。人和工具共用一个调试模式的 Chrome，是人被反复验证的根因。
+
+- **AI 浏览器** = 原专属 Chrome（`C:\VibeData\HubChrome`）。生图、中转、圆桌、登录检查都在这里，绑定与配置一律不变。人在这里「给 AI 登录 / 过验证」时，以普通窗口启动，不带调试端口和三个参数（`launchArgs` 仅 `debug` 时加）。
+- **你的浏览器**（`core/personal-chrome.js`，`C:\VibeData\HubChromePersonal`）：账号页「打开」、GitHub、语雀用它。启动参数只有资料目录与 Hub 代理，与普通 Chrome 一致，自动化永不接触。首次打开时从 AI 浏览器整体复制（登录、书签、扩展、历史；跳过缓存、会话恢复；删除 `cf_clearance`、`__cf_bm`、`cf_chl_*`）。本机 Chrome 的 cookie 密钥在 `Local State`（DPAPI，同一 Windows 用户），复制后照常解密：已用真 Chrome 在临时资料上验证登录 cookie 值完整保留。复制需要 AI 浏览器关闭：空闲时自动关闭；有人用着窗口或工具在工作时，这次先在专属 Chrome 打开并说明。
+- 账号行状态指 **AI 浏览器** 的登录（MCP 能否用）。掉登录时按钮为「给 AI 登录」；更多菜单有「把我的登录复制给 AI」（你在自己的浏览器重新登录后，把 Cookies、Local Storage、IndexedDB、Session Storage 复制给 AI 浏览器，两边需关闭）。投研数据站点仍在 AI 浏览器登录，因为它们供工具导出 cookie。
+
 ## 2026-10-08 夜 · 自动化像一个克制的真人（用户要求「别触发风控、别封号」）
 
 依据：调研 `D:/AI-Artifacts/20261008-网页自动化风控调研-claude1-notes.md`、代码盘点 `D:/AI-Artifacts/20261008-网页自动化路径盘点-claude1.md`。

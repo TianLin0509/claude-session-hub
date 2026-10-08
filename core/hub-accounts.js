@@ -11,8 +11,11 @@ const ROUNDTABLE_PROVIDER = { chatgpt: 'chatgpt', google: 'gemini', deepseek: 'd
 const AUTO = { tickMs: 60000, firstMs: 3 * 60000, dueMs: 12 * 3600000, retryMs: 30 * 60000, recheckAfterMs: 90000, recheckEveryMs: 5 * 60000, recheckForMs: 3600000 };
 
 class HubAccounts {
-  constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectCookies, inspectLive = inspectAccounts, getToolCatalog } = {}) {
+  constructor({ hubChrome, personalChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectCookies, inspectLive = inspectAccounts, getToolCatalog } = {}) {
+    // The AI browser: the Hub Chrome every web tool drives. The person's own browser is a copy
+    // of it that automation never touches (personal-chrome.js).
     this.chrome = hubChrome || new HubChrome({ env, proxy: () => getConfig().proxy });
+    this.personal = personalChrome || new (require('./personal-chrome').PersonalChrome)({ env, proxy: () => getConfig().proxy });
     Object.assign(this, { getConfig, env, recovery, now, inspect, inspectLive, getToolCatalog });
     this.checking = null; this.progress = null; this.lastState = null;
     this.rechecks = new Map(); this.autoTried = 0; this.attention = null;
@@ -51,7 +54,11 @@ class HubAccounts {
     if (fixture?.recordOpens) {
       fs.appendFileSync(path.join(this.env.CLAUDE_HUB_HOME_DIR, 'external-open.jsonl'), JSON.stringify({ service, action, identity: 'main' }) + '\n');
       if (action === 'check') external.writeExternalState(this.chrome.root, service, { state: 'signed_in', account: 'fixture-github', source: 'fixture', checkedAt: this.now() });
-    } else if (action === 'open') await this.chrome.openWebsite('main', service);
+    } else if (action === 'open') {
+      // Research sites feed the AI tools' cookie export, so they are signed in there.
+      if (research) await this.chrome.openWebsite('main', service);
+      else await this.openPersonal('main', service);
+    }
     else if (action === 'check') {
       const isolated = this.env.CLAUDE_HUB_HOME_DIR || this.env.CLAUDE_HUB_DATA_DIR;
       if (isolated) throw Error('隔离实例不会核对或修改真实 GitHub 授权');
@@ -250,17 +257,46 @@ class HubAccounts {
     try { before = (await this.passiveState()).identities.find(i => i.id === identity)?.sites.find(s => s.key === site)?.health?.state || ''; } catch {}
     let opened;
     if (fixture?.recordOpens) {
-      fs.appendFileSync(path.join(this.env.CLAUDE_HUB_HOME_DIR, 'accounts-open.jsonl'), JSON.stringify({ identity, site, url: SITES[site].url }) + '\n');
+      fs.appendFileSync(path.join(this.env.CLAUDE_HUB_HOME_DIR, 'accounts-open.jsonl'), JSON.stringify({ identity, site, url: SITES[site].url, browser: login ? 'ai' : 'personal' }) + '\n');
     } else if (login) opened = await this.chrome.openLogin(identity, [site]);
-    else opened = await this.chrome.openWebsite(identity, site);
+    else opened = await this.openPersonal(identity, site);
     if (before !== 'ok') this.rechecks.set(identity + ':' + site, { identity, site, from: this.now() });
     this.lastState = null;
     let usageWarning = '';
     try { require('./hub-account-activity').recordActivity(this.chrome.root, { identity, site, outcome: 'opened', at: this.now() }); }
     catch { usageWarning = '；使用记录未保存'; }
-    const handoff = opened?.handoff ? '。网页工具已暂停，你关掉这个窗口后自动恢复（最多 15 分钟）' : '';
-    const shared = login && opened?.mode === 'shared' ? '。网页工具正在使用专属 Chrome，登录页开在它里面；若 Google 提示浏览器不安全，等工具空闲后再点一次去登录' : '';
-    return { identity, site, message: '已在 AI Hub 专属 Chrome 打开 ' + SITES[site].name + handoff + shared + usageWarning };
+    const name = SITES[site].name;
+    if (login) {
+      const shared = opened?.mode === 'shared' ? '；AI 工具正在用它，若网站提示浏览器不安全，等工具空闲后再点一次' : '';
+      return { identity, site, message: '已在 AI 浏览器打开 ' + name + ' 的登录页。登录或验证完成后关掉这个窗口，AI 工具就能继续用' + shared + usageWarning };
+    }
+    return { identity, site, message: (opened?.mode === 'personal' ? '已在你的浏览器打开 ' : '已在专属 Chrome 打开 ') + name + (opened?.note || '') + usageWarning };
+  }
+  // The person's own browser. Prepared on first use from the AI browser's profile (so every
+  // login is already there); that needs the AI browser closed for a few seconds.
+  async openPersonal(identity, siteKey) {
+    const url = this.chrome.site(siteKey).url;
+    let note = '';
+    if (!this.personal.ready()) {
+      try {
+        await this.personal.prepare(this.chrome);
+        note = '（第一次使用：已为你复制好一个独立的浏览器，登录都还在，AI 工具以后不会再碰它）';
+      } catch (e) {
+        if (!['HUB_WINDOW_OPEN', 'HUB_BROWSER_BUSY', 'HUB_NO_PROFILE'].includes(e.code)) throw e;
+        const opened = await this.chrome.openWebsite(identity, siteKey);
+        return { ...opened, note: '。你的独立浏览器要在专属 Chrome 关闭时才能准备好，这次先在专属 Chrome 打开' };
+      }
+    }
+    return { ...await this.personal.open(identity, [url]), note };
+  }
+  // The person signed in again in their browser: the AI browser gets the same logins.
+  async copyLogins({ identity = 'main' } = {}) {
+    await this.yieldCheck();
+    this.chrome.identity(identity);
+    const r = await this.personal.copyLoginsTo(this.chrome, identity);
+    this.lastState = null;
+    try { await this.startCheck({ identity }); await this.checking; } catch { /* the next routine check reads it */ }
+    return { ...(await this.passiveState()), message: '已把你浏览器里的登录复制给 AI 浏览器' + (r.scrubbed ? '（顺带清掉了 ' + r.scrubbed + ' 个网站验证记录）' : '') };
   }
   async login({ identity = 'main', site } = {}) {
     if (site) return this.open({ identity, site, login: true });

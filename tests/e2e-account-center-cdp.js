@@ -134,7 +134,7 @@ async function main() {
     await click('.ac-company[data-site="claude"] [data-ac="open"][data-identity="alt"]');
     await until('document.querySelector(".ac-company[data-site=claude] [data-identity=alt]").textContent.includes("打开过")', 'opened only, not validated login');
     assert.ok(!(await text('.ac-company[data-site="claude"]')).includes('已登录'));
-    assert.deepEqual(fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)[0], { site: 'claude', identity: 'alt', url: 'https://claude.ai/' });
+    assert.deepEqual(fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)[0], { site: 'claude', identity: 'alt', url: 'https://claude.ai/', browser: 'personal' });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: '1', code: 'Digit1', modifiers: 1, windowsVirtualKeyCode: 49 });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: '1', code: 'Digit1', modifiers: 1, windowsVirtualKeyCode: 49 });
     await until('document.querySelector(".ac-status").textContent.includes("ChatGPT")', 'Alt+1 opens ChatGPT');
@@ -146,7 +146,7 @@ async function main() {
     const badgeBefore = Number(await cdp.eval('document.querySelector("#accounts-attention").hidden ? 0 : document.querySelector("#accounts-attention").textContent'));
     activity.recordActivity(chromeRoot, { site: 'google', source: 'roundtable', outcome: 'login_required' });
     await until('document.querySelector(".ac-company[data-site=google] .ac-open[data-ac=login]")', 'real use login error actionable', 12000);
-    assert.match(await text('.ac-company[data-site="google"]'), /需要重新登录\s+刚刚 网页圆桌提示需要登录/);
+    assert.match(await text('.ac-company[data-site="google"]'), /AI 浏览器需要重新登录\s+刚刚 网页圆桌提示需要登录/);
     await until('Number(document.querySelector("#accounts-attention").textContent) === ' + (badgeBefore + 1) + ' && !document.querySelector("#accounts-attention").hidden', 'red sidebar badge counts the lost login', 12000);
     assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#accounts-attention")).backgroundColor'), 'rgb(229, 72, 77)');
     result.checks.push('更多菜单添加/默认账号、鼠标和 Alt+1 打开正确身份；夹具工具事件被动刷新并提示登录异常');

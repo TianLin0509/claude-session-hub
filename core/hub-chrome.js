@@ -338,7 +338,10 @@ class HubChrome {
       // timers are throttled and no animation frame runs, so a Playwright click waits forever
       // for the element to be stable (measured 2026-09-30 on the bridge's send button). Chrome
       // launched by Playwright carries the same three switches.
-      '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+      // Only for the debugging Chrome the tools drive. A window a person uses (debug false) gets
+      // none of them: the same profile launched without these passed Cloudflare at once while
+      // the debugging launch looped on "Verify you are human" (2026-10-08).
+      ...(debug ? ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'] : []),
       // Set an explicit visible state instead of restoring a parked off-screen window.
       // Measured on Windows Chrome: --window-position overrides --start-maximized,
       // for both the first launch and a new window in an already running browser.

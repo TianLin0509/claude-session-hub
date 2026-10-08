@@ -25,6 +25,7 @@ function registerHubAccountsIpc(ipcMain, accounts) {
     return accounts.setup.start(p.choices);
   }));
   ipcMain.handle('hub-accounts:open', wrap(p => accounts.open(selection(p))));
+  ipcMain.handle('hub-accounts:copy-logins', wrap(p => accounts.copyLogins({ identity: selection(p).identity })));
   ipcMain.handle('hub-accounts:preference', wrap(p => accounts.preference({ ...selection(p), add: p.add === true })));
   ipcMain.handle('hub-accounts:login', wrap(p => {
     if (p.identity !== undefined && (typeof p.identity !== 'string' || !/^[\w-]{1,32}$/.test(p.identity))) throw new Error('身份标识无效');
