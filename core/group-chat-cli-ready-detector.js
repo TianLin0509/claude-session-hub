@@ -110,7 +110,7 @@ const _onceTrue = new Set();    // sid → 一旦 true 永久锁
 //   _STRONG_MARKER_KINDS 含 marker → marker 命中 + buf ≥ MIN 即 ready（无静默期）
 //   其他 kind 含 marker → marker 命中 + 静默期双门
 //   不含 marker（空数组）→ 仅静默期
-function isReady(sessionId, kind, buf) {
+function isReady(sessionId, kind, buf, options = {}) {
   if (!sessionId) return false;
   if (_onceTrue.has(sessionId)) return true;
   const need = MARKERS[kind];
@@ -146,13 +146,18 @@ function isReady(sessionId, kind, buf) {
   // 稳定 = 画面末尾的文字不再变化。TUI 空闲时也会重画同一屏（光标闪烁、同步刷新），
   // 字节长度一直在涨，用长度判稳定对 Claude / Codex 永远不成立。
   const signature = buf.slice(-240).replace(/\s+/g, ' ');
+  // 2026-10-09：稳定窗口原来从「第一次来问」才开始计时，CLI 早已安静几秒也要再干等
+  //   1.5s（新会话第一条消息实测点发送后 1541ms 才开始写）。调用方给出 PTY 最后一次
+  //   输出的时刻：那之后没有任何字节进来，画面必然没变，这段时间同样算稳定。
+  const quietFor = Number(options.lastOutputAt) > 0 ? Date.now() - Number(options.lastOutputAt) : 0;
   let st = _stableState.get(sessionId);
   if (!st) {
     _stableState.set(sessionId, { signature, lastChangeTs: Date.now() });
+    if (quietFor >= STABLE_MS) { _onceTrue.add(sessionId); return true; }
     return false;
   }
   if (signature === st.signature) {
-    const ready = (Date.now() - st.lastChangeTs) >= STABLE_MS;
+    const ready = Math.max(Date.now() - st.lastChangeTs, quietFor) >= STABLE_MS;
     if (ready) _onceTrue.add(sessionId);
     return ready;
   } else {
