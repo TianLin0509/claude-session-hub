@@ -34,6 +34,7 @@ const {
   computeSettleMs,
   writeBracketedPaste,
   waitForPasteSettled,
+  echoNeedle,
   snapshotPasteMarker,
   pasteStillInInputBox,
   hasPromptInInputLine,
@@ -378,7 +379,8 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
   const readyKind=isCodexCliKind(kind) ? 'codex' : isCodeAgentKind(kind) ? 'codeagent' : isClaudeFamily(kind) ? 'claude' : String(kind).replace(/-resume$/,'');
   while (Date.now() - start < maxMs) {
     const buf = sessionManager.getSessionBuffer(sid) || '';
-    if (cliReadyDetector.isReady(sid, readyKind, buf)) return true;
+    // Time the CLI has already been silent counts toward the stable window.
+    if (cliReadyDetector.isReady(sid, readyKind, buf, { lastOutputAt: sessionManager.getGroupChatLastActivity?.(sid) || 0 })) return true;
     await new Promise(r => setTimeout(r, 100));
   }
   return false;
@@ -590,7 +592,12 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
         minMs: Number(_deps && _deps.bracketedPasteSettleMinMs) || undefined,
         maxMs: Number(_deps && _deps.bracketedPasteSettleMaxMs) || undefined,
       });
-    await waitForPasteSettled({ sessionManager, sid, settleMs: pasteSettleMs, baselineMarker });
+    // The CLI drawing the end of this message is the earliest proof it consumed
+    // the paste; the size-based settle stays as the ceiling when it never shows.
+    await waitForPasteSettled({ sessionManager, sid, settleMs: pasteSettleMs, baselineMarker,
+      echoNeedle: usedCodexEditorInput ? null : echoNeedle(prompt),
+      readOutputSince: typeof sessionManager.getSessionOutputSince === 'function'
+        ? () => sessionManager.getSessionOutputSince(sid, outputMarkBefore) : null });
     if (options.shouldSubmit && !options.shouldSubmit()) return {ok:false,notSent:true,reason:'派工已暂停或取消，本条未提交'};
     if (options.submissionReceipt?.resolved) return alreadySubmitted();
     // One Enter first.  Extra Enters are conditional on the absence of a
