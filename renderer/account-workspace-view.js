@@ -65,9 +65,13 @@ function handoffHtml(risk, esc) {
 // The image MCP in one sentence: which route draws right now.
 function imageServiceHtml(images, esc) {
   if (!images) return '';
-  const webReady = images.web?.some(w => w.ready), codexReady = !!images.codex?.ready;
+  const enabled = (images.web || []).filter(w => w.enabled);
+  const webAble = enabled.some(w => w.able ?? w.ready), codexReady = !!images.codex?.ready;
   const order = images.codex?.preferred ? 'Codex 优先、网页兜底' : '网页优先、Codex 兜底';
-  const now = webReady && !(images.codex?.preferred && codexReady) ? '现在走 ChatGPT 网页' : codexReady ? '现在走 Codex' + (images.web?.length && !webReady ? '（网页账号暂不可用）' : '') : '暂时没有可用通道';
+  const retryAt = Math.min(...enabled.map(w => w.retryAt || Infinity));
+  const retry = Number.isFinite(retryAt) ? '，' + (retryAt <= Date.now() ? '下次有生图任务时' : new Date(retryAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' 后有生图任务时') + '自动再试网页' : '';
+  const now = webAble && !(images.codex?.preferred && codexReady) ? '现在走 ChatGPT 网页'
+    : codexReady ? '现在走 Codex' + (enabled.length && !webAble ? '（ChatGPT 网页被网站验证拦住' + retry + '）' : '') : '暂时没有可用通道';
   return `<p class="ac-connection-notice ac-image-status" role="status">${esc('生图 MCP：' + order + ' · ' + now)}</p>`;
 }
 // One line per account: the verdict, then where it came from.
@@ -113,7 +117,7 @@ function aiHtml(state, query, esc, now = Date.now()) {
         return `<div class="ac-account" data-identity="${a.identity}"><div class="ac-account-title">${brandIcon(card, esc, true)}<strong>${esc(card.product)}</strong><span class="ac-account-name">${esc(a.account === '账号待确认' ? a.label : a.account)}</span>${a.preferred ? '<span class="ac-default">默认</span>' : ''}</div>
           <div class="ac-usage ${checking ? 'idle' : view.tone}" data-health="${esc(a.health?.state || 'unknown')}"><span>${esc(checking ? '正在后台确认登录…' : view.text)}</span>${view.detail ? `<small>${esc(view.detail)}</small>` : ''}${detail.html}</div><div class="ac-row-actions"><button class="ac-open" data-ac="${view.action}" data-site="${card.site}" data-identity="${a.identity}" aria-label="${esc(view.button)} ${esc(card.product)} ${esc(a.label)}">${view.button} ↗</button>
           ${canRecover ? `<button class="ac-text-btn" data-ac="recover" data-site="${card.site}" data-identity="${a.identity}">复核并继续原任务</button>` : ''}
-          <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div><button data-ac="recheck" data-site="${card.site}" data-identity="${a.identity}">立即确认登录</button>${view.action === 'login' ? `<button data-ac="open" data-site="${card.site}" data-identity="${a.identity}">在你的浏览器打开</button>` : `<button data-ac="login" data-site="${card.site}" data-identity="${a.identity}">给 AI 重新登录</button>`}<button data-ac="copy-logins" data-site="${card.site}" data-identity="${a.identity}" title="你在自己的浏览器里重新登录过时用：把登录复制给 AI 浏览器">把我的登录复制给 AI</button>${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : ''}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
+          <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div><button data-ac="recheck" data-site="${card.site}" data-identity="${a.identity}">立即确认登录</button>${view.action === 'login' ? `<button data-ac="open" data-site="${card.site}" data-identity="${a.identity}">在你的浏览器打开</button>` : `<button data-ac="login" data-site="${card.site}" data-identity="${a.identity}">${a.health?.automation ? '帮 AI 过网站验证' : '给 AI 重新登录'}</button>`}<button data-ac="copy-logins" data-site="${card.site}" data-identity="${a.identity}" title="你在自己的浏览器里重新登录过时用：把登录复制给 AI 浏览器">把我的登录复制给 AI</button>${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : ''}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
       }).join('')}</article>`;
   }).join('') || '<p class="ac-empty">没有匹配的账号</p>');
 }

@@ -60,8 +60,12 @@ test('row wording: one verdict, one source, and the matching button', () => {
   assert.equal(healthView({ state: 'attention', problem: { kind: 'signed_out', by: 'cookie', at: NOW - H } }, NOW).detail, '1 小时前 本机登录记录已失效');
   assert.equal(healthView({ state: 'unknown' }, NOW).text, '未确认');
   const esc = s => String(s);
-  assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ ready: false }] }, esc), /网页优先、Codex 兜底 · 现在走 Codex（网页账号暂不可用）/);
-  assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ ready: true }] }, esc), /现在走 ChatGPT 网页/);
+  const retryAt = new Date(2026, 9, 8, 14, 30).getTime();
+  assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ enabled: true, able: false, ready: false, retryAt }] }, esc),
+    /网页优先、Codex 兜底 · 现在走 Codex（ChatGPT 网页被网站验证拦住，10\/8 14:30 后有生图任务时自动再试网页）/);
+  assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ enabled: true, able: true, ready: false }] }, esc), /现在走 ChatGPT 网页/,
+    'an idle lane sleeps and wakes for work: it still serves');
+  assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ enabled: false, able: false }] }, esc), /现在走 Codex<\/p>/, 'switched-off lanes are not reported as blocked');
 });
 
 function setup(t, inspect) {
@@ -177,4 +181,13 @@ test('a ChatGPT check loads one page and reads the session endpoint at most twic
   const r = await chrome.chatgptCheck('main');
   assert.deepEqual(r, { state: 'signed_in', account: '' });
   assert.equal(opened, 1); assert.equal(sessionReads, 2); assert.equal(closed, 1);
+});
+test('a verification wall offers to help the AI past it from the row menu', () => {
+  const { aiHtml } = require('../renderer/account-workspace-view');
+  const esc = s => String(s);
+  const state = { identities: [{ id: 'main', label: '主', sites: [{ key: 'chatgpt', name: 'ChatGPT', state: 'signed_in', checkedAt: NOW, verified: true,
+    health: { state: 'ok', syncedAt: NOW, syncedBy: 'cookie', automation: { by: 'images', at: NOW - H } } }] }], preferences: { sites: {} } };
+  const html = aiHtml(state, '', esc, NOW);
+  assert.match(html, /data-ac="login"[^>]*>帮 AI 过网站验证</);
+  assert.match(html, /生图遇到网站验证；你自己使用不受影响/);
 });
