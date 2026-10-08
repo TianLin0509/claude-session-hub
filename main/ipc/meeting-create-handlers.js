@@ -189,7 +189,6 @@ function createMeetingSubAdder(deps) {
           ARENA_AI_KIND: 'gemini',
           ARENA_HUB_DATA_DIR: hubDataDir,
           ARENA_CHUXIN_ENABLED: '1',
-          SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(require('os').homedir(), 'spirit-lens-registry'),
         };
       } else if (isCodexBaseKind(kind) && codexMcpEnabled) {
         sessionOpts.codexBypassApprovals = true;

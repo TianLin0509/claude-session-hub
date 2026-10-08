@@ -31,7 +31,7 @@ test('one real MCP process follows control transfer after the first Hub server c
       writeControlFile({pid,dataDir:root,hookPort:server.address().port,token:'secret-'+pid});
     }
     route.update({hubPid:101},true);
-    child=spawn(process.execPath,[script],{windowsHide:true,env:{...process.env,ARENA_MEETING_ID:'room',ARENA_HUB_ROUTE_FILE:route.file,ARENA_HUB_DATA_DIR:root,SPIRIT_REGISTRY_ROOT:path.join(root,'spirits')}});
+    child=spawn(process.execPath,[script],{windowsHide:true,env:{...process.env,ARENA_MEETING_ID:'room',ARENA_HUB_ROUTE_FILE:route.file,ARENA_HUB_DATA_DIR:root}});
     const replies=new Map();let errors='';child.stderr.on('data',chunk=>errors+=chunk);
     require('node:readline').createInterface({input:child.stdout}).on('line',line=>{const response=JSON.parse(line);replies.set(response.id,response);});
     async function call(id){child.stdin.write(JSON.stringify({jsonrpc:'2.0',id,method:'tools/call',params:{name:'stock_static',arguments:{symbol:'000001'}}})+'\n');const end=Date.now()+5000;while(!replies.has(id)&&Date.now()<end)await new Promise(r=>setTimeout(r,10));assert(replies.has(id),errors);return replies.get(id);}

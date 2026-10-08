@@ -171,7 +171,6 @@ function createResumeSessionHandler(deps) {
             ARENA_AI_KIND: 'gemini',
             ARENA_HUB_DATA_DIR: hubDataDir,
             ARENA_CHUXIN_ENABLED: '1',
-            SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry'),
           };
         } else if (isCodexRuntime && codexMcpEnabled) {
           resumeOpts.codexBypassApprovals = true;

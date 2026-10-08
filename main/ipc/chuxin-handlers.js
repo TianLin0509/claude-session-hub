@@ -219,7 +219,6 @@ function registerChuxinIpc(ipcMain, deps = {}) {
         ARENA_HOOK_TOKEN: hookToken,
         ARENA_AI_KIND: 'kimi',
         ARENA_HUB_DATA_DIR: hubDataDir,
-        SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry'),
       };
     }
     return options;
