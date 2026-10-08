@@ -487,6 +487,12 @@ function registerSessionIpc(ipcMain, deps) {
     return sessionManager.getAllSessions();
   });
 
+  // 公司电脑上装了 CodeAgent 时，新建会话 / 群聊默认用它（只查文件是否存在，不代表已登录）。
+  ipcMain.handle('codeagent:available', () => {
+    try { return { installed: require('../../core/codeagent-config').isCodeAgentInstalled() }; }
+    catch (error) { return { installed: false, error: error.message }; }
+  });
+
   ipcMain.handle('debug:get-session-buffer', (_e, sessionId) => {
     return sessionManager.getSessionBuffer(sessionId);
   });

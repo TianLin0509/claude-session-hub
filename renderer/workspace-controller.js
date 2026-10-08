@@ -1193,7 +1193,7 @@
 
   function openNewSessionModal(options = {}) {
     if (!menuEl) return;
-    selectedKind = KIND_LABELS[options.kind] ? options.kind : 'claude';
+    selectedKind = KIND_LABELS[options.kind] ? options.kind : require('./codeagent-preference').preferredKind(Object.keys(KIND_LABELS));
     const requestedWorkspace = options.workspace && typeof options.workspace.path === 'string'
       ? { ...options.workspace }
       : null;
@@ -1386,6 +1386,7 @@
       if (workspaceMode === 'scratch') workspace = await createScratch('未命名任务');
       else if (workspaceMode === 'default') workspace = await createDefaultWorkspace('未命名任务');
       const session = await createSession(selectedKind, { workspace, opts: tuningOpts() });
+      require('./codeagent-preference').rememberKind(selectedKind);
       closeNewSessionModal();
       return session;
     } catch (error) {
@@ -1401,6 +1402,13 @@
   function init() {
     menuEl = document.getElementById('new-session-menu');
     if (!menuEl) return;
+    // 装了 CodeAgent 的电脑（公司内网）：把它排到会话类型第一位，默认选中它（见 renderer/codeagent-preference.js）。
+    void require('./codeagent-preference').refresh(ipcRenderer).then(installed => {
+      if (!installed) return;
+      const grid = menuEl.querySelector('.session-kind-grid');
+      const button = grid && grid.querySelector('.new-session-option[data-kind="codeagent"]');
+      if (grid && button && grid.firstElementChild !== button) grid.insertBefore(button, grid.firstElementChild);
+    });
 
     document.getElementById('new-session-account')?.addEventListener('change', async event => {
       if (accountSaving) return;

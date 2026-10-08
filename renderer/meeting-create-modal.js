@@ -236,7 +236,7 @@ function _normalizeSlotSpec(spec = {}) {
 }
 
 function _cloneSlots(slots) {
-  return (slots || DEFAULT_GROUP_MEMBERS).map(x => _normalizeSlotSpec(x));
+  return (slots || require('./codeagent-preference').defaultGroupMembers(DEFAULT_GROUP_MEMBERS)).map(x => _normalizeSlotSpec(x));
 }
 
 function _renderSceneChoices(activeId = 'general') {
@@ -270,7 +270,8 @@ function _applyScene(sceneId, opts = {}) {
   const scene = SCENES.find(s => s.id === sceneId) || SCENES[0];
   _currentMode = scene.id;
   if (opts.resetSlots) {
-    _groupSlots = _cloneSlots(DEFAULT_GROUP_MEMBERS);
+    // 装了 CodeAgent 的电脑默认两名 CodeAgent 成员（GLM + MiniMax），见 renderer/codeagent-preference.js。
+    _groupSlots = _cloneSlots(require('./codeagent-preference').defaultGroupMembers(DEFAULT_GROUP_MEMBERS));
     _renderSlots();
   }
   const titleInput = _modalEl && _modalEl.querySelector('#mcm-title-input');

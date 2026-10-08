@@ -82,7 +82,9 @@ class AccountCenter {
   scope(row){const c=this.getConfig();const credential=row.provider==='server'?c.operations?.aliyunMonitor?.bearerToken:row.type==='api'?c[row.provider+'ApiKey']:'';return row.id+':'+(row.home || '')+':'+(credential?crypto.createHash('sha256').update(String(credential)).digest('hex'):'');}
   // Cheap local probes, plus anything with a login window currently open: while the user is
   // finishing an official login we poll that one connection so nobody has to press a check button.
-  autoCheck(row){return !!row.managedBrowser||row.type==='native'&&['claude','codex'].includes(row.provider)||row.provider!=='images'&&row.action==='login'&&this.leaseActive(row);}
+  // 社区版（同事电脑）不自动读取本机已登录的 CLI 账号：只有用户点了「检查 / 登录」才查（2026-10-08 公司验收后用户要求）。
+  // 用户自己刚打开的登录窗口仍会自动复查，免得登录完还要再点一次。
+  autoCheck(row){if(require('./distribution').community)return row.action==='login'&&this.leaseActive(row);return !!row.managedBrowser||row.type==='native'&&['claude','codex'].includes(row.provider)||row.provider!=='images'&&row.action==='login'&&this.leaseActive(row);}
   // Asking these costs a browser: the bridge launches one to read the page, and the image
   // pool's check can only be serviced by a running lane. Their own records already say what
   // we would learn, so a status refresh reads those instead of starting anything.
@@ -113,6 +115,10 @@ class AccountCenter {
     }));
     const connections=rows.map(row=>{
       const key=this.scope(row),cached=this.read(key);
+      if(require('./distribution').community&&row.type==='native'&&!cached){
+        const {home,observation:unused,...safe}=row;
+        return {...safe,signedInAt:0,accountLabel:'',state:'unknown',message:'未检查：点「检查」读取这台电脑上的登录状态，或点「登录」用你自己的账号登录',webRecovery:[],stale:false};
+      }
       const observation=(row.observation && (!cached || row.observation.observedAt>cached.observedAt) ? row.observation : cached) || row.observation || {state:row.configured?'configured':'unknown',message:row.action==='configure'?(row.configured?'密钥已配置，尚未验证有效性':row.provider==='server'?'尚未配置密钥；公开监控端点可以不需要授权':'尚未配置密钥'):'尚未检查；可点登录或刷新状态',observedAt:0,source:'配置发现'};
       // Once the owning tool reports a login there is nothing left to wait for, even when the
       // proof came from its own listing instead of our check — drop the admission we took.

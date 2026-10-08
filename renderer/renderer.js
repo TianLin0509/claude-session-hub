@@ -1488,7 +1488,7 @@ function getOrCreateTerminal(sessionId) {
   }
   const terminal = new Terminal({
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
-    ...resolveXtermOptions(document.documentElement.getAttribute('data-theme')),
+    ...resolveXtermOptions(document.documentElement.getAttribute('data-theme'), sessions.get(sessionId)?.kind),
     fontSize: currentTerminalFontSize,
     lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.16 : 1.04,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
@@ -1780,6 +1780,8 @@ function getOrCreateTerminal(sessionId) {
 
   const cached = {
     terminal, fitAddon, searchAddon, container, opened: false,
+    // 换主题时按会话种类重选终端配色（见 theme-controller.resolveXtermOptions）。
+    kind: sessions.get(sessionId)?.kind || '',
     _codexFollowBottom: true,
     _hydrated: false,
     _hydrating: false,

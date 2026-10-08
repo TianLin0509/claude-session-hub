@@ -22,7 +22,8 @@ const CURSOR_MARKERS = ['❯', '›', '▶', '>'];
 const MAX_MENU_DISTANCE = 8;
 
 const TRUST_PROMPT_RE = /(?:quick\s+safety\s+check|accessing\s+workspace|do\s+you\s+trust)/i;
-const CONFIRM_HINT_RE = /(?:enter\s+to\s+confirm|to\s+confirm)/i;
+// 公司 Code Agent 的同款信任框底栏写作 "Select option ↑ ↓ | Confirm Enter | No, exit Esc"，默认高亮 Yes（2026-10-08 公司真机）。
+const CONFIRM_HINT_RE = /(?:enter\s+to\s+confirm|to\s+confirm|confirm\s+enter)/i;
 // 只匹配选项那一行的措辞。正文段落写的是 "or one you trust?" / "in this folder
 // first."，两边都不连续，不会误命中。
 const TRUST_OPTION_RE = /trust\s+(?:this\s+folder|the\s+files)/i;

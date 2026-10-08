@@ -2,6 +2,9 @@
 
 const http = require('http');
 const https = require('https');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
 const {
   formatBranchSessionTitle,
   isGenericAutoSessionTitle: isGenericAutoSessionTitleForKinds,
@@ -94,6 +97,71 @@ function createAutoTitleManager(deps) {
     return String(raw || '').replace(/["'“”‘’\r\n]/g, '').trim().slice(0, 30);
   }
 
+  // 公司内网没有外部模型 API：用 CodeAgent 的单次问答模式（--print）起名，走使用者自己的登录，
+  // 不需要任何 Key（2026-10-08 公司真机验收后用户提出）。异步执行，实测 30–90 秒，先用兜底名占位。
+  // 不留会话记录（--no-session-persistence）；不带 Hub/CodeTeam 的会话变量，两边的 hook 都会直接退出。
+  function codeAgentTitleAvailable() {
+    if (getHubConfig().deepseekApiKey) return false;
+    try { return require('../core/codeagent-config').isCodeAgentInstalled(); } catch { return false; }
+  }
+
+  function generateTitleViaCodeAgent(text, scope = 'session', timeoutMs = 150000) {
+    const { resolveCodeAgentConfig, commandHead, DEFAULT_MODEL } = require('../core/codeagent-config');
+    const config = resolveCodeAgentConfig(process.env);
+    // 起名只需要问题的大意：压成一行并去掉 cmd 会解释的字符，作为单个参数安全地穿过 .bat 包装。
+    const brief = String(text || '').replace(/[\r\n\t]+/g, ' ').replace(/["%^&|<>`]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!brief) return Promise.resolve('');
+    const ask = scope === 'meeting'
+      ? `给下面这个 AI 群聊话题起一个中文标题，不超过 10 个字，只输出标题本身，不要引号和解释：${brief}`
+      : `给下面这个对话起一个中文标题，不超过 10 个字，只输出标题本身，不要引号和解释：${brief}`;
+    const env = { ...process.env, [config.configDirEnv]: config.configDir };
+    for (const key of Object.keys(env)) {
+      if (/^CLAUDE_HUB_(SESSION_ID|PORT|TOKEN)$/.test(key) || /^CODEAGENT_HUB_/.test(key) || key === 'CODEAGENT3_LAUNCHER_PID') delete env[key];
+    }
+    const cwd = path.join(os.tmpdir(), 'ai-hub-auto-title');
+    try { require('fs').mkdirSync(cwd, { recursive: true }); } catch {}
+    const head = /^[A-Za-z0-9_.-]+$/.test(config.command) ? config.command : `"${config.command}"`;
+    const line = `${head} --print --output-format text --disable-update --skip-safe-check --no-session-persistence --effort low --model ${DEFAULT_MODEL} "${ask}"`;
+    void commandHead;
+    return new Promise(resolve => {
+      let out = '';
+      let child;
+      try { child = spawn(line, { cwd, env, shell: true, windowsHide: true }); }
+      catch (error) { console.warn('[auto-title] codeagent spawn failed:', error.message); resolve(''); return; }
+      const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
+      child.stdout.on('data', d => { out += d; if (out.length > 20000) out = out.slice(-20000); });
+      let err = '';
+      child.stderr.on('data', d => { err = (err + d).slice(-2000); });
+      child.on('error', () => {});
+      child.on('close', code => {
+        clearTimeout(timer);
+        if (code !== 0) console.warn('[auto-title] codeagent exited ' + code + ': ' + String(err || out).trim().slice(-300));
+        resolve(code === 0 ? cleanCodeAgentTitle(out) : '');
+      });
+    });
+  }
+
+  function cleanCodeAgentTitle(raw) {
+    // 输出前面可能粘着「扩展初始化中：<插件路径>.mjs」（公司实测），取最后一行有效文字。
+    const lines = String(raw || '').replace(/扩展初始化中：\S*?\.m?js/g, '\n').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const last = lines.length ? lines[lines.length - 1] : '';
+    const title = last.replace(/^(?:标题|题目)[:：]\s*/, '').replace(/["'“”‘’《》「」\[\]*#`]/g, '').trim();
+    return title.length >= 2 ? title.slice(0, 16) : '';
+  }
+
+  // 兜底名已经写上之后，再用 CodeAgent 生成正式名字；用户改过名或标题已被别处改动就放弃。
+  function refineTitleViaCodeAgent({ text, scope, read, write }) {
+    if (!codeAgentTitleAvailable()) return;
+    const before = read();
+    if (!before || before.userRenamed) return;
+    const placeholder = before.title;
+    void generateTitleViaCodeAgent(text, scope).then(title => {
+      const current = read();
+      if (!title || !current || current.userRenamed || current.title !== placeholder) return;
+      write(title);
+    }).catch(error => console.warn('[auto-title] codeagent title failed:', error && error.message));
+  }
+
   function isAutoTitleSessionKind(kind) {
     const base = String(kind || '').replace(/-resume$/, '');
     return autoTitleBaseKinds.has(base);
@@ -148,6 +216,7 @@ function createAutoTitleManager(deps) {
         const current = sessionManager.getSession(hubSessionId);
         if (!current || current.userRenamed || current.meetingId
             || current.title !== originalTitle || current.kind !== originalKind) return;
+        const usedFallback = !title;
         if (!title) title = fallbackSessionTitleFromPrompt(text, (latest.kind || '').replace(/-resume$/, ''));
         if (!title) return;
         const wasPendingBranch = !!latest.branchAutoTitlePending;
@@ -162,6 +231,13 @@ function createAutoTitleManager(deps) {
         if (updated) {
           sendToRenderer('session-updated', { session: updated });
           syncPendingBranchTitlesFromSource(hubSessionId, title);
+          if (usedFallback && !wasPendingBranch) {
+            refineTitleViaCodeAgent({ text, scope: 'session', read: () => sessionManager.getSession(hubSessionId),
+              write: refined => {
+                const renamed = sessionManager.updateSessionMeta(hubSessionId, { title: refined, autoTitleGenerated: true });
+                if (renamed) { sendToRenderer('session-updated', { session: renamed }); syncPendingBranchTitlesFromSource(hubSessionId, refined); }
+              } });
+          }
           // A branch shares the parent's cwd. Renaming that workspace from a
           // child prompt would unexpectedly relabel the parent and siblings.
           if (workspaceService && updated.cwd && !updated.branchSourceSessionId) {
@@ -197,6 +273,7 @@ function createAutoTitleManager(deps) {
         }
         const current = meetingManager.getMeeting(meetingId);
         if (!current || current.userRenamed || current.autoTitleGenerated || current.title !== originalTitle) return;
+        const usedFallback = !title;
         if (!title) title = fallbackMeetingTitleFromPrompt(text, latest);
         if (!title) return;
         const updated = meetingManager.updateMeeting(meetingId, {
@@ -206,6 +283,13 @@ function createAutoTitleManager(deps) {
         });
         if (updated) {
           sendToRenderer('meeting-updated', { meeting: updated });
+          if (usedFallback) {
+            refineTitleViaCodeAgent({ text, scope: 'meeting', read: () => meetingManager.getMeeting(meetingId),
+              write: refined => {
+                const renamed = meetingManager.updateMeeting(meetingId, { title: refined, autoTitleGenerated: true });
+                if (renamed) sendToRenderer('meeting-updated', { meeting: renamed });
+              } });
+          }
           if (workspaceService && updated.workspace) {
             const workspace = workspaceService.updateSuggestedName(updated.workspace, title);
             if (workspace) {
@@ -222,6 +306,8 @@ function createAutoTitleManager(deps) {
   }
 
   return {
+    cleanCodeAgentTitle,
+    generateTitleViaCodeAgent,
     fallbackMeetingTitleFromPrompt,
     fallbackSessionTitleFromPrompt,
     isGenericAutoMeetingTitle,
