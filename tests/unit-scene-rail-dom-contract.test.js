@@ -100,7 +100,7 @@ test('搬家保留了 data-* 入口与可访问名', () => {
   assert.match(rail, /id="btn-study"[^>]*data-study-entry/);
   assert.match(rail, /id="btn-ran"[^>]*data-ran-entry/);
   // 文案常驻显示，tooltip 用原 title
-  for (const [id, label] of [['btn-home', '工作台'], ['btn-research', '投研'], ['btn-study', '学习'], ['btn-ran', '开发']]) {
+  for (const [id, label] of [['btn-home', '主页'], ['btn-research', '投研'], ['btn-study', '学习'], ['btn-ran', '开发']]) {
     assert.ok(rail.includes('<span class="btn-label">' + label + '</span>'), id + ' 的 btn-label 应当保留');
   }
   assert.match(rail, /id="btn-home"[^>]*title="/);

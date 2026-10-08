@@ -14,8 +14,6 @@ function installNavigationOrder(doc = globalThis.document) {
   if (!list || list.dataset.orderInstalled) return;
   list.dataset.orderInstalled = 'true';
   const win = doc.defaultView, rail = doc.getElementById('scene-rail');
-  const memo = doc.getElementById('btn-quick-memo');
-  if (memo) list.append(memo);
   const buttons = [...list.querySelectorAll('.btn-shell-nav')].filter(e => !e.hidden);
   const ids = buttons.map(e => e.id), byId = new Map(buttons.map(e => [e.id, e]));
   let storage, saved;
