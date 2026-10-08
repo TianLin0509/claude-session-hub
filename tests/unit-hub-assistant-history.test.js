@@ -29,3 +29,5 @@ test('current native evidence never erases that session historical window or key
   const queried=service.context({now:110000,query:'独角鲸旧业务决定'});
   assert(queried.sources.some(s=>s.text==='独角鲸旧业务决定'));
 });
+
+test('interest selection retains user questions even when newer agent reports exhaust the normal budget',t=>{const {index,history}=fixture(t);index.replaceSource(source('interest',[{scope:'user',text:'Agent上下文压缩为什么会丢信息',timestamp:90000},...Array.from({length:10},(_,i)=>({text:'很长的运行报告'.repeat(800),timestamp:100000+i}))]));const normal=history.context({now:110000,maxChars:2000});assert.equal(normal.sources.some(s=>s.role==='user'),false);const interest=history.context({now:110000,maxChars:2000,userOnly:true});assert.equal(interest.sources.length,1);assert.equal(interest.sources[0].text,'Agent上下文压缩为什么会丢信息');assert.equal(interest.sources[0].role,'user');});

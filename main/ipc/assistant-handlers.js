@@ -5,6 +5,7 @@ function registerAssistantIpc(ipcMain,deps){
   const service=new AssistantService(deps);
   ipcMain.on('assistant:session-view',(_event,packet)=>service.setSessionViews(packet));
   for(const [name,handler] of Object.entries({
+    'session-cards':request=>service.sessionCards(request),
     'workbench':request=>request.refresh?service.workbench.refresh():service.workbench.snapshot(),
     'workbench-context':request=>({ok:true,text:service.workbench.context(request)}),
     'workbench-action':request=>service.workbench.action(request),

@@ -31,16 +31,16 @@ class AssistantService {
     this.liveHistory=new (require('./final-readers').AssistantFinalReaders)(deps);
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
     this.dialog=new (require('./dialog-log').DialogLog)(path.join(deps.dataDir,'assistant'));
-    this.reminders=new (require('./reminders').AssistantReminders)({store:this.store,isOwner:()=>this.ownsAssistant(),onFire:r=>this.fireReminder(r),onReschedule:r=>{try{this.deps.onReminderChanged?.({action:'set',reminder:r});}catch{}}});
+    this.reminders=new (require('./reminders').AssistantReminders)({store:this.store,isOwner:()=>this.ownsTimers(),onFire:r=>this.fireReminder(r),onReschedule:r=>{try{this.deps.onReminderChanged?.({action:'set',reminder:r});}catch{}}});
     // 提醒检查不能因数据库已关闭等异常把进程带崩（测试结束、Hub 退出时）。
     // 备忘清单：助理写入、田哥在助理页和手机上看与改；有时间的联动到点提醒，每晚 21:00 推一次清单。
-    this.memos=new (require('./memos').AssistantMemos)({store:this.store,reminders:this.reminders,isOwner:()=>this.ownsAssistant(),onChange:memo=>{try{this.deps.onMemosChanged?.(memo);}catch{}},onDigest:d=>this.watches.addNotice({id:d.id,title:'备忘清单',kind:'memo-digest',label:'晚间备忘',text:d.text})});
+    this.memos=new (require('./memos').AssistantMemos)({store:this.store,reminders:this.reminders,isOwner:()=>this.ownsTimers(),onChange:memo=>{try{this.deps.onMemosChanged?.(memo);}catch{}},onDigest:d=>this.watches.addNotice({id:d.id,title:'备忘清单',kind:'memo-digest',label:'晚间备忘',text:d.text})});
     if(!deps.noReminderTimer)setTimeout(()=>{try{this.reminders.schedule();this.memos.schedule();}catch(e){console.warn('[assistant] reminders',e.message);}},3000).unref?.();
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
     this.ledger=new (require('./ledger').AssistantLedger)(path.join(deps.dataDir,'assistant','ledger'),{read:(meta,options)=>this.liveHistory.read(meta,options)});
     this.workbench=new (require('./workbench').AssistantWorkbench)({assistant:this});
     this.secretary=new (require('./daily-secretary').DailySecretary)({assistant:this});
-    if(!deps.noReminderTimer)setTimeout(()=>this.secretary.schedule(),4000).unref?.();
+    if(!deps.noReminderTimer){require('./timer-owner').claimTimers(this.store);setTimeout(()=>this.secretary.schedule(),4000).unref?.();}
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>{try{this.logDialog({id:'notice:'+notice.id,role:'assistant',lane:'notice',by:notice.title||'提醒',text:notice.text||''});}catch{}this.deps.onAssistantNotification?.(notice);}});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
@@ -55,6 +55,8 @@ class AssistantService {
   assistantIds(){return Object.values(backends.bindings(this.store));}
   captureContinuity(){for(const id of this.assistantIds()){const meta=this.sessionMetadata(id);if(!meta)continue;for(const row of this.liveHistory.read(meta).records)this.continuity.add({...row,provider:meta.kind,timestamp:row.timestamp||Date.now()});}}
   liveInventory(){return this.sessions().map(s=>{const result=s.isOpen?this.liveHistory.read(s):null;return{...s,nativeSessionId:nativeId(s),latestFinal:result?.records.at(-1)||null,liveIssue:result?.issue||null};});}
+  get videos(){if(!this._videos)this._videos=new (require('./video-studio').VideoStudio)({assistant:this});return this._videos;}
+  sessionCards(request){return require('./session-cards').sessionCards(this,request);}
   readLiveFinal(sessionId){const meta=this.sessionMetadata(sessionId);if(!meta)throw new Error('找不到原会话');const result=this.liveHistory.read(meta);return{sessionId,title:meta.title,...result};}
   // 不做固定频率的心跳：会话答完一轮由完成事件记账与提醒；换班按精确时间点（空闲 2 小时、每天 4 点）触发；
   // 每 2 小时做一次全面核对补漏；只有被关注的会话不发完成事件（千问、GLM 等）时，才每 5 分钟补查关注任务。
@@ -68,6 +70,8 @@ class AssistantService {
   }
   // 只有当前持有助理会话的 Hub 做定时核对，多开 Hub 时不会两边同时写账本。
   ownsAssistant(){const id=this.store.get('sessionId');return !!(id&&this.deps.getSession(id));}
+  // 定时任务归属：见 timer-owner.js（不要求助理会话此刻开着）。
+  ownsTimers(){return require('./timer-owner').ownsTimers(this.store);}
   scheduledReconcile(){
     if(!this.ownsAssistant())return;
     try{this.reconcileLedger();this.pollWatches();this.ledger.prune();}catch(error){console.warn('[assistant] reconcile',error.message);}
@@ -490,6 +494,8 @@ class AssistantService {
     const hasCaller=callerSessionId!==undefined;
     if(hasCaller&&!this.isAssistantSession(callerSessionId))throw new Error('调用方不是固定助理会话，未授予专属工具');
     if(name==='workbench_status')return this.workbench.refresh();
+    // 学习选题用：田哥最近一周在 Hub 里亲口问的话（已排除 Agent 之间的派活任务书），只读。
+    if(name==='learning_context')return require('./learning-context').learningContext(this);
     if(name==='publish_daily_brief'){
       const current=this.currentRequest;
       if(!hasCaller||!current||args.requestToken!==current.token||Date.now()-current.createdAt>30*60000)throw new Error('日稿不属于当前回合');
