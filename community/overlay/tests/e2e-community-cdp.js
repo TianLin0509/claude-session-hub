@@ -78,7 +78,7 @@ async function main() {
     hub = await launchIsolatedHub({ dataDir: data, port: await freePort(), label: 'community', extraEnv: env,
       ...(packaged ? { executablePath: customExecutable || path.resolve('dist/win-unpacked/AI Hub Community.exe') } : {}) });
     cdp = await connectFirstPage(hub);
-    await until('document.querySelectorAll(".community-provider").length === 4', 'first-run provider detection');
+    await until('document.querySelectorAll(".community-provider").length === 5', 'first-run provider detection');
 
     const marker = JSON.parse(fs.readFileSync(path.resolve('community-edition.json'), 'utf8'));
     let title = '';
@@ -88,7 +88,7 @@ async function main() {
 
     assert.equal(await cdp.eval('document.querySelectorAll("#btn-research,#btn-study,#study-panel,[data-action=sync-chatgpt],[data-action=sync-company],[data-kind=chatgpt]").length'), 0);
     assert.equal(await cdp.eval('document.querySelectorAll(".community-provider[data-installed=\\"1\\"]").length'), 0);
-    report.checks.push('Clean machine: four providers reported as not installed; no private entry points on the page');
+    report.checks.push('Clean machine: five providers (incl. CodeAgent) reported as not installed; no private entry points on the page');
     await shot('01-first-run');
 
     const settingsPath = path.join(home, '.claude', 'settings.json');

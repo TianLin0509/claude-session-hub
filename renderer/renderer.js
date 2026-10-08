@@ -1546,6 +1546,9 @@ function getOrCreateTerminal(sessionId) {
       const s = sessions.get(sessionId);
       if (!s) return;
       if (s.userRenamed || s.autoTitleGenerated) return; // user's Hub rename / Hub auto-title is authoritative
+      // 公司 Code Agent 的窗口标题是「🟡/🟢 + 用户刚发的那句话」或「opentui: 路径」，不是会话摘要，
+      // 交给 Hub 自己的自动起名（2026-10-08 公司实测录屏）。
+      if (String(s.kind || '').startsWith('codeagent')) return;
       // slot 化（2026-05-03 道雪）：AI 群聊 sub session title 永久绑定 slot 名
       //   （Pikachu/Charmander/Squirtle），不接受 OSC 自动覆盖。
       //   主桌单 session（meetingId === null）仍走 OSC 自动命名（Claude 给的简短摘要）。

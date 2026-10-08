@@ -12,10 +12,10 @@ assert.match(source, /const isNativeClaude = \(isClaude && nativeAgentRuntime\) 
 assert.match(source, /isNativeClaude \? createNativeClaudeDriver/);
 assert.match(source, /ensureClaudeProjectTrusted\(spawnCwd/,
   'PTY Claude must pre-trust the cwd before the CLI starts');
-const ptyLaunch = source.slice(source.indexOf('if (claudePtyLaunch) {'));
+const ptyLaunch = source.slice(source.indexOf('if (agentPtyLaunch) {'));
 assert.match(ptyLaunch, /detectClaudeTrustDialog\(trustBuf\)[\s\S]*?dialog\.keys\.forEach/,
   'the fallback may only send the keys located for the Yes option');
-assert.doesNotMatch(ptyLaunch.slice(0, ptyLaunch.indexOf('const cmd = claudePtyLaunch.cmd;')), /write\('\\r'\)/,
+assert.doesNotMatch(ptyLaunch.slice(0, ptyLaunch.indexOf('const cmd = agentPtyLaunch.cmd;')), /write\('\\r'\)/,
   'the trust fallback must never press a blind Enter');
 
 // Native Claude output is display-only. It reaches the backstage terminal the

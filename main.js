@@ -72,7 +72,7 @@ const {
   attachCodexUsageScope,
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
-const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isKimiCliKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isKimiCliKind, isCodeAgentKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerWorkbenchOperationsIpc } = require('./main/ipc/workbench-operations-handlers.js');
 const { createWorkbenchOperationsService } = require('./core/workbench-operations.js');
@@ -2573,7 +2573,7 @@ const hookServer = http.createServer((req, res) => {
       if (isHook) {
         const event = req.url.slice('/api/hook/'.length);
         const eventAt = Date.now();
-        const boundClaudeSessionId = String(hookTargetSession.ccSessionId || '');
+        let boundClaudeSessionId = String(hookTargetSession.ccSessionId || '');
         const incomingClaudeSessionId = String(parsed.claudeSessionId || '');
         let initialCwdMismatch = false;
         let initialTranscriptBucketMismatch = false;
@@ -2588,6 +2588,34 @@ const hookServer = http.createServer((req, res) => {
             initialTranscriptBucketMismatch = path.basename(path.dirname(parsed.transcriptPath)).toLowerCase()
               !== projectSlug(hookTargetSession.cwd).toLowerCase();
           } catch {}
+        }
+        // 公司 Code Agent 不认 --session-id，Hub 启动时无法预定身份（core/codeagent-config.js）。
+        // 待绑定期间（新建、分支、没有记录可恢复的重启），工作目录与记录所在目录都对得上的第一个
+        // 顶层 hook 就是这个会话本人：绑定后立刻撤掉待绑定标记，之后与 Claude 一样严格拒收外来 id。
+        // 子代理（agentId）和在会话里另起的 CLI（目录不同）不会被当成本人。
+        if (hookTargetSession.codeagentIdentityPending === true && isCodeAgentKind(hookTargetSession.kind)
+            && !parsed.agentId && incomingClaudeSessionId && hookTargetSession.cwd) {
+          let sameCwd = false;
+          let sameBucket = !parsed.transcriptPath;
+          try { sameCwd = !parsed.cwd || path.resolve(parsed.cwd).toLowerCase() === path.resolve(hookTargetSession.cwd).toLowerCase(); } catch {}
+          try {
+            if (parsed.transcriptPath) sameBucket = path.basename(path.dirname(parsed.transcriptPath)).toLowerCase()
+              === projectSlug(hookTargetSession.cwd).toLowerCase();
+          } catch {}
+          if (sameCwd && sameBucket) {
+            sessionManager.updateSessionMeta(parsed.sessionId, { codeagentIdentityPending: false, ccSessionId: null });
+            const bound = updateSessionTranscriptBinding(parsed.sessionId, {
+              ccSessionId: incomingClaudeSessionId, transcriptPath: parsed.transcriptPath, cwd: parsed.cwd,
+            });
+            if (bound && bound.ccSessionId === incomingClaudeSessionId) {
+              boundClaudeSessionId = incomingClaudeSessionId;
+              console.log(`[codeagent hook] ${parsed.sessionId.slice(0, 8)} bound to CLI identity ${incomingClaudeSessionId.slice(0, 8)} (${event})`);
+              if (parsed.transcriptPath) void transcriptTap.watchClaudeTranscript(parsed.sessionId, parsed.transcriptPath, { turnId: null, newTurn: false });
+              if (event === 'session-start') { res.writeHead(200); res.end(JSON.stringify({ ok: true, identity: 'bound' })); return; }
+            } else {
+              sessionManager.updateSessionMeta(parsed.sessionId, { codeagentIdentityPending: true });
+            }
+          }
         }
         // PTY Claude 的身份生命周期：/clear、/resume、退出后重启都会换 session_id。
         // 只有当前绑定的会话先发出 SessionEnd，随后的新 SessionStart 才允许改绑；
@@ -3530,13 +3558,28 @@ app.whenReady().then(async () => {
   //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
   //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
   for (const claudeDir of claudeDirs) ensureHooksDeployed(claudeDir);
+  // 公司 Code Agent（Claude 形态，core/codeagent-config.js）：配置目录已存在才部署，不凭空创建 ~/.cac。
+  // 隔离 Hub 只在测试显式指定了它的配置目录时部署，绝不碰真实 home。
+  const codeagentHookTargets = [];
+  try {
+    const codeagentConfig = require('./core/codeagent-config').resolveCodeAgentConfig(process.env);
+    const allowed = isIsolatedHub() ? !!process.env.AI_HUB_CODEAGENT_CONFIG_DIR : true;
+    if (allowed && fs.existsSync(codeagentConfig.configDir)) {
+      const settingsOptions = { events: require('./core/codeagent-config').HOOK_EVENTS,
+        manageStatusLine: false, managePermissionMode: false };
+      const result = ensureClaudeHookIntegration({ claudeDir: codeagentConfig.configDir,
+        sourceScriptsDir: hookSourceScriptsDir, logger: console, settingsOptions });
+      if (result.errors.length) console.warn(`[codeagent-hooks] ${codeagentConfig.configDir}: ${result.errors.join('；')}`);
+      codeagentHookTargets.push({ dir: codeagentConfig.configDir, settingsOptions });
+    }
+  } catch (error) { console.warn('[codeagent-hooks] skipped:', error.message); }
   // settings.json can be rewritten by Claude settings/plugin changes while the
   // Hub keeps running. A one-time boot merge is therefore insufficient: the
   // screenshot incident had UserPromptSubmit=[] and no Hub Stop hook five
   // hours after launch. Periodically repair only Hub-owned entries.
-  if (claudeDirs.length) {
+  if (claudeDirs.length || codeagentHookTargets.length) {
     claudeHookWatchdog = startClaudeHookIntegrationWatchdog({
-      claudeDirs,
+      claudeDirs: [...claudeDirs, ...codeagentHookTargets],
       sourceScriptsDir: hookSourceScriptsDir,
       logger: console,
     });

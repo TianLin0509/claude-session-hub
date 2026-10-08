@@ -94,7 +94,8 @@ function planSessionFork({ source, siblingPool = [], meeting = null, rendererTit
     kind = source.kind.replace(/-resume$/, '');
     needsAcpFork = true;
   } else if (providerFamily === 'claude') {
-    kind = isDeepSeek ? 'deepseek' : 'claude';
+    // 公司 Code Agent 与 Claude 同属 Claude 家族，分支必须仍是 Code Agent，不能变成 Claude 会话。
+    kind = isDeepSeek ? 'deepseek' : String(source.kind || '').startsWith('codeagent') ? 'codeagent' : 'claude';
     opts.forkCCSessionId = nativeSessionId;
     if (String(runtimeKind || '').startsWith('deepseek-legacy')) opts.deepseekLegacyClaude = true;
   } else {

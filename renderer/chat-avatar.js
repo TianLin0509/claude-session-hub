@@ -5,7 +5,8 @@ const { canonicalAiKind } = require('../core/ai-kinds');
 // Artwork is a presentation registry, not another list of supported runtimes.
 const ARTWORK = Object.freeze({
   gpt: 'codex', claude: 'claude', gemini: 'gemini', deepseek: 'deepseek',
-  kimi: 'kimi', qwen: 'qwen', glm: 'glm',
+  // 公司 Code Agent 默认模型是 GLM-5.2，先借用智谱的画像。
+  kimi: 'kimi', qwen: 'qwen', glm: 'glm', codeagent: 'glm',
 });
 const USER_AVATAR_SRC = '../claude-wx.ico';
 const ASSISTANT_AVATAR_SRC = 'assets/assistant/penguin.png';

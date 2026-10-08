@@ -72,7 +72,8 @@ function normalizeProviderFamily(kind) {
   // permissive legacy path for that member, so keep both variants listed.
   if (require('./acp-profiles').isAcpKind(value)) return value.replace(/-resume$/, '');
   if (value === 'claude' || value === 'claude-resume'
-      || value === 'deepseek-legacy' || value === 'deepseek-legacy-resume') return 'claude';
+      || value === 'deepseek-legacy' || value === 'deepseek-legacy-resume'
+      || value === 'codeagent' || value === 'codeagent-resume') return 'claude';
   if (value === 'codex' || value === 'codex-resume'
       || value === 'deepseek' || value === 'deepseek-resume') return 'codex';
   if (value === 'kimi' || value === 'kimi-resume') return 'kimi';

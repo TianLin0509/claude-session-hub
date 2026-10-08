@@ -15,7 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { detectHostShellTakeover, detectCodexThreadEnded } = require('./host-shell-detector.js');
-const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
+const { isClaudeFamily, isCodexCliKind, isCodeAgentKind } = require('./ai-kinds.js');
 const { stripAnsi } = require('./ansi-utils.js');
 const {
   RUNTIME_RUNNING,
@@ -375,7 +375,7 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
     return nativeClaude.runtime.connection === 'connected' && !nativeClaude.unreconciled;
   }
   const start = Date.now();
-  const readyKind=isCodexCliKind(kind) ? 'codex' : isClaudeFamily(kind) ? 'claude' : String(kind).replace(/-resume$/,'');
+  const readyKind=isCodexCliKind(kind) ? 'codex' : isCodeAgentKind(kind) ? 'codeagent' : isClaudeFamily(kind) ? 'claude' : String(kind).replace(/-resume$/,'');
   while (Date.now() - start < maxMs) {
     const buf = sessionManager.getSessionBuffer(sid) || '';
     if (cliReadyDetector.isReady(sid, readyKind, buf)) return true;
@@ -471,7 +471,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       && (isClaudeFamily(kind) || isCodexCliKind(kind)) && _deps.cliReadyDetector) {
     if (await waitCliReady(sid, kind, Number(_deps.firstPromptReadyMs) || 20000)) sessionManager.setGroupChatReady(sid, true);
     else {
-      const readyKind = isCodexCliKind(kind) ? 'codex' : 'claude';
+      const readyKind = isCodexCliKind(kind) ? 'codex' : isCodeAgentKind(kind) ? 'codeagent' : 'claude';
       // 选择框还挂着时粘贴会被吞掉，回车还会替用户选默认项：宁可不发，也不能替人做选择。
       if (_deps.cliReadyDetector.isChoiceDialogVisible?.(readyKind, sessionManager.getSessionBuffer(sid) || '')) {
         throw Object.assign(new Error('CLI 正在等你在终端里做选择（例如启动提示），消息未发送；处理完后再发送'),

@@ -32,7 +32,8 @@ function resolveNative(member, slot, options = {}) {
   if (!UUID.test(member.nativeId || '')) throw Error('缺少有效的原生会话编号');
   const homeDir = options.homeDir || process.env.CLAUDE_HUB_HOME_DIR || os.homedir();
   const kind = baseKind(slot.kind);
-  if (kind === 'claude') {
+  // 公司 Code Agent 的记录与 Claude 同格式，定位器也会搜它的配置目录。
+  if (kind === 'claude' || kind === 'codeagent') {
     const locator = require('./claude-transcript-locator');
     const transcriptPath = locator.findTranscriptByCCSessionId(member.nativeId, homeDir);
     if (!transcriptPath) throw Error('找不到原 Claude 历史文件');

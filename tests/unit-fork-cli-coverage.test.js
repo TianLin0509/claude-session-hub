@@ -43,7 +43,7 @@ test('DeepSeek fork runtime is selected from the persisted native id', () => {
 test('a DeepSeek fork spawns as deepseek, not as claude', () => {
   assert.match(
     IPC_SRC,
-    /kind = isDeepSeek \? 'deepseek' : 'claude';/,
+    /kind = isDeepSeek \? 'deepseek' : [^;]*'claude';/,
     'forking legacy DeepSeek must keep its public DeepSeek identity',
   );
   assert.match(IPC_SRC, /opts\.forkCCSessionId = nativeSessionId;/);

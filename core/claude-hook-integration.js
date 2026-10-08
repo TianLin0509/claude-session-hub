@@ -43,7 +43,10 @@ function readSettings(settingsPath, fsModule) {
   }
 }
 
-function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = {}) {
+// events / manageStatusLine / managePermissionMode：同形态的其他 CLI（公司 Code Agent）共用这套合并，
+// 但只登记它实测支持的事件，不接管状态栏、不改全局权限模式（那份 settings.json 同事的其他工具也在用）。
+function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console, events = null,
+  manageStatusLine = true, managePermissionMode = true } = {}) {
   const settingsPath = path.join(claudeDir, 'settings.json');
   const scriptsDir = path.join(claudeDir, 'scripts');
   let changed = false;
@@ -84,7 +87,9 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
     ['Notification', hook('notification'),
       'permission_prompt|agent_needs_input|agent_completed|quota_auto_resume_fired|quota_auto_resume_stale|quota_auto_resume_disabled|elicitation_dialog|elicitation_url_dialog'],
   ];
+  const wanted = Array.isArray(events) ? new Set(events) : null;
   for (const [eventName, command, matcher = '', asyncHook = false] of managed) {
+    if (wanted && !wanted.has(eventName)) continue;
     if (!Array.isArray(settings.hooks[eventName])) {
       settings.hooks[eventName] = [];
       changed = true;
@@ -114,7 +119,7 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
   const statusJsPath = path.join(scriptsDir, 'claude-hub-statusline.js').replace(/\\/g, '/');
   // 社区版不覆盖用户已有的状态栏，也不改全局权限模式：Hub 启动的会话各自带
   // --permission-mode（session-manager.js），用户在终端里单独跑的 Claude 保持原样。
-  const mayOwnStatusLine = !community || (!settings.statusLine && nodeOnPath());
+  const mayOwnStatusLine = manageStatusLine && (!community || (!settings.statusLine && nodeOnPath()));
   if (mayOwnStatusLine && (!settings.statusLine || !String(settings.statusLine.command || '').includes('claude-hub-statusline'))) {
     settings.statusLine = {
       type: 'command',
@@ -123,7 +128,7 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
     changed = true;
   }
 
-  if (!community && settings.permissionMode !== 'bypassPermissions') {
+  if (managePermissionMode && !community && settings.permissionMode !== 'bypassPermissions') {
     settings.permissionMode = 'bypassPermissions';
     changed = true;
   }
@@ -141,6 +146,7 @@ function ensureClaudeHookIntegration({
   sourceScriptsDir,
   fsModule = fs,
   logger = console,
+  settingsOptions = {},
 } = {}) {
   const result = {
     claudeDir,
@@ -176,7 +182,7 @@ function ensureClaudeHookIntegration({
   }
 
   try {
-    const settingsResult = ensureManagedSettings(claudeDir, { fsModule, logger });
+    const settingsResult = ensureManagedSettings(claudeDir, { ...settingsOptions, fsModule, logger });
     result.settingsUpdated = settingsResult.changed;
     result.errors.push(...settingsResult.errors);
   } catch (error) {
@@ -195,7 +201,13 @@ function startClaudeHookIntegrationWatchdog({
   clearIntervalFn = clearInterval,
   onRepair = null,
 } = {}) {
-  const dirs = Array.from(new Set((claudeDirs || []).filter(Boolean)));
+  // 每项可以是目录字符串，或 { dir, settingsOptions }（见 ensureManagedSettings 的选项）。
+  const targets = new Map();
+  for (const item of claudeDirs || []) {
+    const dir = typeof item === 'string' ? item : item && item.dir;
+    if (dir && !targets.has(dir)) targets.set(dir, typeof item === 'string' ? {} : (item.settingsOptions || {}));
+  }
+  const dirs = Array.from(targets.keys());
   let auditing = false;
   const audit = () => {
     if (auditing) return [];
@@ -203,6 +215,7 @@ function startClaudeHookIntegrationWatchdog({
     try {
       const results = dirs.map(claudeDir => ensureClaudeHookIntegration({
         claudeDir,
+        settingsOptions: targets.get(claudeDir),
         sourceScriptsDir,
         fsModule,
         logger,

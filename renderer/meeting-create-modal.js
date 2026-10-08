@@ -13,7 +13,7 @@ const DEFAULT_SLOTS = [
   { kind: 'codex' },
   { kind: 'deepseek' },
 ];
-const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm'];
+const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm', 'codeagent'];
 // Claude + Codex are the durable default pair. DeepSeek is an explicit third
 // member rather than a cost/latency-bearing default in every room.
 const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.slice(0, 2).map(x => ({ ...x }));

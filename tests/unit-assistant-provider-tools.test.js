@@ -10,7 +10,7 @@ test('every Hub AI backend has its own retained manager identity and scoped tool
     createSession:async(kind,opts)=>{const s={...opts,kind,status:'idle'};sessions.set(s.id,s);return s;}});t.after(()=>{service.close();fs.rmSync(dataDir,{recursive:true,force:true});});
   const ids=new Set();for(const kind of ALL_AI_KINDS){const r=await service.switchBackend({kind});ids.add(r.sessionId);assert.equal(r.session.purpose,'hub-assistant');
     const servers=r.session.codexMcpEntries||r.session.assistantMcpServers;
-    const entry=servers?.[0]||r.session.assistantMcpEntry||(kind==='claude'?JSON.parse(fs.readFileSync(r.session.mcpConfigFile,'utf8')).mcpServers.hub_assistant:null);
+    const entry=servers?.[0]||r.session.assistantMcpEntry||((kind==='claude'||kind==='codeagent')?JSON.parse(fs.readFileSync(r.session.mcpConfigFile,'utf8')).mcpServers.hub_assistant:null);
     assert(entry,kind+' must have a tool bridge');
     assert.equal((await service.switchBackend({kind})).sessionId,r.sessionId);
   }

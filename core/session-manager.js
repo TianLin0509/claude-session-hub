@@ -8,7 +8,7 @@ const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
 const { isAcpKind, buildAcpOptions, LABELS: ACP_LABELS } = require('./acp-profiles');
-const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js');
+const { isClaudeFamily, isCodexCliKind, isKimiCliKind, isCodeAgentKind } = require('./ai-kinds.js');
 const {
   nativeSessionIdentity,
   supportsRecoverableSession,
@@ -426,6 +426,48 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
   const quote = value => /^[A-Za-z0-9_.:=\/\\-]+$/.test(String(value)) ? String(value) : quotePowerShellLiteral(value);
   const cmd = ' claude ' + [...identity, ...args].map(quote).join(' ') + '\r\n';
   return { cmd, sessionId, fast };
+}
+
+// 公司 Code Agent 的启动命令（core/codeagent-config.js 说明了它与 Claude 的差异）。
+// 与 buildClaudePtyLaunch 的区别：
+//   - 它不认 --session-id：新会话和分支都不带身份参数，sessionId 留空，等第一个 hook 上报后绑定；
+//     预先写一个它不会用的 id，会让后续每个 hook 都被当成外来会话丢弃，卡片永远不更新。
+//   - 它不认 --settings：群聊插件隔离、fast、CLI 主题这些靠 overlay 的设置都不传；hook 写在配置目录。
+//   - 必须带 --disable-update（否则弹阻塞的升级框）与 --skip-safe-check（信任框）。
+//   - 没有 Claude 的模型目录与 fast 档；思考档只有 low/medium/high/max。
+function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config) {
+  const { normalizeCodeAgentModel, EFFORTS, commandHead } = require('./codeagent-config');
+  const hubDataDir = getHubDataDir();
+  const mcp = buildClaudeMeetingMcpArgs({ cwd, hubDataDir, mcpConfigFile: opts.mcpConfigFile,
+    mcpProfile: opts.mcpProfile || 'full' });
+  const args = ['--disable-update', '--skip-safe-check', '--model', normalizeCodeAgentModel(opts.model)];
+  if (EFFORTS.includes(opts.effort)) args.push('--effort', opts.effort);
+  args.push('--permission-mode', CLAUDE_PERMISSION_MODES.has(opts.permissionMode) ? opts.permissionMode : 'bypassPermissions');
+  if (opts.appendSystemPromptFile) args.push('--append-system-prompt-file', String(opts.appendSystemPromptFile));
+  if (mcp.configPaths && mcp.configPaths.length) args.push('--mcp-config', ...mcp.configPaths);
+  if (mcp.profile !== 'full') args.push('--strict-mcp-config');
+  for (const dir of claudeNativeAddDirs(opts.addDirs)) args.push('--add-dir', dir);
+  const { findNativeClaudeHistory } = require('./claude-native-history');
+  const historyEnv = { ...env, CLAUDE_CONFIG_DIR: config.configDir };
+  const isUuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+  const hasHistory = value => isUuid(value) && !!findNativeClaudeHistory(value, { cwd, env: historyEnv });
+  let sessionId = null;
+  let identity = [];
+  if (opts.forkCCSessionId) {
+    // 分支一个从未聊过的源会话就是新开一个（同 Claude 的处理）。
+    identity = hasHistory(opts.forkCCSessionId) ? ['--resume', opts.forkCCSessionId, '--fork-session'] : [];
+  } else if (opts.resumeCCSessionId && hasHistory(opts.resumeCCSessionId)) {
+    sessionId = opts.resumeCCSessionId;
+    identity = ['--resume', sessionId];
+  } else if (opts.resumeCCSessionId && !isUuid(opts.resumeCCSessionId)) {
+    identity = ['--resume', opts.resumeCCSessionId];
+  } else if (kind === 'codeagent-resume' || opts.resumePicker) {
+    identity = ['--resume'];
+  }
+  // 其余情况（含「有 id 但没有落盘记录」）都是全新会话：不能用 --continue，它会接上这个目录里最近的别人的对话。
+  const quote = value => /^[A-Za-z0-9_.:=\/\\-]+$/.test(String(value)) ? String(value) : quotePowerShellLiteral(value);
+  const cmd = ' ' + commandHead(config.command) + ' ' + [...identity, ...args].map(quote).join(' ') + '\r\n';
+  return { cmd, sessionId };
 }
 
 function applyClaudeSessionEnv(sessionEnv, cv) {
@@ -1308,10 +1350,12 @@ class SessionManager extends EventEmitter {
     // remains resumable instead of being silently discarded.
     const isDeepSeekLegacy = isDeepSeek && !!opts.deepseekLegacyClaude;
     const isCodex = kind === 'codex' || kind === 'codex-resume';
+    // 公司 Code Agent：Claude 形态的 CLI，只有 PTY 运行方式（没有原生后端）。
+    const isCodeAgent = isCodeAgentKind(kind);
     // Claude / Codex 默认跑 PTY 里的真实 CLI；原生后端只在回退开关打开时使用。
     const nativeAgentRuntime = require('./agent-runtime-mode').usesNativeAgentRuntime(kind);
     const isNativeCodex = isCodex && nativeAgentRuntime;
-    const isPtyAgent = isProviderCli || ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
+    const isPtyAgent = isProviderCli || isCodeAgent || ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
     const webRoute = isCodex && require('./chatgpt-web-models').chatgptWebRoute(opts.model);
     const followsGlobalAccount = isCodex && !webRoute && !isCodexApiBackend(getConfigValues());
     let globalAccount = null;
@@ -1337,7 +1381,7 @@ class SessionManager extends EventEmitter {
       if(!webRoute && nativeConfig.CODEX_BACKEND==='api' && !nativeConfig.CODEX_API_KEY) throw new Error('Codex API 账号未配置密钥，未切换到订阅账号');
       if(!webRoute && opts.codexProfile && resolveCodexSubscriptionProfile(nativeConfig,opts.codexProfile).id!==opts.codexProfile) throw new Error('Codex 账号配置不存在，未切换到默认账号');
     }
-    if ((isCodex || isClaude || isDeepSeekLegacy) && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
+    if ((isCodex || isClaude || isCodeAgent || isDeepSeekLegacy) && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
     if (isCodex && opts.codexSid && opts.useResume) {
       for (const live of this.sessions.values()) {
         if (live.info?.codexSid === opts.codexSid && live.info.status !== 'dormant') {
@@ -1347,7 +1391,7 @@ class SessionManager extends EventEmitter {
     }
     const isCodexRuntime = isCodex || (isDeepSeek && !isDeepSeekLegacy);
     const isKimi = isKimiCliKind(kind);
-    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi || isAcp;
+    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi || isAcp || isCodeAgent;
     let title;
     if (opts.title) title = opts.title;
     else if (isAcp) title = ACP_LABELS[kind.replace(/-resume$/, '')];
@@ -1358,15 +1402,18 @@ class SessionManager extends EventEmitter {
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
     else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else if (kind === 'kimi') { this.kimiCounter = (this.kimiCounter || 0) + 1; title = `Kimi ${this.kimiCounter}`; }
+    else if (kind === 'codeagent') { this.codeagentCounter = (this.codeagentCounter || 0) + 1; title = `CodeAgent ${this.codeagentCounter}`; }
     else if (kind === 'gemini-resume') title = `Gemini Resume ${++this.resumeCounter}`;
     else if (kind === 'codex-resume') title = `Codex Resume ${++this.resumeCounter}`;
     else if (kind === 'deepseek-resume') title = `DeepSeek Resume ${++this.resumeCounter}`;
     else if (kind === 'kimi-resume') title = `Kimi Resume ${++this.resumeCounter}`;
+    else if (kind === 'codeagent-resume') title = `CodeAgent Resume ${++this.resumeCounter}`;
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
-    applyInteractiveTerminalEnv(sessionEnv, { truecolor: isPtyAgent && (isClaude || isCodexRuntime) });
+    applyInteractiveTerminalEnv(sessionEnv, { truecolor: isPtyAgent && (isClaude || isCodexRuntime || isCodeAgent) });
     let codexProfile = null;
+    const codeagentConfig = isCodeAgent ? require('./codeagent-config').resolveCodeAgentConfig(process.env) : null;
 
     if (isClaude) {
       const cv = getConfigValues();
@@ -1380,6 +1427,18 @@ class SessionManager extends EventEmitter {
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
+    } else if (isCodeAgent) {
+      // 配置目录（相当于 CLAUDE_CONFIG_DIR）显式交给 CLI；证书与代理由它自己的 .bat 包装处理，这里不动代理。
+      sessionEnv[codeagentConfig.configDirEnv] = codeagentConfig.configDir;
+      // 同事电脑上的 CodeTeam 也往同一份 settings.json 登记 hook，它只认 CODEAGENT_HUB_*。
+      // 从 CodeTeam 里启动的 Hub 会继承这些变量，清掉才不会把我们的会话事件投给它。
+      for (const key of Object.keys(sessionEnv)) {
+        if (/^CODEAGENT_HUB_/.test(key) || key === 'CODEAGENT3_LAUNCHER_PID') delete sessionEnv[key];
+      }
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      if (process.env.CLAUDE_HUB_DATA_DIR) sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
     } else if (isDeepSeekLegacy) {
       const cv = getConfigValues();
       clearProxyEnv(sessionEnv);
@@ -1627,6 +1686,17 @@ class SessionManager extends EventEmitter {
       // 身份在启动前就定下来：独占声明和卡片都立即可用，不等第一个 hook。
       if (claudePtyLaunch.sessionId && !opts.forkCCSessionId) opts = { ...opts, resumeCCSessionId: claudePtyLaunch.sessionId };
     }
+    let codeagentLaunch = null;
+    if (isCodeAgent) {
+      // .cac.json 的 projects 也预写信任（--skip-safe-check 之外的第二道保险）。
+      require('./claude-project-trust.js').ensureClaudeProjectTrusted(spawnCwd,
+        { configDir: codeagentConfig.configDir, stateFileName: codeagentConfig.stateFile });
+      codeagentLaunch = buildCodeAgentPtyLaunch(id, kind, opts, spawnCwd, sessionEnv, codeagentConfig);
+      // 只有真正 --resume 已有记录时身份才已知；其余一律清空，等第一个 hook 绑定。
+      // 留着一个 CLI 不会用的旧 id，后面每个 hook 都会被当成外来会话丢弃。
+      opts = { ...opts, resumeCCSessionId: codeagentLaunch.sessionId || undefined,
+        resumeTranscriptPath: codeagentLaunch.sessionId ? opts.resumeTranscriptPath : undefined };
+    }
     // Every native driver is owned directly by this Hub; no cross-Hub broker.
     const CodexSessionClass = require('./codex-native-session').CodexNativeSession;
     this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
@@ -1712,6 +1782,9 @@ class SessionManager extends EventEmitter {
     } else if (isKimi) {
       const mid = opts.model || DEFAULT_MODEL_BY_KIND.kimi;
       currentModel = { id: mid, displayName: mid === 'kimi-code/k3' || mid === 'k3' ? 'Kimi K3' : mid };
+    } else if (isCodeAgent) {
+      const mid = require('./codeagent-config').normalizeCodeAgentModel(opts.model);
+      currentModel = { id: mid, displayName: mid };
     }
 
     const effectiveCodexMcpProfile = isCodexRuntime
@@ -1804,6 +1877,9 @@ class SessionManager extends EventEmitter {
       // 沿用同一档位。不要直接存 opts.effort：否则非法 IPC 值虽然首次启动会
       // 回落，却会污染元数据并在后续恢复时再次扩散。
       ...(isClaude && CLAUDE_EFFORT_LEVELS.has(opts.effort) ? { effort: opts.effort } : {}),
+      ...(isCodeAgent && require('./codeagent-config').EFFORTS.includes(opts.effort) ? { effort: opts.effort } : {}),
+      // 身份待绑定：main.js 的 hook 路由据此接受第一个 hook 上报的原生 id（见 codeagentIdentityPending）。
+      ...(isCodeAgent ? { codeagentConfigDir: codeagentConfig.configDir, codeagentIdentityPending: !codeagentLaunch.sessionId } : {}),
       ...(isCodexRuntime && opts.effort ? { effort: normalizeCodexEffort(opts.effort) } : {}),
       ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
       ...(opts.geminiChatId ? { geminiChatId: opts.geminiChatId } : {}),
@@ -2053,7 +2129,8 @@ class SessionManager extends EventEmitter {
 
     if (isNativeClaude) require('./claude-native-binding').bindClaudeNativeSession(this, id, ptyProcess);
 
-    if (claudePtyLaunch) {
+    const agentPtyLaunch = claudePtyLaunch || codeagentLaunch;
+    if (agentPtyLaunch) {
       // 信任框兜底（照搬 8c5c6928）：预写没生效时（.claude.json 损坏 / 只读）才会出现。
       // 绝不盲按回车——Claude Code 默认高亮 "No, exit"。detectClaudeTrustDialog 定位到
       // 「Yes, I trust this folder」那一行给出按键；定位不出来就一个键都不发。
@@ -2085,7 +2162,7 @@ class SessionManager extends EventEmitter {
 
       // 与 8c5c6928 之前的 PTY 时代同一套投递：PowerShell 首屏安静 200ms 后敲入命令，
       // 3 秒安全兜底。所有参数都是启动前确定的，与原生后端同源。
-      const cmd = claudePtyLaunch.cmd;
+      const cmd = agentPtyLaunch.cmd;
       let sent = false;
       let debounceTimer = null;
       const launch = () => {
@@ -2102,7 +2179,7 @@ class SessionManager extends EventEmitter {
         debounceTimer = setTimeout(launch, 200);
       });
       pendingTimers.push(setTimeout(launch, 3000));
-      if (claudePtyLaunch.sessionId) queueMicrotask(() => this._refreshOpenIdentity(id));
+      if (agentPtyLaunch.sessionId) queueMicrotask(() => this._refreshOpenIdentity(id));
     }
 
     if (isGemini) {
@@ -3037,9 +3114,20 @@ class SessionManager extends EventEmitter {
     const baseKind = (typeof runtimeKind === 'string') ? runtimeKind.replace(/-resume$/, '') : runtimeKind;
     const isClaudeCli = isClaudeFamily(baseKind);
     const autonomous = !!(s.info && s.info.autonomous);
-    const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId || autonomous) : '';
+    // Code Agent 不认 --settings，群聊隔离 overlay 对它无效，不传。
+    const isolation = isClaudeCli && !isCodeAgentKind(baseKind) ? buildGroupChatIsolationFlags(meetingId || autonomous) : '';
     let cmd;
-    if (isCodexCliKind(runtimeKind)) {
+    if (isCodeAgentKind(runtimeKind)) {
+      // 原地重拉开一个新的 CLI 进程（同 Claude）。它不认 --session-id，新身份要等 hook 上报：
+      // 先清掉旧绑定并标记待绑定，否则新进程的 hook 会因 id 不同被当成外来会话丢弃。
+      const config = require('./codeagent-config').resolveCodeAgentConfig(process.env);
+      const launch = buildCodeAgentPtyLaunch(sessionId, 'codeagent', {
+        model: modelId, effort: s.info && s.info.effort, mcpConfigFile: s.claudeMcpConfigFile,
+        mcpProfile: s.info && s.info.mcpProfile,
+      }, s.info && s.info.cwd, s.pty.options?.env || process.env, config);
+      Object.assign(s.info, { ccSessionId: undefined, transcriptPath: undefined, codeagentIdentityPending: true });
+      cmd = launch.cmd;
+    } else if (isCodexCliKind(runtimeKind)) {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
@@ -3567,6 +3655,7 @@ module.exports = {
     shouldUseClaudeFastSettings,
     claudePermissionModeArg,
     buildClaudePtyLaunch,
+    buildCodeAgentPtyLaunch,
     applyClaudeSessionEnv,
     resolveClaudeLaunchModel,
     quotePowerShellLiteral,

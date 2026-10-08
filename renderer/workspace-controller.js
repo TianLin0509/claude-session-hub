@@ -24,6 +24,7 @@
     chatgpt: 'ChatGPT',
     deepseek: 'DeepSeek',
     kimi: 'Kimi Code · K3',
+    codeagent: 'CodeAgent · 公司内网',
     powershell: 'PowerShell',
   };
 
@@ -38,8 +39,8 @@
   // 三个 kind 有"速度/质量"档位可调：Claude 走 CLI 的 --effort，
   // Codex 与新版 DeepSeek（同一条 codex runtime）走 -c model_reasoning_effort。
   // 两边的合法枚举不一样：Claude 是固定表，Codex 按模型目录取值（部分模型有 ultra）。
-  const EFFORT_KINDS = new Set(['claude', 'codex', 'deepseek']);
-  const MCP_KINDS = new Set(['claude', 'codex', 'deepseek']);
+  const EFFORT_KINDS = new Set(['claude', 'codex', 'deepseek', 'codeagent']);
+  const MCP_KINDS = new Set(['claude', 'codex', 'deepseek', 'codeagent']);
   // 这个开关只表示 Claude Code 的 fastMode；Codex 的 fast 是另一套
   // service_tier 机制，由下面独立的速度通道控件承载。
   const FAST_KINDS = new Set(['claude']);
@@ -148,6 +149,8 @@
   // 会拼出它不认识的值，给 5.6-sol 藏掉 ultra 又是白白少一档。
   function effortOptionsFor(kind, modelId) {
     if (kind === 'claude') return CLAUDE_EFFORT_OPTIONS;
+    // 公司 Code Agent 的 --effort 只有这四档（实测帮助文本），没有 xhigh。
+    if (kind === 'codeagent') return [['max', 'max · 最强'], ['high', 'high · 推荐'], ['medium', 'medium'], ['low', 'low · 最快']];
     if (!CODEX_TIER_KINDS.has(kind)) return [];
     return codexModelTuning(modelId).efforts
       .slice()

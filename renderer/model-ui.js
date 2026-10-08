@@ -24,6 +24,8 @@ function modelClass(id) {
   if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
   if (s.includes('qwen')) return 'qwen';
+  // 公司 Code Agent 的模型（GLM-5.2-WX-Auto 等）用它自己的样式，不算智谱 ZCode。
+  if (s.includes('-wx') || s.startsWith('minimax')) return 'codeagent';
   if (s.includes('glm')) return 'glm';
   if (s.includes('kimi') || s === 'k3') return 'kimi';
   return '';
