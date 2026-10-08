@@ -316,7 +316,7 @@ class GroupChatOrchestrator {
       attemptEvents: [],
       // Exact prompts prepared for the current in-flight turn.  Keeping this
       // durable makes a post-crash/manual resend faithful to the original
-      // system+delta+hero prompt instead of degrading to the raw user line.
+      // system+delta prompt instead of degrading to the raw user line.
       pendingPrompts: {},
       // 真实用户补充（群聊插话）的逐成员投递账本。见 appendUserSupplement 的注释。
       userSupplements: { pendingBySid: {}, deliveredBySid: {} },

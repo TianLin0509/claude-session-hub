@@ -56,7 +56,7 @@ function registerLoopIpc(ipcMain, deps) {
         ? loopEngine.validateLoop(args.meetingId)
         : { ok: true };
       if (!validation.ok) return { ok: false, reason: validation.reason };
-      loopEngine.runLoop(args.meetingId, args.userInput || '', null, { heroIdBySid: args.heroIdBySid || {} })
+      loopEngine.runLoop(args.meetingId, args.userInput || '', null)
         .catch(err => logger.error('[loop:start] background run failed:', err));
       return { ok: true };
     } catch (err) { logger.error('[loop:start]', err); return { ok: false, reason: (err && err.message) || 'internal_error' }; }
@@ -75,7 +75,6 @@ function registerLoopIpc(ipcMain, deps) {
       // 阻塞 renderer 会让整个窗口看起来卡死。进度走 loop:progress。
       const kickoffRun = loopEngine.runKickoff(args.meetingId, {
         authorMemberId: args.authorMemberId || null,
-        heroIdBySid: args.heroIdBySid || {},
       }).catch(err => logger.error('[dev:kickoff] background run failed:', err));
       endUserAction(args.meetingId, kickoffRun);
       return { ok: true };
@@ -150,7 +149,7 @@ function registerLoopIpc(ipcMain, deps) {
       // 开发群聊讨论阶段不许恢复旧循环（会绕过「开工」的任务说明确认）；引擎内部也拦，这里让前端拿到明确原因
       const phaseCheck = typeof loopEngine.validateResume === 'function' ? loopEngine.validateResume(args.meetingId) : { ok: true };
       if (!phaseCheck.ok) return { ok: false, reason: phaseCheck.reason };
-      loopEngine.runLoop(args.meetingId, null, { ...persisted, status: 'running', stepAttempt: 0, lastError: null }, { heroIdBySid: args.heroIdBySid || {} })
+      loopEngine.runLoop(args.meetingId, null, { ...persisted, status: 'running', stepAttempt: 0, lastError: null })
         .catch(err => logger.error('[loop:resume] background run failed:', err));
       return { ok: true };
     } catch (err) {
@@ -169,7 +168,7 @@ function registerLoopIpc(ipcMain, deps) {
         ? loopEngine.validateSerial(args.meetingId)
         : { ok: true };
       if (!validation.ok) return { ok: false, reason: validation.reason };
-      loopEngine.runSerial(args.meetingId, args.userInput || '', null, { heroIdBySid: args.heroIdBySid || {} })
+      loopEngine.runSerial(args.meetingId, args.userInput || '', null)
         .catch(err => logger.error('[serial:start] background run failed:', err));
       return { ok: true };
     } catch (err) {
@@ -197,7 +196,7 @@ function registerLoopIpc(ipcMain, deps) {
       const resumable = { ...persisted, status: 'running', attemptsByStep, lastError: null };
       // Only this explicit user action grants another bounded execution budget.
       if (Number(persisted.executedRounds || 0) - Number(persisted.budgetStart || 0) >= 6) resumable.budgetStart = Number(persisted.executedRounds);
-      loopEngine.runSerial(args.meetingId, null, resumable, { heroIdBySid: args.heroIdBySid || {} })
+      loopEngine.runSerial(args.meetingId, null, resumable)
         .catch(err => logger.error('[serial:resume] background run failed:', err));
       return { ok: true };
     } catch (err) {

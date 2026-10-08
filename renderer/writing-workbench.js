@@ -53,7 +53,7 @@ function createWorkbench(ctx) {
     }
     try { await ipcRenderer.invoke('meeting-append-user-turn', { meetingId, text }); } catch { /* 时间线记录失败不影响派发 */ }
     const clientMessageId = `writing-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const turn = ipcRenderer.invoke('groupchat:turn', { meetingId, userInput: text, heroIdBySid: {}, recipientSids: recipientSids && recipientSids.length ? recipientSids : undefined, clientMessageId });
+    const turn = ipcRenderer.invoke('groupchat:turn', { meetingId, userInput: text, recipientSids: recipientSids && recipientSids.length ? recipientSids : undefined, clientMessageId });
     // groupchat:turn 在整轮结束时才返回；被拒通常立刻返回。等一小会儿：被拒就报错，否则当作已发出。
     const early = await Promise.race([turn.then((r) => ({ r })), new Promise((res) => setTimeout(() => res(null), 2500))]);
     if (early && early.r && early.r.status !== 'completed') throw new Error(`没有发出：${early.r.reason || early.r.status || '未知原因'}`);

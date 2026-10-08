@@ -55,12 +55,6 @@ if (typeof document !== 'undefined') (function () {
     attemptText: dispatchAttemptText,
     isDispatchCard,
   } = require('./dispatch-card.js');
-  const {
-    buildHeroPromptBlock: _buildHeroPromptBlock,
-    getHero: _getHero,
-    listHeroes: _listHeroes,
-    normalizeHeroAssignments: _normalizeHeroAssignments,
-  } = require('../core/hero-prompts.js');
   // 开发群聊「先讨论再开工」的阶段判断与收敛文本，和主进程 dispatcher 共用同一份。
   const DevDiscuss = require('../core/dev-discuss.js');
   const DevFile = require('../core/dev-file-workflow.js');
@@ -343,7 +337,6 @@ if (typeof document !== 'undefined') (function () {
     _enhanceCodeBlocks(panel);
     panel._groupSelection?.sync();
     _setupGcSearch(panel);
-    _renderHeroDock(meeting);
     if (opts.scroll) {
       _restoreGroupChatScroll(panel, opts.scroll, opts.restoreOpts || {});
     }
@@ -1297,180 +1290,6 @@ if (typeof document !== 'undefined') (function () {
     const currentText = input ? (input.innerText || '') : '';
     const nextText = _replaceDutyHatPromptInText(currentText, prompt);
     _setMeetingInputText(meeting.id, nextText);
-  }
-
-  // 轻量英雄（方案 B）：每个投研群聊、每位 AI 的下一轮一次性选择。
-  // 只保存 hero id，不把任意 Prompt 文本从 renderer 传给主进程。
-  const _heroCatalog = _listHeroes();
-  const _heroAssignmentsByMeeting = {};
-  let _heroPromptPreviewCleanup = null;
-
-  function _isHeroDockEligible(meeting) {
-    return !!(meeting && meeting.groupChat && meeting.scene === 'research');
-  }
-
-  function _getHeroAssignments(meeting) {
-    if (!meeting || !meeting.id) return {};
-    if (!_heroAssignmentsByMeeting[meeting.id]) _heroAssignmentsByMeeting[meeting.id] = {};
-    return _heroAssignmentsByMeeting[meeting.id];
-  }
-
-  function _snapshotHeroAssignments(meeting) {
-    if (!_isHeroDockEligible(meeting)) return {};
-    const validSids = _getGcSlots(meeting).filter(Boolean).map(slot => slot.sid);
-    return _normalizeHeroAssignments(_getHeroAssignments(meeting), validSids);
-  }
-
-  function _clearHeroAssignments(meeting) {
-    if (!meeting || !meeting.id) return;
-    delete _heroAssignmentsByMeeting[meeting.id];
-    if (meeting.id === activeMeetingId) _renderHeroDock(meetingData[meeting.id] || meeting);
-  }
-
-  function _restoreHeroAssignments(meeting, snapshot) {
-    if (!meeting || !meeting.id) return;
-    const validSids = _getGcSlots(meeting).filter(Boolean).map(slot => slot.sid);
-    const restored = _normalizeHeroAssignments(snapshot, validSids);
-    if (Object.keys(restored).length) _heroAssignmentsByMeeting[meeting.id] = restored;
-    else delete _heroAssignmentsByMeeting[meeting.id];
-    if (meeting.id === activeMeetingId) _renderHeroDock(meetingData[meeting.id] || meeting);
-  }
-
-  function _heroSlotLabel(slot) {
-    if (!slot) return 'AI';
-    return slot.displayLabel || slot.label || slot.kind || `AI ${Number(slot.slotIndex || 0) + 1}`;
-  }
-
-  function _ensureHeroDock() {
-    const inputRow = document.getElementById('mr-input-row');
-    if (!inputRow || !inputRow.parentNode) return null;
-    // 固定顺序：作战面板 → 英雄编队条 → 输入框。
-    _ensureInputPreflightRow();
-    let dock = document.getElementById('mr-hero-dock');
-    if (!dock) {
-      dock = document.createElement('section');
-      dock.id = 'mr-hero-dock';
-      dock.className = 'mr-hero-dock';
-      dock.setAttribute('aria-label', '下一轮英雄');
-      inputRow.parentNode.insertBefore(dock, inputRow);
-      dock.addEventListener('change', (ev) => {
-        const select = ev.target && ev.target.closest ? ev.target.closest('[data-hero-sid]') : null;
-        if (!select || !dock.contains(select)) return;
-        const meeting = activeMeetingId ? meetingData[activeMeetingId] : null;
-        if (!_isHeroDockEligible(meeting)) return;
-        const sid = select.getAttribute('data-hero-sid') || '';
-        const heroId = select.value || '';
-        const assignments = _getHeroAssignments(meeting);
-        if (sid && _getHero(heroId)) assignments[sid] = heroId;
-        else if (sid) delete assignments[sid];
-        _renderHeroDock(meeting);
-        _updateInputPreflight(meeting);
-      });
-      dock.addEventListener('click', (ev) => {
-        const previewBtn = ev.target && ev.target.closest ? ev.target.closest('[data-hero-preview]') : null;
-        if (!previewBtn || !dock.contains(previewBtn) || previewBtn.disabled) return;
-        const meeting = activeMeetingId ? meetingData[activeMeetingId] : null;
-        if (meeting) _showHeroPromptPreview(meeting);
-      });
-    }
-    return dock;
-  }
-
-  function _renderHeroDock(meeting) {
-    const dock = _ensureHeroDock();
-    if (!dock) return;
-    if (!_isHeroDockEligible(meeting)) {
-      dock.style.display = 'none';
-      dock.innerHTML = '';
-      return;
-    }
-    const slots = _getGcSlots(meeting).filter(Boolean);
-    const assignments = _snapshotHeroAssignments(meeting);
-    const assignedCount = Object.keys(assignments).length;
-    const optionHtml = _heroCatalog.map(hero =>
-      `<option value="${escapeHtml(hero.id)}">${escapeHtml(hero.label)}</option>`
-    ).join('');
-    const slotHtml = slots.map(slot => {
-      const heroId = assignments[slot.sid] || '';
-      const selectedHero = _getHero(heroId);
-      return `
-        <label class="mr-hero-slot ${selectedHero ? 'assigned' : ''}" title="${selectedHero ? escapeHtml(selectedHero.subtitle) : '本轮不注入英雄 Prompt'}">
-          <span class="mr-hero-slot-name">${escapeHtml(_heroSlotLabel(slot))}</span>
-          <select class="mr-hero-select" data-hero-sid="${escapeHtml(slot.sid)}" aria-label="为 ${escapeHtml(_heroSlotLabel(slot))} 选择下一轮英雄">
-            <option value="">不使用英雄</option>
-            ${optionHtml}
-          </select>
-        </label>
-      `;
-    }).join('');
-    dock.style.display = '';
-    dock.innerHTML = `
-      <div class="mr-hero-dock-title" title="英雄 Prompt 仅下一轮有效，并覆盖用户画像、默认投资倾向和职责帽等业务偏好">
-        <span class="mr-hero-dock-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3.8l2.3 4.7 5.2.8-3.8 3.7.9 5.2L12 15.8 7.4 18.2l.9-5.2-3.8-3.7 5.2-.8L12 3.8z"/></svg></span>
-        <span class="mr-hero-dock-heading">下一轮英雄</span>
-        <span class="mr-hero-dock-meta">${assignedCount ? `${assignedCount} 位 · 业务偏好最高优先级` : '发送后自动清空'}</span>
-      </div>
-      <div class="mr-hero-slots">${slotHtml}</div>
-      <button type="button" class="mr-hero-preview-btn" data-hero-preview="1" ${assignedCount ? '' : 'disabled'}>查看注入</button>
-    `;
-    dock.querySelectorAll('[data-hero-sid]').forEach(select => {
-      select.value = assignments[select.getAttribute('data-hero-sid')] || '';
-    });
-  }
-
-  function _buildHeroPromptPreview(meeting) {
-    const assignments = _snapshotHeroAssignments(meeting);
-    const slotsBySid = {};
-    for (const slot of _getGcSlots(meeting).filter(Boolean)) slotsBySid[slot.sid] = slot;
-    const sections = Object.entries(assignments).map(([sid, heroId]) => {
-      const hero = _getHero(heroId);
-      const slot = slotsBySid[sid];
-      if (!hero || !slot) return '';
-      return `# ${_heroSlotLabel(slot)} → ${hero.label}\n\n${_buildHeroPromptBlock(heroId)}`;
-    }).filter(Boolean);
-    return sections.join('\n\n---\n\n');
-  }
-
-  function _showHeroPromptPreview(meeting) {
-    if (_heroPromptPreviewCleanup) _heroPromptPreviewCleanup();
-    const prompt = _buildHeroPromptPreview(meeting);
-    if (!prompt) return;
-    const overlay = document.createElement('div');
-    overlay.className = 'mr-gc-prompt-modal-overlay mr-hero-prompt-modal-overlay';
-    overlay.innerHTML = `
-      <div class="mr-gc-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="mr-hero-preview-title">
-        <div class="mr-gc-prompt-modal-head">
-          <span class="mr-gc-prompt-modal-title" id="mr-hero-preview-title">下一轮英雄 Prompt 预览</span>
-          <span class="mr-gc-prompt-modal-act">仅下一轮</span>
-          <span class="mr-gc-prompt-modal-spacer"></span>
-          <button type="button" class="mr-gc-prompt-modal-copy" title="复制 Prompt 原文">复制</button>
-          <button type="button" class="mr-gc-prompt-modal-close" title="关闭 (Esc)" aria-label="关闭">×</button>
-        </div>
-        <div class="mr-gc-prompt-modal-body"><div class="mr-gc-md">${_renderMarkdown(prompt)}</div></div>
-        <div class="mr-gc-prompt-modal-foot">按 AI 独立注入 · 业务偏好层最高优先级 · 发送后自动清空</div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    const close = () => {
-      document.removeEventListener('keydown', onKeydown);
-      try { overlay.remove(); } catch {}
-      if (_heroPromptPreviewCleanup === close) _heroPromptPreviewCleanup = null;
-    };
-    const onKeydown = (ev) => { if (ev.key === 'Escape') close(); };
-    overlay.querySelector('.mr-gc-prompt-modal-close').addEventListener('click', close);
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
-    overlay.querySelector('.mr-gc-prompt-modal-copy').addEventListener('click', async (ev) => {
-      const button = ev.currentTarget;
-      try {
-        await copyGroupText(prompt);
-        button.textContent = '已复制';
-      } catch {
-        button.textContent = '复制失败';
-      }
-    });
-    document.addEventListener('keydown', onKeydown);
-    _heroPromptPreviewCleanup = close;
-    overlay.querySelector('.mr-gc-prompt-modal-close').focus();
   }
 
   // T1（2026-05-04 道雪）：抽出单 slot 卡片渲染，让 partial-update IPC handler
@@ -4503,9 +4322,6 @@ if (typeof document !== 'undefined') (function () {
       const isLatest = _gcSendGen[mid] === myGen;
       if (isLatest) delete _gcActiveSids[mid];
       _discardPendingUserMessage(mid, { clientId: opts.pendingClientId });
-      if (opts.heroIdBySid && Object.keys(opts.heroIdBySid).length) {
-        _restoreHeroAssignments(meetingData[mid] || meeting, opts.heroIdBySid);
-      }
       clearOptimistic();
       const recovery = _restoreQuestionAndPreserveDraft(mid, opts.userInput);
       const recoveryText = recovery.mergedWithDraft
@@ -4517,7 +4333,6 @@ if (typeof document !== 'undefined') (function () {
     ipcRenderer.invoke('groupchat:turn', {
       meetingId: meeting.id,
       userInput: opts.userInput || '',
-      heroIdBySid: opts.heroIdBySid || {},
       recipientSids: opts.recipientSids,
       // 本次发送的身份。服务端把它写进权威 user 消息，渲染层据此撤掉本地那条 pending
       // 气泡 —— 内容和时间都认不出「是不是同一条」，只有这个 id 能（见
@@ -4596,7 +4411,7 @@ if (typeof document !== 'undefined') (function () {
     btn.setAttribute('aria-label', on ? `${workflowLabel}，${roundCount} 轮，点击修改` : '工作流设置');
   }
 
-  async function runSerialWorkflow(meeting, userInput, opts = {}) {
+  async function runSerialWorkflow(meeting, userInput) {
     const m = meetingData[meeting.id] || meeting;
     const trimmed = String(userInput || '').trim();
     const pendingUser = trimmed ? _rememberPendingUserMessage(m, trimmed) : null;
@@ -4607,7 +4422,6 @@ if (typeof document !== 'undefined') (function () {
       const result = await ipcRenderer.invoke('serial:start', {
         meetingId: m.id,
         userInput: trimmed,
-        heroIdBySid: opts.heroIdBySid || {},
       });
       if (!result || !result.ok) {
         throw new Error(result && result.reason || 'serial_start_failed');
@@ -4615,9 +4429,6 @@ if (typeof document !== 'undefined') (function () {
       _showGcEscapeNotice('串行工作流已启动；刷新或 Hub 重启后会从持久检查点继续', 'info');
     } catch (error) {
       _discardPendingUserMessage(m.id, { clientId: pendingUser && pendingUser.clientId });
-      if (opts.heroIdBySid && Object.keys(opts.heroIdBySid).length) {
-        _restoreHeroAssignments(m, opts.heroIdBySid);
-      }
       const recovery = _restoreQuestionAndPreserveDraft(m.id, trimmed);
       const suffix = recovery.mergedWithDraft
         ? '；原问题与当前草稿均已保留'
@@ -5714,8 +5525,6 @@ if (typeof document !== 'undefined') (function () {
       chips.push(_renderInputChip('目标', targetLabel || '全部'));
     }
     // 2026-07-20 道雪 [修#10]：空态降噪——引用 0 / 字数 0 不渲染 chip
-    const heroAssignmentCount = Object.keys(_snapshotHeroAssignments(current)).length;
-    if (heroAssignmentCount) chips.push(_renderInputChip('英雄', `${heroAssignmentCount} 位`, 'hero'));
     if (_gcQuoteChips.length) chips.push(_renderInputChip('引用', `${_gcQuoteChips.length}`, 'accent'));
     if (charCount) chips.push(_renderInputChip('字数', `${charCount}`, charCount > _LONG_INPUT_CHAR_THRESHOLD ? 'warn' : ''));
     if (_inputDraftByMeeting[current.id]) chips.push(_renderInputChip('草稿', '已保存', 'saved'));
@@ -7340,7 +7149,6 @@ if (typeof document !== 'undefined') (function () {
     _pasteChips.attachPasteChipBehaviors(inputBox, { document, window });
     _ensureInputPreflightRow();
     _ensureInputTools(meeting);
-    _renderHeroDock(meeting);
     _updateInputPreflight(meeting);
     if (targetSelect) {
       if (_isPanelCapableMeeting(meeting)) {
@@ -7394,7 +7202,6 @@ if (typeof document !== 'undefined') (function () {
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
-      const heroIdBySid = _snapshotHeroAssignments(m);
       let recipientSids;
       if(m.groupChat){
         try{recipientSids=Recipients.resolveRecipients(m);}
@@ -7428,10 +7235,7 @@ if (typeof document !== 'undefined') (function () {
           ? `${quoteSection}\n\n用户问题: ${userText}`
           : `${quoteSection}\n\n(请就以上引用展开评论或继续讨论)`;
       }
-      _dispatchMeetingInput(m, finalText, heroIdBySid, recipientSids);
-      // 一次性语义：点击发送后立即清空；普通群聊若主进程拒绝本轮，
-      // triggerGroupChat.restoreFailedSend 会把同一份快照恢复回来。
-      if (Object.keys(heroIdBySid).length) _clearHeroAssignments(m);
+      _dispatchMeetingInput(m, finalText, recipientSids);
       _pushPromptHistory(m.id, userText || finalText);
       if (box) box.textContent = '';
       _clearInputDraft(m.id);
@@ -7442,53 +7246,53 @@ if (typeof document !== 'undefined') (function () {
     // 发送三岔路。抽成独立函数是为了让「开工」弹窗能带着任务说明走完全相同的一条路，
     // 而不是往输入框里塞文本再模拟点击。
     // 开发群聊处于讨论阶段时，循环配置虽然在，也只走普通群聊 —— 这是「先讨论再开工」的全部机制。
-    function _dispatchMeetingInput(m, finalText, heroIdBySid, recipientSids=Recipients.selectedSids(m)) {
+    function _dispatchMeetingInput(m, finalText, recipientSids=Recipients.selectedSids(m)) {
       // AI 编排模式：默认只发给编排员；@成员 时直接发给被点名的成员并抄送编排员。
       if (OrchUI.active(m)) {
         const route = OrchUI.resolveRecipients(m, finalText, sid => (typeof sessions !== 'undefined' && sessions.get(sid)?.title) || '');
         if (!route.sids.length) { _restoreQuestionAndPreserveDraft(m.id, finalText); _showGcEscapeNotice('编排员会话不可用，消息未发送', 'error'); return; }
         void OrchUI.noteUserMessage(m, finalText, route.direct);
-        handleMeetingSend(finalText, m, { heroIdBySid, recipientSids: route.sids });
+        handleMeetingSend(finalText, m, { recipientSids: route.sids });
         return;
       }
       // 循环工作流（评审 gate + 自动重来）→ main 进程驱动（崩溃续跑）；串行 → renderer 驱动；否则普通群聊单轮
       if (Delivery.enabled(m) && m.serialWorkflow.enabled) {
         void DeliveryControls.submit(m,finalText,recipientSids).then(result=>{
-          if(result.plain)return handleMeetingSend(finalText, m, { heroIdBySid, recipientSids });
+          if(result.plain)return handleMeetingSend(finalText, m, { recipientSids });
           if(result.supplement)return _presentUserSupplement(m,result);
         }).catch(error=>{
           _restoreQuestionAndPreserveDraft(m.id,finalText);
           _showGcEscapeNotice(error.message,'error');
         });
       } else if (DevFile.enabled(m) || DevDiscuss.isDiscussing(m)) {
-        handleMeetingSend(finalText, m, { heroIdBySid, recipientSids });
+        handleMeetingSend(finalText, m, { recipientSids });
       } else if (m.scene && m.serialWorkflow && m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
         // 循环已经在跑时，这句话的语义是「给当前任务补一句」，不是「开一个新任务」。
         // 以前这里照样调 loop:start，主进程以 already_running 拒绝，消息被退回输入框 ——
         // 用户以为说了，其实一个字都没送出去。现在先问主进程「循环在跑吗」（不信 renderer
         // 缓存），在跑就走插话闭环：落盘 + 当前执行者即时收到 + 待命者记账下次补。
-        void _routeLoopInput(m, finalText, heroIdBySid, recipientSids);
+        void _routeLoopInput(m, finalText, recipientSids);
       } else if (m.serialWorkflow && m.serialWorkflow.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
-        void _routeSerialInput(m, finalText, heroIdBySid, recipientSids);
+        void _routeSerialInput(m, finalText, recipientSids);
       } else {
-        handleMeetingSend(finalText, m, { heroIdBySid, recipientSids });
+        handleMeetingSend(finalText, m, { recipientSids });
       }
     }
 
-    async function _routeSerialInput(m, finalText, heroIdBySid, recipientSids) {
+    async function _routeSerialInput(m, finalText, recipientSids) {
       try {
         const status = await ipcRenderer.invoke('loop:status', {meetingId:m.id});
         if (status?.running) await _sendUserSupplement(m, finalText, recipientSids);
-        else runSerialWorkflow(m, finalText, {heroIdBySid});
+        else runSerialWorkflow(m, finalText);
       } catch (error) {
         _restoreQuestionAndPreserveDraft(m.id, finalText);
         _showGcEscapeNotice('无法核对工作流状态，补充内容已恢复到输入框：' + error.message, 'error');
       }
     }
 
-    async function _routeLoopInput(m, finalText, heroIdBySid, recipientSids) {
+    async function _routeLoopInput(m, finalText, recipientSids) {
       let running = false;
       try {
         const status = await ipcRenderer.invoke('loop:status', { meetingId: m.id });
@@ -7497,7 +7301,7 @@ if (typeof document !== 'undefined') (function () {
         console.warn('[loop] status probe failed, treating as not running:', e && e.message);
       }
       if (running) { await _sendUserSupplement(m, finalText, recipientSids); return; }
-      _startLoopWithGoal(m, finalText, heroIdBySid);
+      _startLoopWithGoal(m, finalText);
     }
 
     // 插话：不开新一轮、不抢占当前步骤、不重置返工预算。
@@ -7537,10 +7341,9 @@ if (typeof document !== 'undefined') (function () {
       }
     }
 
-    function _startLoopWithGoal(m, finalText, heroIdBySid) {
+    function _startLoopWithGoal(m, finalText) {
       const pendingLoopQuestion = _rememberPendingUserMessage(m, finalText);
       const restoreLoopStartFailure = (reason) => {
-        if (Object.keys(heroIdBySid).length) _restoreHeroAssignments(m, heroIdBySid);
         _discardPendingUserMessage(m.id, { clientId: pendingLoopQuestion && pendingLoopQuestion.clientId });
         const recovery = _restoreQuestionAndPreserveDraft(m.id, finalText);
         const recoveryText = recovery.mergedWithDraft
@@ -7552,7 +7355,7 @@ if (typeof document !== 'undefined') (function () {
       // timeline 写入失败不阻断执行，但会明确记录日志；避免内部 builder prompt 冒充原问题。
       ipcRenderer.invoke('meeting-append-user-turn', { meetingId: m.id, text: finalText })
         .catch((e) => console.warn('[loop] append original goal failed:', e && e.message))
-        .then(() => ipcRenderer.invoke('loop:start', { meetingId: m.id, userInput: finalText, heroIdBySid }))
+        .then(() => ipcRenderer.invoke('loop:start', { meetingId: m.id, userInput: finalText }))
         .then((r) => {
           if (!r || !r.ok) {
             console.warn('[loop] start failed:', r && r.reason);
@@ -7660,7 +7463,6 @@ if (typeof document !== 'undefined') (function () {
       triggerGroupChat(current, {
         userInput: text,
         pendingClientId: pendingUser && pendingUser.clientId,
-        heroIdBySid: opts.heroIdBySid || {},
         recipientSids: opts.recipientSids,
       });
       return;
