@@ -11,6 +11,8 @@ const PROVIDERS = Object.freeze([
   { id: 'codex', name: 'Codex', command: 'codex', login: 'codex login', docs: 'https://developers.openai.com/codex/cli/' },
   { id: 'gemini', name: 'Gemini CLI', command: 'gemini', login: 'gemini', docs: 'https://github.com/google-gemini/gemini-cli' },
   { id: 'kimi', name: 'Kimi Code', command: 'kimi', login: 'kimi login', docs: 'https://github.com/MoonshotAI/kimi-cli' },
+  // 公司内网的 Code Agent CLI（Claude 形态，见 docs/COMPANY-CODE-AGENT.md）；只在公司电脑上会被检测到。
+  { id: 'codeagent', name: 'CodeAgent', command: 'codeagent', login: 'codeagent auth login', docs: 'https://github.com/TianLin0509/ai-hub-community/blob/main/docs/COMPANY-CODE-AGENT.md' },
 ]);
 
 function searchDirs(command, env, platform) {
@@ -24,6 +26,12 @@ function searchDirs(command, env, platform) {
 }
 
 function findCommand(command, env = process.env, platform = process.platform) {
+  // Code Agent 的命令可以配置成完整路径（例如没有这个 CLI 的电脑上的测试替身）。
+  if (command === 'codeagent') {
+    const configured = require('./codeagent-config').resolveCodeAgentConfig(env, {}).command;
+    if (path.isAbsolute(configured)) { try { return fs.statSync(configured).isFile() ? configured : null; } catch { return null; } }
+    command = configured;
+  }
   // Codex: the same lookup that actually starts it (account check, login, sessions, App Server),
   // so the first-run panel can never report an install the Hub then fails to launch.
   if (command === 'codex' && platform === 'win32') {

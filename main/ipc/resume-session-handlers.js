@@ -320,7 +320,9 @@ function createResumeSessionHandler(deps) {
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
       ...(meta.runtimeBackend === 'claude-stream-json' ? { ...meta.nativeConfig, nativeRuntime: meta.nativeRuntime } : {}),
       resumeTranscriptPath: resumeTranscriptPath || undefined,
-      useContinue: isClaudeCliResumable && !meta.ccSessionId && !freshUnboundAgentLeague,
+      // Code Agent 没有身份时从头开：--continue 会接上这个目录里最近的别的对话（它不认 --session-id，身份只能等 hook）。
+      useContinue: isClaudeCliResumable && !meta.ccSessionId && !freshUnboundAgentLeague
+        && !String(meta.kind || '').startsWith('codeagent'),
       // Agent 联赛的空壳 Session 从未产生过原生 turn，没有历史可选。
       // 进入通用 picker 会让自动 Prompt 落到“Resume a previous session”界面。
       // 保留 Hub ID fresh start；一旦首次 turn 生成 codexSid，后续仍精确 resume。

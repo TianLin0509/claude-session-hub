@@ -43,28 +43,31 @@ function toClaudeProjectKey(projectDir) {
   return path.resolve(projectDir || os.homedir()).replace(/\\/g, '/');
 }
 
-function claudeStatePathFor(configDir) {
+// stateFileName：同形态的 CLI 用别的状态文件名（公司 Code Agent 是 <configDir>/.cac.json）。
+function claudeStatePathFor(configDir, stateFileName = '.claude.json') {
   return configDir
-    ? path.join(configDir, '.claude.json')
+    ? path.join(configDir, stateFileName)
     : path.join(os.homedir(), '.claude.json');
 }
 
 function ensureClaudeProjectTrusted(projectDir, options = {}) {
   const {
     configDir = null,
+    stateFileName = null,
     fsImpl = fs,
     logger = console,
     renameRetries,
     renameRetryDelayMs,
     renameSleep,
   } = options;
-  const statePath = claudeStatePathFor(configDir);
+  const statePath = claudeStatePathFor(configDir, stateFileName || '.claude.json');
   const projectKey = toClaudeProjectKey(projectDir);
 
   try {
     let raw = null;
     try { raw = fsImpl.readFileSync(statePath, 'utf8'); } catch { raw = null; }
-    if (raw === null && !configDir) {
+    // 别的 CLI 的状态文件不存在，说明它还没初始化过，同样不凭空创建。
+    if (raw === null && (!configDir || stateFileName)) {
       return { ok: false, changed: false, reason: 'state-missing', statePath, projectKey };
     }
 

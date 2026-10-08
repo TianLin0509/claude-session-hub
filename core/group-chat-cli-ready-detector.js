@@ -35,6 +35,9 @@ const MARKERS = {
   // Kimi Code 官方 TUI 状态栏稳定显示小写 `context:`。不能设为强 marker：
   // 未登录启动也会短暂渲染状态栏，随后才显示 OAuth login expired。
   kimi: ['context:'],
+  // 公司 Code Agent（opentui 界面，2026-10-08 公司实测录屏）：空闲输入框占位 "Anything I can assist you with?"，
+  // 底栏 "Bypass (Cycle shift+tab) | <模型>"。保留 Claude 的标记，测试替身跑的是真 Claude 界面。
+  codeagent: ['Anything I can assist you with', 'Cycle shift+tab', 'shift+tab', '? for shortcuts', 'bypass permissions', 'Try "', 'mode on', 'for agents'],
 };
 
 // 启动时的选择框（模型迁移提示、更新提示……）会把第一条粘贴吞掉，随后的回车还会
@@ -43,8 +46,12 @@ const MARKERS = {
 // 不是 "Esc to cancel"（2026-09-25 真机），所以只认前半句的固定结构。
 const CHOICE_DIALOG_BLOCKERS = [/press enter to confirm/i, /Use ↑\/↓ to move/i, /Enter to confirm\s*[·|]\s*Esc to\b/i];
 
+// Code Agent 的选择框底栏是 "Select ↑ ↓ | Confirm Enter | 退出 Esc"；未带 --disable-update 时启动即弹「版本更新提醒」。
+const CODEAGENT_DIALOG_BLOCKERS = [/版本更新提醒/, /Quick safety check/i, /Confirm Enter\s*\|/i];
+
 const BLOCKERS = {
   claude: [...CHOICE_DIALOG_BLOCKERS],
+  codeagent: [...CODEAGENT_DIALOG_BLOCKERS, ...CHOICE_DIALOG_BLOCKERS],
   codex: [/Do you trust the contents of this directory/i, /Booting MCP server/i, /esc to interrupt/i, ...CHOICE_DIALOG_BLOCKERS],
   kimi: [
     /OAuth login expired/i,
@@ -64,6 +71,7 @@ const BLOCKERS = {
 const STALEABLE_BLOCKERS = {
   // 选择框答完就消失：之后出现的输入行标记说明它已被新画面盖掉。
   claude: [...CHOICE_DIALOG_BLOCKERS],
+  codeagent: [...CODEAGENT_DIALOG_BLOCKERS, ...CHOICE_DIALOG_BLOCKERS],
   codex: [/Booting MCP server/i, /esc to interrupt/i, ...CHOICE_DIALOG_BLOCKERS],
 };
 
@@ -157,7 +165,8 @@ function isReady(sessionId, kind, buf) {
 /** 选择框是否正挂在屏幕上（出现在最后一个输入行标记之后）。 */
 function isChoiceDialogVisible(kind, buf) {
   const text = terminalText(buf);
-  const dialogAt = _lastMatchIndex(text, CHOICE_DIALOG_BLOCKERS);
+  const dialogAt = _lastMatchIndex(text, kind === 'codeagent'
+    ? [...CODEAGENT_DIALOG_BLOCKERS, ...CHOICE_DIALOG_BLOCKERS] : CHOICE_DIALOG_BLOCKERS);
   if (dialogAt < 0) return false;
   const need = MARKERS[kind] || [];
   return !(_lastIncludesIndex(text, need) > dialogAt);

@@ -64,6 +64,11 @@ const MODEL_OPTIONS_BY_KIND = {
   kimi: [
     { id: 'kimi-code/k3', label: 'Kimi K3' },
   ],
+  // 公司内部 Code Agent（core/codeagent-config.js）；Auto 由 CLI 自动在大小模型间分流。
+  codeagent: [
+    { id: 'GLM-5.2-WX-Auto', label: 'GLM-5.2 Auto' },
+    { id: 'MiniMax-M2.7', label: 'MiniMax M2.7' },
+  ],
 };
 
 // Renderer-side catalogs can be refreshed from each CLI's own account cache.
@@ -115,6 +120,7 @@ const DEFAULT_MODEL_BY_KIND = {
   codex: 'gpt-6-astra',
   deepseek: 'deepseek-v4-flash',
   kimi: 'kimi-code/k3',
+  codeagent: 'GLM-5.2-WX-Auto',
 };
 
 // PTY output can contain tool/backend model names such as gpt-image-gen2.

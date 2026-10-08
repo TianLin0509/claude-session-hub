@@ -1,8 +1,9 @@
 'use strict';
-const { isCodexCliKind, isClaudeFamily } = require('./ai-kinds');
+const { isCodexCliKind, isClaudeFamily, isCodeAgentKind } = require('./ai-kinds');
 function modelCommandType(kind, prompt) {
   if (isCodexCliKind(kind) && /^\s*\/model\s*$/i.test(prompt)) return 'codex-picker';
-  if (isClaudeFamily(kind) && /^\s*\/model\s+\S+\s*$/i.test(prompt)) return 'claude-inline';
+  // Code Agent 的 /model 是自己的选择界面，确认文案与 Claude 不同，不当成 Claude 的行内切换。
+  if (isClaudeFamily(kind) && !isCodeAgentKind(kind) && /^\s*\/model\s+\S+\s*$/i.test(prompt)) return 'claude-inline';
   return null;
 }
 function modelCommandAcknowledged(type, screen, freshOutput) {

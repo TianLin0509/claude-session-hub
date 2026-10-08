@@ -381,6 +381,7 @@
 .ai-name-kimi     { color: var(--mark-amber); }
 .ai-name-qwen     { color: var(--brand); }
 .ai-name-glm      { color: #3859ff; }
+.ai-name-codeagent { color: #2563eb; }
 /* 2026-06-28 道雪 [改进R2-1]：代码块一键复制按钮 */
 .mr-gc-md pre { position: relative; }
 .mr-gc-code-copy {

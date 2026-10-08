@@ -121,12 +121,29 @@ function classifyClaude(lines) {
   return observation(RUNTIME_UNKNOWN, 'claude-frame-ambiguous');
 }
 
+// 公司 Code Agent（opentui 界面，2026-10-08 公司实测录屏）：执行中显示「⠋ Running…」（盲文点阵转圈），
+// 输入框占位变成「补充指令（Enter 排队等待发送）...」；空闲时占位是「Anything I can assist you with?」，
+// 底栏「Bypass (Cycle shift+tab) | <模型>」。认不出时按 Claude 的规则判（测试替身跑的是 Claude 界面）。
+function classifyCodeAgent(lines) {
+  const waiting = waitingObservation(lines);
+  if (waiting) return waiting;
+  const liveTail = lines.slice(-16);
+  const running = firstMatchingLine(liveTail, /[⠀-⣿]\s*Running/)
+    || firstMatchingLine(liveTail, /补充指令（Enter 排队/);
+  if (running) return observation(RUNTIME_RUNNING, 'codeagent-running', running);
+  const prompt = firstMatchingLine(lines, /Anything I can assist you with/);
+  const footer = firstMatchingLine(lines, /Cycle shift\+tab/);
+  if (prompt && footer) return observation(RUNTIME_IDLE, 'codeagent-input-ready', `${prompt} | ${footer}`);
+  return classifyClaude(lines);
+}
+
 function classifyTerminalRuntime(kind, lines) {
   const normalized = normalizeLines(lines);
   const runtimeKind = String(kind || '').toLowerCase();
   if (runtimeKind === 'codex' || runtimeKind === 'codex-resume' || runtimeKind === 'deepseek') {
     return classifyCodex(normalized);
   }
+  if (runtimeKind === 'codeagent' || runtimeKind === 'codeagent-resume') return classifyCodeAgent(normalized);
   if (runtimeKind === 'claude' || runtimeKind === 'claude-resume' || runtimeKind === 'deepseek-claude') {
     return classifyClaude(normalized);
   }

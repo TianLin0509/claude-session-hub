@@ -20,7 +20,7 @@
 //   新增 AI 时只需追加这个数组 + 补 KIND_LABELS。
 //   不含 'powershell' 等非 AI 类型。
 // ---------------------------------------------------------------------------
-const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi', 'qwen', 'deepseek-acp', 'glm'];
+const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi', 'qwen', 'deepseek-acp', 'glm', 'codeagent'];
 const WEB_STYLE_KINDS = [];
 // DeepSeek V4 Pro / Flash 原生支持 Responses API，并适配 Codex 0.144.0+。
 // 新 DeepSeek 会话因此也属于 Codex CLI runtime；老会话恢复时
@@ -28,6 +28,9 @@ const WEB_STYLE_KINDS = [];
 const CODEX_CLI_KINDS = ['codex', 'codex-resume', 'deepseek', 'deepseek-resume'];
 const CODEX_SESSION_KINDS = [...CODEX_CLI_KINDS];
 const KIMI_CLI_KINDS = ['kimi', 'kimi-resume'];
+// 公司内部 Code Agent CLI：界面、配置、记录与 hook 都是 Claude Code 形态，所以归入 Claude 家族；
+// 与 Claude 的差异（不认 --session-id / --settings、命令名与配置目录不同）见 core/codeagent-config.js。
+const CODEAGENT_KINDS = ['codeagent', 'codeagent-resume'];
 const CLAUDE_WEB_KINDS = [];
 const CODEX_WEB_KINDS = [];
 
@@ -44,6 +47,7 @@ const KIND_LABELS = {
   qwen: '千问',
   'deepseek-acp': 'DeepSeek 原生',
   glm: '智谱',
+  codeagent: 'CodeAgent',
 };
 
 // Initial titles used by provider harnesses, shared with auto-title eligibility.
@@ -57,7 +61,7 @@ const HARNESS_LABELS = { qwen: '千问 · Qwen Code', 'deepseek-acp': 'DeepSeek 
 //                    仅用于恢复 2026-08-09 以前的 DeepSeek Claude transcript
 // 共享：transcript JSONL shape / Stop hook / OSC title 协议 / system prompt 注入参数 (--append-system-prompt)
 // ---------------------------------------------------------------------------
-const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek-legacy', 'deepseek-legacy-resume'];
+const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek-legacy', 'deepseek-legacy-resume', ...CODEAGENT_KINDS];
 
 // ---------------------------------------------------------------------------
 // TUI alt-screen 程序（paste-sensitive）：
@@ -65,7 +69,7 @@ const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek-legacy', 'deepseek-l
 //   AI CLI 都是 TUI alt-screen；powershell 等普通 shell 不是。
 //   普通模式发送 prompt 时这些 kind 需要 ≥400ms 延迟才能让 paste-detect 完成。
 // ---------------------------------------------------------------------------
-const PASTE_SENSITIVE_KINDS = ['claude', 'claude-resume', 'gemini', 'codex', 'codex-resume', 'deepseek', 'deepseek-resume', 'kimi', 'kimi-resume'];
+const PASTE_SENSITIVE_KINDS = ['claude', 'claude-resume', 'gemini', 'codex', 'codex-resume', 'deepseek', 'deepseek-resume', 'kimi', 'kimi-resume', ...CODEAGENT_KINDS];
 
 // ---------------------------------------------------------------------------
 // 跑在 Claude CLI 上、复用 Stop hook + transcript JSONL 的 kind。
@@ -98,6 +102,10 @@ function isCodexSessionKind(kind) {
 
 function isKimiCliKind(kind) {
   return KIMI_CLI_KINDS.includes(kind);
+}
+
+function isCodeAgentKind(kind) {
+  return CODEAGENT_KINDS.includes(kind);
 }
 
 function isClaudeWebKind(kind) {
@@ -134,7 +142,7 @@ function kindRegexAlternation() {
 //   返回家族字符串：claude / gemini / gpt / deepseek
 // ---------------------------------------------------------------------------
 // 群聊记忆系统的家族存储 key 集合（去重 canonical 后）
-const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'kimi', 'qwen', 'glm'];
+const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'kimi', 'qwen', 'glm', 'codeagent'];
 const _FAMILY_SET = new Set(FAMILY_KINDS);
 
 function canonicalAiKind(rawKind) {
@@ -145,6 +153,7 @@ function canonicalAiKind(rawKind) {
   if (rawKind === 'claude-resume') return 'claude';
   if (rawKind === 'deepseek-resume' || rawKind === 'deepseek-legacy' || rawKind === 'deepseek-legacy-resume') return 'deepseek';
   if (rawKind === 'kimi-resume') return 'kimi';
+  if (rawKind === 'codeagent-resume') return 'codeagent';
   const out = rawKind || 'unknown';
   // [Phase 4 silent-failure-hunt] 静默 fall-through 会让未来新加的 kind（如 'mistral'）
   //   生成预期外的 .md 文件，且 _runLegacyMigration 不会归档它（因为不在 FAMILY_SET）。
@@ -202,6 +211,7 @@ module.exports = {
   CODEX_CLI_KINDS,
   CODEX_SESSION_KINDS,
   KIMI_CLI_KINDS,
+  CODEAGENT_KINDS,
   CLAUDE_WEB_KINDS,
   CODEX_WEB_KINDS,
   KIND_LABELS,
@@ -215,6 +225,7 @@ module.exports = {
   isCodexCliKind,
   isCodexSessionKind,
   isKimiCliKind,
+  isCodeAgentKind,
   isClaudeWebKind,
   isCodexWebKind,
   isWebStyleKind,

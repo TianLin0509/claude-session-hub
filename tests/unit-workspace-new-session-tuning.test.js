@@ -177,8 +177,8 @@ test('only flags the selected CLI understands are sent', () => {
   // 三家都有这个旋钮，但 Gemini / Kimi / PowerShell 没有，不能乱传。
   assert.match(
     CONTROLLER_SRC,
-    /const EFFORT_KINDS = new Set\(\['claude', 'codex', 'deepseek'\]\)/,
-    'effort applies to the three kinds whose CLI has a reasoning dial',
+    /const EFFORT_KINDS = new Set\(\['claude', 'codex', 'deepseek', 'codeagent'\]\)/,
+    'effort applies to the kinds whose CLI has a reasoning dial (CodeAgent: --effort low|medium|high|max)',
   );
   // fastMode（--settings）是 Claude Code 独有的机制，所以那个复选框只给 Claude。
   // 但 Codex **也有** fast —— 是 service_tier（priority 通道，1.5× 速度），
@@ -215,7 +215,8 @@ test('only flags the selected CLI understands are sent', () => {
   // 加载 superRAN」，而 superran 每个进程恒定提交 2.66 GB，默认加载是内存杀手。
   assert.match(
     CREATION_DEFAULTS_SRC,
-    /const DEFAULT_MCP_BY_KIND = \{ claude: 'none', codex: 'none', deepseek: 'none' \}/,
+    // 公司 Code Agent 跑在同事电脑上，沿用他们自己配好的公司 MCP（代码检索等），默认 full。
+    /const DEFAULT_MCP_BY_KIND = \{ claude: 'none', codex: 'none', deepseek: 'none', codeagent: 'full' \}/,
     '三家默认都必须是 None（不加载任何 MCP）',
   );
   // 2026-09-05：用户要求 Claude / Codex 两家的 fast 默认都关掉。
@@ -235,7 +236,7 @@ test('only flags the selected CLI understands are sent', () => {
   // 必须继续落在通用 DEFAULT_EFFORT('max')，所以这里同时守"没有 deepseek 键"。
   assert.match(
     CREATION_DEFAULTS_SRC,
-    /const DEFAULT_EFFORT_BY_KIND = \{ claude: 'high', codex: 'high' \}/,
+    /const DEFAULT_EFFORT_BY_KIND = \{ claude: 'high', codex: 'high', codeagent: 'high' \}/,
     'Claude 与 Codex 的默认思考强度必须是 high',
   );
   assert.match(

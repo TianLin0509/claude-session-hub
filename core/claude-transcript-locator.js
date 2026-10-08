@@ -14,7 +14,14 @@ function defaultHomeDir() {
 }
 
 function claudeProjectRoots(homeDir = defaultHomeDir()) {
-  return CLAUDE_PROJECT_ROOT_DIRS.map(dir => path.join(homeDir, dir, 'projects'));
+  const roots = CLAUDE_PROJECT_ROOT_DIRS.map(dir => path.join(homeDir, dir, 'projects'));
+  // 公司 Code Agent 的记录与 Claude 同格式，放在它自己的配置目录（默认 ~/.cac）下。
+  try {
+    const { configDir } = require('./codeagent-config').resolveCodeAgentConfig({ ...process.env, USERPROFILE: homeDir, HOME: homeDir });
+    const root = path.join(configDir, 'projects');
+    if (!roots.some(item => path.resolve(item).toLowerCase() === path.resolve(root).toLowerCase())) roots.push(root);
+  } catch {}
+  return roots;
 }
 
 function findTranscriptByCCSessionId(ccSessionId, homeDir = defaultHomeDir()) {
