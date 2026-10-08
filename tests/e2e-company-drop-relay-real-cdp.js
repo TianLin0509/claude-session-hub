@@ -110,6 +110,8 @@ async function main() {
     const boxText = await c.eval('document.querySelector(".floating-input-box").innerText');
     assert.ok(boxText.includes(marker) && boxText.includes('BSR'), boxText);
     check('点「拉取」后文字进入输入框', `${result.timings.pullMs}ms · ${toast.text.replace(/\n/g, ' ')}`);
+    assert.equal(await c.eval('document.querySelector(".composer-tools-popover").hidden'), true, 'tools menu closes after an action');
+    check('点完「拉取」工具菜单自动收起，不挡输入框');
     await snap('02-pulled-into-input');
     const feed1 = await api(base, 'feed');
     const mine = feed1.body.up.find(m => m.id === posted.body.id);
