@@ -3048,6 +3048,17 @@ try {
   if (cachedCodex && cachedCodex.source === 'app-server') _codexLiveUsage = cachedCodex;
 } catch {}
 
+// The Codex accounts not in use right now, for the usage popover (on demand, never polled).
+const codexOtherUsage = require('./main/usage/codex-other-profiles-usage.js').createCodexOtherProfilesUsage({
+  getConfig: getHubConfig,
+  currentScope: currentCodexUsageScope,
+  resolveScope: config => resolveCodexUsageScope(config, { hubDataDir: getHubDataDir(), homeDir: os.homedir() }),
+  readUsage: opts => readCodexAccountUsage({ ...opts, cwd: os.homedir() }),
+  file: path.join(getHubDataDir(), 'codex-other-usage.json'),
+});
+ipcMain.handle('codex-other-usage', () => codexOtherUsage.list());
+ipcMain.handle('refresh-codex-other-usage', (_event, opts = {}) => codexOtherUsage.refresh({ force: opts && opts.force === true }));
+
 registerUsageIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   loadUsageCacheForCurrentConfig,

@@ -133,7 +133,9 @@ async function main() {
   button.click(); // pin an already-hovered popup
   refresh.focus();
   await controller.refreshUsageNow();
-  assert.deepStrictEqual(invokeCalls, ['refresh-usage-now']);
+  assert.deepStrictEqual(invokeCalls.filter(c => c === 'refresh-usage-now'), ['refresh-usage-now']);
+  // The Codex account not in use is read when the popover opens and again on 刷新.
+  assert.ok(invokeCalls.includes('codex-other-usage') && invokeCalls.filter(c => c === 'refresh-codex-other-usage').length >= 1);
   assert.ok(rows.innerHTML.includes('66%'));
   assert.strictEqual(document.activeElement, refresh);
   assert.strictEqual(popup.hidden, false);

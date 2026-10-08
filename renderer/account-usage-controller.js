@@ -48,6 +48,21 @@ function createAccountUsageController({
   if (typeof escapeHtml !== 'function') throw new Error('escapeHtml is required');
 
   const accountUsage = { usage5h: null, usage7d: null };
+  // The Codex subscription accounts not in use right now: read when the popover opens.
+  let otherCodex = [];
+  const otherCodexState = { inFlight: false };
+  async function loadOtherCodex(force = false) {
+    if (otherCodexState.inFlight) return;
+    otherCodexState.inFlight = true;
+    render();
+    try {
+      const list = await ipcRenderer.invoke('refresh-codex-other-usage', { force });
+      if (Array.isArray(list)) otherCodex = list;
+    } catch { /* the rows keep their last reading */ }
+    finally { otherCodexState.inFlight = false; render(); }
+  }
+  Promise.resolve().then(() => ipcRenderer.invoke('codex-other-usage'))
+    .then(list => { if (Array.isArray(list)) { otherCodex = list; render(); } }).catch(() => {});
   const agentUsage = { gemini: null, codex: null, kimi: null, deepseek: null, tokenPlan: null };
   const agentUsageLastSeen = { gemini: 0, codex: 0, kimi: 0, deepseek: 0, tokenPlan: 0 };
   let _claudeUsageLastSeen = 0;
@@ -254,6 +269,7 @@ function createAccountUsageController({
     render();
     return Promise.resolve().then(() => ipcRenderer.invoke('refresh-usage-now'))
       .then((result) => {
+        void loadOtherCodex(true);
         usageRefreshState.providerResults = result && result.providerResults || null;
         usageRefreshState.error = ['claude', 'codex', 'deepseek'].flatMap(provider => {
           const status = usageRefreshState.providerResults?.[provider];
@@ -319,6 +335,7 @@ function createAccountUsageController({
     ui.button.setAttribute('aria-expanded', String(open));
     if (!open) popoverPinned = false;
     if (open) positionPopover(wasHidden);
+    if (open && wasHidden) void loadOtherCodex(false);
     else if (returnFocus) ui.button.focus({ preventScroll: true });
   }
 
@@ -460,7 +477,8 @@ function createAccountUsageController({
     };
     ui.rows.innerHTML = ['claude', 'codex', 'deepseek'].map(provider => {
       const data = snapshot[provider] || {};
-      const name = PROVIDER_NAMES[provider] + (data.profileLabel ? '·' + data.profileLabel : '');
+      const name = PROVIDER_NAMES[provider] + (data.profileLabel ? '·' + data.profileLabel : '')
+        + (provider === 'codex' && otherCodex.length ? '（在用）' : '');
       const providerResult = usageRefreshState.providerResults?.[provider];
       const tip = name + ' · ' + formatAge(data.lastSeen)
         + (data.source ? ' · ' + data.source : provider === 'claude' ? ' · statusline' : '')
@@ -484,6 +502,29 @@ function createAccountUsageController({
         + '<span class="usage-provider-detail">' + detail + '</span>'
         + (!data.lastSeen ? '<span class="usage-row-age">未刷新</span>' : '') + '</div>';
     }).join('');
+    // Other Codex accounts, right under the one in use.
+    const otherRows = otherCodex.map(other => {
+      const name = 'Codex·' + (other.profileLabel || other.profileId);
+      const tip = name + ' · 未在使用' + (other.accountEmail ? ' · ' + other.accountEmail : '')
+        + (other.observedAt ? ' · ' + formatAge(other.observedAt) : '') + (other.error ? ' · 读取异常：' + other.error : '');
+      let bar, detail, age = '';
+      if (other.apiKey) {
+        bar = renderBar(0, 'muted');
+        detail = '<span class="usage-unavailable">API Key 登录，没有订阅配额</span>';
+      } else {
+        const pick = pickTightestWindow({ codex: other });
+        bar = renderBar(pick?.percent || 0, pick?.level || 'muted');
+        detail = renderWindow('5h', other.usage5h) + renderWindow('7d', other.usage7d);
+        if (!other.observedAt) age = otherCodexState.inFlight ? '查询中…' : other.error ? '读取失败' : '未刷新';
+      }
+      return '<div class="usage-provider-row usage-provider-other" data-provider="codex-other" data-profile="' + escapeHtml(other.profileId)
+        + '" title="' + escapeHtml(tip) + '"><span class="usage-provider-name">' + escapeHtml(name) + '</span>' + bar
+        + '<span class="usage-provider-detail">' + detail + '</span>' + (age ? '<span class="usage-row-age">' + age + '</span>' : '') + '</div>';
+    }).join('');
+    if (otherRows) {
+      const codexRow = ui.rows.querySelector('[data-provider="codex"]');
+      if (codexRow) codexRow.insertAdjacentHTML('afterend', otherRows); else ui.rows.insertAdjacentHTML('beforeend', otherRows);
+    }
     const times = ['claude', 'codex', 'deepseek'].map(p => snapshot[p]?.lastSeen).filter(ts => Number.isFinite(ts) && ts > 0);
     ui.age.textContent = formatAge(times.length ? Math.min(...times) : 0) + (times.length ? '（取三家最旧）' : '');
     ui.refresh.textContent = usageRefreshState.inFlight ? '刷新中…' : '刷新';
