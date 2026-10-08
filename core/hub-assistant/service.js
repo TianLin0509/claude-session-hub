@@ -55,6 +55,8 @@ class AssistantService {
   assistantIds(){return Object.values(backends.bindings(this.store));}
   captureContinuity(){for(const id of this.assistantIds()){const meta=this.sessionMetadata(id);if(!meta)continue;for(const row of this.liveHistory.read(meta).records)this.continuity.add({...row,provider:meta.kind,timestamp:row.timestamp||Date.now()});}}
   liveInventory(){return this.sessions().map(s=>{const result=s.isOpen?this.liveHistory.read(s):null;return{...s,nativeSessionId:nativeId(s),latestFinal:result?.records.at(-1)||null,liveIssue:result?.issue||null};});}
+  get videos(){if(!this._videos)this._videos=new (require('./video-studio').VideoStudio)({assistant:this});return this._videos;}
+  sessionCards(request){return require('./session-cards').sessionCards(this,request);}
   readLiveFinal(sessionId){const meta=this.sessionMetadata(sessionId);if(!meta)throw new Error('找不到原会话');const result=this.liveHistory.read(meta);return{sessionId,title:meta.title,...result};}
   // 不做固定频率的心跳：会话答完一轮由完成事件记账与提醒；换班按精确时间点（空闲 2 小时、每天 4 点）触发；
   // 每 2 小时做一次全面核对补漏；只有被关注的会话不发完成事件（千问、GLM 等）时，才每 5 分钟补查关注任务。

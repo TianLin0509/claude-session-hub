@@ -3,9 +3,9 @@ const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:pat
 const {seal,open,credentials,invite}=require('./crypto');
 // 手机协议 v2（App 1.1）：voice_message 识别后直接交给助理，转写只回传显示；hello 声明能力后才下发 profile；set_profile 切换助理模型。
 // 旧 App 只认 text/voice/status/answer/image/transcript，未声明能力前不向它发送新类型。
-const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak','memo_update','podcast_get','voice_prepare','workbench_get','workbench_action'];
+const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak','memo_update','podcast_get','voice_prepare','workbench_get','workbench_action','session_cards_get','video_chunk_get'];
 // 本 Hub 能处理的手机消息能力，随 profile 下发；手机据此决定是否发 voice_prepare（老 Hub 不认会回「校验未通过」）。
-const HUB_CAPS=['voice_prepare','workbench'];
+const HUB_CAPS=['voice_prepare','workbench','session_cards','learning_video'];
 const MAX_VOICE_BYTES=16000*2*120;
 const ACTIVE=['dispatching','waiting','unknown'];
 const LONG_POLL_SECONDS=15; // 中继支持长等待时，新消息一到即返回；旧中继忽略该参数、立即返回
@@ -41,7 +41,9 @@ class PhoneChannel{
      this.journal.change(x=>{x.inbox.push({...m,id:packet.id,state:'queued',t:{received:Date.now()}});x.cursor=packet.seq;x.lastInbound=Date.now();});if(m.type==='text')this.log({id:packet.id,role:'user',input:'text',text:m.text});}catch{this.journal.change(x=>{x.cursor=packet.seq;});this.emit('invalid-'+packet.id,{type:'status',requestId:packet.id,state:'rejected',text:'消息校验未通过，未提交任务。'});}}else this.journal.change(x=>{x.cursor=packet.seq;});}
  }
  validate(m){
-  if(m.context!==undefined&&(!['text','voice_message'].includes(m.type)||!m.context||!['session','plan','lesson','summary'].includes(m.context.kind)||typeof m.context.id!=='string'||m.context.id.length>100))throw Error('工作台上下文无效');
+  if(m.type==='session_cards_get'&&(typeof m.sessionId!=='string'||! /^[A-Za-z0-9_-]{1,100}$/.test(m.sessionId)||m.before!=null&&(typeof m.before!=='string'||m.before.length>160)))throw Error('卡片请求无效');
+  if(m.type==='video_chunk_get'&&(typeof m.videoId!=='string'||! /^[A-Za-z0-9-]{8,64}$/.test(m.videoId)||!Number.isInteger(m.index)||m.index<0))throw Error('视频请求无效');
+  if(m.context!==undefined&&(!['text','voice_message'].includes(m.type)||!m.context||!['session','plan','lesson','summary','video'].includes(m.context.kind)||typeof m.context.id!=='string'||m.context.id.length>100))throw Error('工作台上下文无效');
   if(m.type==='workbench_action'&&(!['configure','confirm','done','reopen'].includes(m.action)||m.day!==undefined&&(typeof m.day!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(m.day))||m.itemId!==undefined&&(typeof m.itemId!=='string'||m.itemId.length>100)))throw Error('工作台操作无效');
   if(!TYPES.includes(m.type))throw Error('消息类型不支持');
   if(m.type==='text'&&(typeof m.text!=='string'||!m.text.trim()||m.text.length>50000))throw Error('任务文字无效');
@@ -86,7 +88,7 @@ class PhoneChannel{
   if(!this.supports('profile')||!this.assistant.phoneProfile)return;
   const profile=await this.assistant.phoneProfile();
   this.journal.change(x=>{x.profileSignature=this.profileSignature();});
-  this.emit('profile-'+crypto.randomUUID(),{type:'profile',...(requestId?{requestId}:{}),...profile,hubCaps:HUB_CAPS.filter(c=>c!=='workbench'||!!this.assistant.workbench),watching:this.watchingCount(),switching:!!this.assistant.switching});
+  this.emit('profile-'+crypto.randomUUID(),{type:'profile',...(requestId?{requestId}:{}),...profile,hubCaps:HUB_CAPS.filter(c=>c==='workbench'?!!this.assistant.workbench:c==='session_cards'?typeof this.assistant.sessionCards==='function':c==='learning_video'?!!this.assistant.videos:true),watching:this.watchingCount(),switching:!!this.assistant.switching});
  }
  async tick(){const s=this.journal.state;if(this.working||this.closed||!s.enabled||!s.credentials)return;this.working=true;this.lastPoll=Date.now();
  try{
@@ -96,6 +98,12 @@ class PhoneChannel{
   for(const row of s.inbox.filter(r=>r.state==='queued'&&['workbench_get','workbench_action'].includes(r.type))){
    try{if(!this.supports('workbench')||!this.assistant.workbench)throw Error('工作台需要新版手机和 Hub');if(row.type==='workbench_action')this.assistant.workbench.action(row);this.sendWorkbench(row.id,row.type==='workbench_get');this.journal.change(()=>{row.state='done';});}
    catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;});this.emit('workbench-error-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:e.message});}
+  }
+  for(const row of s.inbox.filter(r=>r.state==='queued'&&['session_cards_get','video_chunk_get'].includes(r.type))){
+   try{const cards=row.type==='session_cards_get';if(!this.supports(cards?'session_cards':'learning_video'))throw Error('手机需要更新');
+    const body=cards?this.assistant.sessionCards(row):this.assistant.videos.chunk(row.videoId,row.index);
+    this.emit('readonly-'+row.id,{type:cards?'session_cards':'video_chunk',requestId:row.id,...body,...(cards?{append:!!row.before}:{})});this.journal.change(()=>{row.state='done';});
+   }catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;});this.emit('readonly-error-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:e.message});}
   }
   // 朗读请求不排队：合成后把音频地址发给手机（手机直接从阿里云下载播放）。
   for(const row of s.inbox.filter(r=>r.state==='queued'&&r.type==='speak')){this.journal.change(()=>{row.state='speaking';});try{if(!this.speak)throw Error('电脑未配置朗读');const a=await this.speak(row.text);this.emit('audio-'+row.id,{type:'audio',requestId:row.id,answerId:row.answerId,url:a.url,expiresAt:a.expiresAt});console.log('[phone] speak',row.id.slice(0,8),JSON.stringify({chars:a.chars,tokens:a.tokens,ms:a.ms}));this.journal.change(()=>{row.state='done';delete row.text;});}catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;delete row.text;});this.emit('speakerror-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:'朗读暂不可用：'+e.message});}}

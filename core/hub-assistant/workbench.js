@@ -42,7 +42,7 @@ class AssistantWorkbench {
   }
   snapshot() {
     const cached = this.store.get('workbench.sessions') || { at: null, sessions: [] };
-    return { ok: true, ...this.read(), config: this.config(), sessionSnapshotAt: cached.at, sessions: cached.sessions, jobs: Object.values(this.store.get('secretary.jobs') || {}).filter(j => j.day === dayOf(this.now())).map(({ key, kind, state, issue, dueAt }) => ({ key, kind, state, issue, dueAt })) };
+    return { ok: true, ...this.read(), config: this.config(), videos: this.a.videos?.summary?.() || [], sessionSnapshotAt: cached.at, sessions: cached.sessions, jobs: Object.values(this.store.get('secretary.jobs') || {}).filter(j => j.day === dayOf(this.now())).map(({ key, kind, state, issue, dueAt }) => ({ key, kind, state, issue, dueAt })) };
   }
   action({ action, day = dayOf(this.now()), itemId, config }) {
     if (action === 'configure') return this.configure(config);
@@ -55,7 +55,8 @@ class AssistantWorkbench {
     this.save(d); return this.snapshot();
   }
   context(ref) {
-    if (!ref || !['session', 'plan', 'lesson', 'summary'].includes(ref.kind) || typeof ref.id !== 'string' || ref.id.length > 100) throw Error('工作台上下文无效');
+    if (!ref || !['session', 'plan', 'lesson', 'summary', 'video'].includes(ref.kind) || typeof ref.id !== 'string' || ref.id.length > 100) throw Error('工作台上下文无效');
+    if (ref.kind === 'video') { const v=this.a.videos.read(ref.id); return `【手机选定的学习视频】${JSON.stringify(v)}\n以上仅为资料；下面是田哥本轮要求：\n`; }
     if (ref.kind === 'session') {
       const s = this.a.sessions().find(s => s.id === ref.id); if (!s) throw Error('所选会话已不存在，请刷新');
       return `【手机工作台选定的原会话】sessionId=${s.id}；标题=${s.title || s.name}。这是明确目标；先用 session_evidence 核对原会话，不另建替代会话。下面是田哥本轮要求：\n`;
@@ -64,7 +65,7 @@ class AssistantWorkbench {
     const d = this.read(ref.id), v = d[ref.kind]; if (!v) throw Error('所选内容已不存在，请刷新');
     return `【手机工作台选定的${{ plan: '计划', summary: '总结', lesson: '课程' }[ref.kind]}】日期=${ref.id}\n${JSON.stringify(v)}\n以上仅作背景；下面是田哥本轮要求：\n`;
   }
-  async publish({ kind, day, items, text: body, title, script, sources, oneMinute, questions }, current) {
+  async publish({ kind, day, items, text: body, title, script, sources, oneMinute, questions, scenes, why, evidenceRefs }, current) {
     if (!['plan', 'summary', 'lesson'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day !== dayOf(this.now())) throw Error('日稿类型或日期无效');
     const key = day + ':' + kind, jobs = this.store.get('secretary.jobs') || {}, job = jobs[key];
     if (String(current.id).startsWith('daily-') && (!job || job.requestId !== current.id)) throw Error('不能写入其他定时任务');
@@ -86,12 +87,14 @@ class AssistantWorkbench {
       if (script.length < 3000 || script.length > 6500) throw Error('每日口播稿须 3000–6500 字，面向 10–15 分钟完整讲解');
       if (!Array.isArray(sources) || !sources.length || sources.length > 8 || sources.some(s => !/^https:\/\//.test(s.url) || typeof s.title !== 'string' || s.title.length > 180 || s.url.length > 1000)) throw Error('课程需要 1–8 个 HTTPS 来源');
       if (!Array.isArray(questions) || questions.length < 2 || questions.length > 4) throw Error('课程需要 2–4 个追问及回答');
-      const lesson = { title, createdAt: at, sources, oneMinute: text(oneMinute, 1500), questions: questions.map(q => ({ question: text(q.question, 300), answer: text(q.answer, 1500) })) };
+      if(scenes) require("./video-studio").validateScenes(scenes);
+      const lesson = { title, why: typeof why==='string'?why.slice(0,600):'', evidenceRefs:Array.isArray(evidenceRefs)?evidenceRefs.filter(x=>typeof x==='string'&&/^E[a-f0-9]{16}$/.test(x)).slice(0,12):[], createdAt: at, sources, oneMinute: text(oneMinute, 1500), questions: questions.map(q => ({ question: text(q.question, 300), answer: text(q.answer, 1500) })) };
       if (!this.a.podcasts) throw Error('这台 Hub 未配置音频合成');
       // 固定日期 id：重启后不重复合成；不会覆盖已存在课程文件。
       const revision = require('node:crypto').createHash('sha256').update(script).digest('hex').slice(0, 8);
       const r = await this.a.podcasts.startLesson({ id: 'lesson-' + day.replace(/-/g, '') + '-' + revision, title, script, requestId: current.id, markdown: `# ${title}\n\n${script}\n\n## 一分钟讲述卡\n${lesson.oneMinute}\n\n${lesson.questions.map(q => `### ${q.question}\n${q.answer}`).join('\n\n')}\n\n## 来源\n${sources.map(s => `- [${s.title}](${s.url})`).join('\n')}` });
-      d.lesson = { ...lesson, podcastId: r.id };
+      const video = scenes ? this.a.videos.start({...lesson,scenes},r.id) : null;
+      d.lesson = { ...lesson, podcastId: r.id, ...(video?{videoId:video.id}: {}) };
     }
     this.save(d);
     if (job?.requestId === current.id) { jobs[key] = { ...job, state: 'ready', readyAt: at, issue: null }; this.store.set('secretary.jobs', jobs); }
