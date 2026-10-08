@@ -19,6 +19,8 @@ const argv = process.argv.slice(2);
 const arg = name => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null; };
 const exe = arg('--exe') || process.env.AI_HUB_EXE || '';
 const skipGroup = argv.includes('--skip-group');
+// --steps 01,03,04,11：只跑这些步骤（排查单项问题用）；未列出的步骤记为跳过。
+const onlySteps = arg('--steps') ? new Set(arg('--steps').split(',').map(s => s.trim())) : null;
 const secondModel = arg('--model') || 'MiniMax-M2.7';
 const home = process.env.USERPROFILE || os.homedir();
 const configDir = path.resolve(process.env.AI_HUB_CODEAGENT_CONFIG_DIR || process.env.CODEAGENT3_CONFIG_DIR || path.join(home, '.cac'));
@@ -41,6 +43,7 @@ function redact(text) {
 async function step(id, title, fn, { needs = [] } = {}) {
   const entry = { id, title, status: 'running', evidence: [] };
   report.steps.push(entry);
+  if (onlySteps && !onlySteps.has(id)) { entry.status = 'skipped'; entry.evidence.push('未在 --steps 中'); print(entry); return; }
   const missing = needs.filter(n => !ctx[n]);
   if (missing.length) { entry.status = 'skipped'; entry.evidence.push('前置条件未满足：' + missing.join(', ')); print(entry); return; }
   const t0 = Date.now();
@@ -284,14 +287,37 @@ async function main() {
     await c.eval(`applyViewMode('card')`);
     await c.eval(`ipcRenderer.invoke('session:send-prompt', ${j({ sessionId: ctx.a, text: '请写一篇 2000 字的文章，介绍无线信道估计的发展历史，分十节。' })})`);
     await until(`getSessionRuntimeTruth(sessions.get(${j(ctx.a)})).state === 'running'`, '开始执行', 60000);
-    await sleep(3000);
+    // 像人一样：看到 AI 开始输出后再点停止。还没出第一个字就停时，Claude 形态的 CLI 只把问题退回输入框、
+    // 不写中断标记，Hub 收不到中断信号（已知边界，与 CLI 种类无关）。
+    const outputStarted = () => {
+      const lines = fs.readFileSync(ctx.transcript, 'utf8').split('\n');
+      const at = lines.findIndex(l => l.includes('2000 字'));
+      return at >= 0 && lines.slice(at + 1).some(l => l.includes('"type":"assistant"'));
+    };
+    for (let i = 0; i < 90 && !outputStarted(); i++) await sleep(1000);
+    note('点停止时 AI 是否已开始输出：' + outputStarted());
+    await sleep(2000);
     await until(`!!document.querySelector('.floating-input-stop')`, '停止按钮出现', 20000);
+    const stateNow = () => c.eval(`getSessionRuntimeTruth(sessions.get(${j(ctx.a)})).state`);
+    const timeline = [];
+    note('点停止前状态：' + await stateNow() + '；记录里已收到长文请求：' + transcriptUserTexts(ctx.transcript).some(t => t.includes('2000 字')));
     await c.eval(`document.querySelector('.floating-input-stop').click()`);
-    await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(ctx.a)})).state)`, '停止生效', 60000);
+    try {
+      const end = Date.now() + 60000;
+      for (;;) {
+        const st = await stateNow(); if (timeline[timeline.length - 1] !== st) timeline.push(st);
+        if (!['running', 'starting'].includes(st)) break;
+        if (Date.now() > end) throw new Error('超时：停止生效');
+        await sleep(1000);
+      }
+    } finally {
+      note('点停止后状态变化：' + timeline.join(' → '));
+      note('记录里有中断标记「[Request interrupted by user」：' + fs.readFileSync(ctx.transcript, 'utf8').includes('Request interrupted by user'));
+    }
     note('停止后状态：' + await c.eval(`getSessionRuntimeTruth(sessions.get(${j(ctx.a)})).state`));
     await sleep(2000);
     await sendAndWait(ctx.a, '只回复 ACCEPT-4 这几个字符。', 'ACCEPT-4', '停止后一轮');
-  }, { needs: ['resumed'] });
+  }, { needs: ['turn1'] });
 
   if (!skipGroup) {
     await step('11', `群聊：两名 CodeAgent 成员（GLM-5.2-WX-Auto 与 ${secondModel}）都回答`, async note => {
@@ -305,7 +331,7 @@ async function main() {
       await sleep(20000);
       // 像人一样输入：点进输入框、键入文字、点发送（直接改 textContent 不会进入输入框的草稿）。
       await c.eval(`(() => { const box = document.getElementById('mr-input-box'); box.focus(); const r = document.createRange(); r.selectNodeContents(box); r.collapse(false); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); })()`);
-      await c.send('Input.insertText', { text: '只回复 GROUP-OK 和你的群聊角色名字，不调用工具。' });
+      await c.send('Input.insertText', { text: '请用一句话回复：GROUP-OK 加上你的群聊角色名字。' });
       await sleep(500);
       const typed = await c.eval(`document.getElementById('mr-input-box').innerText`);
       if (!typed.includes('GROUP-OK')) throw new Error('群聊输入框没有收到文字：' + typed);
@@ -314,7 +340,14 @@ async function main() {
       try {
         await until(`(async () => { const s = await ${stateExpr}; return (s?.messages || []).filter(m => m.role === 'assistant' && String(m.content || '').includes('GROUP-OK')).length >= 2; })()`, '两名成员都回答', 420000);
       } catch (error) {
-        for (const sid of group.subSessions) note(`成员 ${sid.slice(0, 8)} 终端最后 15 行：\n` + redact(await activeScreenTail(sid, 15)));
+        const st = await c.eval(stateExpr).catch(() => null);
+        note('群聊里记录的用户消息：' + j((st?.messages || []).filter(m => m.role === 'user').map(m => String(m.content || '').slice(0, 200))));
+        for (const sid of group.subSessions) {
+          const raw = String(await c.eval(`ipcRenderer.invoke('debug:get-session-buffer', ${j(sid)})`) || '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '');
+          const at = raw.lastIndexOf('## 用户');
+          note(`成员 ${sid.slice(0, 8)} 收到的「## 用户」段：` + redact(at >= 0 ? raw.slice(at, at + 300) : '（终端里没有找到）'));
+          note(`成员 ${sid.slice(0, 8)} 终端最后 15 行：\n` + redact(await activeScreenTail(sid, 15)));
+        }
         throw error;
       }
       const state = await c.eval(stateExpr);
