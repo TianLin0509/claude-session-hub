@@ -38,7 +38,14 @@ function imageStatus(root, env = process.env, now = Date.now()) {
       const worker=json(path.join(pool,'worker-'+a.id+'-health.json'));
       const stalled=worker.pid === a.pid && worker.tick_started > worker.tick_finished && now - worker.tick_started * 1000 > 300000;
       const occupied=db.prepare("SELECT 1 FROM jobs WHERE account_id=? AND status='needs_attention' AND cancel_requested=0 LIMIT 1").get(a.id);
-      result.web.push({ identity: binding.identity, enabled: !!a.enabled, ready: !!a.enabled && !!a.ready && !paused && !gates[group] && !stalled && !occupied && !(cooldown?.retry_after * 1000 > now) && now - a.heartbeat * 1000 < 20000 && now >= a.heartbeat * 1000,
+      // `able`: the image tool would give this lane work now; an idle lane sleeps and wakes for
+      // work in seconds (image_pool.web_takers), so a missing heartbeat does not make it unable.
+      const able = !!a.enabled && !!a.ready && !paused && !gates[group] && !stalled && !occupied && !(cooldown?.retry_after * 1000 > now);
+      // A gated login is looked at again only when there is work, after growing waits
+      // (gate_revisit.py RETRY_AFTER, 0.7.36): the earliest such moment, for the account page.
+      const gate = gates[group], tries = Number(gate?.auto_tries) || 0, base = Math.max(Number(gate?.since) || 0, Number(gate?.auto_check_at) || 0);
+      const retryAt = gate ? (base + [6, 12, 24, 48][Math.min(tries, 3)] * 3600) * 1000 : 0;
+      result.web.push({ identity: binding.identity, enabled: !!a.enabled, able, retryAt, ready: able && now - a.heartbeat * 1000 < 20000 && now >= a.heartbeat * 1000,
         state: String(a.state || 'not_checked').slice(0, 60), checkedAt: a.updated * 1000, pending: count });
       result.pending += count;
     }
