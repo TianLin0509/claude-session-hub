@@ -180,3 +180,14 @@ test('project trust is written for both the 8.3 short path and the real long pat
   }
   assert.equal(ensureClaudeProjectTrusted(cwd, { configDir, stateFileName: '.cac.json', fsImpl, logger: { warn() {} } }).changed, false);
 });
+
+test('CodeAgent print-mode titles: tagged line wins over startup noise and appended paragraphs', () => {
+  const { createAutoTitleManager } = require('../main/auto-title-manager.js');
+  const m = createAutoTitleManager({ allAiKinds: [], getHubConfig: () => ({}), kindLabels: {}, meetingManager: {},
+    sendToRenderer() {}, sessionManager: {}, workspaceService: null });
+  assert.equal(m.cleanCodeAgentTitle('扩展初始化中：C:/x/.cac/extensions/p/dtagent-plugin.mjs标题：信道估计对比\n\n白话解读：这是一个标题'), '信道估计对比');
+  assert.equal(m.cleanCodeAgentTitle('**标题：** 「多径信道仿真」'), '多径信道仿真');
+  assert.equal(m.cleanCodeAgentTitle('📌 **多进程读 CSV**\n白话解读：说明'), '多进程读 CSV');
+  assert.equal(m.cleanCodeAgentTitle('白话解读：这次只起了一个标题，内容很长很长很长'), '');
+  assert.equal(m.cleanCodeAgentTitle(''), '');
+});

@@ -363,10 +363,8 @@ async function main() {
   }
 
   await step('12', '新建会话表单默认选中 CodeAgent，并排在第一位', async note => {
-    await c.eval(`selectSession(null)`).catch(() => {});
-    await c.eval(`document.querySelector('[data-rail-view="home"], #btn-rail-home')?.click()`);
-    await until(`!!document.getElementById('home-create-session')`, '首页按钮', 20000);
-    await c.eval(`document.getElementById('home-create-session').click()`);
+    // 首页「新建普通会话」与侧栏「启动」按钮都调用这个入口；默认选中的逻辑就在其中。
+    await c.eval(`window.WorkspaceController.openNewSessionModal()`);
     await until(`document.querySelector('#new-session-submit')?.getBoundingClientRect().width > 0`, '新建会话表单', 20000);
     const state = await c.eval(`(() => { const grid = document.querySelector('.session-kind-grid'); const sel = document.querySelector('.new-session-option.selected'); return { selected: sel && sel.dataset.kind, first: grid && grid.firstElementChild && grid.firstElementChild.dataset.kind, summary: document.getElementById('new-session-summary')?.innerText || '' }; })()`);
     note('默认选中：' + state.selected + '；第一位：' + state.first + '；表单摘要：' + state.summary);
