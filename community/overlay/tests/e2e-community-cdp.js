@@ -144,6 +144,23 @@ async function main() {
     report.checks.push('Prompt typed and sent with the keyboard reaches the CLI in the PTY; UserPromptSubmit and Stop hooks relay through PowerShell; the composer shows the turn completed');
     report.hookTrace = traceText().split(/\r?\n/).filter(Boolean);
 
+    // Suspend, then open it again from the sidebar with the mouse: the Hub must resume the same
+    // native session. v0.3.0/v0.4.0 failed here ("isAgentLeague is not defined") for every session.
+    const q = JSON.stringify(id);
+    const native = await cdp.eval(`sessions.get(${q}).ccSessionId`);
+    const suspended = await cdp.eval(`ipcRenderer.invoke('suspend-session', { sessionId: ${q} })`);
+    assert.equal(suspended && suspended.ok, true, 'suspend: ' + JSON.stringify(suspended));
+    await until(`sessions.get(${q})?.status === 'dormant'`, 'session dormant');
+    const startsBefore = (traceText().match(/SessionStart exit=0/g) || []).length;
+    await click(`.session-item[data-session-id="${id}"]`);
+    await until(`sessions.get(${q})?.status !== 'dormant' || document.body.innerText.includes('会话恢复失败')`, 'wake attempt');
+    assert.equal(await cdp.eval(`document.body.innerText.includes('会话恢复失败')`), false, 'resume must not fail');
+    for (let i = 0; i < 150 && (traceText().match(/SessionStart exit=0/g) || []).length <= startsBefore; i++) await sleep(200);
+    assert.ok((traceText().match(/SessionStart exit=0/g) || []).length > startsBefore, 'the CLI started again on wake');
+    assert.equal(await cdp.eval(`sessions.get(${q}).ccSessionId`), native, 'resumed the same native session');
+    await shot('04-resumed');
+    report.checks.push('Suspended and reopened from the sidebar: the CLI restarts with the same native session and no resume error');
+
     assert.ok(hub.log().some(line => line.includes('hook server listening')), 'hook listener must start');
     report.passed = true;
   } catch (error) {
