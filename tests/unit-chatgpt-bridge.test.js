@@ -9,6 +9,7 @@ const {
   parseBridgeOutput,
   registerChatgptBridgeIpc,
   resolveChatgptBridgeRuntime,
+  resolveCompanyTextRuntime,
   normalizeMessageIds,
   validateText,
 } = require('../main/ipc/chatgpt-bridge-handlers.js');
@@ -48,6 +49,45 @@ test('bridge runtime honors explicit existing paths', () => {
     homeDir: 'C:\\Users\\test',
     existsSync: candidate => existing.has(candidate),
   }), { pythonPath, bridgePath });
+});
+
+test('company text channel defaults to the Aliyun relay and can be switched back to ChatGPT', () => {
+  const home = 'C:\\Users\\test';
+  const python = 'C:\\Users\\test\\AppData\\Local\\Programs\\Python\\Python312\\python.exe';
+  const relay = 'C:\\Users\\test\\company-drop\\client\\company_relay.py';
+  const bridge = 'C:\\Users\\test\\tools\\chatgpt_bridge\\bridge.py';
+  const env = { LOCALAPPDATA: 'C:\\Users\\test\\AppData\\Local' };
+  const all = new Set([python, relay, bridge]);
+  const resolve = (extraEnv, present) => resolveCompanyTextRuntime({
+    env: { ...env, ...extraEnv }, homeDir: home, existsSync: candidate => present.has(candidate),
+  });
+  assert.deepEqual(resolve({}, all), { pythonPath: python, scriptPath: relay, backend: 'relay' });
+  assert.equal(resolve({ AI_HUB_COMPANY_TEXT_BACKEND: 'chatgpt' }, all).backend, 'chatgpt');
+  assert.equal(resolve({ AI_HUB_COMPANY_TEXT_BACKEND: 'chatgpt' }, all).scriptPath, bridge);
+  // 没装公司收件箱工具的机器（如社区用户）沿用 ChatGPT 中转。
+  assert.equal(resolve({}, new Set([python, bridge])).backend, 'chatgpt');
+  // 明确要求走收件箱却缺工具：报错，不静默换通道。
+  assert.equal(resolve({ AI_HUB_COMPANY_TEXT_BACKEND: 'relay' }, new Set([python, bridge])).code, 'relay_missing');
+  // 文件管理器的 ChatGPT 附件通道不受影响。
+  assert.deepEqual(resolveChatgptBridgeRuntime({ env, homeDir: home, existsSync: c => all.has(c) }),
+    { pythonPath: python, bridgePath: bridge });
+});
+
+test('IPC push forwards the source label only to the relay backend', async () => {
+  for (const backend of ['relay', 'chatgpt']) {
+    const handlers = new Map();
+    const calls = [];
+    registerChatgptBridgeIpc({ handle(channel, handler) { handlers.set(channel, handler); } }, {
+      runBridge: async (args, options) => { calls.push({ args, input: options && options.input }); return { ok: true }; },
+      resolveBackend: () => backend,
+    });
+    await handlers.get('chatgpt-bridge:push')(null, { text: '回答正文', label: '当前回答' });
+    await handlers.get('chatgpt-bridge:push')(null, { text: '无标签' });
+    assert.deepEqual(calls, [
+      { args: backend === 'relay' ? ['push', '--stdin', '--label', '当前回答'] : ['push', '--stdin'], input: '回答正文' },
+      { args: ['push', '--stdin'], input: '无标签' },
+    ]);
+  }
 });
 
 test('text validation rejects empty and oversized content', () => {
@@ -206,7 +246,7 @@ test('renderer controller inserts before acknowledging and remains usable withou
   assert.deepEqual(invocations, [
     { channel: 'chatgpt-bridge:pull-for-input', payload: undefined },
     { channel: 'chatgpt-bridge:ack', payload: { messageIds: ['msg-input-1'] } },
-    { channel: 'chatgpt-bridge:push', payload: { text: '最近回答' } },
+    { channel: 'chatgpt-bridge:push', payload: { text: '最近回答', label: '最近一条 AI 回答' } },
   ]);
   assert.equal(body.children.length, 1, 'controller should reuse one live status toast');
 });
@@ -279,8 +319,11 @@ test('Hub UI exposes card/company, composer pull, and selection actions without 
     'latest-answer push binds the focused session before reading its content');
   assert.match(renderer, /ipcRenderer\.invoke\('get-last-assistant-text', sessionId\)/,
     'PTY view must fall back to the bound session transcript for latest-answer push');
-  assert.match(html, /data-action="sync-chatgpt"[^>]*>同步选中文字到公司 ChatGPT/);
-  assert.match(html, /data-action="sync-chatgpt"[^>]*>同步内容到公司 ChatGPT/);
+  assert.match(html, /id="terminal-context-menu"[\s\S]*?data-action="sync-chatgpt"[^>]*>同步选中文字到公司</);
+  assert.match(html, /id="card-selection-context-menu"[\s\S]*?data-action="sync-chatgpt"[^>]*>同步选中文字到公司</);
+  assert.match(html, /data-action="sync-company"[^>]*>同步到公司<[\s\S]*?data-action="sync-chatgpt"[^>]*>以文字发到公司</,
+    'path menu keeps file sync and text sync as two distinct actions');
+  assert.doesNotMatch(html, /公司 ChatGPT/, 'company text actions no longer promise ChatGPT as the channel');
   assert.match(card, /data-action="sync-chatgpt"[^>]*>同步这条消息到公司<\/button>/,
     'the card action remains available with its explicit label in the more menu');
   assert.match(renderer, /overlay\.querySelectorAll\(':scope > \.turn-card:not\(\.user\)'\)/,

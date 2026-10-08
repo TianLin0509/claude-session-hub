@@ -32,6 +32,44 @@ function resolveChatgptBridgeRuntime({
   return { pythonPath, bridgePath };
 }
 
+// 公司文字通道（拉取 / 同步文字到公司）。2026-10-07 起默认走阿里云公司收件箱
+// （company-drop 的 company_relay.py：公司网页提交纯文字，本机经受限 SFTP 取走），
+// 不再依赖 ChatGPT 网页。命令与 JSON 输出与 bridge.py 一致，可随时切回：
+//   AI_HUB_COMPANY_TEXT_BACKEND=chatgpt  强制走 ChatGPT 中转
+//   AI_HUB_COMPANY_TEXT_BACKEND=relay    强制走公司收件箱（缺文件时报错，不静默换通道）
+// 未设置时：有 company_relay.py 用它，否则用 bridge.py。
+// 文件管理器的「发送到 ChatGPT：准备附件」仍用 resolveChatgptBridgeRuntime，不受影响。
+function resolveCompanyTextRuntime({
+  env = process.env,
+  homeDir = os.homedir(),
+  existsSync = fs.existsSync,
+} = {}) {
+  const wanted = String(env.AI_HUB_COMPANY_TEXT_BACKEND || '').trim().toLowerCase();
+  const chatgpt = () => {
+    const runtime = resolveChatgptBridgeRuntime({ env, homeDir, existsSync });
+    return runtime.error ? runtime : { ...runtime, scriptPath: runtime.bridgePath, backend: 'chatgpt' };
+  };
+  if (wanted === 'chatgpt') return chatgpt();
+  const localAppData = env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local');
+  const pythonPath = [
+    env.COMPANY_DROP_PYTHON,
+    path.join(localAppData, 'Programs', 'Python', 'Python312', 'python.exe'),
+    path.join(localAppData, 'Programs', 'Python', 'Python313', 'python.exe'),
+  ].filter(Boolean).find(candidate => existsSync(candidate));
+  const scriptPath = [
+    env.COMPANY_RELAY_SCRIPT,
+    path.join(homeDir, 'company-drop', 'client', 'company_relay.py'),
+  ].filter(Boolean).find(candidate => existsSync(candidate));
+  if (pythonPath && scriptPath) return { pythonPath, scriptPath, backend: 'relay' };
+  if (wanted === 'relay') {
+    return {
+      error: scriptPath ? '未找到公司收件箱中转所需的 Python。' : '未找到公司收件箱中转工具 company_relay.py。',
+      code: scriptPath ? 'python_missing' : 'relay_missing',
+    };
+  }
+  return chatgpt();
+}
+
 function parseBridgeOutput(stdout, stderr, exitCode) {
   const lines = String(stdout || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   let envelope = null;
@@ -46,7 +84,7 @@ function parseBridgeOutput(stdout, stderr, exitCode) {
   if (!envelope || typeof envelope !== 'object') {
     return {
       ok: false,
-      error: String(stderr || '').trim() || 'ChatGPT 中转工具没有返回有效结果。',
+      error: String(stderr || '').trim() || '公司中转工具没有返回有效结果。',
       code: 'invalid_response',
     };
   }
@@ -54,7 +92,7 @@ function parseBridgeOutput(stdout, stderr, exitCode) {
     const error = envelope.error && typeof envelope.error === 'object' ? envelope.error : {};
     return {
       ok: false,
-      error: error.message || String(stderr || '').trim() || `ChatGPT 中转工具退出码：${exitCode}`,
+      error: error.message || String(stderr || '').trim() || `公司中转工具退出码：${exitCode}`,
       code: error.code || 'bridge_failed',
       details: error.details,
     };
@@ -66,15 +104,17 @@ function runChatgptBridge(args, {
   input = '',
   spawnImpl = spawn,
   runtimeOptions,
+  resolveRuntime = resolveChatgptBridgeRuntime,
   timeoutMs = BRIDGE_TIMEOUT_MS,
   maxOutputBytes = BRIDGE_MAX_OUTPUT_BYTES,
 } = {}) {
-  const runtime = resolveChatgptBridgeRuntime(runtimeOptions);
+  const runtime = resolveRuntime(runtimeOptions);
   if (runtime.error) return Promise.resolve({ ok: false, ...runtime });
+  const scriptPath = runtime.scriptPath || runtime.bridgePath;
   return new Promise((resolve) => {
-    const child = spawnImpl(runtime.pythonPath, [runtime.bridgePath, ...args], {
+    const child = spawnImpl(runtime.pythonPath, [scriptPath, ...args], {
       windowsHide: true,
-      cwd: path.dirname(runtime.bridgePath),
+      cwd: path.dirname(scriptPath),
       env: {
         ...process.env,
         PYTHONUTF8: '1',
@@ -97,7 +137,7 @@ function runChatgptBridge(args, {
       outputBytes += chunk.length;
       if (outputBytes > maxOutputBytes) {
         child.kill();
-        finish({ ok: false, error: 'ChatGPT 中转返回内容超过安全上限。', code: 'output_limit' });
+        finish({ ok: false, error: '公司中转返回内容超过安全上限。', code: 'output_limit' });
         return target;
       }
       return target + chunk.toString('utf8');
@@ -106,19 +146,23 @@ function runChatgptBridge(args, {
     if (child.stderr) child.stderr.on('data', chunk => { stderr = append(stderr, chunk); });
     child.on('error', error => finish({
       ok: false,
-      error: `无法启动 ChatGPT 中转工具：${String(error && error.message || error)}`,
+      error: `无法启动公司中转工具：${String(error && error.message || error)}`,
       code: 'spawn_failed',
     }));
     child.on('close', code => finish(parseBridgeOutput(stdout, stderr, code)));
     timer = setTimeout(() => {
       child.kill();
-      finish({ ok: false, error: 'ChatGPT 中转操作超时。', code: 'timeout' });
+      finish({ ok: false, error: '公司中转操作超时。', code: 'timeout' });
     }, timeoutMs);
     if (child.stdin) {
       child.stdin.on('error', () => {});
       child.stdin.end(String(input || ''), 'utf8');
     }
   });
+}
+
+function runCompanyText(args, options = {}) {
+  return runChatgptBridge(args, { ...options, resolveRuntime: resolveCompanyTextRuntime });
 }
 
 function validateText(text) {
@@ -142,7 +186,8 @@ function normalizeMessageIds(values) {
 
 function registerChatgptBridgeIpc(ipcMain, deps = {}) {
   const sessionManager = deps.sessionManager;
-  const runner = deps.runBridge || runChatgptBridge;
+  const runner = deps.runBridge || runCompanyText;
+  const backendOf = deps.resolveBackend || (() => resolveCompanyTextRuntime().backend);
   const sendPrompt = deps.sendPrompt || sendToPty;
   let pullInFlight = false;
   let pushInFlight = false;
@@ -184,7 +229,11 @@ function registerChatgptBridgeIpc(ipcMain, deps = {}) {
     if (pushInFlight) return { ok: false, error: '正在同步，请稍候。', code: 'already_pushing' };
     pushInFlight = true;
     try {
-      return await runner(['push', '--stdin'], { input: checked.text });
+      // 公司收件箱页面会显示来源说明（如「当前回答」、文件名）；ChatGPT 中转不认识这个参数。
+      const label = typeof payload.label === 'string' ? payload.label.trim().slice(0, 80) : '';
+      const args = ['push', '--stdin'];
+      if (label && backendOf() === 'relay') args.push('--label', label);
+      return await runner(args, { input: checked.text });
     } finally {
       pushInFlight = false;
     }
@@ -236,7 +285,9 @@ module.exports = {
   parseBridgeOutput,
   registerChatgptBridgeIpc,
   resolveChatgptBridgeRuntime,
+  resolveCompanyTextRuntime,
   runChatgptBridge,
+  runCompanyText,
   normalizeMessageIds,
   validateText,
 };
