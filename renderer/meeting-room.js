@@ -7090,15 +7090,6 @@ if (typeof document !== 'undefined') (function () {
     }
     if (isGroupChat) {
       items.unshift({ value: '@all', label: '@all · 全体成员', hint: 'group target' });
-      // @community-strip 投研场景
-      if (meeting && meeting.scene === 'research') {
-        items.unshift(
-          { value: '@英灵', label: '英灵议事 · 按任务自动选择', hint: '统一 Lens Packet' },
-          { value: '@英灵 巴菲特', label: '巴菲特 · 成熟企业复利镜头', hint: 'fundamental lens' },
-          { value: '@英灵 利弗莫尔', label: '利弗莫尔 · 右侧趋势镜头', hint: 'trend lens' },
-        );
-      }
-      // @community-end
     } else {
     }
     return items;
