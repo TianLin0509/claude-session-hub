@@ -31,6 +31,19 @@ function personalRoot(env = process.env) {
   // return path.join(require('./data-dir').getHubDataDir(), 'hub-personal-chrome');
   // @community-end
 }
+// A directory that was just written can be briefly held by Windows Defender or
+// the search indexer, and renaming it then fails with EPERM/EBUSY/EACCES (seen
+// 1 in 4 isolated runs, 2026-10-08). Wait for the scanner instead of failing.
+async function renameWhenReleased(from, to, attempts = 8) {
+  for (let attempt = 1; ; attempt++) {
+    try { fs.renameSync(from, to); return; }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || attempt >= attempts || fs.existsSync(to)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50 * attempt));
+    }
+  }
+}
+
 function copyTree(from, to) {
   fs.mkdirSync(to, { recursive: true });
   for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
@@ -103,7 +116,7 @@ class PersonalChrome {
     }
     fs.writeFileSync(path.join(staging, MARKER), JSON.stringify({ version: 1, from: hub.root, at: Date.now(), profiles: copied, scrubbed }), 'utf8');
     if (fs.existsSync(this.root)) throw Error('你的浏览器目录已存在但未完成准备，请保留并检查：' + this.root);
-    fs.renameSync(staging, this.root);
+    await renameWhenReleased(staging, this.root);
     return { prepared: true, profiles: copied, scrubbed };
   }
   // The person signed in again in their browser: give the AI browser the same logins.

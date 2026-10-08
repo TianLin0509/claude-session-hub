@@ -13,6 +13,7 @@ const http = require('http');
 const path = require('path');
 const { execFile } = require('child_process');
 const { yamlScalar, controllerPipeCandidates, listVergeMihomoPipes } = require('./clash-verge-delay.js');
+const { sharedOffMainExecFile } = require('./off-main-exec.js');
 
 const FILE_VERSION = 1;
 const MAX_HOSTS = 600;
@@ -275,9 +276,17 @@ function createVpnTrafficRecorder(options = {}) {
   const intervalMs = Math.max(500, Number(options.intervalMs) || 2_000);
   const flushMs = Math.max(1_000, Number(options.flushMs) || 60_000);
   const configPath = options.configPath || path.join(process.env.APPDATA || '', 'io.github.clash-verge-rev.clash-verge-rev', 'clash-verge.yaml');
-  const run = options.execFile || ((file, args) => new Promise((resolve, reject) => {
-    execFile(file, args, { windowsHide: true, timeout: 5_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
-  }));
+  // netstat / tasklist start from a worker thread: creating the process blocks
+  // the calling thread on Windows (measured 751 ms on the live Hub, see
+  // core/off-main-exec.js). Same programs, arguments and output.
+  const offMain = options.offMain === false ? null : sharedOffMainExecFile();
+  const run = options.execFile || ((file, args) => {
+    const execOptions = { windowsHide: true, timeout: 5_000, maxBuffer: 8 * 1024 * 1024 };
+    if (offMain) return offMain(file, args, execOptions).then(result => result.stdout);
+    return new Promise((resolve, reject) => {
+      execFile(file, args, execOptions, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    });
+  });
   const isPidAlive = options.isPidAlive || (target => { try { process.kill(target, 0); return true; } catch (error) { return error.code === 'EPERM'; } });
   const listPipes = options.listPipes || listVergeMihomoPipes;
   const lockPath = path.join(dir, 'recorder.lock');

@@ -1432,6 +1432,12 @@ function unloadGpuRenderer(cached) {
   return changed;
 }
 
+// The primary panel's terminal is covered by the card overlay in card view.
+function setCardHiddenTerminal(cached, hidden) {
+  if (!cached || !cached.container || cached.container.closest('.terminal-panel') !== terminalPanelEl) return;
+  cached.container.style.display = hidden ? 'none' : 'block';
+}
+
 function suspendInactiveTerminalRenderers(activeId) {
   for (const [sessionId, cached] of terminalCache) {
     if (activeId && sessionId === activeId) continue;
@@ -2232,6 +2238,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // surface here costs a frame and can stall Windows compositor commits.
   if (embedded || currentView === 'pty') loadGpuRenderer(cached);
   else unloadGpuRenderer(cached);
+  // Behind the opaque cards a visible xterm still paints with its DOM fallback
+  // renderer and measures every new glyph: on 2026-10-08 one click on a
+  // CJK-heavy Claude session froze the window for 993 ms in xterm _measure.
+  // Hide it exactly like inactive terminals; it keeps parsing output into its
+  // buffer, and applyViewMode('pty') shows it and runs the visible recovery.
+  // It is opened (and measured) above while still displayed.
+  if (!embedded) setCardHiddenTerminal(cached, currentView !== 'pty');
   if (isCodexKind(session.kind) && !isNativeAgent(session)) {
     cached._codexAnswerAccent ||= require('./codex-answer-accent').mountCodexAnswerAccent(cached.terminal, document);
     cached._codexAnswerAccent.refresh();
@@ -3972,12 +3985,14 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.fitAddon) {
+      setCardHiddenTerminal(cached, false);
       loadGpuRenderer(cached);
       scheduleVisibleTerminalRecovery(activeSessionId, cached, { pinBottom: false });
     }
   }
   if (mode === 'card' && typeof terminalCache !== 'undefined') {
     unloadGpuRenderer(terminalCache.get(activeSessionId));
+    setCardHiddenTerminal(terminalCache.get(activeSessionId), true);
   }
   // Spec 3 · W3 resume bug fix (b)：切到卡片时若历史从未全量加载过，
   // 主动 trigger load — 用 _cardHistoryHydratedSid 状态标记而非 DOM 检测，
@@ -6640,12 +6655,31 @@ function scheduleClaudeStopHookResolution(sessionId, stopAt) {
   session._claudeStopHookTimer = setTimeout(tick, CLAUDE_STOP_HOOK_RESOLVE_MS);
 }
 
+// What a PTY runtime observation can change that the sidebar (or anything it
+// re-renders) displays. A running TUI repaints its status line several times a
+// second; each repaint renews the truth's observedAt/expiresAt heartbeat but
+// usually changes nothing visible. On the live Hub (2026-10-08) 41 of 50
+// full sidebar rebuilds in 15 s were such heartbeats. The effective truth at
+// `at` is included so a renewal of an expired observation still repaints.
+function ptyObservationSidebarSignature(session, at) {
+  const truth = session.runtimeTruth || {};
+  const effective = getSessionRuntimeTruth(session, { now: at });
+  return JSON.stringify([session.status, effective.state, effective.source, effective.confidence, effective.evidence,
+    truth.state, truth.source, truth.confidence, truth.evidence, truth.reason, truth.turnId, truth.startedAt, truth.completedAt,
+    (truth.corroborations || []).map(item => [item.source, item.state]),
+    session.runStartedAt, session.lastRunStartedAt, session.lastRunDurationMs, session.lastCompletedAt, session.lastMessageTime,
+    session.unreadCount, session.needsUserInput, session.replyReady, session.isWaiting, session.attentionState,
+    session.waitingReason, session.waitingText, session.replyReadyText,
+    session._agentWorking, session._runSource, session._ptyRuntimeState, session._ptyRuntimeReason, session._ptyRuntimeEvidence]);
+}
+
 function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   if (isNativeSession(session)) return false;
   if (!session || !runtime || session.status === 'dormant') return false;
   if (!isClaudeRuntimeSession(session) && !isCodexKind(session.kind)) return false;
 
   const at = Number(observedAt) || Date.now();
+  const sidebarBefore = ptyObservationSidebarSignature(session, at);
   const truthBefore = getSessionRuntimeTruth(session, { now: at });
   // Codex keeps the composer visible while a task runs, and its fullscreen
   // history view can hide Working entirely. Input-ready pixels do not close a
@@ -6796,7 +6830,7 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   session._ptyRuntimeEvidence = runtime.evidence || null;
   session._ptyRuntimeObservedAt = at;
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(session.id);
-  scheduleSessionListRender();
+  if (ptyObservationSidebarSignature(session, at) !== sidebarBefore) scheduleSessionListRender();
   schedulePersist();
   return true;
 }
