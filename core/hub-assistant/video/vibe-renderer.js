@@ -95,6 +95,8 @@ async function renderVibeVideo({ storyboard, dir, ffmpeg, ffprobe, capture, onPr
   const actual = Number(String(await run(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', output])).trim());
   if (!Number.isFinite(actual) || Math.abs(actual - seconds) > 1.5) throw Error(`视频时长 ${actual} 秒与分镜 ${seconds} 秒不符，未交付`);
   fs.renameSync(output, path.join(dir, 'video.mp4'));
+  // 成片后只留 video.mp4 / cover.jpg，中间音频（垫音约 27MB）删掉。
+  for (const f of fs.readdirSync(dir)) if (/^(sfx-.*\.wav|bed\.wav|soundtrack\.m4a)$/.test(f)) fs.rmSync(path.join(dir, f), { force: true });
   // 章节：每屏的起点，供手机跳转
   let at = 0; const chapters = spec.screens.map(s => { const c = { title: s.headline || s.quote || s.big, at: Math.round(at) }; at += s.duration + 0.3; return c; });
   onProgress('视频已完成', 100);
