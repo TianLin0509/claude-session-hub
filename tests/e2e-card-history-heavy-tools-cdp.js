@@ -102,6 +102,25 @@ function syntheticTranscript(sid, cwd, tag) {
       const top = m => [...m].filter(([k]) => !/^\((idle|root|program)\)/.test(k)).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${v.toFixed(0).padStart(6)}ms ${k}`);
       report.profile = { self: top(self), inclusive: top(incl) };
     }
+    {
+      // 卡片视图下终端隐藏（不再在卡片背后重画）；点「后台」必须恢复出有内容的终端，再切回卡片。
+      const x = cases[cases.length - 1];
+      const term = `terminalCache.get(${j(x.hubId)})`;
+      const hiddenInCards = await c.eval(`getComputedStyle(${term}.container).display==='none'`);
+      if (!hiddenInCards) throw Error('terminal still displayed behind the cards');
+      await click('#btn-backstage');
+      await until(`currentView==='pty' && ${term}.container.offsetWidth>100 && ${term}.container.offsetHeight>100`, 'terminal shown', 20000);
+      await sleep(1500);
+      const pty = await c.eval(`(()=>{const t=${term}.terminal,b=t.buffer.active;let text='';for(let i=0;i<b.length;i++)text+=b.getLine(i)?.translateToString(true)||'';
+        const cell=t._core?._renderService?.dimensions?.css?.cell||{};return {cols:t.cols,rows:t.rows,bufferChars:text.trim().length,cellW:cell.width,cellH:cell.height,mode:${term}._rendererMode};})()`);
+      const out = path.resolve('artifacts/card-history-heavy-tools'); fs.mkdirSync(out, { recursive: true });
+      fs.writeFileSync(path.join(out, `${label}-backstage.png`), Buffer.from((await c.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+      if (!(pty.cols > 20 && pty.rows > 5 && pty.cellW > 0 && pty.cellH > 0)) throw Error('backstage terminal not restored: ' + j(pty));
+      report.checks.push(`backstage terminal restored: ${pty.cols}x${pty.rows}, ${pty.bufferChars} chars in buffer, renderer ${pty.mode}`);
+      await click('#btn-backstage');
+      await until(`currentView==='card' && getComputedStyle(${term}.container).display==='none' && document.querySelectorAll('#msg-overlay > .turn-card').length>0`, 'back to cards', 20000);
+      report.checks.push('back to cards: terminal hidden again, cards present');
+    }
     if (!real.length) {
       const x = cases[cases.length - 1];
       const text = await c.eval(`document.querySelector('#msg-overlay').innerText`);

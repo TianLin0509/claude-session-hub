@@ -5,6 +5,8 @@ const path = require('path');
 const { execFile: execFileCallback } = require('child_process');
 const { promisify } = require('util');
 
+const { sharedOffMainExecFile } = require('./off-main-exec.js');
+
 const execFileAsync = promisify(execFileCallback);
 
 function clampPercent(value) {
@@ -36,7 +38,9 @@ function localDiskRoot(cwd = process.cwd()) {
 }
 
 function createSystemTelemetry(options = {}) {
-  const execFile = options.execFile || execFileAsync;
+  // nvidia-smi is started from a worker thread: creating the process blocks
+  // the calling thread on Windows (see core/off-main-exec.js).
+  const execFile = options.execFile || (options.offMain === false ? execFileAsync : sharedOffMainExecFile());
   const statfs = options.statfs || fs.promises.statfs.bind(fs.promises);
   const now = options.now || Date.now;
   const cwd = options.cwd || process.cwd;

@@ -8,7 +8,7 @@ const {
 } = require('../core/session-attention-state.js');
 const { sessionRuntimeIssue } = require('../core/session-runtime-issue.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
-const {compareSidebarPlacement,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView}=require('../core/session-sidebar-state');
+const {compareSidebarPlacement,sortBySidebarPlacement,sidebarItemClassification,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView}=require('../core/session-sidebar-state');
 const {sidebarRelativeTime}=require('./sidebar-relative-time');
 const {createSessionViewPublisher}=require('../core/hub-assistant/session-state');
 const {reconcileSidebarDom}=require('./sidebar-dom-reconciler');
@@ -137,9 +137,9 @@ function createSessionListRenderer(options = {}) {
     savePreference('hubSidebarRecentDays', String(recentDays));
     syncRangeControls(); renderSessionList();
   });
-  function sidebarView(items, sessionMap = getSessions(), days = recentDays) {
-    const parts = partitionSidebarSessions(items, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
-    return buildSidebarView(parts, { days, pinnedOnly, excludePinned: !pinnedOnly, sessionMap, hasUnread: sidebarItemHasUnread });
+  function sidebarView(items, sessionMap = getSessions(), days = recentDays, { now = Date.now(), classify = null } = {}) {
+    const parts = partitionSidebarSessions(items, { now, classify, sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+    return buildSidebarView(parts, { now, days, pinnedOnly, excludePinned: !pinnedOnly, sessionMap, hasUnread: sidebarItemHasUnread });
   }
   const modelControl = doc.getElementById?.('session-model-filter');
   if (modelControl) {
@@ -579,7 +579,7 @@ sessionListEl.addEventListener('keydown', event => {
 
   const all = regularSessions.concat(meetingItems);
 
-  const sorted = all.sort(compareSidebarPlacement);
+  const sorted = sortBySidebarPlacement(all);
 
   // Hide any leftover legacy background PTY sessions from the removed room path.
   const everything = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
@@ -674,7 +674,18 @@ sessionListEl.addEventListener('keydown', event => {
   }
 
   function renderSessionList() {
-  publishSessionViews([...getSessions().values()]);
+    // One clock and one classification per item for the whole render: the
+    // assistant snapshot and the sidebar sections used to classify all
+    // sessions separately, three times a second.
+    const renderNow = Date.now();
+    const renderSessions = getSessions();
+    const classifications = new Map();
+    const classify = item => {
+      let result = classifications.get(item);
+      if (!result) { result = sidebarItemClassification(item, { now: renderNow, sessionMap: renderSessions }); classifications.set(item, result); }
+      return result;
+    };
+  publishSessionViews([...renderSessions.values()], { now: renderNow, classify });
     const renderStartedAt = nowMs();
     // Rebuilt rows join the same clock instead of restarting their pulse on
     // every runtime delta (which can otherwise make a busy logo look static).
@@ -682,9 +693,9 @@ sessionListEl.addEventListener('keydown', event => {
       sessionListEl.style?.setProperty('--sidebar-work-phase', `${-(Date.now() % 24000)}ms`);
       sidebarPhaseInitialized=true;
     }
-    const sessionMap = getSessions();
+    const sessionMap = renderSessions;
   const visible = filteredSidebarItems(sessionMap);
-  const sections = sidebarView(visible, sessionMap);
+  const sections = sidebarView(visible, sessionMap, recentDays, { now: renderNow, classify });
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
   // back to the top, which feels like the sidebar is "fighting" the user.

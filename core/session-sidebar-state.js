@@ -3,7 +3,7 @@
 const {isGroupChatMemberRunning}=require('./groupchat-running-state');
 const {sessionHasCompletedUnread}=require('./session-attention-state');
 const {sessionRuntimeIssue}=require('./session-runtime-issue');
-const {compareLatestActivityDesc,latestActivityTime}=require('./session-recency');
+const {compareLatestActivityDesc,latestActivityTime,positiveTimestamp}=require('./session-recency');
 const {RUNTIME_WAITING,RUNTIME_DORMANT,RUNTIME_UNKNOWN,getSessionRuntimeTruth,sessionRuntimeIsActive}=require('./session-runtime-truth');
 function getMeetingUnreadMemberIds(meeting, sessions = new Map()) {
   return new Set((meeting?.subSessions || []).filter(sid =>
@@ -22,6 +22,25 @@ function compareSidebarPlacement(left, right) {
   const rightBottomed = isPinnedToBottom(right);
   if (leftBottomed !== rightBottomed) return leftBottomed ? 1 : -1;
   return compareLatestActivityDesc(left, right);
+}
+
+// The sidebar sorts every session (1,571 on the live Hub, 2026-10-08) about
+// three times a second. A plain comparator recomputed latestActivityTime twice
+// per comparison (~17k comparisons per sort). These read each key once and
+// sort with the same rule; Array#sort is stable, so the order is identical.
+function sortBySidebarPlacement(items) {
+  return (items || []).map(item => ({ item, pinned: !!(item && item.pinned), bottomed: isPinnedToBottom(item),
+    at: latestActivityTime(item), created: positiveTimestamp(item && item.createdAt) }))
+    .sort((left, right) => (left.pinned !== right.pinned ? (left.pinned ? -1 : 1)
+      : left.bottomed !== right.bottomed ? (left.bottomed ? 1 : -1)
+        : (right.at - left.at) || (right.created - left.created)))
+    .map(entry => entry.item);
+}
+
+function sortByLatestActivityDesc(items) {
+  return (items || []).map(item => ({ item, at: latestActivityTime(item), created: positiveTimestamp(item && item.createdAt) }))
+    .sort((left, right) => (right.at - left.at) || (right.created - left.created))
+    .map(entry => entry.item);
 }
 
 function sidebarItemHasUnread(item, sessionMap) {
@@ -48,11 +67,13 @@ function sidebarItemClassification(s, {now=Date.now(),sessionMap=new Map(),group
   return {state,dormant,waiting,error,working,unread};
 }
 
-function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
+// `classify` lets one render reuse a classification it already computed for the
+// same item at the same `now` (the assistant snapshot publishes it too).
+function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set(), classify = null } = {}) {
   const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
   const states = new Map();
-  for (const s of [...(items || [])].sort(compareSidebarPlacement)) {
-    const {state,dormant,waiting,error,working,unread}=sidebarItemClassification(s,{now,sessionMap,groupMemberIds});
+  for (const s of sortBySidebarPlacement(items)) {
+    const {state,dormant,waiting,error,working,unread}=classify ? classify(s) : sidebarItemClassification(s,{now,sessionMap,groupMemberIds});
     const fresh = now - latestActivityTime(s, now) < 86400000;
     states.set(s.id,state);
     if (error) failed.push(s);
@@ -110,9 +131,9 @@ function buildSidebarView(parts, { now = Date.now(), days = 1, pinnedOnly = fals
     return waiting || compare(a, b);
   });
   today.sort(compare);
-  archive.sort(compareLatestActivityDesc);
-  return { ...parts, failed, active, today, archive, archiveCount: archive.length };
+  const archiveSorted = sortByLatestActivityDesc(archive);
+  return { ...parts, failed, active, today, archive: archiveSorted, archiveCount: archiveSorted.length };
 }
 
 
-module.exports={getMeetingUnreadMemberIds,compareSidebarPlacement,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,sidebarItemClassification,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView};
+module.exports={getMeetingUnreadMemberIds,compareSidebarPlacement,sortBySidebarPlacement,sortByLatestActivityDesc,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,sidebarItemClassification,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView};
