@@ -23,6 +23,11 @@ const skipGroup = argv.includes('--skip-group');
 const onlySteps = arg('--steps') ? new Set(arg('--steps').split(',').map(s => s.trim())) : null;
 const secondModel = arg('--model') || 'MiniMax-M2.7';
 const home = process.env.USERPROFILE || os.homedir();
+// 在 Code Agent 自己的会话里运行本脚本时，会继承「当前会话」的变量；嵌套启动的 CLI 不能带着它们
+// （2026-10-08 公司第二轮实测：清掉这些后嵌套启动正常，登录走 .credentials.json）。
+for (const key of Object.keys(process.env)) {
+  if (/^CODEAGENT_HUB_/.test(key) || ['CODEAGENT3_LAUNCHER_PID', 'CODEAGENT3_X_AUTH_TOKEN'].includes(key)) delete process.env[key];
+}
 const configDir = path.resolve(process.env.AI_HUB_CODEAGENT_CONFIG_DIR || process.env.CODEAGENT3_CONFIG_DIR || path.join(home, '.cac'));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-acceptance-'));
 const out = path.join(root, 'report');
