@@ -23,6 +23,11 @@ const skipGroup = argv.includes('--skip-group');
 const onlySteps = arg('--steps') ? new Set(arg('--steps').split(',').map(s => s.trim())) : null;
 const secondModel = arg('--model') || 'MiniMax-M2.7';
 const home = process.env.USERPROFILE || os.homedir();
+// 在 Code Agent 自己的会话里运行本脚本时，会继承「当前会话」的变量；嵌套启动的 CLI 不能带着它们
+// （2026-10-08 公司第二轮实测：清掉这些后嵌套启动正常，登录走 .credentials.json）。
+for (const key of Object.keys(process.env)) {
+  if (/^CODEAGENT_HUB_/.test(key) || ['CODEAGENT3_LAUNCHER_PID', 'CODEAGENT3_X_AUTH_TOKEN'].includes(key)) delete process.env[key];
+}
 const configDir = path.resolve(process.env.AI_HUB_CODEAGENT_CONFIG_DIR || process.env.CODEAGENT3_CONFIG_DIR || path.join(home, '.cac'));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-acceptance-'));
 const out = path.join(root, 'report');
@@ -151,7 +156,9 @@ function transcriptUserTexts(file) {
 
 async function main() {
   if (!exe || !fs.existsSync(exe)) throw new Error('请用 --exe 指定已安装的「AI Hub Community.exe」完整路径（安装回执 JSON 的 executable）');
-  const version = spawnSync('cmd.exe', ['/d', '/s', '/c', (process.env.AI_HUB_CODEAGENT_COMMAND ? `"${process.env.AI_HUB_CODEAGENT_COMMAND}"` : 'codeagent') + ' --version'], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  const cliCommand = process.env.AI_HUB_CODEAGENT_COMMAND || 'codeagent';
+  const version = spawnSync('cmd.exe', ['/d', '/c', `chcp 65001>nul & ${/\s/.test(cliCommand) ? `"${cliCommand}"` : cliCommand} --version`],
+    { encoding: 'utf8', windowsHide: true, timeout: 60000, windowsVerbatimArguments: true });
   report.facts.codeagentVersion = redact((version.stdout || version.stderr || '').trim()).slice(0, 200);
   report.facts.node = process.version;
   const before = hookEntries();
