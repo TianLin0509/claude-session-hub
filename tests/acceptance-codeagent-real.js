@@ -156,7 +156,9 @@ function transcriptUserTexts(file) {
 
 async function main() {
   if (!exe || !fs.existsSync(exe)) throw new Error('请用 --exe 指定已安装的「AI Hub Community.exe」完整路径（安装回执 JSON 的 executable）');
-  const version = spawnSync('cmd.exe', ['/d', '/s', '/c', (process.env.AI_HUB_CODEAGENT_COMMAND ? `"${process.env.AI_HUB_CODEAGENT_COMMAND}"` : 'codeagent') + ' --version'], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  const cliCommand = process.env.AI_HUB_CODEAGENT_COMMAND || 'codeagent';
+  const version = spawnSync('cmd.exe', ['/d', '/c', `chcp 65001>nul & ${/\s/.test(cliCommand) ? `"${cliCommand}"` : cliCommand} --version`],
+    { encoding: 'utf8', windowsHide: true, timeout: 60000, windowsVerbatimArguments: true });
   report.facts.codeagentVersion = redact((version.stdout || version.stderr || '').trim()).slice(0, 200);
   report.facts.node = process.version;
   const before = hookEntries();
