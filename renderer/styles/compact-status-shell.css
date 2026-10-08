@@ -23,7 +23,6 @@
 }
 #scene-rail .rail-utility-label { display:block; font-size:10px; line-height:13px; white-space:nowrap; }
 :root body #scene-rail .rail-utilities .rail-artwork { width:22px; height:22px; }
-:root body #scene-rail .rail-utilities #btn-quick-memo .rail-artwork { width:26px; height:26px; }
 :root body #hub-system-footer {
   display:flex; align-items:center; gap:14px; padding:0 12px; box-sizing:border-box;
   white-space:nowrap; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin;
