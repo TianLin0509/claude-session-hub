@@ -29,7 +29,11 @@ const asText=value=>typeof value==='string'?value:JSON.stringify(value ?? '',nul
 // are untrimmed.
 async function readTrimmedFromTranscript(session,toolUseId) {
   const file=typeof session.historyPath==='function'?session.historyPath():null;
-  if(!file)return null;
+  return readToolResultFromTranscriptFile(file,toolUseId);
+}
+
+async function readToolResultFromTranscriptFile(file,toolUseId) {
+  if(!file || !toolUseId)return null;
   let stream;
   try { stream=fs.createReadStream(file,{encoding:'utf8'}); }
   catch { return null; }
@@ -64,4 +68,4 @@ async function readClaudeToolResult(session,reference) {
   }
   throw Error('未找到完整 Claude 工具来源，请重新载入会话');
 }
-module.exports={compactClaudeTools,readClaudeToolResult};
+module.exports={compactClaudeTools,readClaudeToolResult,readToolResultFromTranscriptFile};

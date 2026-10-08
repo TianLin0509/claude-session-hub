@@ -8,6 +8,7 @@ const { parseCodexRolloutToTurns } = require('./codex-transcript-parser.js');
 const { parseKimiWireToTurns } = require('./kimi-transcript-parser.js');
 
 const {TranscriptResultCache}=require('./transcript-result-cache');
+const { compactTurnsToolOutputs } = require('./transcript-tool-compact.js');
 const cache = new TranscriptResultCache(workerData?.cacheOptions);
 
 function parserForKind(kind) {
@@ -36,7 +37,11 @@ function parseTask(message) {
 
   const startedAt = Date.now();
   const turns = parserForKind(kind)(transcriptPath, opts);
-  const normalizedTurns = Array.isArray(turns) ? turns : [];
+  // Compacted here, before caching and before postMessage, so neither the
+  // cache budget nor the main thread ever holds the full tool output.
+  const normalizedTurns = Array.isArray(turns)
+    ? (opts.compactToolOutputs ? compactTurnsToolOutputs(turns, { transcriptPath }) : turns)
+    : [];
   cache.set(key,kind,signature,opts,normalizedTurns);
   return {
     id,
