@@ -71,13 +71,6 @@ try {
     if (-not (Test-Path -LiteralPath $oldReceipt -PathType Leaf)) { throw "Refusing to overwrite unrecognized directory: $target" }
     $old = Get-Content -LiteralPath $oldReceipt -Raw -Encoding UTF8 | ConvertFrom-Json
     $exe = Join-Path $target 'AI Hub Community.exe'
-  $gpuArgs = ''
-  if ($DisableGpu) {
-    $dataRoot = Join-Path $env:USERPROFILE '.ai-hub-community'
-    [IO.Directory]::CreateDirectory($dataRoot) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $dataRoot 'gpu-disabled.json'), '{"reason":"install-release -DisableGpu"}', (New-Object Text.UTF8Encoding($false)))
-    $gpuArgs = '--disable-gpu --disable-gpu-compositing'
-  }
     $asar = Join-Path $target 'resources\app.asar'
     if ($old.archiveSha256 -ne $actual -or $old.version -ne $tag -or -not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $asar)) { throw 'Existing version differs from this release. Use a new Destination; no files were overwritten.' }
     if ((Get-FileHash -LiteralPath $exe).Hash -ne $old.executableSha256 -or (Get-FileHash -LiteralPath $asar).Hash -ne $old.applicationSha256) { throw 'Existing executable/application changed. Use a new Destination; no files were overwritten.' }
@@ -115,6 +108,13 @@ try {
   if ($Provider -ne 'existing') {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $target 'resources\scripts\install-provider.ps1') -Provider $Provider
     if ($LASTEXITCODE -ne 0) { throw "Hub files installed in $target, but $Provider setup failed. Resolve the CLI error, then rerun; not counted as ready." }
+  }
+  $gpuArgs = ''
+  if ($DisableGpu) {
+    $dataRoot = Join-Path $env:USERPROFILE '.ai-hub-community'
+    [IO.Directory]::CreateDirectory($dataRoot) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $dataRoot 'gpu-disabled.json'), '{"reason":"install-release -DisableGpu"}', (New-Object Text.UTF8Encoding($false)))
+    $gpuArgs = '--disable-gpu --disable-gpu-compositing'
   }
   if (-not $NoShortcut) {
     $desktop = [Environment]::GetFolderPath('Desktop')
