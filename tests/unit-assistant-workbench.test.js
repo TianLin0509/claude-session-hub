@@ -97,7 +97,7 @@ test('daily lesson completion does not raise its own podcast notice', () => {
   AssistantService.prototype.podcastDone.call(self, { id: 'doc-1', title: '资料', episodes: [{ status: 'done', seconds: 700 }] });
   assert.equal(added.length, 1); assert.equal(added[0].id, 'podcast:doc-1');
 });
-test('timers belong to the latest started Hub and do not need an open assistant session (10-09 morning regression)', async () => {
+test('timers belong to the latest started Hub and do not need an open assistant session (restart-before-8am regression)', async () => {
   const { claimTimers, ownsTimers } = require('../core/hub-assistant/timer-owner');
   const kv = new Map(), store = { get: k => kv.get(k) ?? null, set: (k, v) => kv.set(k, v) };
   assert.equal(ownsTimers(store, 1), true); claimTimers(store, 1); assert.equal(ownsTimers(store, 1), true);
