@@ -362,6 +362,39 @@ async function main() {
     }, { needs: ['hub'] });
   }
 
+  await step('12', '新建会话表单默认选中 CodeAgent，并排在第一位', async note => {
+    await c.eval(`selectSession(null)`).catch(() => {});
+    await c.eval(`document.querySelector('[data-rail-view="home"], #btn-rail-home')?.click()`);
+    await until(`!!document.getElementById('home-create-session')`, '首页按钮', 20000);
+    await c.eval(`document.getElementById('home-create-session').click()`);
+    await until(`document.querySelector('#new-session-submit')?.getBoundingClientRect().width > 0`, '新建会话表单', 20000);
+    const state = await c.eval(`(() => { const grid = document.querySelector('.session-kind-grid'); const sel = document.querySelector('.new-session-option.selected'); return { selected: sel && sel.dataset.kind, first: grid && grid.firstElementChild && grid.firstElementChild.dataset.kind, summary: document.getElementById('new-session-summary')?.innerText || '' }; })()`);
+    note('默认选中：' + state.selected + '；第一位：' + state.first + '；表单摘要：' + state.summary);
+    await c.eval(`document.getElementById('new-session-cancel')?.click()`);
+    if (state.selected !== 'codeagent') throw new Error('默认选中的不是 CodeAgent');
+    if (state.first !== 'codeagent') throw new Error('CodeAgent 不在第一位');
+  }, { needs: ['hub'] });
+
+  await step('13', '浅色主题下 CodeAgent 终端用深色配色（与 CLI 自己的黑底协调）', async note => {
+    const theme = await c.eval(`document.documentElement.getAttribute('data-theme')`);
+    await openTerminal(ctx.a);
+    await sleep(1500);
+    const bg = await c.eval(`terminalCache.get(${j(ctx.a)})?.terminal?.options?.theme?.background || ''`);
+    note('Hub 主题：' + theme + '；CodeAgent 终端背景色：' + bg);
+    await c.eval(`applyViewMode('card')`);
+    if (theme === 'codex' && !/^#0d1117$/i.test(bg)) throw new Error('浅色主题下 CodeAgent 终端不是深色配色');
+  }, { needs: ['turn1'] });
+
+  await step('14', '会话自动命名：第一句话后先显示临时名，再由 CodeAgent 生成正式名字', async note => {
+    const titleOf = () => c.eval(`sessions.get(${j(ctx.a)})?.title || ''`);
+    let title = await titleOf();
+    note('当前标题：' + title);
+    const end = Date.now() + 200000;
+    while (/^CodeAgent( · |\s*\d+$)/.test(title) && Date.now() < end) { await sleep(3000); title = await titleOf(); }
+    note('最终标题：' + title);
+    if (/^CodeAgent( · |\s*\d+$)/.test(title)) throw new Error('3 分钟内没有生成正式名字（仍是临时名或默认名）');
+  }, { needs: ['turn1'] });
+
   report.facts.settingsAfter = (() => { const a = hookEntries(); return { keys: a.keys, foreignHooks: a.foreign && a.foreign.length, hubHooks: a.hub && a.hub.length }; })();
 }
 
