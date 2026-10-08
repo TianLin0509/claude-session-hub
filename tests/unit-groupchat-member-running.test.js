@@ -100,7 +100,7 @@ function groupChat(statuses, extra = {}) {
   });
   const meetings = {
     m1: {
-      id: 'm1', title: '英雄大厅轻量化实现', subSessions: kinds.map(k => 'sid-' + k),
+      id: 'm1', title: '投研面板轻量化实现', subSessions: kinds.map(k => 'sid-' + k),
       groupChat: true, status: 'idle',
       lastMessageTime: Date.now(), createdAt: Date.now(),
       ...(extra.meeting || {}),
@@ -142,7 +142,7 @@ test('成员自己在跑时，它的状态点是运行中（黄色脉冲）而�
 test('群聊里任意一个成员在跑，该群聊就归到侧栏「运行中」分区', () => {
   const { sessions, meetings } = groupChat(['idle', 'running', 'idle']);
   const html = render({ sessions, meetings });
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃',
+  assert.strictEqual(sectionOf(html, '投研面板轻量化实现'), '活跃',
     '只要有成员在跑，群聊就该进「运行中」，而不是沉到「最近」');
 });
 
@@ -150,7 +150,7 @@ test('三个成员都空闲时群聊不进运行中', () => {
   const { sessions, meetings } = groupChat(['idle', 'idle', 'idle']);
   const html = render({ sessions, meetings });
   assert.ok(!Object.values(memberLogoStates(html)).includes('run'), '没人在跑就不该有运行中状态点');
-  assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
+  assert.notStrictEqual(sectionOf(html, '投研面板轻量化实现'), '活跃');
 });
 
 test('群聊父项优先显示等待和运行，不会被部分完成未读覆盖', () => {
@@ -160,14 +160,14 @@ test('群聊父项优先显示等待和运行，不会被部分完成未读覆�
   waitingCase.sessions.get('sid-claude').attentionState = 'needs-input';
   waitingCase.sessions.get('sid-claude').waitingText = 'Allow PowerShell?';
   const waitingHtml = render(waitingCase);
-  assert.strictEqual(sectionOf(waitingHtml, '英雄大厅轻量化实现'), '活跃');
+  assert.strictEqual(sectionOf(waitingHtml, '投研面板轻量化实现'), '活跃');
   assert.match(waitingHtml, /sl-group-logos" data-state="wait"/);
 
   const runningCase = groupChat(['running', 'idle', 'idle'], {
     meeting: { unreadAnswered: new Set(['sid-codex']) },
   });
   const runningHtml = render(runningCase);
-  assert.strictEqual(sectionOf(runningHtml, '英雄大厅轻量化实现'), '活跃');
+  assert.strictEqual(sectionOf(runningHtml, '投研面板轻量化实现'), '活跃');
   assert.match(runningHtml, /sl-group-logos" data-state="run"/);
   assert.doesNotMatch(runningHtml, /sl-group-logos" data-state="unread"/);
 });
@@ -176,7 +176,7 @@ test('群聊成员失败会聚合到父项异常分区', () => {
   const fixture = groupChat(['idle', 'error', 'idle']);
   fixture.sessions.get('sid-codex').lastError = 'rate limited';
   const html = render(fixture);
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '异常');
+  assert.strictEqual(sectionOf(html, '投研面板轻量化实现'), '异常');
   assert.equal(memberLogoStates(html).codex,'error');
   assert.match(html, /sl-group-logos" data-state="error"/);
 });
@@ -193,7 +193,7 @@ test('只有运行异常而没有运行中时，普通会话仍显示「最近�
     lastMessageTime: Date.now(),
   });
   const html = render(fixture);
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '异常');
+  assert.strictEqual(sectionOf(html, '投研面板轻量化实现'), '异常');
   assert.strictEqual(sectionOf(html, '普通最近会话'), '今天',
     '运行异常本身也是特殊分区，后续普通项目必须重新用「最近」标题分隔');
 });
@@ -213,7 +213,7 @@ test('成员被 Ctrl+C 打断（自己 idle）时，无时间戳的旧 gcWorking
   });
   const html = render({ sessions, meetings });
   assert.ok(!Object.values(memberLogoStates(html)).includes('run'), '会话自己说 idle 就以会话为准');
-  assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
+  assert.notStrictEqual(sectionOf(html, '投研面板轻量化实现'), '活跃');
 });
 
 test('成员 PTY 短暂 idle 时，新鲜 watcher 心跳仍点亮成员和群聊父项', () => {
@@ -224,7 +224,7 @@ test('成员 PTY 短暂 idle 时，新鲜 watcher 心跳仍点亮成员和群聊
   const html = render({ sessions, meetings });
   assert.strictEqual(Object.values(memberLogoStates(html)).filter(state=>state==='run').length, 1,
     '只有正在发言的 Claude 应显示黄色脉冲');
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃',
+  assert.strictEqual(sectionOf(html, '投研面板轻量化实现'), '活跃',
     '新鲜 watcher 必须让群聊父项归入运行中');
 });
 
