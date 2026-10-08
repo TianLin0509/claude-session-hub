@@ -54,7 +54,7 @@ test('a site never seen signed in is just "not signed in" and raises no badge', 
 test('row wording: one verdict, one source, and the matching button', () => {
   assert.deepEqual(healthView({ state: 'ok', syncedAt: NOW - 2 * H, syncedBy: 'images' }, NOW), { tone: 'ok', text: '正常 · 2 小时前同步', detail: '生图调用成功', action: 'open', button: '打开' });
   const login = healthView({ state: 'attention', problem: { kind: 'signed_out', by: 'check', at: NOW - 3 * H } }, NOW);
-  assert.equal(login.text, '需要重新登录'); assert.equal(login.detail, '3 小时前 网页检查发现已退出登录'); assert.equal(login.button, '去登录'); assert.equal(login.action, 'login');
+  assert.equal(login.text, 'AI 浏览器需要重新登录'); assert.equal(login.detail, '3 小时前 网页检查发现已退出登录'); assert.equal(login.button, '给 AI 登录'); assert.equal(login.action, 'login');
   const wall = healthView({ state: 'ok', syncedAt: NOW - H, syncedBy: 'cookie', automation: { by: 'roundtable', at: NOW - 6 * H } }, NOW);
   assert.equal(wall.text, '正常 · 1 小时前同步'); assert.equal(wall.detail, '6 小时前 网页圆桌遇到网站验证；你自己使用不受影响'); assert.equal(wall.button, '打开');
   assert.equal(healthView({ state: 'attention', problem: { kind: 'signed_out', by: 'cookie', at: NOW - H } }, NOW).detail, '1 小时前 本机登录记录已失效');

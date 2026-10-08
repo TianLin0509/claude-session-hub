@@ -22,7 +22,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     tabs.querySelector('[aria-selected="true"]')?.focus();
   }
   function footerHtml() {
-    return `<footer class="ac-footnote"><span>网页共用 AI Hub 专属 Chrome · 打开网页只记录打开时间</span><details class="ac-connections" data-details="connections"><summary>工具连接</summary>${toolConnections(toolAccounts, esc, state?.activity)}${toolAccountsError ? `<p class="ac-item-error">${esc(toolAccountsError)}</p>` : ''}${toolsHtml()}</details></footer>`;
+    return `<footer class="ac-footnote"><span>「打开」用你自己的浏览器（AI 不碰它）；状态显示 AI 浏览器的登录，生图、中转、圆桌用的是它</span><details class="ac-connections" data-details="connections"><summary>工具连接</summary>${toolConnections(toolAccounts, esc, state?.activity)}${toolAccountsError ? `<p class="ac-item-error">${esc(toolAccountsError)}</p>` : ''}${toolsHtml()}</details></footer>`;
   }
   async function call(action, args) {
     const r = await ipcRenderer.invoke('hub-accounts:' + action, args);
@@ -34,7 +34,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     el.textContent = text; el.hidden = !text; el.classList.toggle('error', !!error);
     // A background login check never disables 打开: clicking makes the check yield.
     for (const b of page.querySelectorAll('[data-ac="open"],[data-ac="login"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="external"]')) b.disabled = !!busy || state?.setupProgress?.status === 'running';
-    for (const b of page.querySelectorAll('[data-ac="recover"],[data-ac="recheck"],[data-ac="tools"],[data-ac="tools-connect"]')) b.disabled = !!busy || state?.setupProgress?.status === 'running' || state?.progress?.status === 'running';
+    for (const b of page.querySelectorAll('[data-ac="recover"],[data-ac="recheck"],[data-ac="copy-logins"],[data-ac="tools"],[data-ac="tools-connect"]')) b.disabled = !!busy || state?.setupProgress?.status === 'running' || state?.progress?.status === 'running';
     for (const b of page.querySelectorAll('[data-ac="codex-quota"]')) b.disabled=!!busy || !!state?.clis?.find(c=>c.kind==='codex' && c.profileId===b.dataset.profile)?.isDefault;
   }
   function toolsHtml() {
@@ -118,6 +118,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     if (busy) return;
     busy = name; error = ''; notice = ''; renderStatus();
     if (['external', 'open', 'login'].includes(name)) { notice = '正在打开官方入口…'; renderStatus(); }
+    if (name === 'copy-logins') { notice = '正在把你的登录复制给 AI 浏览器…'; renderStatus(); }
     const ticket = epoch; ++request;
     try {
       const result = await call(name, args);
@@ -126,6 +127,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
       else if (name === 'tools-connect') { state.setupProgress = result; render(); }
       else if (name === 'external') { notice = result.message; await refresh(); await refreshToolAccounts(); }
       else if (name === 'open' || name === 'login') { notice = result.message; await refresh(); }
+      else if (name === 'copy-logins') { notice = result.message; apply(result); }
       else apply(result);
     } catch (e) { if (ticket === epoch) error = e.message; }
     finally { busy = ''; if (ticket === epoch) renderStatus(); schedule(); }
@@ -188,6 +190,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     else if (a === 'login') void action('login', args);
     else if (a === 'recover') void action('check-start', { ...args, live: true });
     else if (a === 'recheck') void action('check-start', args);
+    else if (a === 'copy-logins') void action('copy-logins', args);
     else if (a === 'check-cancel') void action('check-cancel', {});
     else if (a === 'add' || a === 'preferred') void action('preference', { ...args, add: a === 'add' });
     else if (a === 'authorize') void authorize(b.dataset.id);

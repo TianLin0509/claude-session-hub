@@ -86,11 +86,11 @@ function healthView(health, now = Date.now()) {
   if (h.state === 'attention') {
     const p = h.problem;
     const detail = when(p.at) + ' ' + BY[p.by] + (p.by === 'cookie' ? '已失效' : p.by === 'check' ? '发现已退出登录' : '提示需要登录');
-    return { tone: 'warn', text: '需要重新登录', detail, action: 'login', button: '去登录' };
+    return { tone: 'warn', text: 'AI 浏览器需要重新登录', detail, action: 'login', button: '给 AI 登录' };
   }
   const synced = h.syncedAt ? when(h.syncedAt) + '同步' : '';
   if (h.state === 'ok') return { tone: 'ok', text: '正常' + (synced ? ' · ' + synced : ''), detail: note || PROOF[h.syncedBy] || '', action: 'open', button: '打开' };
-  if (h.state === 'off') return { tone: 'idle', text: '未登录', detail: '', action: 'login', button: '登录' };
+  if (h.state === 'off') return { tone: 'idle', text: 'AI 浏览器未登录', detail: '', action: 'open', button: '打开' };
   return { tone: 'idle', text: '未确认' + (synced ? ' · ' + when(h.syncedAt) + '打开过' : ''), detail: note, action: 'open', button: '打开' };
 }
 function accountToolHtml(state, card, account, esc) {
@@ -113,7 +113,7 @@ function aiHtml(state, query, esc, now = Date.now()) {
         return `<div class="ac-account" data-identity="${a.identity}"><div class="ac-account-title">${brandIcon(card, esc, true)}<strong>${esc(card.product)}</strong><span class="ac-account-name">${esc(a.account === '账号待确认' ? a.label : a.account)}</span>${a.preferred ? '<span class="ac-default">默认</span>' : ''}</div>
           <div class="ac-usage ${checking ? 'idle' : view.tone}" data-health="${esc(a.health?.state || 'unknown')}"><span>${esc(checking ? '正在后台确认登录…' : view.text)}</span>${view.detail ? `<small>${esc(view.detail)}</small>` : ''}${detail.html}</div><div class="ac-row-actions"><button class="ac-open" data-ac="${view.action}" data-site="${card.site}" data-identity="${a.identity}" aria-label="${esc(view.button)} ${esc(card.product)} ${esc(a.label)}">${view.button} ↗</button>
           ${canRecover ? `<button class="ac-text-btn" data-ac="recover" data-site="${card.site}" data-identity="${a.identity}">复核并继续原任务</button>` : ''}
-          <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div><button data-ac="recheck" data-site="${card.site}" data-identity="${a.identity}">立即确认登录</button>${view.action !== 'login' ? `<button data-ac="login" data-site="${card.site}" data-identity="${a.identity}">重新登录</button>` : ''}${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : ''}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
+          <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div><button data-ac="recheck" data-site="${card.site}" data-identity="${a.identity}">立即确认登录</button>${view.action === 'login' ? `<button data-ac="open" data-site="${card.site}" data-identity="${a.identity}">在你的浏览器打开</button>` : `<button data-ac="login" data-site="${card.site}" data-identity="${a.identity}">给 AI 重新登录</button>`}<button data-ac="copy-logins" data-site="${card.site}" data-identity="${a.identity}" title="你在自己的浏览器里重新登录过时用：把登录复制给 AI 浏览器">把我的登录复制给 AI</button>${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : ''}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
       }).join('')}</article>`;
   }).join('') || '<p class="ac-empty">没有匹配的账号</p>');
 }

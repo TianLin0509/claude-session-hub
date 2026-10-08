@@ -74,7 +74,7 @@ async function main() {
     await until('document.querySelector("#account-page")', 'still on account page');
     for (const end = Date.now() + 15000; Date.now() < end && !fs.existsSync(path.join(home, 'accounts-open.jsonl'));) await sleep(200);
     const opened = fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    assert.deepEqual(opened[0], { identity: 'alt', site: 'chatgpt', url: 'https://chatgpt.com/' });
+    assert.deepEqual(opened[0], { identity: 'alt', site: 'chatgpt', url: 'https://chatgpt.com/', browser: 'personal' });
     await snap('02-after-verify-click');
     result.checks.push('点「打开」走打开网站入口（站点暂停中时即人工接管），参数为副号 ChatGPT');
     result.passed = true;
