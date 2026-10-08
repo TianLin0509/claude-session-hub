@@ -82,8 +82,13 @@ function createResumeSessionHandler(deps) {
       effectiveCodexSessionsRoot = defaultCodexSessionsRoot;
     }
     const hookPort = getHookPort();
+    // 剥离范围只能包住联赛自己的代码：社区版恢复逻辑后面还会读 isAgentLeague，
+    // 也需要助理与编排员的恢复配置（2026-10-08 真机验收：剥掉后所有会话恢复都报 isAgentLeague is not defined）。
     // @community-strip 投资联赛
     const isAgentLeague = meta.purpose === 'agent-league' || meta.purpose === 'agent-league-virtual';
+    // @community-else
+    // const isAgentLeague = false;
+    // @community-end
 
     let resumeOpts = {};
     if (meta.purpose === 'hub-assistant') {
@@ -96,6 +101,7 @@ function createResumeSessionHandler(deps) {
     if (meta.purpose === 'hub-orchestrator' && typeof deps.prepareOrchestratorResume === 'function') {
       resumeOpts = { ...resumeOpts, ...(deps.prepareOrchestratorResume(meta) || {}) };
     }
+    // @community-strip 投资联赛
     if (isAgentLeague) {
       const agentId = path.basename(String(meta.cwd || '')).toLowerCase();
       const scopePrefix = meta.purpose === 'agent-league-virtual' ? 'agent-league-virtual-' : 'agent-league-';
@@ -117,8 +123,6 @@ function createResumeSessionHandler(deps) {
         logger.warn('[agent-league] resume without hookPort; Chuxin MCP is unavailable');
       }
     }
-    // @community-else
-    // let resumeOpts = {};
     // @community-end
     if (meta.meetingId) {
       const meeting = meetingManager.getMeeting(meta.meetingId);
