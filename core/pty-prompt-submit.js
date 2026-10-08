@@ -164,21 +164,56 @@ function snapshotPasteMarker(sessionManager, sid) {
   return extractMarker(sessionManager.getSessionBuffer(sid) || '');
 }
 
+// 回显信号（2026-10-09）：短消息不会折叠成标记，原来每条都要干等满 settle 下限 500ms
+//   才发 \r —— 用户看着文字已经躺在 CLI 输入框里，却要再等半秒才提交。CLI 把这次
+//   消息的**结尾**画出来，说明它已经读完并处理了这次粘贴（含 BP_END），此时的 \r
+//   必然是独立的 stdin chunk。只看写入之后的新输出，不看历史；结尾太短（<2 个非空白
+//   字符）不作依据，照旧等满 settle。万一判早了，调用方的语义确认与有界补回车兜底。
+const ECHO_TAIL_CHARS = 12;
+const ECHO_MIN_CHARS = 2;
+const ECHO_POLL_MS = 20;
+
+function echoComparable(text) {
+  return String(text || '')
+    .replace(/\x1b\[(\d*)C/g, ' ')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .replace(/\x1b[@-_]/g, '')
+    .replace(/\s+/g, '');
+}
+
+// 回显要找的那段：消息**最后一行**去掉空白后的最后若干个字符。
+//   不能跨行取：多行输入时 TUI 只重画新增的那一行，上一行的结尾不会紧挨着出现。
+function echoNeedle(prompt) {
+  const lines = String(prompt == null ? '' : prompt).split(/\r\n?|\n/);
+  const compact = echoComparable(lines[lines.length - 1]);
+  if (compact.length < ECHO_MIN_CHARS) return null;
+  let start = Math.max(0, compact.length - ECHO_TAIL_CHARS);
+  // 不从代理对中间切开。
+  const code = compact.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff && start > 0) start -= 1;
+  return compact.slice(start);
+}
+
 // 等 CLI 真的把这次粘贴吃完。
 //   正向信号：屏幕上出现一条与基线**不同**的折叠标记（Claude 的
-//     [Pasted text #N +M lines] / Codex 的 [[Pasted Content N chars]]）。
+//     [Pasted text #N +M lines] / Codex 的 [[Pasted Content N chars]]）；
+//     或者（传了 echoNeedle + readOutputSince 时）写入之后的新输出里出现了消息结尾。
 //   拿不到信号（Codex 走 BP 时不进粘贴态，屏幕上根本没有标记）就等满 settleMs，
 //     由调用方的语义确认继续兜底。
-// 返回 { reason: 'marker' | 'ceiling', waitedMs, marker }
+// 返回 { reason: 'marker' | 'echo' | 'ceiling', waitedMs, marker }
 async function waitForPasteSettled(options = {}) {
   const {
     sessionManager,
     sid,
     settleMs,
     baselineMarker = null,
-    pollMs = POLL_MS,
     markerConfirmMs = MARKER_CONFIRM_MS,
+    echoNeedle: needle = null,
+    readOutputSince = null,
   } = options;
+  const watchEcho = !!needle && typeof readOutputSince === 'function';
+  const pollMs = options.pollMs ?? (watchEcho ? ECHO_POLL_MS : POLL_MS);
   const startedAt = Date.now();
   const deadline = startedAt + Math.max(0, Number(settleMs) || 0);
   const canScan = sessionManager && typeof sessionManager.getSessionBuffer === 'function';
@@ -187,6 +222,13 @@ async function waitForPasteSettled(options = {}) {
 
   while (Date.now() < deadline) {
     await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+    if (watchEcho) {
+      let fresh = '';
+      try { fresh = readOutputSince() || ''; } catch { fresh = ''; }
+      if (echoComparable(fresh).includes(needle)) {
+        return { reason: 'echo', waitedMs: Date.now() - startedAt, marker: null };
+      }
+    }
     if (!canScan) continue;
     const marker = extractMarker(sessionManager.getSessionBuffer(sid) || '');
     // 与基线相同的标记一律不算数：那可能只是上一次粘贴留在屏幕上的残影。
@@ -258,11 +300,12 @@ module.exports = {
   computeSettleMs,
   writeBracketedPaste,
   waitForPasteSettled,
+  echoNeedle,
   snapshotPasteMarker,
   splitInlinePastes,
   INLINE_PASTE_MAX_PIECES,
   INLINE_PASTE_MAX_TOTAL_CHARS,
-  _private: { splitChunks, safeSliceEnd, extractMarker },
+  _private: { splitChunks, safeSliceEnd, extractMarker, echoComparable },
   SETTLE_MIN_MS,
   SETTLE_MAX_MS,
   CHUNK_SIZE,
