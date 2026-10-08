@@ -1,6 +1,6 @@
 {
   "$comment": "社区版导出清单。include 取文件，drop 删私人模块，scrub 做注释与文案脱敏，overlay/ 目录的文件最后覆盖进去。改动后跑 node scripts/community/export-community.js 与 tests/unit-community-export.test.js。",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "include": [
     "main.js",
     "main-bootstrap.js",
@@ -27,7 +27,9 @@
     "tools/hub-escape.ps1",
     "tools/hub-escape-foreground.ps1",
     "tests/helpers/hub-launcher.js",
-    "tests/helpers/cdp-client.js"
+    "tests/helpers/cdp-client.js",
+    "tests/fixtures/codeagent-standin/**",
+    "tests/e2e-codeagent-standin-real-cli.js"
   ],
   "drop": [
     "renderer/assets/navigation/sticker-v2/research.png",
