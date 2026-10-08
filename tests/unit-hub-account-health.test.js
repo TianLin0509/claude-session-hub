@@ -60,7 +60,8 @@ test('row wording: one verdict, one source, and the matching button', () => {
   assert.equal(healthView({ state: 'attention', problem: { kind: 'signed_out', by: 'cookie', at: NOW - H } }, NOW).detail, '1 小时前 本机登录记录已失效');
   assert.equal(healthView({ state: 'unknown' }, NOW).text, '未确认');
   const esc = s => String(s);
-  const retryAt = new Date(2026, 9, 8, 14, 30).getTime();
+  // 必须在「现在」之后，否则文案会变成「下次有生图任务时」（2026-10-08 写死今天 14:30，过点后合并闸门全红）。
+  const retryAt = new Date(2099, 9, 8, 14, 30).getTime();
   assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ enabled: true, able: false, ready: false, retryAt }] }, esc),
     /网页优先、Codex 兜底 · 现在走 Codex（ChatGPT 网页被网站验证拦住，10\/8 14:30 后有生图任务时自动再试网页）/);
   assert.match(imageServiceHtml({ codex: { ready: true, preferred: false }, web: [{ enabled: true, able: true, ready: false }] }, esc), /现在走 ChatGPT 网页/,
