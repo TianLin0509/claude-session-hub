@@ -8,6 +8,9 @@ param(
   [ValidateSet('existing','claude','codex','gemini')][string]$Provider = 'existing',
   [switch]$NoLaunch,
   [switch]$NoShortcut,
+  # Compatibility rendering for machines where the GPU path shows a black window: writes
+  # gpu-disabled.json into the Hub data folder (delete it to use the GPU again).
+  [switch]$DisableGpu,
   [string]$ResultPath
 )
 $ErrorActionPreference = 'Stop'
@@ -106,25 +109,33 @@ try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $target 'resources\scripts\install-provider.ps1') -Provider $Provider
     if ($LASTEXITCODE -ne 0) { throw "Hub files installed in $target, but $Provider setup failed. Resolve the CLI error, then rerun; not counted as ready." }
   }
+  $gpuArgs = ''
+  if ($DisableGpu) {
+    $dataRoot = Join-Path $env:USERPROFILE '.ai-hub-community'
+    [IO.Directory]::CreateDirectory($dataRoot) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $dataRoot 'gpu-disabled.json'), '{"reason":"install-release -DisableGpu"}', (New-Object Text.UTF8Encoding($false)))
+    $gpuArgs = '--disable-gpu --disable-gpu-compositing'
+  }
   if (-not $NoShortcut) {
     $desktop = [Environment]::GetFolderPath('Desktop')
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop 'AI Hub Community.lnk'))
-    $shortcut.TargetPath=$exe; $shortcut.WorkingDirectory=$target; $shortcut.Save()
+    $shortcut.TargetPath=$exe; $shortcut.WorkingDirectory=$target; if ($gpuArgs) { $shortcut.Arguments=$gpuArgs }; $shortcut.Save()
   }
   $launched = $false
   if (-not $NoLaunch) {
     $launch=New-Object Diagnostics.ProcessStartInfo
     $launch.FileName=$exe; $launch.WorkingDirectory=$target; $launch.UseShellExecute=$false
+    if ($gpuArgs) { $launch.Arguments=$gpuArgs }
     $launch.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden
     # An agent may run this installer from another Hub. Never inherit its data
     # root, test fixtures, hook credentials or native session identity.
     foreach($key in @($launch.EnvironmentVariables.Keys)) {
-      if($key -match '^(CLAUDE_HUB_|ARENA_HUB_)' -or $key -in @('CLAUDECODE','CODEX_THREAD_ID','CODEX_SESSION_ID','AI_TEAM_HUB_CALLBACK_URL','ELECTRON_RUN_AS_NODE')) { $launch.EnvironmentVariables.Remove($key) }
+      if($key -match '^(CLAUDE_HUB_|ARENA_HUB_|CODEAGENT_HUB_)' -or $key -in @('CODEAGENT3_LAUNCHER_PID','CODEAGENT3_X_AUTH_TOKEN','CLAUDECODE','CODEX_THREAD_ID','CODEX_SESSION_ID','AI_TEAM_HUB_CALLBACK_URL','ELECTRON_RUN_AS_NODE')) { $launch.EnvironmentVariables.Remove($key) }
     }
     [Diagnostics.Process]::Start($launch) | Out-Null
     $launched=$true
   }
-  Write-Receipt @{ schemaVersion=1; ok=$true; version=$tag; directory=$target; executable=$exe; archiveSha256=$actual; reused=$reused; launchRequested=$launched; auth='not_checked'; model='not_checked'; next='In Hub, refresh CLI detection, open Accounts, complete official login, and send one test message.' }
+  Write-Receipt @{ schemaVersion=1; ok=$true; version=$tag; directory=$target; executable=$exe; archiveSha256=$actual; reused=$reused; launchRequested=$launched; gpu=$(if ($DisableGpu) { 'disabled' } else { 'default' }); auth='not_checked'; model='not_checked'; next='In Hub, refresh CLI detection, open Accounts, complete official login, and send one test message.' }
   $success = $true
   exit 0
 } catch {

@@ -56,6 +56,20 @@ function commandHead(command) {
   return `& '${command.replace(/'/g, "''")}'`;
 }
 
+// 只查文件、不启动进程：命令是完整路径就看文件在不在；否则按 PATH + Windows 可执行扩展名找。
+// 用于界面默认选中 CodeAgent（公司电脑），不作为能否登录或调用模型的证据。
+function isCodeAgentInstalled(env = process.env, provider = hubProviderConfig()) {
+  const fs = require('fs');
+  let command;
+  try { ({ command } = resolveCodeAgentConfig(env, provider)); } catch { return false; }
+  const exists = file => { try { return fs.statSync(file).isFile(); } catch { return false; } };
+  if (path.isAbsolute(command)) return exists(command);
+  const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') || 'PATH';
+  const dirs = String(env[pathKey] || '').split(path.delimiter).filter(Boolean);
+  const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat'] : [''];
+  return dirs.some(dir => exts.some(ext => exists(path.join(dir.replace(/^"|"$/g, ''), command + ext))));
+}
+
 function normalizeCodeAgentModel(model) {
   const value = cleanString(model);
   return MODELS.find(id => id.toLowerCase() === value.toLowerCase()) || DEFAULT_MODEL;
@@ -72,4 +86,5 @@ module.exports = {
   resolveCodeAgentConfig,
   commandHead,
   normalizeCodeAgentModel,
+  isCodeAgentInstalled,
 };

@@ -22,4 +22,11 @@ try {
   process.__hubLifecycleJournalInstallError = error && error.message ? error.message : String(error);
 }
 
+// 兼容渲染：必须在 app ready 之前决定（见 core/gpu-mode.js）。
+try {
+  require('./core/gpu-mode.js').applyGpuMode({ app, dataDir: require('./core/data-dir.js').getHubDataDir() });
+} catch (error) {
+  process.__hubGpuModeError = error && error.message ? error.message : String(error);
+}
+
 require('./main.js');

@@ -141,3 +141,53 @@ test('screen samples from the real CLI: readiness, dialogs and running state', (
   assert.equal(classifyTerminalRuntime('codeagent', idleLines).state, 'idle');
   assert.equal(classifyTerminalRuntime('codeagent', ['  ⠋ Running…', ' │ > 补充指令（Enter 排队等待发送）...']).state, 'running');
 });
+
+test('the CodeAgent trust dialog (Yes highlighted, "Confirm Enter" footer) is confirmed with a single Enter', () => {
+  const { detectClaudeTrustDialog } = require('../core/claude-trust-dialog');
+  // Screen text from the company machine, 2026-10-08 (v1.2615.02.01).
+  const screen = [
+    '   Accessing workspace:',
+    '',
+    '    C:/Users/x/AppData/Local/Temp/work-a',
+    "    Quick safety check: Is this a project you created or one you trust? If not, review what's in this folder first.",
+    '    CodeAgent will load .cac contents (skill, mcp, hook, command, etc.) and be able to read, edit, and execute files here.',
+    '',
+    '    ⚠ This folder runs commands to mint HTTP headers (headersHelper), declared in .mcp.json.',
+    '    No additional risks detected.',
+    '',
+    '    > Yes, I trust this folder',
+    '      No, exit',
+    '',
+    '   Select option ↑ ↓ | Scroll risks Ctrl+↑ ↓ | Confirm Enter | No, exit Esc',
+  ].join('\r\n');
+  const dialog = detectClaudeTrustDialog(screen);
+  assert.ok(dialog, 'dialog recognized');
+  assert.deepEqual(dialog.keys, ['\r'], 'Yes is already highlighted: Enter only');
+});
+
+test('project trust is written for both the 8.3 short path and the real long path', t => {
+  const { configDir, cwd } = sandbox(t);
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, '.cac.json'), JSON.stringify({ projects: {} }));
+  const longPath = path.join(path.dirname(cwd), 'very-long-workspace-name');
+  const fsImpl = { ...fs, realpathSync: Object.assign((p) => fs.realpathSync(p), { native: () => longPath }) };
+  const { ensureClaudeProjectTrusted } = require('../core/claude-project-trust');
+  const result = ensureClaudeProjectTrusted(cwd, { configDir, stateFileName: '.cac.json', fsImpl, logger: { warn() {} } });
+  assert.equal(result.changed, true);
+  const projects = JSON.parse(fs.readFileSync(path.join(configDir, '.cac.json'), 'utf8')).projects;
+  for (const key of [path.resolve(cwd), longPath].map(p => p.split(path.sep).join('/'))) {
+    assert.equal(projects[key] && projects[key].hasTrustDialogAccepted, true, key);
+  }
+  assert.equal(ensureClaudeProjectTrusted(cwd, { configDir, stateFileName: '.cac.json', fsImpl, logger: { warn() {} } }).changed, false);
+});
+
+test('CodeAgent print-mode titles: tagged line wins over startup noise and appended paragraphs', () => {
+  const { createAutoTitleManager } = require('../main/auto-title-manager.js');
+  const m = createAutoTitleManager({ allAiKinds: [], getHubConfig: () => ({}), kindLabels: {}, meetingManager: {},
+    sendToRenderer() {}, sessionManager: {}, workspaceService: null });
+  assert.equal(m.cleanCodeAgentTitle('扩展初始化中：C:/x/.cac/extensions/p/dtagent-plugin.mjs标题：信道估计对比\n\n白话解读：这是一个标题'), '信道估计对比');
+  assert.equal(m.cleanCodeAgentTitle('**标题：** 「多径信道仿真」'), '多径信道仿真');
+  assert.equal(m.cleanCodeAgentTitle('📌 **多进程读 CSV**\n白话解读：说明'), '多进程读 CSV');
+  assert.equal(m.cleanCodeAgentTitle('白话解读：这次只起了一个标题，内容很长很长很长'), '');
+  assert.equal(m.cleanCodeAgentTitle(''), '');
+});

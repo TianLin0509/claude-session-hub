@@ -58,8 +58,12 @@ function resolveXtermTheme(theme) {
   return XTERM_THEMES[normalizeTheme(theme)] || XTERM_THEMES[DEFAULT_THEME];
 }
 
-function resolveXtermOptions(theme) {
-  return { theme: resolveXtermTheme(theme), minimumContrastRatio: normalizeTheme(theme) === 'codex' ? 4.5 : 1 };
+// 公司 Code Agent 的界面（opentui）自己铺满黑底；浅色主题下终端其余部分是白的，黑白拼在一起很突兀。
+// 这类会话在浅色主题下整体用深色终端配色，像一张统一的深色控制台卡片（2026-10-08 公司验收后用户提出）。
+function resolveXtermOptions(theme, kind = '') {
+  const light = normalizeTheme(theme) === 'codex';
+  if (light && String(kind || '').startsWith('codeagent')) return { theme: GITHUB_DARK, minimumContrastRatio: 1 };
+  return { theme: resolveXtermTheme(theme), minimumContrastRatio: light ? 4.5 : 1 };
 }
 
 /**
@@ -176,9 +180,8 @@ function createThemeController({ document, localStorage, terminalCache, openConf
     }
     if (previousTheme !== currentTheme) forceStyleRecalc(root);
 
-    const xtermOptions = resolveXtermOptions(currentTheme);
     for (const [, cached] of terminalCache) {
-      Object.assign(cached.terminal.options, xtermOptions);
+      Object.assign(cached.terminal.options, resolveXtermOptions(currentTheme, cached.kind));
     }
 
     onThemeApplied(currentTheme);

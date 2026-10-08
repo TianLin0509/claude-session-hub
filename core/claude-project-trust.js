@@ -85,20 +85,30 @@ function ensureClaudeProjectTrusted(projectDir, options = {}) {
       state.projects = {};
     }
 
-    const existing = state.projects[projectKey];
-    if (existing && typeof existing === 'object' && existing.hasTrustDialogAccepted === true) {
+    // 同一个目录可能有两种写法：8.3 短名（C:/Users/L00807~1/…，TEMP 常是这种）和真实长名。
+    // CLI 按哪种查不确定（2026-10-08 公司真机：Hub 写短名、CLI 查长名，信任框照弹），两种都写。
+    const keys = [projectKey];
+    try {
+      const realKey = toClaudeProjectKey((fsImpl.realpathSync && fsImpl.realpathSync.native || fs.realpathSync.native)(projectDir));
+      if (realKey && realKey !== projectKey) keys.push(realKey);
+    } catch {}
+    const isTrusted = key => state.projects[key] && typeof state.projects[key] === 'object' && state.projects[key].hasTrustDialogAccepted === true;
+    if (keys.every(isTrusted)) {
       return { ok: true, changed: false, reason: 'already-trusted', statePath, projectKey };
     }
 
-    state.projects[projectKey] = {
-      allowedTools: [],
-      mcpContextUris: [],
-      mcpServers: {},
-      enabledMcpjsonServers: [],
-      disabledMcpjsonServers: [],
-      ...(existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}),
-      hasTrustDialogAccepted: true,
-    };
+    for (const key of keys) {
+      const existing = state.projects[key];
+      state.projects[key] = {
+        allowedTools: [],
+        mcpContextUris: [],
+        mcpServers: {},
+        enabledMcpjsonServers: [],
+        disabledMcpjsonServers: [],
+        ...(existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}),
+        hasTrustDialogAccepted: true,
+      };
+    }
 
     // 原子写。~/.claude.json 有 600KB+，直接就地写会让并发启动的 claude CLI 读到
     // 半截 JSON；tmp + rename 至少保证读到的永远是完整的一版。
