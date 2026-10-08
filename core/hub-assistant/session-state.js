@@ -2,9 +2,9 @@
 const {sidebarItemClassification,sidebarItemHasUnread}=require('../session-sidebar-state');
 const {nativeId}=require('./live-history');
 const LABELS={wait:'等你响应',error:'运行异常',run:'运行中',unread:'未读',dorm:'休眠',idle:'就绪',unknown:'状态未知'};
-function sessionHubState(s,sessionMap,now,isOpen=s.isOpen){
+function sessionHubState(s,sessionMap,now,isOpen=s.isOpen,classify=null){
    if(isOpen&&s.sidebarView&&s.sidebarView.nativeSessionId===nativeId(s))return s.sidebarView.hubState;
-   const state=isOpen?sidebarItemClassification(s,{now,sessionMap}).state:'unknown';
+   const state=isOpen?(classify?classify(s):sidebarItemClassification(s,{now,sessionMap})).state:'unknown';
    return {source:'Hub 侧栏共用的运行状态与未读规则',state,label:LABELS[state],
      isActive:isOpen?(state==='run'||state==='wait'):null,
      group:isOpen?(state==='run'||state==='wait'?'active':state==='error'?'failed':'inactive'):'history',
@@ -22,10 +22,12 @@ function projectSessionStates(sessions,{now=Date.now()}={}){
 // IPC; this transport neither changes runtime truth nor counts unread replies.
 function createSessionViewPublisher(send){
  let previous=new Map();
- return sessions=>{
-  const now=Date.now(),sessionMap=new Map(sessions.map(s=>[s.id,s])),current=new Map(),changed=[];
+ // The sidebar passes its own `now` and classification so one render classifies
+ // each session once instead of twice; without them the result is unchanged.
+ return (sessions,{now=Date.now(),classify=null}={})=>{
+  const sessionMap=new Map(sessions.map(s=>[s.id,s])),current=new Map(),changed=[];
   for(const s of sessions){
-   const row={id:s.id,nativeSessionId:nativeId(s),hubState:{...sessionHubState(s,sessionMap,now,true),source:'Hub 侧栏当前状态快照'}};
+   const row={id:s.id,nativeSessionId:nativeId(s),hubState:{...sessionHubState(s,sessionMap,now,true,classify),source:'Hub 侧栏当前状态快照'}};
    const signature=JSON.stringify(row);current.set(s.id,signature);
    if(previous.get(s.id)!==signature)changed.push(row);
   }
