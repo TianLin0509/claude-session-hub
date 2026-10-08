@@ -291,9 +291,15 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
         if ((wf.settingsRevision || 0) !== expectedRevision) throw new Error('设置已被更新，请关闭后重新打开');
         const ids = (m.slotSpecs || []).map((p,i)=>p.memberId || `m${i+1}`);
         // Existing delivered legacy tasks keep their original protocol and paths.
-        const next = fileStatus?.files?.length ? Settings.toConfig(wf,draft,ids) : Settings.toDeliveryConfig(wf,draft,ids);
+        // Saving is the user's choice to use this configuration. Old editors
+        // may still send enabled:false; it must not leave the saved flow inert.
+        const savedDraft = {...draft,enabled:true};
+        const next = fileStatus?.files?.length ? Settings.toConfig(wf,savedDraft,ids) : Settings.toDeliveryConfig(wf,savedDraft,ids);
         if (fileStatus?.files?.length && (draft.kind !== 'file' || JSON.stringify(next.steps) !== JSON.stringify(wf.steps))) throw new Error('已有任务文件，不能切换协议或负责人；请为新任务创建群聊');
         next.settingsRevision = (wf.settingsRevision || 0) + 1;
+        // A terminal run normally returns to ordinary chat. An explicit save
+        // selects the new flow for the next message, without touching run.json.
+        if(next.deliveryVersion===1)next.taskArmed=true;
         meetingManager.updateMeeting(meetingId,{serialWorkflow:next});
         if(next.deliveryVersion===1 && next.enabled)meetingManager.setParticipants(meetingId,next.deliveryStages[0].members.map(id=>ids.indexOf(id)));
         sendToRenderer('meeting-updated',{meeting:get(meetingId)});
