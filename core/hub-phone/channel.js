@@ -3,7 +3,7 @@ const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:pat
 const {seal,open,credentials,invite}=require('./crypto');
 // 手机协议 v2（App 1.1）：voice_message 识别后直接交给助理，转写只回传显示；hello 声明能力后才下发 profile；set_profile 切换助理模型。
 // 旧 App 只认 text/voice/status/answer/image/transcript，未声明能力前不向它发送新类型。
-const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak','memo_update','podcast_get','voice_prepare','workbench_get','workbench_action','session_cards_get','video_chunk_get'];
+const TYPES=['text','voice','voice_message','hello','set_profile','set_front_desk','speak','memo_update','podcast_get','voice_prepare','workbench_get','workbench_action','session_cards_get','video_chunk_get','video_cover_get'];
 // 本 Hub 能处理的手机消息能力，随 profile 下发；手机据此决定是否发 voice_prepare（老 Hub 不认会回「校验未通过」）。
 const HUB_CAPS=['voice_prepare','workbench','session_cards','learning_video'];
 const MAX_VOICE_BYTES=16000*2*120;
@@ -42,6 +42,7 @@ class PhoneChannel{
  }
  validate(m){
   if(m.type==='session_cards_get'&&(typeof m.sessionId!=='string'||! /^[A-Za-z0-9_-]{1,100}$/.test(m.sessionId)||m.before!=null&&(typeof m.before!=='string'||m.before.length>160)))throw Error('卡片请求无效');
+  if(m.type==='video_cover_get'&&(typeof m.videoId!=='string'||! /^[A-Za-z0-9-]{8,64}$/.test(m.videoId)))throw Error('封面请求无效');
   if(m.type==='video_chunk_get'&&(typeof m.videoId!=='string'||! /^[A-Za-z0-9-]{8,64}$/.test(m.videoId)||!Number.isInteger(m.index)||m.index<0))throw Error('视频请求无效');
   if(m.context!==undefined&&(!['text','voice_message'].includes(m.type)||!m.context||!['session','plan','lesson','summary','video'].includes(m.context.kind)||typeof m.context.id!=='string'||m.context.id.length>100))throw Error('工作台上下文无效');
   if(m.type==='workbench_action'&&(!['configure','confirm','done','reopen'].includes(m.action)||m.day!==undefined&&(typeof m.day!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(m.day))||m.itemId!==undefined&&(typeof m.itemId!=='string'||m.itemId.length>100)))throw Error('工作台操作无效');
@@ -99,10 +100,11 @@ class PhoneChannel{
    try{if(!this.supports('workbench')||!this.assistant.workbench)throw Error('工作台需要新版手机和 Hub');if(row.type==='workbench_action')this.assistant.workbench.action(row);this.sendWorkbench(row.id,row.type==='workbench_get');this.journal.change(()=>{row.state='done';});}
    catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;});this.emit('workbench-error-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:e.message});}
   }
-  for(const row of s.inbox.filter(r=>r.state==='queued'&&['session_cards_get','video_chunk_get'].includes(r.type))){
-   try{const cards=row.type==='session_cards_get';if(!this.supports(cards?'session_cards':'learning_video'))throw Error('手机需要更新');
-    const body=cards?this.assistant.sessionCards(row):this.assistant.videos.chunk(row.videoId,row.index);
-    this.emit('readonly-'+row.id,{type:cards?'session_cards':'video_chunk',requestId:row.id,...body,...(cards?{append:!!row.before}:{})});this.journal.change(()=>{row.state='done';});
+  for(const row of s.inbox.filter(r=>r.state==='queued'&&['session_cards_get','video_chunk_get','video_cover_get'].includes(r.type))){
+   try{const cards=row.type==='session_cards_get',cover=row.type==='video_cover_get';if(!this.supports(cards?'session_cards':'learning_video'))throw Error('手机需要更新');
+    // 封面：钩子屏定格的小图，手机缓存做缩略图。
+    const body=cards?this.assistant.sessionCards(row):cover?{id:row.videoId,data:this.assistant.videos.cover(row.videoId)}:this.assistant.videos.chunk(row.videoId,row.index);
+    this.emit('readonly-'+row.id,{type:cards?'session_cards':cover?'video_cover':'video_chunk',requestId:row.id,...body,...(cards?{append:!!row.before}:{})});this.journal.change(()=>{row.state='done';});
    }catch(e){this.journal.change(()=>{row.state='rejected';row.issue=e.message;});this.emit('readonly-error-'+row.id,{type:'status',requestId:row.id,state:'rejected',text:e.message});}
   }
   // 朗读请求不排队：合成后把音频地址发给手机（手机直接从阿里云下载播放）。

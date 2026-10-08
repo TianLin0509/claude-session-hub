@@ -492,6 +492,8 @@ class AssistantService {
     const hasCaller=callerSessionId!==undefined;
     if(hasCaller&&!this.isAssistantSession(callerSessionId))throw new Error('调用方不是固定助理会话，未授予专属工具');
     if(name==='workbench_status')return this.workbench.refresh();
+    // 学习选题用：田哥最近一周在 Hub 里亲口问的话（已排除 Agent 之间的派活任务书），只读。
+    if(name==='learning_context')return require('./learning-context').learningContext(this);
     if(name==='publish_daily_brief'){
       const current=this.currentRequest;
       if(!hasCaller||!current||args.requestToken!==current.token||Date.now()-current.createdAt>30*60000)throw new Error('日稿不属于当前回合');

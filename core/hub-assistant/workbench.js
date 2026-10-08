@@ -65,7 +65,7 @@ class AssistantWorkbench {
     const d = this.read(ref.id), v = d[ref.kind]; if (!v) throw Error('所选内容已不存在，请刷新');
     return `【手机工作台选定的${{ plan: '计划', summary: '总结', lesson: '课程' }[ref.kind]}】日期=${ref.id}\n${JSON.stringify(v)}\n以上仅作背景；下面是田哥本轮要求：\n`;
   }
-  async publish({ kind, day, items, text: body, title, script, sources, oneMinute, questions, scenes, why, evidenceRefs }, current) {
+  async publish({ kind, day, items, text: body, title, script, sources, oneMinute, questions, storyboard, why, evidenceRefs }, current) {
     if (!['plan', 'summary', 'lesson'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day !== dayOf(this.now())) throw Error('日稿类型或日期无效');
     const key = day + ':' + kind, jobs = this.store.get('secretary.jobs') || {}, job = jobs[key];
     if (String(current.id).startsWith('daily-') && (!job || job.requestId !== current.id)) throw Error('不能写入其他定时任务');
@@ -83,18 +83,24 @@ class AssistantWorkbench {
       }) };
     } else if (kind === 'summary') d.summary = { text: text(body, 8000), createdAt: at };
     else {
-      title = text(title, 80); script = text(script, 10000);
-      if (script.length < 3000 || script.length > 6500) throw Error('每日口播稿须 3000–6500 字，面向 10–15 分钟完整讲解');
+      // 2026-10-09：学习以视频为主（Vibe 知识大赏式分镜）；长讲稿可选，有讲稿才顺带做音频版。
+      title = text(title, 80);
+      if (!storyboard && !script) throw Error('课程需要视频分镜 storyboard（或旧版讲稿 script）');
       if (!Array.isArray(sources) || !sources.length || sources.length > 8 || sources.some(s => !/^https:\/\//.test(s.url) || typeof s.title !== 'string' || s.title.length > 180 || s.url.length > 1000)) throw Error('课程需要 1–8 个 HTTPS 来源');
       if (!Array.isArray(questions) || questions.length < 2 || questions.length > 4) throw Error('课程需要 2–4 个追问及回答');
-      if(scenes) require("./video-studio").validateScenes(scenes);
-      const lesson = { title, why: typeof why==='string'?why.slice(0,600):'', evidenceRefs:Array.isArray(evidenceRefs)?evidenceRefs.filter(x=>typeof x==='string'&&/^E[a-f0-9]{16}$/.test(x)).slice(0,12):[], createdAt: at, sources, oneMinute: text(oneMinute, 1500), questions: questions.map(q => ({ question: text(q.question, 300), answer: text(q.answer, 1500) })) };
-      if (!this.a.podcasts) throw Error('这台 Hub 未配置音频合成');
-      // 固定日期 id：重启后不重复合成；不会覆盖已存在课程文件。
-      const revision = require('node:crypto').createHash('sha256').update(script).digest('hex').slice(0, 8);
-      const r = await this.a.podcasts.startLesson({ id: 'lesson-' + day.replace(/-/g, '') + '-' + revision, title, script, requestId: current.id, markdown: `# ${title}\n\n${script}\n\n## 一分钟讲述卡\n${lesson.oneMinute}\n\n${lesson.questions.map(q => `### ${q.question}\n${q.answer}`).join('\n\n')}\n\n## 来源\n${sources.map(s => `- [${s.title}](${s.url})`).join('\n')}` });
-      const video = scenes ? this.a.videos.start({...lesson,scenes},r.id) : null;
-      d.lesson = { ...lesson, podcastId: r.id, ...(video?{videoId:video.id}: {}) };
+      if (storyboard) require('./video-studio').validateStoryboard({ ...storyboard, title });
+      const lesson = { title, why: typeof why === 'string' ? why.slice(0, 600) : '', evidenceRefs: Array.isArray(evidenceRefs) ? evidenceRefs.filter(x => typeof x === 'string' && /^E[a-f0-9]{16}$/.test(x)).slice(0, 12) : [], createdAt: at, sources, oneMinute: text(oneMinute, 1500), questions: questions.map(q => ({ question: text(q.question, 300), answer: text(q.answer, 1500) })) };
+      let podcastId = null;
+      if (script) {
+        script = text(script, 10000);
+        if (script.length < 3000 || script.length > 6500) throw Error('音频版讲稿须 3000–6500 字');
+        if (!this.a.podcasts) throw Error('这台 Hub 未配置音频合成');
+        // 固定日期 id：重启后不重复合成；不会覆盖已存在课程文件。
+        const revision = require('node:crypto').createHash('sha256').update(script).digest('hex').slice(0, 8);
+        podcastId = (await this.a.podcasts.startLesson({ id: 'lesson-' + day.replace(/-/g, '') + '-' + revision, title, script, requestId: current.id, markdown: `# ${title}\n\n${script}\n\n## 一分钟讲述卡\n${lesson.oneMinute}\n\n${lesson.questions.map(q => `### ${q.question}\n${q.answer}`).join('\n\n')}\n\n## 来源\n${sources.map(s => `- [${s.title}](${s.url})`).join('\n')}` })).id;
+      }
+      const video = storyboard ? this.a.videos.start({ ...lesson, storyboard }) : null;
+      d.lesson = { ...lesson, ...(podcastId ? { podcastId } : {}), ...(video ? { videoId: video.id } : {}) };
     }
     this.save(d);
     if (job?.requestId === current.id) { jobs[key] = { ...job, state: 'ready', readyAt: at, issue: null }; this.store.set('secretary.jobs', jobs); }

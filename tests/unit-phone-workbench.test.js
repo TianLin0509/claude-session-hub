@@ -31,7 +31,9 @@ test('daily notices are tagged so the phone replaces its own 08:00 alarm instead
 });
 
 test('native cards and bounded video chunks are read while assistant is busy without CLI dispatch',async()=>{
- const x=setup();x.s.phoneCaps.push('session_cards','learning_video');x.assistant.overview=()=>({status:'running'});let calls=0;x.assistant.sessionCards=req=>{calls++;return{ok:true,sessionId:req.sessionId,cards:[{id:'c1',text:'原卡片'}],hasMore:false}};x.assistant.videos={chunk:(id,index)=>({id,index,total:1,bytes:3,sha256:'test',data:'AQID'})};
+ const x=setup();x.s.phoneCaps.push('session_cards','learning_video');x.assistant.overview=()=>({status:'running'});let calls=0;x.assistant.sessionCards=req=>{calls++;return{ok:true,sessionId:req.sessionId,cards:[{id:'c1',text:'原卡片'}],hasMore:false}};x.assistant.videos={chunk:(id,index)=>({id,index,total:1,bytes:3,sha256:'test',data:'AQID'}),cover:id=>'Q09WRVI='};
  x.incoming({type:'session_cards_get',sessionId:'s1'});await x.channel.tick();assert.equal(calls,1);assert.equal(x.calls.length,0);assert.equal(x.packets('session_cards').at(-1).cards[0].text,'原卡片');
  x.incoming({type:'video_chunk_get',videoId:'video-12345678',index:0});await x.channel.tick();assert.equal(x.packets('video_chunk').at(-1).data,'AQID');assert.equal(x.calls.length,0);
+ x.incoming({type:'video_cover_get',videoId:'video-12345678'});await x.channel.tick();assert.equal(x.packets('video_cover').at(-1).data,'Q09WRVI=');assert.equal(x.packets('video_cover').at(-1).id,'video-12345678');
+ x.incoming({type:'video_cover_get',videoId:'../etc'});await x.channel.tick();assert.equal(x.packets('video_cover').length,1);
 });
