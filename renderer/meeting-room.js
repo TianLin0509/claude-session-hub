@@ -5395,7 +5395,7 @@ if (typeof document !== 'undefined') (function () {
         tuning.id = 'mr-input-tuning';
         tuning.className = 'composer-rail';
         // @community-strip 公司中转
-        tuning.innerHTML = '<div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div><div class="mr-input-tuning-members"></div>';
+        tuning.innerHTML = '<div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司拉取新文字到输入框">拉取</button></div><div class="mr-input-tuning-members"></div>';
         tuning.querySelector('.fi-bridge-pull').addEventListener('click', async event => {
           const button = event.currentTarget, meetingId = activeMeetingId;
           event.stopPropagation();

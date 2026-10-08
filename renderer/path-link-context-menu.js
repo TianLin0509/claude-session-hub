@@ -165,7 +165,7 @@ function createPathLinkContextMenuController({
           text = read.content;
         }
         if (typeof pushToChatgpt !== 'function') {
-          showSyncStatus('同步失败\nChatGPT 中转未初始化', 'error');
+          showSyncStatus('同步失败\n公司中转未初始化', 'error');
           return;
         }
         const result = await pushToChatgpt(text, displayName);

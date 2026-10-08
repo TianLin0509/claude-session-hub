@@ -63,7 +63,7 @@ function createChatgptBridgeController(options = {}) {
       return result;
     }
     if (pullButton) pullButton.disabled = true;
-    showStatus('正在从公司 ChatGPT 拉取…', 'working');
+    showStatus('正在从公司拉取…', 'working');
     try {
       const result = await ipcRenderer.invoke('chatgpt-bridge:pull-and-send', { sessionId });
       if (!result || result.ok !== true) {
@@ -72,7 +72,7 @@ function createChatgptBridgeController(options = {}) {
         return result || { ok: false, error };
       }
       if (result.new !== true) {
-        showStatus('公司中转站暂无新内容', 'success');
+        showStatus('公司暂无新内容', 'success');
         return result;
       }
       showStatus(
@@ -90,7 +90,7 @@ function createChatgptBridgeController(options = {}) {
   }
 
   async function pullForInput(applyContent) {
-    showStatus('正在从公司 ChatGPT 拉取到输入框…', 'working');
+    showStatus('正在从公司拉取到输入框…', 'working');
     try {
       const result = await ipcRenderer.invoke('chatgpt-bridge:pull-for-input');
       if (!result || result.ok !== true) {
@@ -99,7 +99,7 @@ function createChatgptBridgeController(options = {}) {
         return result || { ok: false, error };
       }
       if (result.new !== true || typeof result.content !== 'string' || !result.content.trim()) {
-        showStatus('公司中转站暂无新内容', 'success');
+        showStatus('公司暂无新内容', 'success');
         return { ...result, inserted: false, acknowledged: false };
       }
       if (typeof applyContent !== 'function') {
@@ -121,7 +121,7 @@ function createChatgptBridgeController(options = {}) {
         ? await ipcRenderer.invoke('chatgpt-bridge:ack', { messageIds })
         : { ok: true };
       const acknowledged = !!(ack && ack.ok === true);
-      const fileHint = result.file_count ? `\n${result.file_count} 个文件已下载为绝对路径` : '';
+      const fileHint = result.file_count ? `\n${result.file_count} 段长文本已存为文件，输入框里是绝对路径` : '';
       const warning = acknowledged ? '' : '\n游标确认失败，下次拉取可能重复';
       showStatus(`已拉取到输入框${fileHint}${warning}`, acknowledged ? 'success' : 'error');
       return { ...result, inserted: true, acknowledged, warning: warning.trim() || null };
@@ -139,15 +139,16 @@ function createChatgptBridgeController(options = {}) {
       showStatus(result.error, 'error');
       return result;
     }
-    showStatus(`正在同步到公司 ChatGPT…\n${label}`, 'working');
+    showStatus(`正在同步到公司…\n${label}`, 'working');
     try {
-      const result = await ipcRenderer.invoke('chatgpt-bridge:push', { text: value });
+      const result = await ipcRenderer.invoke('chatgpt-bridge:push', { text: value, label });
       if (!result || result.ok !== true) {
         const error = result && result.error ? result.error : '同步失败。';
         showStatus(`同步失败\n${error}`, 'error');
         return result || { ok: false, error };
       }
-      showStatus(`已同步到公司 ChatGPT\n${label}`, 'success');
+      const where = result.backend === 'company-relay' ? '公司收件箱（网页自动刷新）' : '公司 ChatGPT';
+      showStatus(`已同步到${where}\n${label}`, 'success');
       return result;
     } catch (error) {
       const result = { ok: false, error: error && error.message ? error.message : String(error) };
