@@ -63,7 +63,7 @@ function validate(d, memberIds) {
     if (!Array.isArray(r.members) || r.members.length < 1 || r.members.length > 3 || new Set(r.members).size !== r.members.length) throw new Error(`第 ${i + 1} 轮请选择 1–3 位不同的 Agent`);
     if (r.members.some(id => !memberIds.includes(id))) throw new Error(`第 ${i + 1} 轮有已移除的成员，请重新选择`);
     if (typeof r.name !== 'string' || !r.name.trim() || r.name.length > 80) throw new Error(`第 ${i + 1} 轮名称不能为空且不能超过 80 字`);
-    if (typeof r.prompt !== 'string' || !r.prompt.trim() || r.prompt.length > 16000) throw new Error(`第 ${i + 1} 轮共享 prompt 不能为空且不能超过 16000 字`);
+    if (typeof r.prompt !== 'string' || r.prompt.length > 16000) throw new Error(`第 ${i + 1} 轮共享 prompt 须为文本且不能超过 16000 字（可以留空）`);
     // 串行流程可在最后一轮设审核：需返工退回上一轮。
     const serialReview = d.kind === 'serial' && i > 0 && i === d.rounds.length - 1;
     if (!['next', 'end', ...(d.kind === 'file' || serialReview ? ['review'] : [])].includes(r.after)) throw new Error('轮次接续规则无效');

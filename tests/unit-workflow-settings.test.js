@@ -17,7 +17,10 @@ for (const preset of S.PRESETS) {
     assert(p.includes(d.rounds[1].prompt));assert(p.includes('需返工-合并手册-轮次1.md'));assert(p.includes('已完成-实现手册-轮次2.md'));
   }
 }
-const d=S.createPreset('custom',people);assert.throws(()=>S.validate(d,['a']),/prompt/);
+const d=S.createPreset('custom',people);assert.equal(S.validate(d,['a']),true,'custom prompt may be empty');
+d.rounds[0].prompt='  \n';assert.equal(S.validate(d,['a']),true,'whitespace prompt is optional');
+d.rounds[0].prompt=null;assert.throws(()=>S.validate(d,['a']),/文本/);
+d.rounds[0].prompt='x'.repeat(16001);assert.throws(()=>S.validate(d,['a']),/16000/);
 d.rounds[0].prompt='test';d.rounds[0].members=['a','b','c','d'];assert.throws(()=>S.validate(d,['a','b','c','d']),/1–3/);
 d.rounds[0].members=['missing'];assert.throws(()=>S.validate(d,['a']),/已移除/);
 d.rounds[0].members=['a'];d.rounds=Array.from({length:7},()=>structuredClone(d.rounds[0]));assert.throws(()=>S.validate(d,['a']),/1–6/);
