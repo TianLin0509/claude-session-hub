@@ -43,7 +43,7 @@ class DailySecretary {
     this.a.watches.addNotice({ id: 'secretary:' + s.key + (late ? ':ready' : ':due'), title, kind: 'daily-' + s.kind, label: title, text: (late ? '迟到补齐：\n' : '') + text });
   }
   async tick() {
-    if (this.running || this.stopped || !this.a.workbench.config().enabled || !this.a.ownsAssistant()) return;
+    if (this.running || this.stopped || !this.a.workbench.config().enabled || !this.a.ownsTimers()) return;
     this.running = true;
     try {
       const now = this.now(); let dispatched = false;

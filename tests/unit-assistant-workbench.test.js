@@ -7,7 +7,7 @@ function fixture(iso = '2026-10-07T07:39:00+08:00') {
   const a = { deps: { noReminderTimer: true }, store: { get: k => kv.has(k) ? structuredClone(kv.get(k)) : null, set: (k, v) => kv.set(k, structuredClone(v)) },
     sessions: () => [{ id: 's1', title: '真实中文会话', kind: 'claude', isOpen: true, status: 'idle', hubState: { state: 'idle', label: '就绪' } }, { id: 's2', title: '等你', isOpen: true, hubState: { state: 'wait', label: '等你响应' } }],
     memos: { view: () => ({ open: [{ id: 'm1', title: '记下的事' }], closed: [] }), digest: () => '原始备忘：记下的事' }, memory: { read: () => ({ user: '兴趣' }) },
-    ownsAssistant: () => true, sessionBusy: () => false, send: async r => { calls.push(r); return { ok: true }; }, watches: { addNotice: n => notices.push(n) },
+    ownsTimers: () => true, ownsAssistant: () => false, sessionBusy: () => false, send: async r => { calls.push(r); return { ok: true }; }, watches: { addNotice: n => notices.push(n) },
     podcasts: { startLesson: async r => ({ id: r.id }) } };
   a.workbench = new AssistantWorkbench({ assistant: a, now: () => time });
   a.secretary = new DailySecretary({ assistant: a, now: () => time, timer: fn => { scheduled.push(fn); return 1; }, clear: () => {} });
@@ -54,8 +54,8 @@ test('deadline emits an honest fallback; a finished brief later sends one marked
   const n = x.notices.filter(n => n.kind === 'daily-plan'); assert.equal(n.length, 2); assert.match(n[1].text, /迟到补齐/);
 });
 test('disabled and non-owning Hub never dispatch; 21:00 summary uses a separate persistent job', async () => {
-  const x = fixture('2026-10-07T20:45:00+08:00'); x.a.ownsAssistant = () => false; await x.a.secretary.tick(); assert.equal(x.calls.length, 0);
-  x.a.ownsAssistant = () => true; await x.a.secretary.tick(); assert.match(x.calls[0].requestId, /:summary$/);
+  const x = fixture('2026-10-07T20:45:00+08:00'); x.a.ownsTimers = () => false; await x.a.secretary.tick(); assert.equal(x.calls.length, 0);
+  x.a.ownsTimers = () => true; await x.a.secretary.tick(); assert.match(x.calls[0].requestId, /:summary$/);
   x.a.workbench.configure({ enabled: false }); x.at('2026-10-07T21:00:00+08:00'); await x.a.secretary.tick(); assert.equal(x.notices.length, 0);
 });
 test('scheduled publish is bound to its exact job and duplicate completion does not rewrite a confirmed plan', async () => {
@@ -96,4 +96,13 @@ test('daily lesson completion does not raise its own podcast notice', () => {
   AssistantService.prototype.podcastDone.call(self, { id: 'lesson-1', title: '课', source: 'daily-secretary', episodes: [{ status: 'done', seconds: 700 }] });
   AssistantService.prototype.podcastDone.call(self, { id: 'doc-1', title: '资料', episodes: [{ status: 'done', seconds: 700 }] });
   assert.equal(added.length, 1); assert.equal(added[0].id, 'podcast:doc-1');
+});
+test('timers belong to the latest started Hub and do not need an open assistant session (10-09 morning regression)', async () => {
+  const { claimTimers, ownsTimers } = require('../core/hub-assistant/timer-owner');
+  const kv = new Map(), store = { get: k => kv.get(k) ?? null, set: (k, v) => kv.set(k, v) };
+  assert.equal(ownsTimers(store, 1), true); claimTimers(store, 1); assert.equal(ownsTimers(store, 1), true);
+  claimTimers(store, 2); assert.equal(ownsTimers(store, 1), false); assert.equal(ownsTimers(store, 2), true);
+  // Hub 刚重启、助理会话还没开：秘书照样在 7:40 前后派出日稿任务
+  const x = fixture('2026-10-09T07:41:00+08:00'); x.a.ownsAssistant = () => false; x.a.ownsTimers = () => true;
+  await x.a.secretary.tick(); assert.ok(x.calls.some(c => /:plan$/.test(c.requestId)));
 });
