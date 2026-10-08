@@ -73,6 +73,42 @@ test('company text channel defaults to the Aliyun relay and can be switched back
     { pythonPath: python, bridgePath: bridge });
 });
 
+test('runner decodes UTF-8 across pipe chunk boundaries', async () => {
+  // 管道按块送数据：一个汉字的 3 个字节可能被切到两块里，逐块解码会变成乱码。
+  const { EventEmitter } = require('node:events');
+  const { runCompanyText } = require('../main/ipc/chatgpt-bridge-handlers.js');
+  const payload = Buffer.from(JSON.stringify({ ok: true, new: true, content: '中文长报告' }) + '\n', 'utf8');
+  const cut = payload.indexOf(Buffer.from('中', 'utf8')) + 1;
+  const result = await runCompanyText(['pull', '--peek'], {
+    runtimeOptions: { env: { AI_HUB_COMPANY_TEXT_BACKEND: 'relay', COMPANY_DROP_PYTHON: 'py', COMPANY_RELAY_SCRIPT: 'relay.py' }, existsSync: () => true },
+    spawnImpl: () => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { on() {}, end() {} };
+      child.kill = () => {};
+      setImmediate(() => {
+        child.stdout.emit('data', payload.subarray(0, cut));
+        child.stdout.emit('data', payload.subarray(cut));
+        child.emit('close', 0);
+      });
+      return child;
+    },
+  });
+  assert.equal(result.content, '中文长报告');
+});
+
+test('IPC push passes the label as one argv token so a leading dash is not parsed as a flag', async () => {
+  const handlers = new Map();
+  const calls = [];
+  registerChatgptBridgeIpc({ handle(channel, handler) { handlers.set(channel, handler); } }, {
+    runBridge: async (args) => { calls.push(args); return { ok: true }; },
+    resolveBackend: () => 'relay',
+  });
+  await handlers.get('chatgpt-bridge:push')(null, { text: '正文', label: '-notes.md' });
+  assert.deepEqual(calls, [['push', '--stdin', '--label=-notes.md']]);
+});
+
 test('IPC push forwards the source label only to the relay backend', async () => {
   for (const backend of ['relay', 'chatgpt']) {
     const handlers = new Map();
@@ -84,7 +120,7 @@ test('IPC push forwards the source label only to the relay backend', async () =>
     await handlers.get('chatgpt-bridge:push')(null, { text: '回答正文', label: '当前回答' });
     await handlers.get('chatgpt-bridge:push')(null, { text: '无标签' });
     assert.deepEqual(calls, [
-      { args: backend === 'relay' ? ['push', '--stdin', '--label', '当前回答'] : ['push', '--stdin'], input: '回答正文' },
+      { args: backend === 'relay' ? ['push', '--stdin', '--label=当前回答'] : ['push', '--stdin'], input: '回答正文' },
       { args: ['push', '--stdin'], input: '无标签' },
     ]);
   }

@@ -122,8 +122,9 @@ function runChatgptBridge(args, {
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    let stdout = '';
-    let stderr = '';
+    // 先攒原始字节、结束时一次解码：管道分块可能把一个汉字切成两半，逐块解码会出乱码。
+    const stdout = [];
+    const stderr = [];
     let outputBytes = 0;
     let settled = false;
     let timer = null;
@@ -134,22 +135,24 @@ function runChatgptBridge(args, {
       resolve(result);
     };
     const append = (target, chunk) => {
-      outputBytes += chunk.length;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+      outputBytes += buffer.length;
       if (outputBytes > maxOutputBytes) {
         child.kill();
         finish({ ok: false, error: '公司中转返回内容超过安全上限。', code: 'output_limit' });
-        return target;
+        return;
       }
-      return target + chunk.toString('utf8');
+      target.push(buffer);
     };
-    if (child.stdout) child.stdout.on('data', chunk => { stdout = append(stdout, chunk); });
-    if (child.stderr) child.stderr.on('data', chunk => { stderr = append(stderr, chunk); });
+    const text = parts => Buffer.concat(parts).toString('utf8');
+    if (child.stdout) child.stdout.on('data', chunk => append(stdout, chunk));
+    if (child.stderr) child.stderr.on('data', chunk => append(stderr, chunk));
     child.on('error', error => finish({
       ok: false,
       error: `无法启动公司中转工具：${String(error && error.message || error)}`,
       code: 'spawn_failed',
     }));
-    child.on('close', code => finish(parseBridgeOutput(stdout, stderr, code)));
+    child.on('close', code => finish(parseBridgeOutput(text(stdout), text(stderr), code)));
     timer = setTimeout(() => {
       child.kill();
       finish({ ok: false, error: '公司中转操作超时。', code: 'timeout' });
@@ -232,7 +235,8 @@ function registerChatgptBridgeIpc(ipcMain, deps = {}) {
       // 公司收件箱页面会显示来源说明（如「当前回答」、文件名）；ChatGPT 中转不认识这个参数。
       const label = typeof payload.label === 'string' ? payload.label.trim().slice(0, 80) : '';
       const args = ['push', '--stdin'];
-      if (label && backendOf() === 'relay') args.push('--label', label);
+      // 写成单个 --label=值：文件名以 - 开头时，分开传会被当成另一个参数。
+      if (label && backendOf() === 'relay') args.push(`--label=${label}`);
       return await runner(args, { input: checked.text });
     } finally {
       pushInFlight = false;
