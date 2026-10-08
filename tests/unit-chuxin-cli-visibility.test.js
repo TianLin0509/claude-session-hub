@@ -6,8 +6,7 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { ChuxinSessionRegistry } = require('../core/chuxin-session-registry.js');
-const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
-const { CHUXIN_DEFAULT_MODEL_BY_KIND, modelCatalog, registerChuxinIpc, resumeOptions, validateProviderModel } = require('../main/ipc/chuxin-handlers.js');
+const { registerChuxinIpc, resumeOptions } = require('../main/ipc/chuxin-handlers.js');
 
 function test(name, fn) {
   try {
@@ -34,33 +33,13 @@ function resolveChuxinResearchRoot(repoRoot) {
 
 console.log('Running Chuxin native PTY tests...');
 
-test('research model picker consumes the Hub catalog instead of a private list', () => {
-  const catalog = modelCatalog();
-  assert.deepStrictEqual(catalog.map((row) => row.provider), ['codex-cli', 'claude-cli', 'kimi-cli']);
-  for (const row of catalog) {
-    assert.strictEqual(row.defaultModel, CHUXIN_DEFAULT_MODEL_BY_KIND[row.kind] || DEFAULT_MODEL_BY_KIND[row.kind]);
-    assert.deepStrictEqual(row.models, MODEL_OPTIONS_BY_KIND[row.kind]);
-    assert.strictEqual(validateProviderModel(row.provider, row.defaultModel).ok, true);
-  }
-  assert.strictEqual(validateProviderModel('codex-cli', 'made-up-model').ok, false);
-  assert.deepStrictEqual(CHUXIN_DEFAULT_MODEL_BY_KIND, {
-    codex: 'gpt-5.6-sol',
-    claude: 'claude-opus-4-8[1m]',
-    kimi: 'kimi-code/k3',
-  });
-});
-
 test('closing a running native PTY releases its global writer lease', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chuxin-exit-'));
   const previous = process.env.CHUXIN_GLOBAL_SESSION_DIR;
   process.env.CHUXIN_GLOBAL_SESSION_DIR = root;
   try {
     const sessionManager = new EventEmitter();
-    const sent = [];
-    const bridge = registerChuxinIpc({ handle() {} }, {
-      sessionManager,
-      sendToRenderer: (channel, payload) => sent.push({ channel, payload }),
-    });
+    const bridge = registerChuxinIpc({ handle() {} }, { sessionManager });
     const id = bridge.registry.createId();
     bridge.registry.upsert(id, { provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol' });
     const lease = bridge.registry.claim(id, { ownerHub: 'test' });
@@ -71,19 +50,13 @@ test('closing a running native PTY releases its global writer lease', () => {
       leaseToken: lease.token,
       leaseTimer,
     });
-    bridge.pendingByHubSession.set('hub-native-1', {
-      runId: 'spirit-analysis-test',
-      researchSessionId: id,
-    });
     assert.strictEqual(bridge.isAuthorizedResearchScope(`chuxin-${id}`), true);
     assert.strictEqual(bridge.isAuthorizedResearchScope('meeting-not-chuxin'), false);
     sessionManager.emit('session-exited', { sessionId: 'hub-native-1' });
-    assert.strictEqual(bridge.pendingByHubSession.has('hub-native-1'), false);
     assert.strictEqual(bridge.ownershipByHubSession.has('hub-native-1'), false);
     assert.strictEqual(bridge.registry.lease(id), null);
     assert.strictEqual(bridge.isAuthorizedResearchScope(`chuxin-${id}`), false);
-    assert.strictEqual(bridge.registry.get(id).status, 'interrupted');
-    assert.strictEqual(sent.at(-1).channel, 'chuxin:task-failed');
+    assert.strictEqual(bridge.registry.get(id).status, 'restorable');
   } finally {
     if (previous === undefined) delete process.env.CHUXIN_GLOBAL_SESSION_DIR;
     else process.env.CHUXIN_GLOBAL_SESSION_DIR = previous;

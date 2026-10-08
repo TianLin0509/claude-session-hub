@@ -377,9 +377,6 @@ function createResumeSessionHandler(deps) {
         : {}),
       ...(meta.purpose ? { purpose: meta.purpose } : {}),
       ...(meta.researchSessionId ? { researchSessionId: meta.researchSessionId } : {}),
-      ...(meta.chuxinTaskId ? { chuxinTaskId: meta.chuxinTaskId } : {}),
-      ...(Array.isArray(meta.heroIds) ? { heroIds: meta.heroIds } : {}),
-      ...(meta.promptPolicyVersion ? { promptPolicyVersion: meta.promptPolicyVersion } : {}),
       ...(meta.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       ...resumeOpts,
     });

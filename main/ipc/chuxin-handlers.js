@@ -4,28 +4,12 @@ const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
 const os = require('os');
-const {
-  MODEL_OPTIONS_BY_KIND,
-  DEFAULT_MODEL_BY_KIND,
-} = require('../../core/model-options.js');
 const { ChuxinSessionRegistry } = require('../../core/chuxin-session-registry.js');
 const scenes = require('../../core/group-chat-scenes.js');
-const { waitCliReady, sendToPty } = require('../../core/group-chat-watcher.js');
 
 const CHUXIN_DIR = process.env.CHUXIN_DIR || 'C:\\Users\\lintian\\chuxin-research';
 const API_BASE = process.env.CHUXIN_API_BASE || 'http://127.0.0.1:3004';
 const WEB_BASE = process.env.CHUXIN_WEB_BASE || 'http://127.0.0.1:3003';
-const SAFE_WORKSPACE_RE = /^[A-Za-z0-9_-]{16,128}$/;
-const PROVIDERS = {
-  'codex-cli': { kind: 'codex', label: 'Codex', mark: 'CX' },
-  'claude-cli': { kind: 'claude', label: 'Claude', mark: 'CL' },
-  'kimi-cli': { kind: 'kimi', label: 'Kimi', mark: 'KM' },
-};
-const CHUXIN_DEFAULT_MODEL_BY_KIND = {
-  codex: 'gpt-5.6-sol',
-  claude: 'claude-opus-4-8[1m]',
-  kimi: 'kimi-code/k3',
-};
 
 function httpJson(method, url, timeoutMs, body = null, headers = {}) {
   return new Promise((resolve) => {
@@ -64,33 +48,6 @@ function httpJson(method, url, timeoutMs, body = null, headers = {}) {
 
 function httpGetJson(url, timeoutMs, headers = {}) {
   return httpJson('GET', url, timeoutMs, null, headers);
-}
-
-function providerPresentation(provider, model) {
-  const row = PROVIDERS[provider] || PROVIDERS['codex-cli'];
-  const fallbackModel = CHUXIN_DEFAULT_MODEL_BY_KIND[row.kind] || DEFAULT_MODEL_BY_KIND[row.kind];
-  return { ...row, provider, model: model || fallbackModel };
-}
-
-function modelCatalog() {
-  return Object.entries(PROVIDERS).map(([provider, row]) => ({
-    provider,
-    kind: row.kind,
-    name: row.label,
-    mark: row.mark,
-    defaultModel: CHUXIN_DEFAULT_MODEL_BY_KIND[row.kind] || DEFAULT_MODEL_BY_KIND[row.kind],
-    models: (MODEL_OPTIONS_BY_KIND[row.kind] || []).map((item) => ({ ...item })),
-  }));
-}
-
-function validateProviderModel(provider, model) {
-  const row = PROVIDERS[provider];
-  if (!row) return { ok: false, error: 'unsupported-provider' };
-  const selected = model || CHUXIN_DEFAULT_MODEL_BY_KIND[row.kind] || DEFAULT_MODEL_BY_KIND[row.kind];
-  if (!(MODEL_OPTIONS_BY_KIND[row.kind] || []).some((item) => item.id === selected)) {
-    return { ok: false, error: 'unsupported-model', message: `模型 ${selected} 不在 Hub 的 ${row.label} 目录中。` };
-  }
-  return { ok: true, ...row, provider, model: selected };
 }
 
 function nativeSessionMeta(session) {
@@ -136,13 +93,11 @@ function registerChuxinIpc(ipcMain, deps = {}) {
     registerSessionForTap = () => {},
     sendToRenderer = () => {},
     sessionManager = null,
-    transcriptTap = null,
     getHubDataDir = () => process.env.CLAUDE_HUB_DATA_DIR || path.join(os.homedir(), '.claude-session-hub'),
     getHookPort = () => 0,
     hookToken = '',
   } = deps;
   const registry = new ChuxinSessionRegistry();
-  const pendingByHubSession = new Map();
   const ownershipByHubSession = new Map();
 
   function claimOwnership(researchSessionId) {
@@ -224,8 +179,7 @@ function registerChuxinIpc(ipcMain, deps = {}) {
     return options;
   }
 
-  function createNativeSession({ researchSessionId, provider, kind, model, title, heroIds, taskId, policyVersion, resume = null,
-    purpose = 'chuxin-research', hiddenFromSidebar = true }) {
+  function createNativeSession({ researchSessionId, kind, model, title, resume = null, purpose, hiddenFromSidebar }) {
     if (!sessionManager) throw new Error('session-manager-unavailable');
     const options = {
       cwd: CHUXIN_DIR,
@@ -235,9 +189,6 @@ function registerChuxinIpc(ipcMain, deps = {}) {
       purpose,
       hiddenFromSidebar,
       researchSessionId,
-      chuxinTaskId: taskId || '',
-      heroIds,
-      promptPolicyVersion: policyVersion || '',
       ...researchMcpOptions(kind, researchSessionId),
       ...(resume || {}),
     };
@@ -250,24 +201,6 @@ function registerChuxinIpc(ipcMain, deps = {}) {
   function findLiveResearchSession(researchSessionId) {
     if (!sessionManager) return null;
     return sessionManager.listSessions().find((row) => row.researchSessionId === researchSessionId) || null;
-  }
-
-  function restoreRecord(record, taskMeta = {}) {
-    const live = findLiveResearchSession(record.researchSessionId);
-    if (live) return live;
-    const resume = resumeOptions(record);
-    if (!resume) throw new Error('该投研 Session 尚未取得原生会话 ID，不能跨 Hub 恢复。');
-    return createNativeSession({
-      researchSessionId: record.researchSessionId,
-      provider: record.provider,
-      kind: record.kind,
-      model: record.model,
-      title: record.title,
-      heroIds: taskMeta.heroIds || record.heroIds || [],
-      taskId: taskMeta.taskId || '',
-      policyVersion: taskMeta.policyVersion || record.promptPolicyVersion || '',
-      resume,
-    });
   }
 
   ipcMain.handle('chuxin:status', async () => {
@@ -424,13 +357,9 @@ function registerChuxinIpc(ipcMain, deps = {}) {
       try {
         session = createNativeSession({
           researchSessionId: record.researchSessionId,
-          provider: record.provider,
           kind: record.kind,
           model: record.model,
           title: record.title,
-          heroIds: [],
-          taskId: '',
-          policyVersion: '',
           resume,
           purpose: LINDANG_PURPOSE,
           hiddenFromSidebar: false,   // 这一条就是「出现在左侧栏」
@@ -448,252 +377,21 @@ function registerChuxinIpc(ipcMain, deps = {}) {
     }
   });
 
-  ipcMain.handle('chuxin:model-catalog', () => ({ ok: true, agents: modelCatalog() }));
-  ipcMain.handle('chuxin:list-research-sessions', () => ({
-    ok: true,
-    sessions: registry.list().map(publicSession),
-    registryRoot: registry.root,
-  }));
-
-  ipcMain.handle('chuxin:resume-research-session', (_event, input) => {
-    try {
-      const researchSessionId = typeof input === 'object' && input
-        ? String(input.researchSessionId || '') : String(input || '');
-      const proposedWorkspace = typeof input === 'object' && input ? String(input.workspace || '') : '';
-      let record = registry.get(researchSessionId);
-      if (!record) return { ok: false, error: 'not-found' };
-      if (!record.workspace && SAFE_WORKSPACE_RE.test(proposedWorkspace)) {
-        record = registry.upsert(researchSessionId, { workspace: proposedWorkspace });
-      }
-      const live = findLiveResearchSession(record.researchSessionId);
-      if (live) return { ok: true, session: live, research: publicSession(record) };
-      const ownership = claimOwnership(record.researchSessionId);
-      if (!ownership.ok) {
-        return { ok: false, error: 'session-busy', message: '这个投研 Session 正在另一 Hub 中运行；完成后可在这里恢复。' };
-      }
-      let session;
-      try {
-        session = restoreRecord(record);
-      } catch (error) {
-        if (ownership.leaseTimer) clearInterval(ownership.leaseTimer);
-        registry.release(record.researchSessionId, ownership.token);
-        throw error;
-      }
-      bindOwnership(session.id, record.researchSessionId, ownership);
-      const updated = registry.upsert(record.researchSessionId, { hubSessionId: session.id, status: 'idle', ownerPid: process.pid });
-      return { ok: true, session, research: publicSession(updated) };
-    } catch (error) {
-      return { ok: false, error: 'resume-failed', message: error.message };
-    }
-  });
-
-  ipcMain.handle('chuxin:run-agent-task', async (_event, payload = {}) => {
-    if (!sessionManager) return { ok: false, error: 'session-manager-unavailable' };
-    const workspace = String(payload.workspace || '');
-    const question = String(payload.question || '').trim();
-    const heroIds = Array.isArray(payload.spiritIds) ? payload.spiritIds.map(String).slice(0, 4) : [];
-    if (!SAFE_WORKSPACE_RE.test(workspace) || question.length < 2 || !heroIds.length) {
-      return { ok: false, error: 'invalid-task', message: 'workspace、问题或英雄选择无效。' };
-    }
-    const requestedSessionId = String(payload.researchSessionId || '');
-    let record = requestedSessionId ? registry.get(requestedSessionId) : null;
-    let selection;
-    if (record) {
-      selection = validateProviderModel(record.provider, record.model);
-    } else {
-      selection = validateProviderModel(String(payload.provider || 'codex-cli'), String(payload.model || ''));
-    }
-    if (!selection.ok) return selection;
-    const researchSessionId = record ? record.researchSessionId : registry.createId();
-    let session = record ? findLiveResearchSession(researchSessionId) : null;
-    if (session && pendingByHubSession.has(session.id)) {
-      return { ok: false, error: 'session-busy', message: '这个投研 Session 的上一轮还没有结束。' };
-    }
-    let ownership = session ? ownershipByHubSession.get(session.id) : null;
-    let ownershipBound = !!ownership;
-    if (!ownership) {
-      ownership = claimOwnership(researchSessionId);
-      if (!ownership.ok) return { ok: false, error: 'session-busy', message: '这个投研 Session 正由另一个 Hub 占用。', lease: ownership.lease };
-    }
-    let task = null;
-    try {
-      const response = await httpJson('POST', `${API_BASE}/api/spirits/agent-tasks`, 20000, {
-        question,
-        mandate: payload.mandate || 'value_speculation',
-        spirit_ids: heroIds,
-        context: payload.context && typeof payload.context === 'object' ? payload.context : { type: 'free', data: {} },
-        research_mode: payload.researchMode || 'auto',
-        answer_provider: selection.provider,
-        model: selection.model,
-        session_bootstrapped: !!record,
-        research_session_id: researchSessionId,
-      }, { 'X-Chuxin-Workspace': workspace });
-      if (!response.ok || !response.body || !response.body.ok) throw new Error(response.error || `Chuxin HTTP ${response.status}`);
-      task = response.body;
-      const runId = task.job.run_id;
-      const prompt = task.prompt || {};
-      const shortQuestion = question.replace(/\s+/g, ' ').slice(0, 26);
-      const title = record && record.title ? record.title : `投研 · ${selection.label} · ${shortQuestion}`;
-      if (!session && record) session = restoreRecord(record, { heroIds, taskId: runId, policyVersion: prompt.prompt_version });
-      if (!session) {
-        session = createNativeSession({
-          researchSessionId,
-          provider: selection.provider,
-          kind: selection.kind,
-          model: selection.model,
-          title,
-          heroIds,
-          taskId: runId,
-          policyVersion: prompt.prompt_version,
-        });
-      } else {
-        sessionManager.updateSessionMeta(session.id, {
-          chuxinTaskId: runId,
-          heroIds,
-          promptPolicyVersion: prompt.prompt_version,
-        });
-      }
-      if (!ownershipBound) {
-        bindOwnership(session.id, researchSessionId, ownership);
-        ownershipBound = true;
-      }
-      record = registry.upsert(researchSessionId, {
-        hubSessionId: session.id,
-        title,
-        kind: selection.kind,
-        provider: selection.provider,
-        model: selection.model,
-        cwd: CHUXIN_DIR,
-        workspace,
-        status: 'running',
-        ownerPid: process.pid,
-        heroIds,
-        promptPolicyVersion: prompt.prompt_version,
-        lastQuestion: question,
-        lastRunId: runId,
-        nativeSession: { ...(record && record.nativeSession || {}), ...nativeSessionMeta(session) },
-      });
-      pendingByHubSession.set(session.id, {
-        runId,
-        workspace,
-        researchSessionId,
-        provider: selection.provider,
-        model: selection.model,
-        startedAt: Date.now(),
-        prompt,
-      });
-      sendToRenderer('chuxin:task-started', { runId, session, research: publicSession(record), prompt });
-      const ready = await waitCliReady(session.id, selection.kind, 60000);
-      if (!ready) throw new Error(`${selection.label} CLI 在 60 秒内未就绪。`);
-      const sent = await sendToPty(session.id, String(prompt.agent_input || prompt.rendered_prompt || ''), selection.kind);
-      if (!sent) throw new Error('Prompt 写入 PTY 后未检测到提交活动。');
-      return { ok: true, runId, session, research: publicSession(record), prompt };
-    } catch (error) {
-      if (task && task.job && task.job.run_id) {
-        for (const [hubId, pending] of pendingByHubSession.entries()) {
-          if (pending.runId === task.job.run_id) {
-            pendingByHubSession.delete(hubId);
-          }
-        }
-      }
-      if (!ownershipBound && ownership && ownership.ok) {
-        if (ownership.leaseTimer) clearInterval(ownership.leaseTimer);
-        registry.release(researchSessionId, ownership.token);
-      }
-      if (record || ownershipBound) {
-        registry.upsert(researchSessionId, { status: 'error', lastError: error.message });
-      }
-      return { ok: false, error: 'task-start-failed', message: error.message };
-    }
-  });
-
-  if (transcriptTap && typeof transcriptTap.on === 'function') {
-    transcriptTap.on('session-bound', (event = {}) => {
-      const session = sessionManager && sessionManager.getSession(event.hubSessionId);
-      if (!session || session.purpose !== 'chuxin-research' || !session.researchSessionId) return;
-      registry.upsert(session.researchSessionId, {
-        hubSessionId: session.id,
-        nativeSession: { ...(registry.get(session.researchSessionId) || {}).nativeSession, ...nativeSessionMeta(session),
-          ...(event.ccSessionId ? { ccSessionId: event.ccSessionId } : {}),
-          ...(event.codexSid ? { codexSid: event.codexSid } : {}),
-          ...(event.kimiSid ? { kimiSid: event.kimiSid } : {}),
-          ...(event.sessionDir ? { kimiSessionDir: event.sessionDir } : {}),
-          ...(event.rolloutPath || event.wirePath ? { transcriptPath: event.rolloutPath || event.wirePath } : {}),
-        },
-      });
-    });
-
-    transcriptTap.on('turn-complete', async (event = {}) => {
-      const pending = pendingByHubSession.get(event.hubSessionId);
-      if (!pending) return;
-      pendingByHubSession.delete(event.hubSessionId);
-      const session = sessionManager && sessionManager.getSession(event.hubSessionId);
-      const native = { ...((registry.get(pending.researchSessionId) || {}).nativeSession || {}), ...nativeSessionMeta(session) };
-      try {
-        const response = await httpJson('POST', `${API_BASE}/api/spirits/agent-tasks/${encodeURIComponent(pending.runId)}/complete`, 30000, {
-          markdown: String(event.text || ''),
-          provider: pending.provider,
-          model: pending.model,
-          hub_session_id: event.hubSessionId,
-          research_session_id: pending.researchSessionId,
-          native_session: native,
-          duration_ms: Number(event.durationMs || (Date.now() - pending.startedAt)),
-          research_mcp_configured: true,
-          tool_calls: [],
-          usage: {},
-        }, { 'X-Chuxin-Workspace': pending.workspace });
-        if (!response.ok || !response.body || !response.body.ok) throw new Error(response.error || `Chuxin HTTP ${response.status}`);
-        const record = registry.upsert(pending.researchSessionId, {
-          hubSessionId: event.hubSessionId,
-          status: 'idle',
-          lastRunId: pending.runId,
-          lastTurnAt: Date.now(),
-          nativeSession: native,
-        });
-        sendToRenderer('chuxin:task-completed', {
-          runId: pending.runId,
-          sessionId: event.hubSessionId,
-          research: publicSession(record),
-          run: response.body.run,
-        });
-      } catch (error) {
-        registry.upsert(pending.researchSessionId, { status: 'error', lastError: error.message, nativeSession: native });
-        sendToRenderer('chuxin:task-failed', { runId: pending.runId, sessionId: event.hubSessionId, message: error.message });
-      }
-    });
-  }
-
   if (sessionManager && typeof sessionManager.on === 'function') {
     sessionManager.on('session-exited', (event = {}) => {
-      const pending = pendingByHubSession.get(event.sessionId);
       const ownership = ownershipByHubSession.get(event.sessionId);
       releaseOwnership(event.sessionId);
-      if (pending) {
-        pendingByHubSession.delete(event.sessionId);
-        registry.upsert(pending.researchSessionId, {
-          status: 'interrupted',
-          lastError: '原生 CLI 在本轮完成前退出；可恢复 Session 后重新提问。',
-        });
-        sendToRenderer('chuxin:task-failed', {
-          runId: pending.runId,
-          sessionId: event.sessionId,
-          message: '原生 CLI 在本轮完成前退出；Session 已保留，可恢复后重新提问。',
-        });
-      } else if (ownership) {
+      if (ownership) {
         registry.upsert(ownership.researchSessionId, { status: 'restorable', ownerPid: null });
       }
     });
   }
 
-  return { isAuthorizedResearchScope, releaseAllOwnership, registry, ownershipByHubSession, pendingByHubSession };
+  return { isAuthorizedResearchScope, releaseAllOwnership, registry, ownershipByHubSession };
 }
 
 module.exports = {
-  CHUXIN_DEFAULT_MODEL_BY_KIND,
-  modelCatalog,
   nativeSessionMeta,
-  providerPresentation,
   registerChuxinIpc,
   resumeOptions,
-  validateProviderModel,
 };

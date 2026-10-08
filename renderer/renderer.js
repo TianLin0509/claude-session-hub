@@ -9237,9 +9237,6 @@ function persistWorkscene(flush = false) {
         kimiSessionDir: s.kimiSessionDir || null,
         purpose: s.purpose || null,
         researchSessionId: s.researchSessionId || null,
-        chuxinTaskId: s.chuxinTaskId || null,
-        heroIds: Array.isArray(s.heroIds) ? s.heroIds : null,
-        promptPolicyVersion: s.promptPolicyVersion || null,
         hiddenFromSidebar: !!s.hiddenFromSidebar,
         completionNotificationEnabled: s.completionNotificationEnabled === true,
       });
@@ -9602,9 +9599,6 @@ sessionImmersive = require('./session-immersive').createSessionImmersiveControll
         kimiSessionDir: meta.kimiSessionDir || null,
         purpose: meta.purpose || null,
         researchSessionId: meta.researchSessionId || null,
-        chuxinTaskId: meta.chuxinTaskId || null,
-        heroIds: Array.isArray(meta.heroIds) ? meta.heroIds : null,
-        promptPolicyVersion: meta.promptPolicyVersion || null,
         hiddenFromSidebar: !!meta.hiddenFromSidebar,
         completionNotificationEnabled: meta.completionNotificationEnabled === true,
       });
