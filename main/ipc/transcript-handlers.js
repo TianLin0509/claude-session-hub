@@ -10,6 +10,8 @@ const {
   mergeInheritedTurns,
   resolveForkTimestamp,
 } = require('../../core/branch-transcript-inheritance.js');
+const { compactTurnsToolOutputs } = require('../../core/transcript-tool-compact.js');
+const { readToolResultFromTranscriptFile } = require('../../core/claude-tool-details.js');
 
 // 增量刷新（turn-complete 回填）用 limit:1 只取最新一条回答，合并前置历史后再切尾
 // 结果完全一样，白搭一次父 transcript 解析。除此之外的窗口都照常继承。
@@ -20,11 +22,40 @@ function defaultDefer() {
 }
 
 async function runTranscriptParser(deps, kind, transcriptPath, parseOpts, fallbackParser) {
+  if (parseOpts && parseOpts.compactToolOutputs) rememberCompactedTranscript(transcriptPath);
   if (deps.transcriptParserService && typeof deps.transcriptParserService.parse === 'function') {
     return deps.transcriptParserService.parse(kind, transcriptPath, parseOpts);
   }
   const turns = await fallbackParser(transcriptPath, parseOpts);
-  return { turns: Array.isArray(turns) ? turns : [], meta: {} };
+  const list = Array.isArray(turns) ? turns : [];
+  return { turns: parseOpts && parseOpts.compactToolOutputs ? compactTurnsToolOutputs(list, { transcriptPath }) : list, meta: {} };
+}
+
+// Only transcripts this process has itself served as compacted card history
+// can be read back through `claude-transcript:tool-result`; the window cannot
+// name an arbitrary file.
+const COMPACTED_TRANSCRIPTS_MAX = 2000;
+const compactedTranscripts = new Set();
+function transcriptKey(file) {
+  return require('path').resolve(String(file || '')).toLowerCase();
+}
+function rememberCompactedTranscript(file) {
+  if (!file) return;
+  const key = transcriptKey(file);
+  compactedTranscripts.delete(key);
+  compactedTranscripts.add(key);
+  if (compactedTranscripts.size > COMPACTED_TRANSCRIPTS_MAX) compactedTranscripts.delete(compactedTranscripts.values().next().value);
+}
+
+async function readCompactedToolResult(reference = {}) {
+  const file = reference && reference.transcriptPath;
+  const itemId = reference && typeof reference.itemId === 'string' ? reference.itemId : '';
+  if (!file || !itemId || !compactedTranscripts.has(transcriptKey(file))) {
+    throw new Error('未找到完整工具来源，请重新载入会话');
+  }
+  const full = await readToolResultFromTranscriptFile(file, itemId);
+  if (full == null) throw new Error('Claude 原生记录中已找不到这段工具输出的全文');
+  return full;
 }
 
 // 分支会话的祖先记录既可能是活会话，也可能只剩落盘记录（休眠 / Hub 重启后）。
@@ -298,8 +329,10 @@ async function parseProviderTranscript(args = {}, deps) {
     // 工具状态与耗时都对齐。旧 DeepSeek-Claude 兼容会话保持原解析器。
     const nativeProjection = typeof deps.parseClaudeTranscriptToNativeTurns === 'function'
       && !/^deepseek-legacy/.test(String(runtimeKind || ''));
+    // Cards show a preview of each tool result and read the rest on demand;
+    // screenshots and long outputs stay in the transcript (transcript-tool-compact).
     const parsed = nativeProjection
-      ? await runTranscriptParser(deps, 'claude-native', transcriptPath, parseOpts, deps.parseClaudeTranscriptToNativeTurns)
+      ? await runTranscriptParser(deps, 'claude-native', transcriptPath, { ...parseOpts, compactToolOutputs: true }, deps.parseClaudeTranscriptToNativeTurns)
       : await runTranscriptParser(deps, 'claude', transcriptPath, parseOpts, parseClaudeTranscriptToTurns);
     return {
       turns: await withInheritedBranchTurns(args, deps, session, parsed.turns, parseOpts, transcriptPath),
@@ -361,10 +394,12 @@ function registerTranscriptIpc(ipcMain, deps) {
   ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
     return parseSessionTranscript(args, deps);
   });
+  ipcMain.handle('claude-transcript:tool-result', (_event, reference = {}) => readCompactedToolResult(reference));
 }
 
 module.exports = {
   parseSessionTranscript,
+  readCompactedToolResult,
   registerTranscriptIpc,
   runTranscriptParser,
 };

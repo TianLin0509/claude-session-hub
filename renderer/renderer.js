@@ -2528,7 +2528,7 @@ const turnCardRenderer = createTurnCardRenderer({
   getActiveSessionId: () => activeSessionId,
   getSessionContext: (sessionId) => sessions.get(sessionId) || null,
   openAttachment: (target, opts) => openPathInHub(target, opts),
-  readToolResult: reference => ipcRenderer.invoke(reference.source==='claude-stream-json'?'claude-native:tool-result':reference.source==='codex-app-server'?'codex-native:tool-result':'acp:tool-result', reference),
+  readToolResult: reference => ipcRenderer.invoke(reference.source==='claude-stream-json'?'claude-native:tool-result':reference.source==='claude-transcript-file'?'claude-transcript:tool-result':reference.source==='codex-app-server'?'codex-native:tool-result':'acp:tool-result', reference),
   onTurnPresentation: syncTurnPresentationToSession,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
   renderMathInElement: window.renderMathInElement,
@@ -9373,7 +9373,7 @@ function createSecondarySessionView(sessionId, panel, options = {}) {
       copyText: (text, options) => clipboardController.copyText(text, options),
       wrapPathLinksInElement, getSessionContext: id => sessions.get(id),
       openAttachment: (target, opts) => openPathInHub(target, opts),
-      readToolResult: reference => ipcRenderer.invoke(reference.source === 'claude-stream-json' ? 'claude-native:tool-result' : reference.source === 'codex-app-server' ? 'codex-native:tool-result' : 'acp:tool-result', reference),
+      readToolResult: reference => ipcRenderer.invoke(reference.source === 'claude-stream-json' ? 'claude-native:tool-result' : reference.source === 'claude-transcript-file' ? 'claude-transcript:tool-result' : reference.source === 'codex-app-server' ? 'codex-native:tool-result' : 'acp:tool-result', reference),
       renderMathInElement: window.renderMathInElement,
     },
     services: {
