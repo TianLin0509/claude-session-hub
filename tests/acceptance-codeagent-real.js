@@ -93,7 +93,14 @@ async function activeScreenTail(sid, lines = 20) {
   return text.split('\n').filter(l => l.trim()).slice(-lines).join('\n');
 }
 const alertText = () => c.eval(`(document.body.innerText.match(/(?:会话恢复失败|操作未完成)[^\\n]*(?:\\n[^\\n]*){0,2}/) || [''])[0]`);
-async function normalCompact(sid) { return (await c.eval(bufferExpr(sid, 'normal'))).replace(/\s+/g, ''); }
+// 启动命令敲在 PowerShell 里：界面终端只回放当前画面时看不到它（终端藏在卡片后面的优化之后），
+// 所以同时核对主进程保存的完整原始输出（去掉控制序列）。
+async function normalCompact(sid) {
+  const shown = await c.eval(bufferExpr(sid, 'normal'));
+  const raw = String(await c.eval(`ipcRenderer.invoke('debug:get-session-buffer', ${j(sid)})`).catch(() => '') || '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '');
+  return (shown + raw).replace(/\s+/g, '');
+}
 async function openTerminal(sid) { await c.eval(`selectSession(${j(sid)})`); await sleep(500); await c.eval(`applyViewMode('pty')`); }
 async function waitTui(sid, label) {
   await openTerminal(sid);
