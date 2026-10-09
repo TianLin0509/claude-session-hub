@@ -51,7 +51,8 @@ assert.match(renderer, /function openSessionFilePanel\(session\) \{[\s\S]{0,240}
 assert.match(renderer, /filesBtn\.addEventListener\('click', \(\) => openSessionFilePanel\(session\)\)/,
   'the 文件 button and the breadcrumb workspace segment must share one entry point');
 const directoryRoute = renderer.slice(
-  renderer.indexOf('if (_isDirectoryPath(fullPath))'),
+  // 2026-10-09: the folder check is async so a share path cannot freeze the click.
+  renderer.indexOf('if (await _isDirectoryPathAsync(fullPath))'),
   renderer.indexOf('if (PREVIEW_PATH_RE.test(fullPath))'),
 );
 assert.match(directoryRoute, /manager\.openDirectory\(fullPath, context\)/);

@@ -70,12 +70,22 @@ function syntheticTranscript(sid, cwd, tag) {
       ipc.invoke=async(ch,...a)=>{if(ch!=='parse-session-transcript')return orig(ch,...a);window.__inflight++;try{const r=await orig(ch,...a);try{window.__payloads.push(JSON.stringify(r).length);}catch{}return r;}finally{window.__inflight--;}};
       window.__long=[];new PerformanceObserver(l=>window.__long.push(...l.getEntries().map(e=>Math.round(e.duration)))).observe({type:'longtask'});})()`);
     // 首次打开会恢复 CLI（PTY）；两条都起来后再测纯切换。
+    report.opens = [];
     for (const x of cases) {
+      const openedAt = Date.now();
+      await c.eval(`window.__long=[]`);
       await click(`.session-item[data-session-id="${x.hubId}"]`);
       await until(`activeSessionId===${j(x.hubId)}`, 'active');
       if (await c.eval(`currentView!=='card'`)) await c.eval(`applyViewMode('card')`);
       await until(`(sessions.get(${j(x.hubId)})?.status||'dormant')!=='dormant'`, 'pty started');
       await until(settled(x.hubId), 'first cards');
+      // First open includes resuming the CLI; the longest main-thread task is the freeze a person feels.
+      report.opens.push({ session: cases.indexOf(x), ms: Date.now() - openedAt, longestTaskMs: Math.max(0, ...await c.eval('window.__long')) });
+      // HUB_EXPECT_LINK：这条（网络）路径必须在卡片里变成可点击链接（后台确认存在后补上）。
+      if (process.env.HUB_EXPECT_LINK && cases.indexOf(x) === 0) {
+        await until(`[...document.querySelectorAll('#msg-overlay a.rt-file-link')].some(a=>a.dataset.path===${j(process.env.HUB_EXPECT_LINK)})`, 'share link', 10000);
+        report.checks.push('share path linked: ' + process.env.HUB_EXPECT_LINK);
+      }
     }
     await sleep(4000);
     if (process.env.HUB_PROFILE === '1') { await c.send('Profiler.enable'); await c.send('Profiler.setSamplingInterval', { interval: 200 }); await c.send('Profiler.start'); }
