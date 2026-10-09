@@ -13,8 +13,13 @@ assert.match(source, /isNativeClaude \? createNativeClaudeDriver/);
 assert.match(source, /ensureClaudeProjectTrusted\(spawnCwd/,
   'PTY Claude must pre-trust the cwd before the CLI starts');
 const ptyLaunch = source.slice(source.indexOf('if (agentPtyLaunch) {'));
-assert.match(ptyLaunch, /detectClaudeTrustDialog\(trustBuf\)[\s\S]*?dialog\.keys\.forEach/,
+// 两条判断路径（Claude 的字节重放、Code Agent 的终端屏幕）都只把定位出的按键交给 pressTrustKeys。
+assert.match(ptyLaunch, /const pressTrustKeys = \(dialog\) => \{[\s\S]*?dialog\.keys\.forEach/,
   'the fallback may only send the keys located for the Yes option');
+assert.match(ptyLaunch, /detectClaudeTrustDialog\(trustBuf\);\s*if \(!dialog\) return;\s*pressTrustKeys\(dialog\)/,
+  'the Claude path presses only located keys');
+assert.match(ptyLaunch, /detectTrustDialogInLines\(await trustScreen\.lines\(\)\)[\s\S]*?pressTrustKeys\(dialog\)/,
+  'the Code Agent path presses only located keys');
 assert.doesNotMatch(ptyLaunch.slice(0, ptyLaunch.indexOf('const cmd = agentPtyLaunch.cmd;')), /write\('\\r'\)/,
   'the trust fallback must never press a blind Enter');
 
