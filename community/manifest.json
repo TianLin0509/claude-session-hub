@@ -30,7 +30,8 @@
     "tests/helpers/cdp-client.js",
     "tests/fixtures/codeagent-standin/**",
     "tests/e2e-codeagent-standin-real-cli.js",
-    "tests/acceptance-codeagent-real.js"
+    "tests/acceptance-codeagent-real.js",
+    "tests/diagnose-codeagent.js"
   ],
   "drop": [
     "renderer/assets/navigation/sticker-v2/research.png",
