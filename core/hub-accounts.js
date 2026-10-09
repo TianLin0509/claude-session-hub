@@ -258,6 +258,10 @@ class HubAccounts {
     let opened;
     if (fixture?.recordOpens) {
       fs.appendFileSync(path.join(this.env.CLAUDE_HUB_HOME_DIR, 'accounts-open.jsonl'), JSON.stringify({ identity, site, url: SITES[site].url, browser: login ? 'ai' : 'personal' }) + '\n');
+    } else if (login && require('./ordinary-browser-client').enabled({identity,root:this.chrome.root},this.env)) {
+      const transport=require('./ordinary-browser-client');
+      opened=await transport.call(transport.options({identity},this.env),'account-person-'+identity,['human-open',SITES[site].url]);
+      opened.mode='personal';
     } else if (login) opened = await this.chrome.openLogin(identity, [site]);
     else opened = await this.openPersonal(identity, site);
     if (before !== 'ok') this.rechecks.set(identity + ':' + site, { identity, site, from: this.now() });
@@ -267,6 +271,7 @@ class HubAccounts {
     catch { usageWarning = '；使用记录未保存'; }
     const name = SITES[site].name;
     if (login) {
+      if(opened?.mode==='personal')return {identity,site,message:'已在账号 Tab 的普通浏览器打开 '+name+'；自动化已断开，完成后继续原任务，无需关闭浏览器'+usageWarning};
       const shared = opened?.mode === 'shared' ? '；AI 工具正在用它，若网站提示浏览器不安全，等工具空闲后再点一次' : '';
       return { identity, site, message: '已在 AI 浏览器打开 ' + name + ' 的登录页。登录或验证完成后关掉这个窗口，AI 工具就能继续用' + shared + usageWarning };
     }
