@@ -1391,7 +1391,10 @@ function _loadCanvasRenderer(cached) {
 function loadGpuRenderer(cached) {
   if (cached._backstageReadable) return;
   if (cached._gpuLoaded) return;
-  const pref = localStorage.getItem('hub.renderer') || 'canvas';
+  // 关闭了显卡加速时默认用 DOM：公司真机（2026-10-09）上 Canvas 在软件渲染下会让整个页面停止重绘，
+  // 点「后台」后界面卡死、切回卡片也不恢复；DOM 渲染不依赖显卡。手动设置的 hub.renderer 仍然优先。
+  const gpuDisabled = Array.isArray(process.argv) && process.argv.includes('--ai-hub-gpu-disabled');
+  const pref = localStorage.getItem('hub.renderer') || (gpuDisabled ? 'dom' : 'canvas');
   if (pref === 'dom') {
     cached._rendererAddon = null;
     cached._rendererMode = 'dom';

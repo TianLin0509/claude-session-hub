@@ -1,5 +1,5 @@
 {
   "$comment": "公司版发行目标：node scripts/community/export-community.js --target company --out <空目录>。在社区版基础上叠加 overlay/，并把仓库地址换成 repo。",
   "repo": "TianLin0509/ai-hub-codeagent",
-  "version": "0.5.1"
+  "version": "0.5.2"
 }
