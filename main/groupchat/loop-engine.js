@@ -17,6 +17,7 @@
 const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯逻辑 module.exports
 const { suspendMeetingRoom: suspendMeetingRoomImpl } = require('../../core/meeting-room-suspend.js');
 const WT = require('../../renderer/workflow-templates.js');
+const Conversation = require('../../core/conversation-workflow');
 const DOCS = require('../../core/dev-task-docs.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
 const LOCATOR = require('../../core/dev-project-locator.js');
@@ -347,7 +348,7 @@ function createLoopEngine(deps) {
     const sid = sidOf(meeting, memberId);
     if (!sid || !sessionManager) throw new Error(`workflow member ${memberId} is missing`);
     let session = sessionManager.getSession(sid);
-    if (!session && (require('../../core/dev-file-workflow').enabled(meeting) || require('../../core/delivery-workflow').enabled(meeting)) && typeof deps.loadSessionMeta === 'function') {
+    if (!session && (Conversation.enabled(meeting) || require('../../core/dev-file-workflow').enabled(meeting) || require('../../core/delivery-workflow').enabled(meeting)) && typeof deps.loadSessionMeta === 'function') {
       const meta = deps.loadSessionMeta(sid);
       if (meta && meta.hubId === sid && meta.meetingId === meeting.id) {
         if (typeof resumeSession !== 'function' || !await resumeSession(meta)) throw new Error(`workflow member ${memberId} could not restore its saved session`);
@@ -635,8 +636,9 @@ function createLoopEngine(deps) {
     const validation = validateSerial(meetingId);
     if (!validation.ok) return { status: 'paused', lastError: { reason: validation.reason, at: Date.now() } };
     const { meeting, workflow, steps } = validation;
+    const conversation = Conversation.enabled(meeting);
     const stepConfigs = WT.normalizeStepConfigs(steps, workflow.stepConfigs);
-    const maxAttempts = Math.max(1, Math.min(3, Number(workflow.maxAttemptsPerStep) || 2));
+    const maxAttempts = conversation ? 1 : Math.max(1, Math.min(3, Number(workflow.maxAttemptsPerStep) || 2));
     const state = persistedState && persistedState.status === 'running'
       ? {
           ...persistedState,
@@ -695,6 +697,7 @@ function createLoopEngine(deps) {
           }
           state.nextStepIndex = stepConfigs[index]?.after === 'end' ? steps.length : index + 1;
           state.currentStepIndex = null;
+          if (conversation) state.currentTurnNum = null;
           state.lastError = null;
           persistSerial(meetingId, state);
           progress({ stage: 'recovered-step', completedStepIndex: index });
@@ -725,11 +728,16 @@ function createLoopEngine(deps) {
         try {
           for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
           if (shouldNotDispatch(meetingId, entry)) { state.status = 'stopped_user'; break; }
-          if (!continuingStep && workflow.settingsVersion === 1 && Number(state.executedRounds || 0) - Number(state.budgetStart || 0) >= 6) {
+          if (!conversation && !continuingStep && workflow.settingsVersion === 1 && Number(state.executedRounds || 0) - Number(state.budgetStart || 0) >= 6) {
             state.status = 'paused'; state.lastError = {reason:'已达 6 轮执行上限，保留现场并暂停',at:Date.now()}; break;
           }
-          let stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
-          if (workflow.settingsVersion === 1) stepPrompt = require('../../core/workflow-settings').GENERAL + '\n\n' + stepPrompt;
+          // Ordinary answer files remain editable; refresh them before a later
+          // speaker receives context. No delivery hash or task gate is involved.
+          if (conversation && typeof getOrchestrator === 'function') {
+            require('../../core/group-answer-files').reconcile(getOrchestrator(meetingId));
+          }
+          let stepPrompt = conversation ? Conversation.prompt(state.goal,stepConfigs[index],index,steps.length) : WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
+          if (!conversation && workflow.settingsVersion === 1) stepPrompt = require('../../core/workflow-settings').GENERAL + '\n\n' + stepPrompt;
           if (runOptions.restartContinuation) {
             stepPrompt = runOptions.restartContinuation + '\n\n' + stepPrompt;
             runOptions = {...runOptions,restartContinuation:null};
@@ -741,13 +749,14 @@ function createLoopEngine(deps) {
             userInput: stepPrompt,
             targetMemberIds,
             reuseTurnNum: state.currentTurnNum || null,
-            appendUserMessage: !state.currentTurnNum,
-            dispatchMode: 'serial',
-            turnTimeoutMs: timeoutMs,
+            appendUserMessage: conversation ? index === 0 && !state.currentTurnNum : !state.currentTurnNum,
+            displayUserInput: conversation ? state.goal : undefined,
+            dispatchMode: conversation ? 'conversation' : 'serial',
+            turnTimeoutMs: conversation ? undefined : timeoutMs,
             allowActiveExtend: false,
             workflowRun: {
               runId: state.runId,
-              kind: 'serial',
+              kind: conversation ? 'conversation' : 'serial',
               stepIndex: index,
               attempt,
               targetMemberIds,
@@ -771,6 +780,7 @@ function createLoopEngine(deps) {
           state.completedSteps.push({ stepIndex: index, completedAt: Date.now(), attempt });
           state.nextStepIndex = stepConfigs[index]?.after === 'end' ? steps.length : index + 1;
           state.currentStepIndex = null;
+          if (conversation) state.currentTurnNum = null;
           state.lastError = null;
           persistSerial(meetingId, state);
           progress({ stage: 'step-complete', completedStepIndex: index, attempt });
@@ -787,6 +797,7 @@ function createLoopEngine(deps) {
         state.status = entry.abort ? 'stopped_user' : 'paused';
       }
 
+      if (conversation && state.status === 'stopped_user') state.status = 'paused';
       if (state.status === 'running' && state.nextStepIndex >= steps.length) state.status = 'done';
       state.currentStepIndex = null;
       persistSerial(meetingId, state);
@@ -1653,6 +1664,7 @@ function createLoopEngine(deps) {
     const workflow = meeting && meeting.serialWorkflow || {};
     return {
       running: false,
+      conversation: Conversation.enabled(meeting),
       serialRunState: workflow.serialRunState || null,
       loopState: workflow.loopState || null,
       // 开题记录和 MD 交付账本：前端要靠它们说清「现在停在哪一步、缺的是哪个文件」。
@@ -1669,6 +1681,9 @@ function createLoopEngine(deps) {
       for (const mt of all) {
         if (require('../../core/dev-file-workflow').enabled(mt)) continue;
         const sw = mt && mt.serialWorkflow; const ls = sw && sw.loopState;
+        // Reopening the Hub must not speak into an old conversation by itself.
+        // The saved order remains available for each new user input.
+        if (Conversation.enabled(mt)) continue;
         const serialState = sw && sw.serialRunState;
         // 用户上次明确停过 → 开机不许自作主张接着跑。清掉它是用户点「继续/重发」的事。
         if (sw && sw.stopRequested) {

@@ -287,21 +287,21 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
         const wf = m.serialWorkflow || {}, fileStatus = status(meetingId);
         if (deliveryEngine?.isBusy(meetingId)) throw new Error('当前任务尚未结束，请先完成或结束任务，再修改工作流');
         if (fileStatus?.error) throw new Error('任务目录状态无法确认，保留原设置：'+fileStatus.error);
-        if (isWorkflowRunning(meetingId) || preparing.has(meetingId) || active.get(meetingId)?.size || wf.loopState?.status === 'running' || wf.serialRunState?.status === 'running') throw new Error('工作流运行中，停止并等待本轮结束后再修改');
+        if (isWorkflowRunning(meetingId) || preparing.has(meetingId) || active.get(meetingId)?.size || wf.loopState?.status === 'running' || (wf.serialRunState?.status === 'running' && wf.conversationVersion!==1)) throw new Error('工作流运行中，停止并等待本轮结束后再修改');
         if ((wf.settingsRevision || 0) !== expectedRevision) throw new Error('设置已被更新，请关闭后重新打开');
         const ids = (m.slotSpecs || []).map((p,i)=>p.memberId || `m${i+1}`);
         // Existing delivered legacy tasks keep their original protocol and paths.
         // Saving is the user's choice to use this configuration. Old editors
         // may still send enabled:false; it must not leave the saved flow inert.
         const savedDraft = {...draft,enabled:true};
-        const next = fileStatus?.files?.length ? Settings.toConfig(wf,savedDraft,ids) : Settings.toDeliveryConfig(wf,savedDraft,ids);
+        const next = fileStatus?.files?.length ? Settings.toConfig(wf,savedDraft,ids) : Settings.toWorkflowConfig(wf,savedDraft,ids);
         if (fileStatus?.files?.length && (draft.kind !== 'file' || JSON.stringify(next.steps) !== JSON.stringify(wf.steps))) throw new Error('已有任务文件，不能切换协议或负责人；请为新任务创建群聊');
         next.settingsRevision = (wf.settingsRevision || 0) + 1;
         // A terminal run normally returns to ordinary chat. An explicit save
         // selects the new flow for the next message, without touching run.json.
         if(next.deliveryVersion===1)next.taskArmed=true;
         meetingManager.updateMeeting(meetingId,{serialWorkflow:next});
-        if(next.deliveryVersion===1 && next.enabled)meetingManager.setParticipants(meetingId,next.deliveryStages[0].members.map(id=>ids.indexOf(id)));
+        if(next.enabled)meetingManager.setParticipants(meetingId,next.steps[0].map(id=>ids.indexOf(id)));
         sendToRenderer('meeting-updated',{meeting:get(meetingId)});
         emit(meetingId);
         return {ok:true,config:next};

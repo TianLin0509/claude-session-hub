@@ -26,8 +26,8 @@ const port=()=>new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1'
   hub=await launchIsolatedHub({dataDir:DATA,port:await port(),windowMode:'hidden',extraEnv:profiles()});cdp=await connectFirstPage(hub);e.pid=hub.pid;
   await wait('renderer',()=>cdp.eval('!!window.MeetingRoom'));
   const m=await invoke('create-meeting',{mode:'group',scene:'general',groupChat:true,title:REPORTED?'真实 Codex → Claude 空 prompt 验收':'真实 Claude → Codex 文件交付',workspace,slots:[{index:0,memberId:'m1',kind:'claude',model:REPORTED?'claude-opus-5-5[1m]':'claude-haiku-4-5-20251001',effort:REPORTED?'high':'low',fastMode:false,mcpProfile:'none'},{index:1,memberId:'m2',kind:'codex',model:REPORTED?'gpt-6.1-sol':'gpt-6-astra',effort:REPORTED?'high':'low',mcpProfile:'none'}]});id=m.id;assert.equal(m.subSessions.length,2);e.sessions=m.subSessions;e.models=m.slotSpecs;
-  const draft={kind:'serial',presetId:'custom',enabled:true,rounds:[{name:'Claude 简答',members:['m1'],prompt:'只需用两句话解释 1+1=2，将结果写进自己的草稿，回读并原子改名交付。不要调用子代理，不做其他工作。',after:'next'},{name:'Codex 核验',members:['m2'],prompt:'读取前序已交付文件，检查 1+1=2，写两句话结论进自己的草稿，回读并原子改名交付。不要调用子代理，不做其他工作。',after:'end'}]};
-  if(REPORTED)draft.rounds=[{name:'Codex 先回答',members:['m2'],prompt:'',after:'next'},{name:'Claude 后核对',members:['m1'],prompt:'',after:'end'}];
+  const draft={kind:'serial',presetId:'filework',enabled:true,rounds:[{name:'Claude 简答',members:['m1'],prompt:'只需用两句话解释 1+1=2，将结果写进自己的草稿，回读并原子改名交付。不要调用子代理，不做其他工作。',after:'next'},{name:'Codex 核验',members:['m2'],prompt:'读取前序已交付文件，检查 1+1=2，写两句话结论进自己的草稿，回读并原子改名交付。不要调用子代理，不做其他工作。',after:'review'}]};
+  if(REPORTED)draft.rounds=[{name:'Codex 先回答',members:['m2'],prompt:'',after:'next'},{name:'Claude 后核对',members:['m1'],prompt:'',after:'review'}];
   const cfg=await invoke('workflow:configure',{meetingId:id,draft,expectedRevision:m.serialWorkflow?.settingsRevision||0});assert(cfg.ok,cfg.reason);
   await cdp.eval(`selectMeeting(${JSON.stringify(id)})`);
   await wait('composer',()=>cdp.eval("!!document.querySelector('[data-delivery=files]')"));

@@ -49,12 +49,12 @@ const freePort=()=>new Promise((resolve,reject)=>{const s=net.createServer();s.o
   ok('research has three rounds',await cdp.eval(`document.querySelectorAll('#workflow-config-modal .wf-step-row').length===3 && document.querySelector('#wf-prompt-0').value.includes('支持证据')`));
   await click('.wf-save');await wait(`document.querySelector('#workflow-config-modal').style.display==='none'`);
   saved=await cdp.eval(`require('electron').ipcRenderer.invoke('get-meetings').then(ms=>ms.find(m=>m.id===${JSON.stringify(id)}).serialWorkflow)`);
-  ok('switching to research uses delivery engine with six-round cap',saved.deliveryVersion===1&&!saved.fileFlowVersion&&saved.settingsPreset==='research'&&saved.executionLimit===6&&saved.steps.length===3);
+  ok('switching to research uses ordered speech with six preset rounds',saved.conversationVersion===1&&!saved.deliveryVersion&&!saved.fileFlowVersion&&saved.settingsPreset==='research'&&saved.executionLimit===6&&saved.steps.length===3);
   await click('#mr-workflow-btn');await click('[data-task-preset="custom"]');
   ok('settings have no separate enable switch',await cdp.eval(`!document.querySelector('#workflow-config-modal [data-wf="toggle"]')`));
   await click('.wf-save');await wait(`document.querySelector('#workflow-config-modal').style.display==='none'`);
   saved=await cdp.eval(`require('electron').ipcRenderer.invoke('get-meetings').then(ms=>ms.find(m=>m.id===${JSON.stringify(id)}).serialWorkflow)`);
-  ok('empty custom prompt saves and activates the next message',saved.enabled&&saved.taskArmed&&saved.deliveryStages[0].prompt==='');
+  ok('empty custom prompt saves a persistent speech order without task controls',saved.enabled&&saved.conversationVersion===1&&!('taskArmed' in saved)&&saved.stepConfigs[0].prompt==='');
   await click('#mr-workflow-btn');
   await fill('[data-wf-step-name="0"]','');await click('.wf-save');
   ok('invalid name still prevents save with actionable message',await cdp.eval(`document.querySelector('#wf-error').textContent.includes('名称不能为空')&&document.querySelector('#workflow-config-modal').style.display==='flex'`));

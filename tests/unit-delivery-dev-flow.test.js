@@ -139,7 +139,7 @@ function migration() {
     assert.equal(loop.config.deliveryKind, 'file'); assert.deepEqual(loop.config.deliveryStages.map(s => s.members[0]), ['m1', 'm1', 'm2']);
     assert.equal(M.plan(room('live', { templateId: 'dev-task', loop: { enabled: true }, steps: [['m1'], ['m2']], loopState: { status: 'paused' } }), data).action, 'keep');
     const relay = M.plan(room('relay', { enabled: true, steps: [['m2'], ['m1']] }), data);
-    assert.equal(relay.action, 'migrate'); assert.equal(relay.config.deliveryStages[0].prompt, M.RELAY_PROMPT); assert.equal(relay.config.deliveryStages.at(-1).after, 'end');
+    assert.equal(relay.action, 'migrate'); assert.equal(relay.config.conversationVersion,1); assert.equal(relay.config.stepConfigs[0].prompt, M.RELAY_PROMPT); assert.equal(relay.config.stepConfigs.at(-1).after, 'end');
     assert.equal(M.plan(room('plain', { enabled: false, steps: [] }), data).reason, 'not-workflow', 'plain group chats are untouched');
     assert.equal(M.plan(room('off', { settingsVersion: 1, enabled: false, steps: [['m1'], ['m2']], stepConfigs: [{ name: 'a', prompt: 'x' }, { name: 'b', prompt: 'y' }] }), data).action, 'keep', 'a workflow the user switched off stays off');
     assert.equal(M.plan(room('manual', { ...fileflow(), devWorkbenchManual: true }), data).action, 'keep', 'manual takeover stays a plain chat');

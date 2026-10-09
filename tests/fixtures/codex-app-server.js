@@ -133,6 +133,19 @@ rl.on('line',line=>{
       thread.turns.push(turn);thread.status={type:'active',activeFlags:[]};save();
       event('turn/started',{threadId:thread.id,turn:{...turn}});status(thread);
       event('item/completed',{threadId:thread.id,turnId:turn.id,item:user});
+      const gateDirectory=process.env.CLAUDE_HUB_CODEX_FIXTURE_GATE_DIR;
+      if(gateDirectory){
+        if(!process.env.CLAUDE_HUB_DATA_DIR)throw Error('Gated Codex fixture requires isolated Hub data');
+        const path=require('path');fs.mkdirSync(gateDirectory,{recursive:true});
+        fs.appendFileSync(path.join(gateDirectory,'received.jsonl'),JSON.stringify({uuid:turn.id,threadId:thread.id,text})+'\n');
+        answer(msg.id,{turn});
+        const timer=setInterval(()=>{
+          if(turn.status!=='inProgress'){clearInterval(timer);return;}
+          const gate=path.join(gateDirectory,turn.id+'.json');if(!fs.existsSync(gate))return;
+          clearInterval(timer);const result=JSON.parse(fs.readFileSync(gate,'utf8'));finish(thread,turn,result.status||'completed',result.result||'已回答');
+        },25);
+        break;
+      }
       if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_DREAM === '1' && text.startsWith('你是本次项目记忆整理的造梦师。')) {
         // Deterministic file-producing provider fixture, never a real model run.
         answer(msg.id,{turn});

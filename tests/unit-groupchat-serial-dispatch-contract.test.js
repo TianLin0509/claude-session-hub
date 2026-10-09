@@ -13,7 +13,7 @@ console.log('Running serial groupchat dispatcher contract tests...');
 
 assert.match(source, /appendUserMessage,\s*reuseTurnNum,\s*dispatchMode,/s,
   'dispatcher must accept the serial workflow arguments sent by the renderer');
-assert.match(source, /orch\.beginTurn\(userInput \|\| '', \{[\s\S]*turnNum:[\s\S]*appendUserMessage:/,
+assert.match(source, /orch\.beginTurn\([^\n]+, \{[\s\S]*turnNum:[\s\S]*appendUserMessage:/,
   'dispatcher must reuse the visible turn and suppress duplicate user messages');
 assert.match(source, /currentUserMessageAppended: begin\.didAppendUserMessage/,
   'delta construction must know whether this step appended the user message');

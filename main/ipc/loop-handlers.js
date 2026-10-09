@@ -185,6 +185,9 @@ function registerLoopIpc(ipcMain, deps) {
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const status = loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : null;
       const persisted = status && status.serialRunState;
+      if (persisted?.lastError?.reason === 'submission_unknown' && status?.conversation) {
+        return {ok:false,reason:'上一条是否送达尚未确认，请先到成员会话查看；新的输入仍可按顺序开始。'};
+      }
       if (!persisted || !['running', 'paused'].includes(persisted.status)) {
         return { ok: false, reason: 'no_resumable_serial_run' };
       }
