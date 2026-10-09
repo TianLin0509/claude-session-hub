@@ -4172,7 +4172,7 @@ function updateFloatingPromptReceipt(receipt) {
   if (state.status === 'content-mismatch' && !state.dismissed) notifyPromptContentMismatch(state);
   for (const bar of document.querySelectorAll('.floating-input-bar')) {
     if (bar.dataset.sessionId !== receipt.sessionId) continue;
-    if (state.status === 'confirmed' || state.status === 'queued') clearFloatingInputStuck(bar);
+    if (['confirmed', 'delivered', 'queued'].includes(state.status)) clearFloatingInputStuck(bar);
     else if (!state.dismissed) {
       if (state.status === 'content-mismatch') clearFloatingInputStuck(bar);
       markFloatingInputStuck(bar, receipt.sessionId);
@@ -4219,7 +4219,7 @@ function clearFloatingInputStuck(bar) {
 // 核对回执和当前输入行；不能把上一轮运行或未知结果当作已经收到。
 function markFloatingInputStuck(bar, sessionId) {
   const delivery = floatingPromptDeliveries.get(sessionId);
-  if (!bar || !delivery || delivery.dismissed || ['pending', 'confirmed', 'queued'].includes(delivery.status)) {
+  if (!bar || !delivery || delivery.dismissed || ['pending', 'confirmed', 'delivered', 'queued'].includes(delivery.status)) {
     clearFloatingInputStuck(bar); return;
   }
   let row = bar.querySelector('.fi-stuck');
