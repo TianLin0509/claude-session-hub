@@ -215,9 +215,14 @@ function answerCardRendering() {
     'a member whose turn errored shows the error instead of "not handed in"');
   const draft = render({ id: 'a3-m1', sid: 's', role: 'assistant', content: '写了一半', answer: { state: 'draft' } }, meeting, members);
   assert(draft.includes('草稿') && draft.includes('写了一半'));
-  // Resend: a visible button while nothing is handed in, tucked into 更多 once it is.
+  // Missing output cannot prove non-delivery: expose inspection and archived
+  // input, while keeping the explicit resend for completed answers in 更多.
   const menuOf = html => (html.match(/<details class="gc-journal-menu">[\s\S]*?<\/details>/) || [''])[0];
-  assert(missing.includes('data-gc-resend-member="s"') && !menuOf(missing).includes('data-gc-resend-member'), 'visible on a missing card');
+  assert(missing.includes('data-gc-open-cli="s"') && !missing.includes('data-gc-resend-member'), 'a missing card defaults to read-only CLI inspection');
+  assert(!missing.includes('data-gc-copy-prompt'), 'no copy shortcut without a complete archive');
+  const archived = render({ id: 'a2-m1', sid: 's', role: 'assistant', content: '',
+    status: 'errored', sourcePrompt: '完整问题、前序回答和写回要求' }, meeting, members);
+  assert(archived.includes('data-gc-copy-prompt="a2-m1"') && archived.includes('data-gc-open-cli="s"') && !archived.includes('data-gc-resend-member'), 'an uncertain answer offers copying and inspection without automatic submission');
   const done = render({ id: 'a4-m1', sid: 's', role: 'assistant', turnNum: 4, content: '结论', answer: { state: 'delivered' } }, meeting, members);
   assert(menuOf(done).includes('data-gc-resend-member="s"'), 'in 更多 on a delivered card');
 }

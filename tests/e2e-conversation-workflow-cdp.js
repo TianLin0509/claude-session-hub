@@ -4,6 +4,10 @@
 const fs=require('fs'),path=require('path'),os=require('os'),net=require('net'),assert=require('assert/strict');
 const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher'),{connectFirstPage}=require('./helpers/cdp-client');
 const ROOT=fs.mkdtempSync(path.join(os.tmpdir(),'hub-conversation-gui-')),DATA=path.join(ROOT,'data'),CG=path.join(ROOT,'codex-gates'),AG=path.join(ROOT,'claude-gates');
+// Disable unrelated timed secretary jobs in this fixture database. They share
+// the provider receipt log and would otherwise race assertions near 21:00.
+const secretaryStore=new(require('../core/hub-assistant/store').AssistantStore)(path.join(DATA,'assistant'));
+secretaryStore.set('workbench.config',{enabled:false});secretaryStore.db.close();
 const ART=path.resolve('artifacts/20261009-conversation-workflow-codex1');fs.mkdirSync(ART,{recursive:true});
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),port=()=>new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
 const received=dir=>{const file=path.join(dir,'received.jsonl');return fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};
