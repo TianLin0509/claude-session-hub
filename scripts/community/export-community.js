@@ -44,6 +44,7 @@ function parseArgs(argv) {
     if (key === '--out') args.out = argv[++i];
     else if (key === '--ref') args.ref = argv[++i];
     else if (key === '--version') args.version = argv[++i];
+    else if (key === '--target') args.target = argv[++i];
     else if (key === '--all-leaks') args.allLeaks = true;
     else if (key === '--help' || key === '-h') args.help = true;
     else throw new Error(`未知参数：${key}`);
@@ -233,7 +234,10 @@ function applyVersionTokens(text, versions) {
   return out;
 }
 
-function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT } = {}) {
+// 发行目标：默认是公开社区版；--target <名> 读 community/targets/<名>/target.json，
+// 在社区版覆盖文件之后再叠一层该目标的 overlay，并把仓库地址换成目标仓库（例如公司版）。
+const COMMUNITY_REPO = 'TianLin0509/ai-hub-community';
+function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, target = null } = {}) {
   if (!out) throw new Error('需要 --out <目录>');
   const outDir = path.resolve(out);
   if (fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`目标目录不是空的：${outDir}（导出从不覆盖已有内容）`);
@@ -246,7 +250,15 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT } = {}
     if (!fs.existsSync(manifestPath)) throw new Error(`被导出的提交里没有 community/manifest.json：${source.commit}`);
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const upstreamVersion = JSON.parse(fs.readFileSync(path.join(staging, 'package.json'), 'utf8')).version;
-    const versions = { edition: version || manifest.version, upstream: upstreamVersion };
+    let targetSpec = null;
+    if (target) {
+      if (!/^[a-z0-9-]+$/.test(target)) throw new Error(`发行目标名称无效：${target}`);
+      const specPath = path.join(communityDir, 'targets', target, 'target.json');
+      if (!fs.existsSync(specPath)) throw new Error(`被导出的提交里没有发行目标：${target}`);
+      targetSpec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
+      if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(String(targetSpec.repo || ''))) throw new Error('target.json 缺少有效的 repo');
+    }
+    const versions = { edition: version || (targetSpec && targetSpec.version) || manifest.version, upstream: upstreamVersion };
     if (!versions.edition) throw new Error('缺少社区版版本号（manifest.version 或 --version）');
 
     const include = matcher(manifest.include);
@@ -274,12 +286,27 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT } = {}
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, applyVersionTokens(fs.readFileSync(path.join(overlayDir, file), 'utf8'), versions), 'utf8');
     }
+    const targetOverlayDir = targetSpec ? path.join(communityDir, 'targets', target, 'overlay') : null;
+    const targetOverlay = targetOverlayDir && fs.existsSync(targetOverlayDir) ? listFiles(targetOverlayDir) : [];
+    for (const file of targetOverlay) {
+      if (!isText(file)) { copyFileInto(targetOverlayDir, file, outDir); continue; }
+      const dest = path.join(outDir, file);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, applyVersionTokens(fs.readFileSync(path.join(targetOverlayDir, file), 'utf8'), versions), 'utf8');
+    }
 
     fs.writeFileSync(path.join(outDir, 'community-edition.json'), JSON.stringify({
-      edition: 'community', version: versions.edition, upstreamVersion: versions.upstream,
+      edition: 'community', ...(targetSpec ? { target, repo: targetSpec.repo } : {}), version: versions.edition, upstreamVersion: versions.upstream,
       upstreamCommit: source.commit, upstreamDirty: source.dirty,
     }, null, 2) + '\n', 'utf8');
     updatePackage(outDir, manifest, versions);
+    if (targetSpec && targetSpec.repo !== COMMUNITY_REPO) {
+      for (const file of listFiles(outDir).filter(isText)) {
+        const full = path.join(outDir, file);
+        const text = fs.readFileSync(full, 'utf8');
+        if (text.includes(COMMUNITY_REPO)) fs.writeFileSync(full, text.split(COMMUNITY_REPO).join(targetSpec.repo), 'utf8');
+      }
+    }
 
     const files = listFiles(outDir);
     const leftover = files.filter(isText).filter(file => /@community-(?:strip|else|end)\b|@@COMMUNITY_[A-Z]+@@/.test(fs.readFileSync(path.join(outDir, file), 'utf8')));
