@@ -173,8 +173,12 @@ const {
   classifyLocalPathHref,
   _cleanPathCandidate,
   _normalizeLocalPathForOpen,
-  _isDirectoryPath,
+  _isDirectoryPathAsync,
+  onNetworkPathResolved,
 } = require('./path-candidates.js');
+// Elements that mentioned a share path not known yet. Re-wrapping only adds
+// links to text that is still plain; existing links are skipped.
+const _networkPendingWraps = new Map();
 const { isCodexConversationModelId, modelOptionsFor } = require('../core/model-options.js');
 const {
   isStableSessionTitle,
@@ -3434,9 +3438,12 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
   });
   const targets = [];
   let node;
+  // Share paths are resolved in the background (see path-candidates.js); this
+  // element is wrapped again once one of them turns out to exist.
+  const pathOpts = { onNetworkPending: () => _networkPendingWraps.set(rootEl, opts) };
   while ((node = walker.nextNode())) {
     const text = normalizeMarkdownPathBreaks(node.nodeValue);
-    const candidates = collectPathCandidates(text, cwd);
+    const candidates = collectPathCandidates(text, cwd, pathOpts);
     if (candidates.length > 0) targets.push({ textNode: node, text, candidates });
   }
   for (const { textNode, text, candidates } of targets) {
@@ -3459,6 +3466,13 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
   }
 }
 window.wrapPathLinksInElement = wrapPathLinksInElement;
+onNetworkPathResolved(() => {
+  const pending = [..._networkPendingWraps];
+  _networkPendingWraps.clear();
+  for (const [element, wrapOpts] of pending) {
+    if (element.isConnected) wrapPathLinksInElement(element, wrapOpts);
+  }
+});
 
 // rt-file-link click → openPreviewPanel (only for cards inside .msg-overlay,
 // don't conflict with meeting-room.js handler which targets its own scope)
@@ -6183,7 +6197,9 @@ async function openPathInHub(filePath, opts = {}) {
   }
   const fullPath = _normalizeLocalPathForOpen(raw, cwd, opts.requireExistsForRel !== false);
   if (!fullPath) return fail('路径不存在或无法解析', raw);
-  if (_isDirectoryPath(fullPath)) {
+  // A share path is checked off the main thread: an unreachable server would
+  // otherwise freeze the window until the SMB timeout on a single click.
+  if (await _isDirectoryPathAsync(fullPath)) {
     const manager = fileManagerPanel || window.FileManagerPanel;
     if (!manager || typeof manager.openDirectory !== 'function') {
       return fail('文件管理尚未就绪', fullPath);
