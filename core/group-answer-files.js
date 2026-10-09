@@ -16,7 +16,7 @@ const SAFE = /^[a-zA-Z0-9_-]{1,255}$/;
 
 // Legacy engines still extract answers from transcripts until their rooms migrate.
 function legacyWorkflow(w) {
-  if (!w || w.deliveryVersion === 1) return false;
+  if (!w || w.deliveryVersion === 1 || w.conversationVersion === 1) return false;
   return w.fileFlowVersion === 2 || !!w.loop?.enabled || (!!w.enabled && (w.settingsVersion === 1 || (Array.isArray(w.steps) && w.steps.length > 0)));
 }
 // answerSource:'transcript' is a per-room escape hatch (not in the UI) and keeps

@@ -19,7 +19,7 @@ Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导入本文件；Codex / Kimi 等直接
 
 - Claude / Codex 默认真实 PTY/TUI。状态以 CLI hook 为权威、精确 native id + transcript path 绑定，屏幕识别仅能推向运行/等待。原生后端是保留的回退开关，未知提交先核对历史，避免自动重发。设计：`docs/design/cli-pty-core.md`。
 - 发 prompt 走 `session:send-prompt` 或 `groupChatWatcher.sendToPty`；`terminal-input` 仅真实按键/短 shell 命令。保持 `core/pty-prompt-submit.js` 分块→settle→语义确认→有界补回车闭环，禁固定延时/文本与回车一次写入；拿不到确认报 stuck，补发仍走同一入口。改链路先读 `tests/unit-prompt-submit-ui-contract.test.js` 和手册对应章。新增输出匹配须真实样本，避免空白尾巴判完成。
-- 单会话卡片读原生落盘；群聊卡片读 `task-docs/<群>/answers/turn-<n>/<成员>/回答.md`，工作流读该步交付。草稿标草稿，异常看成员状态；文件更新随时生效。旧 transcript 协议仅作兼容逃生入口。设计：`docs/design/group-answer-files.md`。
+- 单会话卡片读原生落盘；普通群聊和固定顺序发言卡片读 `task-docs/<群>/answers/turn-<n>/<成员>/回答.md`，只有交付任务读该步交付。自定义固定顺序不附加任务校对，按原生回合结束接续，每条新输入重走保存的顺序。草稿标草稿，异常看成员状态；文件更新随时生效。旧 transcript 协议仅作兼容逃生入口。设计：`docs/design/group-answer-files.md`、`docs/design/delivery-workflow.md`。
 - 同一原生 session 同时仅一个 Hub writer；关闭先保存、停 writer 再释放，其他 Hub 从最新记录恢复。未打开历史入口不订阅/监听/回写，窗口关闭不驻托盘；保留事务锁与定时去重。设计：`docs/design/session-exclusive-ownership.md`。
 
 ## 产物位置

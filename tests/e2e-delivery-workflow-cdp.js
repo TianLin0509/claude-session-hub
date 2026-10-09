@@ -29,7 +29,7 @@ const release=m=>fs.writeFileSync(path.join(GATES,m.uuid+'.json'),JSON.stringify
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await wait('renderer',()=>cdp.eval('!!window.MeetingRoom'));
   const m=await invoke('create-meeting',{mode:'group',scene:'general',groupChat:true,title:'逐成员文件交付验收',workspace,slots:[0,1,2].map(i=>({index:i,memberId:'m'+(i+1),kind:'claude',model:'claude-haiku-4-5-20251001',mcpProfile:'lean'}))});id=m.id;
-  const draft={version:1,kind:'serial',presetId:'custom',enabled:true,rounds:[{name:'独立作答',members:['m1','m2'],prompt:'各自交付独立答案。',after:'next'},{name:'交叉核对',members:['m3'],prompt:'读取前序两个文件后交付结论。',after:'next'},{name:'补充验证',members:['m1'],prompt:'核对上一步并交付。',after:'end'}]};
+  const draft={version:1,kind:'serial',presetId:'filework',enabled:true,rounds:[{name:'独立作答',members:['m1','m2'],prompt:'各自交付独立答案。',after:'next'},{name:'交叉核对',members:['m3'],prompt:'读取前序两个文件后交付结论。',after:'next'},{name:'补充验证',members:['m1'],prompt:'审核上一步，全部满足则交付，需返工则写清问题。',after:'review'}]};
   const configured=await invoke('workflow:configure',{meetingId:id,draft,expectedRevision:m.serialWorkflow?.settingsRevision || 0});assert(configured.ok,configured.reason);
   const fresh=(await invoke('get-meetings')).find(x=>x.id===id);await cdp.eval(`window.MeetingRoom.openMeeting(${JSON.stringify(id)},${JSON.stringify(fresh)})`);
   await wait('delivery controls',()=>cdp.eval("!!document.querySelector('[data-delivery=files]')"));await send('验证每人交付、晚到文件与显式暂停。');

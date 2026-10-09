@@ -1317,6 +1317,7 @@ function createGroupChatDispatcher(deps) {
     appendUserMessage,
     reuseTurnNum,
     dispatchMode,
+    displayUserInput,
     dispatchPresentation,
     workflowRun,
     clientMessageId,
@@ -1470,18 +1471,18 @@ function createGroupChatDispatcher(deps) {
             } : {}),
           }
         : null;
-      const begin = orch.beginTurn(userInput || '', {
+      const begin = orch.beginTurn(displayUserInput === undefined ? userInput || '' : displayUserInput, {
         turnNum: isReusedTurn ? requestedTurnNum : undefined,
         appendUserMessage: appendUserMessage !== false,
         dispatchMode: dispatchMode || 'group',
-        dispatch: dispatchMeta,
+        dispatch: dispatchMeta?.kind === 'conversation' ? null : dispatchMeta,
         // 渲染层本地气泡的身份，原样带进权威 user 消息；内部编排（循环/串行）不带。
         // 与上面的 dispatch 元数据互不相干：一个回答「这次派发是谁的第几步」，
         // 一个回答「服务端接手的是不是用户刚按下的那一条」，两者都要留在消息上。
         clientMessageId,
       });
       const { turnNum, runId } = begin;
-      if (dispatchMeta && !begin.didAppendUserMessage) {
+      if (dispatchMeta && dispatchMeta.kind !== 'conversation' && !begin.didAppendUserMessage) {
         try { orch.appendDispatchMessage(turnNum, userInput || '', dispatchMeta); }
         catch (e) { warn('[groupchat] dispatch card append failed:', e && e.message); }
       }

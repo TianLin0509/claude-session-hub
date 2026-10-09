@@ -20,7 +20,7 @@ const art=path.resolve(process.env.HUB_AVATAR_ARTIFACTS || 'artifacts/avatar-rou
   hub=await launchIsolatedHub({dataDir:data,port,label:'avatar-workflow',extraEnv:{CODEX_HOME:path.join(root,'codex'),CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.resolve('tests/fixtures/claude-stream.js'),CLAUDE_HUB_CLAUDE_FIXTURE_MODE:'gated',CLAUDE_HUB_FIXTURE_GATE_DIR:gates,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:trace}});
   c=await connectFirstPage(hub);await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});await until('renderer',()=>c.eval('!!window.MeetingRoom'));
   const m=await invoke('create-meeting',{mode:'group',scene:'general',groupChat:true,title:'头像控制补充对象',workspace:root,slots:[{memberId:'m1',kind:'claude',model:'claude-haiku-4-5-20251001',mcpProfile:'lean'},{memberId:'m2',kind:'codex',model:'gpt-6-astra',mcpProfile:'lean'}]});id=m.id;e.meetingId=id;
-  const cfg=await invoke('workflow:configure',{meetingId:id,expectedRevision:m.serialWorkflow?.settingsRevision || 0,draft:{kind:'serial',presetId:'custom',enabled:true,rounds:[{name:'Claude 初稿',members:['m1'],prompt:'写初稿',after:'next'},{name:'Codex 核对',members:['m2'],prompt:'核对初稿',after:'end'}]}});assert(cfg.ok,cfg.reason);
+  const cfg=await invoke('workflow:configure',{meetingId:id,expectedRevision:m.serialWorkflow?.settingsRevision || 0,draft:{kind:'serial',presetId:'filework',enabled:true,rounds:[{name:'Claude 初稿',members:['m1'],prompt:'写初稿',after:'next'},{name:'Codex 核对',members:['m2'],prompt:'核对初稿',after:'review'}]}});assert(cfg.ok,cfg.reason);
   const firstEntry=`[data-meeting-id="${id}"] .sl-title`;
   await until('sidebar meeting',()=>c.eval(`!!document.querySelector(${j(firstEntry)})`));await click(firstEntry);
   await until('first step avatar',async()=>j(await selects())==='[0]');
@@ -59,6 +59,7 @@ const art=path.resolve(process.env.HUB_AVATAR_ARTIFACTS || 'artifacts/avatar-rou
   const ordinary=await invoke('create-meeting',{mode:'group',scene:'general',groupChat:true,title:'普通群聊头像收件',workspace:root,slots:[{memberId:'m1',kind:'claude',model:'claude-haiku-4-5-20251001',mcpProfile:'lean'},{memberId:'m2',kind:'codex',model:'gpt-6-astra',mcpProfile:'lean'}]});
   const ordinaryEntry=`[data-meeting-id="${ordinary.id}"] .sl-title`;
   await until('ordinary sidebar',()=>c.eval(`!!document.querySelector(${j(ordinaryEntry)})`));await click(ordinaryEntry);
+  await until('ordinary room navigation',()=>c.eval(`window.MeetingRoom.getActiveMeetingId()===${j(ordinary.id)} && document.querySelector("#mr-title")?.innerText.includes("普通群聊头像收件")`));
   await until('ordinary avatars',()=>c.eval('document.querySelectorAll(".mr-free-slot-cb").length===2'));await select([1]);
   await send('@all 只是正文引用，普通群聊也只发给选中的 Codex');await until('ordinary selected recipient',()=>traceRows().some(r=>r.method==='turn/start'&&j(r).includes('只是正文引用')));
   assert(!fs.readFileSync(path.join(gates,'received.jsonl'),'utf8').includes('只是正文引用'));e.checks.push('ordinary chat obeys avatar snapshot; @all text does not expand recipients');e.passed=true;

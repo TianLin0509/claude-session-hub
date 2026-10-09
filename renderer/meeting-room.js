@@ -61,6 +61,8 @@ if (typeof document !== 'undefined') (function () {
   const GroupAnswers = require('../core/group-answer-files.js');
   const Delivery = require('../core/delivery-workflow.js');
   const DeliveryControls = require('./delivery-workflow-controls.js');
+  const Conversation = require('../core/conversation-workflow.js');
+  const ConversationControls = require('./conversation-workflow-controls.js');
   const OrchUI = require('./orchestration-ui.js');
   OrchUI.init(meetingId => {
     const m = meetingData[meetingId];
@@ -4407,7 +4409,7 @@ if (typeof document !== 'undefined') (function () {
     btn.classList.toggle('active', on);
     const roundCount = DevFile.enabled(meeting) && !DevFile.isSolo(meeting) ? 3 : wf?.steps?.length || 0;
     if (badge) badge.textContent = on ? String(roundCount) : '';
-    btn.title = on ? `${workflowLabel}已启用：${roundCount} 轮（点击修改）` : '工作流设置';
+    btn.title = on ? `${workflowLabel}：${roundCount} 轮（点击修改）` : '工作流设置';
     btn.setAttribute('aria-label', on ? `${workflowLabel}，${roundCount} 轮，点击修改` : '工作流设置');
   }
 
@@ -4426,7 +4428,7 @@ if (typeof document !== 'undefined') (function () {
       if (!result || !result.ok) {
         throw new Error(result && result.reason || 'serial_start_failed');
       }
-      _showGcEscapeNotice('串行工作流已启动；刷新或 Hub 重启后会从持久检查点继续', 'info');
+      _showGcEscapeNotice(Conversation.enabled(m) ? '已按保存的顺序发言' : '串行工作流已启动；刷新或 Hub 重启后会从持久检查点继续', 'info');
     } catch (error) {
       _discardPendingUserMessage(m.id, { clientId: pendingUser && pendingUser.clientId });
       const recovery = _restoreQuestionAndPreserveDraft(m.id, trimmed);
@@ -5329,7 +5331,7 @@ if (typeof document !== 'undefined') (function () {
       };
     }
     _updateInputPreflight(meeting);
-    if (payload.status === 'done') _showGcEscapeNotice('串行工作流已完成全部步骤', 'info');
+    if (payload.status === 'done') _showGcEscapeNotice(Conversation.enabled(meeting) ? '本次发言已完成；下一条输入仍按同一顺序回答' : '串行工作流已完成全部步骤', 'info');
     else if (payload.status === 'paused') {
       if (!payload.currentTurnNum && payload.goal) {
         _discardPendingUserMessage(payload.meetingId);
@@ -5449,6 +5451,11 @@ if (typeof document !== 'undefined') (function () {
     }
     if (Delivery.enabled(current) && current.serialWorkflow.enabled) {
       DeliveryControls.render(row,current,id=>{if(activeMeetingId===id)_updateInputPreflight(meetingData[id]);},message=>_showGcEscapeNotice(message,'error'));
+      _updateInputHistoryButton(current);
+      return;
+    }
+    if (Conversation.enabled(current) && current.serialWorkflow.enabled) {
+      ConversationControls.render(row,current,id=>{if(activeMeetingId===id)_updateInputPreflight(meetingData[id]);},message=>_showGcEscapeNotice(message,'error'));
       _updateInputHistoryButton(current);
       return;
     }
@@ -7389,7 +7396,19 @@ if (typeof document !== 'undefined') (function () {
         const serialSt0 = _workflowStateByMeeting[m.id]
           || (m.serialWorkflow && m.serialWorkflow.serialRunState)
           || null;
-        if ((loopSt0 && loopSt0.status === 'running') || (serialSt0 && serialSt0.status === 'running')) {
+        let conversationRunning = null;
+        if (Conversation.enabled(m)) {
+          try {
+            const status = await ipcRenderer.invoke('loop:status',{meetingId:m.id});
+            if (status?.error) throw new Error(status.error);
+            conversationRunning = !!status?.running;
+          } catch(error) {
+            _showGcEscapeNotice(`无法读取发言进度：${error.message}`, 'error');
+            return;
+          }
+          if (activeMeetingId !== m.id) return;
+        }
+        if ((loopSt0 && loopSt0.status === 'running') || (Conversation.enabled(m) ? conversationRunning : serialSt0 && serialSt0.status === 'running')) {
           _showGcEscapeNotice('工作流运行中，停止后才能修改配置', 'error');
           return;
         }
@@ -7407,6 +7426,8 @@ if (typeof document !== 'undefined') (function () {
             if (!result?.ok) throw new Error(result?.reason || '工作流设置未保存');
             m.serialWorkflow = result.config;
             DeliveryControls.clear(m.id);
+            ConversationControls.clear(m.id);
+            delete _workflowStateByMeeting[m.id];
             _updateWorkflowBtnState(m);
             _updateInputPreflight(m);
             // 主动落 state.json（boot 恢复源），不赌 schedulePersist 时机

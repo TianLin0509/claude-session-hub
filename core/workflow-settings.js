@@ -95,6 +95,7 @@ function toConfig(previous, d, memberIds) {
 }
 function toDeliveryConfig(previous, draft, memberIds) {
   const c=toConfig(previous,draft,memberIds);
+  delete c.conversationVersion;
   if(previous?.deliveryVersion!==1 && (previous?.serialRunState || previous?.loopState || previous?.fileFlow)) {
     c.legacyExecution={serialRunState:previous.serialRunState,loopState:previous.loopState,fileFlow:previous.fileFlow};
   }
@@ -104,10 +105,20 @@ function toDeliveryConfig(previous, draft, memberIds) {
   c.stepConfigs=draft.rounds.map(r=>({name:r.name,prompt:r.prompt,after:r.after}));
   return c;
 }
+function usesDelivery(draft) {
+  return draft?.kind === 'file' || !!draft?.rounds?.some(r=>r.after === 'review');
+}
+function toWorkflowConfig(previous, draft, memberIds) {
+  if (usesDelivery(draft)) return toDeliveryConfig(previous,draft,memberIds);
+  const c=toConfig(previous,draft,memberIds);
+  for (const key of ['deliveryVersion','deliveryKind','deliveryStages','taskArmed','fileFlow','taskDocs','kickoff','stopRequested','stopRequestedAt','stopReason']) delete c[key];
+  c.conversationVersion=1;
+  return c;
+}
 // New rooms start on the delivery engine directly. extra carries room-level
 // fields such as projectLocator / projectLibrary / workRoot.
 function createDeliveryConfig(presetId, members, extra = {}) {
   const draft = createPreset(presetId, members);
   return toDeliveryConfig({ ...extra }, draft, members.map(m => m.memberId));
 }
-module.exports = { LIMIT, PRESETS, GENERAL, DEV, createPreset, fromConfig, validate, toConfig, toDeliveryConfig, createDeliveryConfig };
+module.exports = { LIMIT, PRESETS, GENERAL, DEV, createPreset, fromConfig, validate, toConfig, toDeliveryConfig, toWorkflowConfig, usesDelivery, createDeliveryConfig };

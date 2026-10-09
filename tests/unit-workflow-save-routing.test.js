@@ -7,7 +7,9 @@ const flush=()=>new Promise(r=>setImmediate(r));
 async function scenario(outcome){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'hub-save-routing-'));
  const people=['codex','claude'].map(memberId=>({memberId,displayName:memberId}));
- const draft={kind:'serial',presetId:'custom',enabled:true,rounds:[{name:'先实现',members:['codex'],prompt:'实现',after:'next'},{name:'再审核',members:['claude'],prompt:'审核',after:'end'}]};
+ // Review/rework intentionally keeps the delivery lifecycle. Plain custom
+ // speech is covered by unit-conversation-workflow instead.
+ const draft={kind:'serial',presetId:'filework',enabled:true,rounds:[{name:'先实现',members:['codex'],prompt:'实现',after:'next'},{name:'再审核',members:['claude'],prompt:'审核',after:'review'}]};
  const m={id:'save-routing',groupChat:true,slotSpecs:people,subSessions:['sc','sa'],serialWorkflow:S.toDeliveryConfig({},draft,['codex','claude'])};
  const calls=[],handlers={},events=[];
  const deps={meetingManager:{getMeeting:()=>m,getAllMeetings:()=>[m],updateMeeting:(_,p)=>Object.assign(m,p),setParticipants:(_,p)=>m.participants=p},sessionManager:{getSession:()=>({status:'idle'})},getHubDataDir:()=>dir,getMembers:()=>people,ensureMemberReady:async()=>{},sendToRenderer:(name,state)=>events.push({name,state}),getDispatcher:()=>({dispatchGroupChatTurn:(_,args)=>{calls.push(args);args.targetMemberIds.forEach(memberId=>args.onSubmission({memberId,ok:true}));return Promise.resolve({status:'completed'});}})};
