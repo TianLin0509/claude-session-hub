@@ -117,8 +117,10 @@ class HubAccounts {
   riskState() {
     const guard = require('./web-risk-guard'), now = this.now(), risk = guard.read(this.chrome.root);
     if (risk.handoff) guard.settleHandoff(this.chrome).catch(() => {});
-    return { handoff: guard.handoff(this.chrome.root, now),
-      sites: Object.fromEntries(Object.entries(risk.sites).filter(([, e]) => e.until > now).map(([k, e]) => [k, { at: e.at, until: e.until, strikes: e.strikes, kind: e.kind, source: e.source || '' }])) };
+    const shared=require('./ordinary-browser-client').enabled({identity:'main',root:this.chrome.root},this.env),root=shared?require('./personal-chrome').personalRoot(this.env):this.chrome.root;
+    const ordinary=shared?guard.read(root):{sites:{}};
+    return { handoff: guard.handoff(root,now)||guard.handoff(this.chrome.root, now),
+      sites: Object.fromEntries(Object.entries({...risk.sites,...ordinary.sites}).filter(([, e]) => e.until > now).map(([k, e]) => [k, { at: e.at, until: e.until, strikes: e.strikes, kind: e.kind, source: e.source || '' }])) };
   }
   publicState(value = this.lastState) {
     const risk = this.riskState(), activity = require('./hub-account-activity').readActivity(this.chrome.root, this.env);
@@ -165,6 +167,7 @@ class HubAccounts {
       const items = this.lastState.identities.flatMap(i => i.sites.map(s => ({ identity: i.id, site: s.key, state: 'queued' })))
         .filter(item => (!identity || item.identity === identity) && (!site || item.site === site)
           && (!only || only.some(o => o.identity === item.identity && o.site === item.site))
+          && (live||this.inspect!==inspectCookies||this.fixture()||!require('./ordinary-browser-check').sharedSites.has(item.site)||!require('./ordinary-browser-client').enabled({identity:item.identity,root:this.chrome.root},this.env))
           && (live || this.inspect !== inspectCookies || cookieSite(item.site)));
       if (live && items.length > 1) throw Error('复核只针对一个账号');
       if (!items.length) throw Error('这个网站的登录无法从本机记录读取，打开网页即可确认');
@@ -258,7 +261,7 @@ class HubAccounts {
     let opened;
     if (fixture?.recordOpens) {
       fs.appendFileSync(path.join(this.env.CLAUDE_HUB_HOME_DIR, 'accounts-open.jsonl'), JSON.stringify({ identity, site, url: SITES[site].url, browser: login ? 'ai' : 'personal' }) + '\n');
-    } else if (login && require('./ordinary-browser-client').enabled({identity,root:this.chrome.root},this.env)) {
+    } else if (login && require('./ordinary-browser-check').sharedSites.has(site) && require('./ordinary-browser-client').enabled({identity,root:this.chrome.root},this.env)) {
       const transport=require('./ordinary-browser-client');
       opened=await transport.call(transport.options({identity},this.env),'account-person-'+identity,['human-open',SITES[site].url]);
       opened.mode='personal';

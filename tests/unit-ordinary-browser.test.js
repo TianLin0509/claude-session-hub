@@ -69,3 +69,10 @@ test('DeepSeek uses one enabled visible send button; ambiguous controls never su
   await providers.send(page,'deepseek');assert.equal(clicked,1);
   controls=[button(),button()];await assert.rejects(providers.send(page,'deepseek'),/Send button unavailable/);assert.equal(clicked,1);
 });
+
+test('account live recheck uses the shared login, visible profile evidence and only its own page',async()=>{
+  const calls=[];const transport={options:b=>b,call:async(b,l,args)=>{calls.push(args);if(args[0]==='evaluate')return {host:'www.kimi.com',profile:true,login:false,challenge:false};}};
+  const result=await require('../core/ordinary-browser-check').check({env:{}},'main','kimi',null,{transport});
+  assert.equal(result.state,'signed_in');assert.equal(result.source,'ordinary-chrome-extension');
+  assert.deepEqual(calls.map(a=>a[0]),['human-done','open','goto','evaluate','close']);
+});
