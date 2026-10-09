@@ -108,6 +108,27 @@ test('challenge-state cookie names never include login cookies', () => {
   for (const name of ['__Secure-next-auth.session-token.0', 'oai-did', '_puid', 'SID', '__Secure-1PSID']) assert.doesNotMatch(name, guard.CHALLENGE_COOKIE);
 });
 
+test('background verification widgets do not pause a usable page; visible widgets still do', () => {
+  const vm = require('vm');
+  const run = (rect, rendered = true) => vm.runInNewContext(guard.CHALLENGE_PROBE, {
+    window: {}, innerWidth: 1280, innerHeight: 900,
+    getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
+    document: { title: 'ChatGPT', body: { innerText: 'Ask anything' },
+      querySelector: () => null,
+      querySelectorAll: sel => sel.includes('challenges.cloudflare.com') ? [{
+        getClientRects: () => [rect], getBoundingClientRect: () => rect,
+        checkVisibility: () => rendered,
+      }] : [] },
+    location: { href: 'https://chatgpt.com/' },
+  }).challenge;
+  assert.equal(run({ width: 0, height: 0, left: 8, top: 40, right: 8, bottom: 40 }), false);
+  assert.equal(run({ width: 300, height: 65, left: -9999, top: 40, right: -9699, bottom: 105 }), false);
+  assert.equal(run({ width: 300, height: 65, left: 8, top: -9999, right: 308, bottom: -9934 }), false);
+  const visible = { width: 300, height: 65, left: 8, top: 40, right: 308, bottom: 105 };
+  assert.equal(run(visible, false), false, 'transparent or CSS-hidden widget');
+  assert.equal(run(visible), true, 'an actual visible verification stays blocking');
+});
+
 test('concurrent writers from several processes keep every record', async t => {
   const dir = root(t);
   const { execFile } = require('child_process');
