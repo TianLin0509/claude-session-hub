@@ -3406,6 +3406,7 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
   // [报告](C:\path\report.md) 只剩“报告”文字，且点击绕过 Hub。本地 href
   // 先升级成统一 rt-file-link；网页 URL 仍保持标准 Markdown 链接语义。
   for (const a of rootEl.querySelectorAll('a[href]:not(.rt-file-link)')) {
+    if (a.closest('button, textarea, input, select')) continue;
     const local = classifyLocalPathHref(a.getAttribute('href') || '', cwd);
     if (!local) continue;
     a.classList.add('rt-file-link');
@@ -3419,7 +3420,7 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
     // 真正的路径信息。显示原始 destination，data-path 则使用纠错后的路径。
     a.textContent = local.displayPath;
   }
-  const SKIP_TAGS = new Set(['A', 'SCRIPT', 'STYLE']);
+  const SKIP_TAGS = new Set(['A', 'SCRIPT', 'STYLE', 'BUTTON', 'TEXTAREA', 'INPUT', 'SELECT']);
   if (opts.skipCodeBlocks) SKIP_TAGS.add('PRE');
   const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -5727,7 +5728,7 @@ async function selectSession(id, opts = {}) {
     || !!(isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
   // 视图按会话记忆：先算出这个会话该用哪个视图，再决定要不要把焦点给终端
   // （卡片视图下抢终端焦点是错的）。
-  const targetView = selectionViewModeForSession(id, session);
+  const targetView = opts.inspectOnly ? 'pty' : selectionViewModeForSession(id, session);
   const shouldFocusTerminal = switching || targetView === 'pty';
   activeSessionId = id;
   // showTerminal owns the history request (and the cached-view fast path).
@@ -5742,6 +5743,7 @@ async function selectSession(id, opts = {}) {
   // Still switch selection and paint a pending surface immediately so a real
   // CLI restart never looks like a dropped click.
   if (session.status === 'dormant') {
+    if (opts.inspectOnly) return;
     // Paint navigation before the main process checks ownership. No CLI or
     // transcript is opened until that check succeeds; an occupied session
     // stays on the placeholder, and a newer selection cancels this intent.
@@ -5803,7 +5805,7 @@ async function selectSession(id, opts = {}) {
   // 2026-08-28 补齐：只清 connectionIssue 不够 —— 断连同时把 runtimeTruth 打成了
   // RUNTIME_FAILED（终态），且 TUI 重绘会把同一段报错文本再喂一遍。要一起降级
   // 终态 + 记住已确认签名，提醒才真的只提醒一次。
-  acknowledgeSessionFailureState(session);
+  if (!opts.inspectOnly) acknowledgeSessionFailureState(session);
   ipcRenderer.send('focus-session', { sessionId: id });
   showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom, reuseCardHistory });
   for (const meeting of Object.values(meetings)) {
@@ -6945,6 +6947,17 @@ window.openMeetingMemberSession = function openMeetingMemberSession(sessionId) {
   if (!sessionId || !sessions.has(sessionId)) return false;
   void selectSession(sessionId, { forceScrollBottom: true });
   return true;
+};
+
+// This explicit shortcut inspects a live terminal without waking a dormant
+// writer, dismissing its runtime failure or sending any input.
+window.openMeetingMemberCli = async function openMeetingMemberCli(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return { ok: false, reason: '该成员会话暂不可用' };
+  if (session.status === 'dormant') return { ok: false, reason: '该成员 CLI 已关闭；请从会话列表自行恢复后查看' };
+  await selectSession(sessionId, { forceScrollBottom: true, inspectOnly: true, splitBypass: true });
+  if (activeSessionId !== sessionId) return { ok: false, reason: '当前已切换到其他会话' };
+  return { ok: true };
 };
 
 const XTERM_REPLAY_CHUNK_CHARS = 64 * 1024;

@@ -110,7 +110,7 @@ test('会话关闭后清掉记忆', () => {
 test('renderer 必须在 selectSession 里计算默认卡片视图，并且选择时不写记忆', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   // 所有普通 AI session 都走同一个默认入口；PowerShell 由 helper 明确留在 PTY。
-  assert.match(src, /const targetView = selectionViewModeForSession\(id, session\);/,
+  assert.match(src, /const targetView = opts\.inspectOnly \? 'pty' : selectionViewModeForSession\(id, session\);/,
     'selectSession 必须先算出该会话的视图');
   assert.match(src, /applyViewMode\(targetView, \{ remember: false, skipPreviousCardCapture: true \}\);/,
     '选择视图由 showTerminal 单次加载历史，不能由 applyViewMode 再并发加载');
