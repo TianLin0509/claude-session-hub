@@ -65,7 +65,11 @@
     "main/ipc/writing-handlers.js",
     "renderer/writing*",
     "tests/unit-writing-tab.test.js",
-    "tests/e2e-writing-tab-cdp.js"
+    "tests/e2e-writing-tab-cdp.js",
+    "renderer/assets/ai-avatars/v1/**",
+    "renderer/assets/navigation/ceramic-navigation.png",
+    "renderer/assets/navigation/coldwhite-enamel-v1.png",
+    "scripts/community/shrink-images.ps1"
   ],
   "scrub": [
     {
@@ -211,9 +215,31 @@
       "appId": "com.ai-hub.community",
       "productName": "AI Hub Community",
       "extraResources": [
-        { "from": "scripts", "to": "scripts", "filter": ["**/*", "!firewall-whitelist-electron.ps1"] },
-        { "from": "docs", "to": "guides/docs", "filter": ["**/*.md"] },
-        { "from": ".", "to": "guides", "filter": ["README.md", "INSTALL.md", "AGENTS.md", "PRIVACY.md"] }
+        {
+          "from": "scripts",
+          "to": "scripts",
+          "filter": [
+            "**/*",
+            "!firewall-whitelist-electron.ps1"
+          ]
+        },
+        {
+          "from": "docs",
+          "to": "guides/docs",
+          "filter": [
+            "**/*.md"
+          ]
+        },
+        {
+          "from": ".",
+          "to": "guides",
+          "filter": [
+            "README.md",
+            "INSTALL.md",
+            "AGENTS.md",
+            "PRIVACY.md"
+          ]
+        }
       ],
       "win": {
         "target": [
@@ -230,7 +256,11 @@
         "installerIcon": "claude-wx.ico",
         "uninstallerIcon": "claude-wx.ico",
         "createDesktopShortcut": true
-      }
+      },
+      "electronLanguages": [
+        "zh-CN",
+        "en-US"
+      ]
     },
     "buildFilesAppend": [
       "!node_modules/node-pty/deps/**",
@@ -239,5 +269,9 @@
       "!node_modules/node-pty/typings/**",
       "!node_modules/node-pty/binding.gyp"
     ]
+  },
+  "shrinkImages": {
+    "renderer/assets/ai-avatars": 384,
+    "renderer/assets/navigation": 256
   }
 }
