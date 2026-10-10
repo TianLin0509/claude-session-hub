@@ -4,7 +4,7 @@
  *
  * 一篇文章一个写作群。这里把群聊读成（主进程 writing:article-view，见 core/writing/workbench.js）：
  *   文章头    标题、中心思想、进度（说想法 → 初稿 → 你点评 → 改稿 → 定稿）
- *   问题卡    AI 想问田哥的问题，带推荐答案，回答后一次发进群
+ *   问题卡    每位 AI 的问题放在自己的文章下面，带推荐答案，回答后发进群
  *   文章区    每位 AI 一个标签页（2026-10-03 田哥要求），排版好的 Markdown 文章 + 写给田哥的话分开放；
  *             版本可切；出错、在写、有新稿都标在标签上；有定稿时「定稿」排第一个；宽屏可切「并排对比」
  *   点评篮    在稿里划线点评、写总评，攒好一次发出：「各自改一版」或「请某位汇总定稿」
@@ -201,6 +201,7 @@ function createWorkbench(ctx) {
   document.addEventListener('mousedown', (e) => { pointerDownIn = e.target && e.target.closest ? e.target.closest('.wb-col, .wb-panel') : null; }, true);
   document.addEventListener('mouseup', () => { setTimeout(() => { pointerDownIn = null; }, 0); }, true);
   function busyIn(node) {
+    if (node.contains(document.activeElement) && document.activeElement.matches('input, textarea, [contenteditable="true"]')) return true;
     if (pointerDownIn === node || pop || selBtn) return pointerDownIn === node || (pop && pop.dataset.col === node.dataset.col) || (selBtn && selBtn.dataset.col === node.dataset.col);
     const sel = window.getSelection();
     return !!(sel && !sel.isCollapsed && sel.rangeCount && node.contains(sel.getRangeAt(0).commonAncestorContainer));
@@ -224,11 +225,12 @@ function createWorkbench(ctx) {
     put(el,
       h('div', { class: 'wb-titlebar' },
         h('h2', { class: 'wb-title', text: v.title || '新文章' }),
-        h('div', { class: 'wb-steps' }, ...STEPS.map(([k, label], i) => h('span', { class: 'wb-step' + (v.steps[k] ? ' done' : i === firstOpen ? ' now' : ''), text: label }))),
+        h('details', { class: 'wb-progress' }, h('summary', { text: `进度 · ${STEPS[firstOpen]?.[1] || '已定稿'}` }),
+          h('div', { class: 'wb-steps' }, ...STEPS.map(([k, label], i) => h('span', { class: 'wb-step' + (v.steps[k] ? ' done' : i === firstOpen ? ' now' : ''), text: label })))),
         h('span', { class: 'wb-actions' },
           h('button', { class: 'wr-btn small', text: '在群聊里看过程', title: '群聊是这篇文章的后台：完整过程、排查问题时看', onclick: () => openMeeting(v.meetingId) }),
           h('button', { class: 'wr-btn small', text: '文件夹', onclick: () => call('writing:article-open-dir', { dir: v.dir }) }))),
-      v.idea ? h('details', { class: 'wb-idea' }, h('summary', { text: `${/^中心思想[:：]/.test(v.idea) ? '' : '中心思想：'}${v.idea.length > 90 ? v.idea.slice(0, 90) + '…' : v.idea}` }), h('div', { class: 'wb-idea-full', text: v.idea })) : null);
+      v.idea ? h('details', { class: 'wb-idea' }, h('summary', { text: '写作想法', title: v.idea }), h('div', { class: 'wb-idea-full', text: v.idea })) : null);
   }
 
   const ideaKey = (dir) => `writing-idea:${dir}`;
@@ -256,14 +258,19 @@ function createWorkbench(ctx) {
       if (force || changed('questions', ['idea-box', S.sending])) renderIdeaBox(el);
       return;
     }
-    if (!force && !changed('questions', [v.questions, S.sending])) return;
-    if (force) S.sigs.questions = JSON.stringify([v.questions, S.sending]);
-    const qs = v.questions || [];
-    if (!qs.length) { el.replaceChildren(); el.hidden = true; return; }
-    el.hidden = false;
-    const from = [...new Set(qs.map((q) => q.from))].join('、');
-    put(el,
-      h('div', { class: 'wb-q-head' }, h('b', { text: `AI 想先问你 ${qs.length} 件事` }), h('span', { class: 'wr-muted', text: `来自 ${from} · 稿里已按推荐答案先写了，不回答也行` })),
+    el.replaceChildren(); el.hidden = true;
+    if (force) renderArticles(true);
+  }
+
+  function questionsOf(col) {
+    return (S.view.questions || []).filter(q => q.sid ? q.sid === col.sid : q.from === col.name);
+  }
+
+  function memberQuestions(col) {
+    const qs = questionsOf(col);
+    if (!qs.length) return null;
+    return h('section', { class: 'wb-questions wb-member-questions', 'data-member': keyOf(col), 'aria-label': `${col.name} 的问题` },
+      h('div', { class: 'wb-q-head' }, h('b', { text: `${col.name} 想问你 · ${qs.length}` }), h('span', { class: 'wr-muted', text: '稿里已按推荐答案先写，不回答也行' })),
       ...qs.map((q) => {
         const input = h('input', { class: 'wr-input wb-q-input', value: S.answers[q.key] ?? q.recommend ?? '', placeholder: '你的回答', oninput: (e) => { S.answers[q.key] = e.target.value; } });
         return h('div', { class: 'wb-q' }, h('div', { class: 'wb-q-text' }, h('span', { class: 'wr-muted', text: `${q.from}：` }), q.q), input);
@@ -324,7 +331,7 @@ function createWorkbench(ctx) {
     return h('button', { class: 'wr-btn small', text: '复制', title: '复制这份稿的 Markdown', onclick: () => guarded(async () => { await navigator.clipboard.writeText(text); toast(`${label}已复制`); }) });
   }
 
-  // AI 写给田哥的话（切入、取舍、拿不准的事实）与 Hub 自己的说明，放在正文上方，和文章分开
+  // AI 写给田哥的话和问题跟在正文后面，首屏优先留给文章。
   function asideOf(it) {
     return [
       it.note ? (() => {
@@ -378,8 +385,8 @@ function createWorkbench(ctx) {
       it && col.sid ? h('button', { class: 'wr-btn small', text: '总评', title: '对这份稿写一句总体意见，放进点评篮', onclick: (e) => askComment({ x: e.clientX - 160, y: e.clientY + 12, col }) }) : null,
       it && it.kind !== 'reply' ? copyBtn(it.text, `${col.name} 的稿`) : null);
     const body = it
-      ? [errBarOf(col, true), ...asideOf(it), articlePaper(col, it)]
-      : [errBarOf(col, false), emptyOf(col)];
+      ? [errBarOf(col, true), articlePaper(col, it), memberQuestions(col), ...asideOf(it)]
+      : [errBarOf(col, false), emptyOf(col), memberQuestions(col)];
     return h('div', { class: `wb-panel ${col.status}`, 'data-col': key }, bar, h('div', { class: 'wb-panel-body' }, ...body.flat().filter(Boolean)));
   }
 
@@ -392,7 +399,7 @@ function createWorkbench(ctx) {
       h('div', { class: 'wb-panel-bar' },
         h('b', { text: '定稿' }), h('span', { class: 'wr-muted', text: `${f.from ? `${f.from} 汇总 · ` : ''}${f.chars} 字` }),
         voice, h('span', { class: 'wr-spacer' }), copyBtn(f.text, '定稿')),
-      h('div', { class: 'wb-panel-body' }, ...asideOf({ note: f.note }).filter(Boolean), paper(f.text)));
+      h('div', { class: 'wb-panel-body' }, paper(f.text), ...asideOf({ note: f.note }).filter(Boolean)));
   }
 
   // 并排对比模式下的一栏（宽屏、两位以上时可选）
@@ -406,7 +413,7 @@ function createWorkbench(ctx) {
       h('span', { class: 'wr-spacer' }),
       versionPills(col, items, idx, () => renderArticles(true)),
       it && col.sid ? h('button', { class: 'wr-btn small', text: '总评', title: '对这份稿写一句总体意见，放进点评篮', onclick: (e) => askComment({ x: e.clientX - 160, y: e.clientY + 12, col }) }) : null);
-    const body = it ? [errBarOf(col, true), ...asideOf(it), articlePaper(col, it)] : [errBarOf(col, false), emptyOf(col)];
+    const body = it ? [errBarOf(col, true), articlePaper(col, it), memberQuestions(col), ...asideOf(it)] : [errBarOf(col, false), emptyOf(col), memberQuestions(col)];
     return h('div', { class: `wb-col ${col.status}`, 'data-col': keyOf(col) }, head, h('div', { class: 'wb-col-body' }, ...body.flat().filter(Boolean)));
   }
 
@@ -425,7 +432,7 @@ function createWorkbench(ctx) {
     for (const t of tabs) if (S.seen[t.key] == null) S.seen[t.key] = t.count; // 打开文章时已有的稿不算「新」
     const shown = compare ? cols : cols.filter((c) => keyOf(c) === cur);
     // 出错栏的「重试」按钮要看这一轮过没过去，所以最新轮次也算进出错栏的签名
-    const sigOf = (c) => JSON.stringify([c, S.versionOf[keyOf(c)] ?? null, c.status === 'error' || c.status === 'stopped' ? v.latestTurn : 0]);
+    const sigOf = (c) => JSON.stringify([c, questionsOf(c), S.sending, S.versionOf[keyOf(c)] ?? null, c.status === 'error' || c.status === 'stopped' ? v.latestTurn : 0]);
     const contentSig = compare ? cols.map(sigOf) : cur === FINAL_KEY ? [JSON.stringify([v.final, v.voice])] : shown.map(sigOf);
     // 别的 AI 交稿 / 状态变化只换标签栏，不动正在读的那份稿（划线、滚动都保留）
     const layout = JSON.stringify([compare, cur, canCompare, compare ? cols.map(keyOf) : 0]);
@@ -499,10 +506,9 @@ function createWorkbench(ctx) {
             if (ids.has(col.sid)) ids.delete(col.sid); else ids.add(col.sid);
             nb.recipients = [...ids]; saveBasket(nb); renderBasket(true);
           } });
-      })), inputHost,
-      h('div', { class: 'wb-compose-row' },
+      }), h('span', { class: 'wr-spacer' }),
         cols.length ? h('span', { class: 'wb-row tight wb-finalize' }, h('span', { class: 'wr-muted', text: '请' }), pick,
-          h('button', { class: 'wr-btn primary', disabled: S.sending, text: '汇总定稿', onclick: () => { const col = cols.find((c) => c.sid === pick.value); if (col) sendFinalize(col); } })) : null));
+          h('button', { class: 'wr-btn primary', disabled: S.sending, text: '汇总定稿', onclick: () => { const col = cols.find((c) => c.sid === pick.value); if (col) sendFinalize(col); } })) : null), inputHost);
     const dir = S.dir;
     composer = require('./writing-composer').mountWritingComposer({ host: inputHost, h, ipcRenderer,
       value: b.free || '', placeholder: '写点评，也可以在稿里选中一段，点「点评这段」…',
