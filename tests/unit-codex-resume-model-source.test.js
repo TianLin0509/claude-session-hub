@@ -60,10 +60,10 @@ test('a precise native id wins over the *-resume picker kind', () => {
   assert.match(SRC, /resumeSessionId: unstarted \? null : \(opts\.forkCCSessionId \|\| opts\.resumeCCSessionId\)/,
     'legacy DeepSeek resume must prefer its exact Claude session id over the picker');
 
-  const geminiExact = SRC.indexOf('if (opts.useResume && opts.geminiChatId && opts.geminiChatId.length > 8) {');
-  const geminiFallback = SRC.indexOf("} else if (kind === 'gemini-resume' || opts.useResume) {", geminiExact);
-  assert.ok(geminiExact >= 0 && geminiFallback > geminiExact,
-    'gemini-resume with a full native id must prefer the exact session over latest');
+  const agy=require('../core/antigravity-config'),id='a1111111-2222-4333-8444-555555555555';
+  const args=agy.launchArgs({useResume:true,geminiChatId:id,geminiProjectHash:'antigravity'});
+  assert.equal(args[args.indexOf('--conversation')+1],id);
+  assert.ok(!args.includes('--continue'),'native recovery must never silently select the latest thread');
 });
 
 test('codex PTY sessions default to max reasoning effort and silent full access', () => {

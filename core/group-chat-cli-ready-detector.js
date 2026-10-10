@@ -22,7 +22,7 @@ const MARKERS = {
   // 2.1.28x 的底栏是 "manual mode on · ← for agents" / "bypass permissions on"，
   // 空输入框占位是 `Try "how does <filepath> work?"`（2026-09-25 真机截图）。
   claude: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "', 'mode on', 'for agents'],
-  gemini: ['Type your message', 'YOLO', 'gemini-'],
+  gemini: ['Type your message'],
   // Do not use model ids such as "gpt-5.6-sol" here: the PowerShell launch
   // command itself contains "--model gpt-5.6-sol", which can falsely mark Codex
   // ready before the TUI input box exists.
@@ -50,6 +50,7 @@ const CHOICE_DIALOG_BLOCKERS = [/press enter to confirm/i, /Use ↑\/↓ to move
 const CODEAGENT_DIALOG_BLOCKERS = [/版本更新提醒/, /Quick safety check/i, /Confirm Enter\s*\|/i];
 
 const BLOCKERS = {
+  gemini: [/not signed in/i, /Select login method/i, /sign in to continue/i, ...CHOICE_DIALOG_BLOCKERS],
   claude: [...CHOICE_DIALOG_BLOCKERS],
   codeagent: [...CODEAGENT_DIALOG_BLOCKERS, ...CHOICE_DIALOG_BLOCKERS],
   codex: [/Do you trust the contents of this directory/i, /Booting MCP server/i, /esc to interrupt/i, ...CHOICE_DIALOG_BLOCKERS],

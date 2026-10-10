@@ -68,7 +68,8 @@ test('CLI status reads token files only, reports the account, and never returns 
   const by = Object.fromEntries(out.map(c => [c.id, c]));
   assert.deepEqual([by['codex:default'].state, by['codex:default'].account], ['authorized', 'main@x.com']);
   assert.deepEqual([by.claude.state, by.claude.account], ['expired', 'd@x.com'], 'an expired refresh token is not an authorisation');
-  assert.equal(by.gemini.state, 'authorized');
+  assert.equal(by.gemini.state, 'unknown', 'retired Gemini OAuth is not Antigravity authorization');
+  assert.equal(by.gemini.account, '', 'do not attribute an unverified Antigravity login to the old Gemini account');
   assert.equal(by.kimi.state, 'missing');
   assert.ok(!/SECRET/.test(JSON.stringify(out)));
 });

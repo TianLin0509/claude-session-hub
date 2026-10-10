@@ -67,7 +67,7 @@ test('plugin contents preserve parent, custom paths, disabled state and reject o
 });
 test('malformed credential JSON never echoes its payload; null MCP entries do not abort the catalog',t=>{
   const {root,write}=fixture(t);write('.claude.json','{"token":"VERY_PRIVATE", invalid}');
-  write('.gemini/settings.json','{"mcpServers":{"invalid":null,"good":{"command":"do-not-run"}}}');
+  write('.gemini/config/mcp_config.json','{"mcpServers":{"invalid":null,"good":{"command":"do-not-run"}}}');
   const r=collectCapabilities({homeDir:root,dataDir:root});assert.equal(r.warnings.length,2);
   assert.ok(r.rows.some(x=>x.name==='good'));assert.doesNotMatch(JSON.stringify(r),/VERY_PRIVATE|do-not-run/);
 });
@@ -136,7 +136,7 @@ test('catalog distinguishes shared, duplicate content, disabled and missing plug
   assert.doesNotMatch(JSON.stringify(r),/SECRET_TEST_VALUE|secret_command/);
 });
 test('malformed JSON is visible and supported TOML quoted names and nested env keep status',t=>{
-  const {root,write}=fixture(t);write('.gemini/settings.json','broken json');
+  const {root,write}=fixture(t);write('.gemini/config/mcp_config.json','broken json');
   const r=collectCapabilities({homeDir:root,dataDir:root});assert.equal(r.warnings.length,1);
   assert.deepEqual(tomlFlags('[mcp_servers."my.service"]\nenabled = false # keep disabled\n[mcp_servers."my.service".env]\nenabled = true\n'),{mcp:[{name:'my.service',enabled:false}],plugins:[]});
 });
