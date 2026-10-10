@@ -53,6 +53,11 @@ test('Codex IPC reaches requested tier after native toggles and keeps model, eff
     assert.equal(calls,2);assert.equal(session.codexSpeedTier,'fast');assert.equal(session.effort,'high');assert.equal(session.currentModel.id,'gpt-6-astra');
     assert.match(fs.readFileSync(file,'utf8'),/service_tier='fast'/);assert.match(fs.readFileSync(file,'utf8'),/model='gpt-6-sol'/);
     session.status='running';assert.equal((await choose('standard')).ok,false);assert.equal(calls,2);
+    session.status='idle';
+    manager.getSessionBufferSnapshot=()=>({cols:100,rows:12,text:'\x1b[2J\x1b[8;1H› unsent CLI draft'});
+    assert.match((await choose('standard')).message,/草稿/);
+    assert.equal(calls,2,'backend protects real CLI drafts independently of the renderer frame');
+    assert.equal(session.codexSpeedTier,'fast');
     assert.equal(require('../core/session-speed').pendingSpeedSwitches.has('test'),false);
     assert.equal(manager.listenerCount('output'),0);
   }finally{watcher.sendToPty=original;}
