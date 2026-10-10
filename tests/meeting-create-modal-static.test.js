@@ -56,7 +56,9 @@ test('group defaults to Claude + Codex and keeps DeepSeek as the optional third 
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*\}/);
   assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS\s*=\s*DEFAULT_SLOTS\.slice\(0,\s*2\)/);
-  assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\s*=\s*\['claude',\s*'codex',\s*'deepseek',\s*'qwen',\s*'deepseek-acp',\s*'glm'\]/);
+  assert.match(MODAL_JS, /\{ KIND_LABELS, GROUP_MEMBER_KINDS \} = require\('\.\.\/core\/ai-kinds.js'\)/);
+  assert.deepStrictEqual(require('../core/ai-kinds').GROUP_MEMBER_KINDS,
+    ['claude','codex','deepseek','qwen','deepseek-acp','glm','codeagent']);
 });
 
 test('group membership is a default, not a cap: same kind may repeat and the roster is unbounded', () => {
@@ -132,7 +134,9 @@ test('scene hint is painted from scene state, not from the radio change event', 
   assert.match(applySceneBody, /_paintSceneHint\(\)/,
     '_applyScene 必须负责刷新场景说明，否则重开弹窗时说明不会复位');
   // 说明只能有一个写入点：再出现第二处赋值，两条路径迟早又会不同步。
-  const writes = MODAL_JS.match(/hint\.textContent\s*=/g) || [];
+  const hintAt = MODAL_JS.indexOf('function _paintSceneHint');
+  const hintBody = MODAL_JS.slice(hintAt, MODAL_JS.indexOf('\nfunction ', hintAt + 1));
+  const writes = hintBody.match(/hint\.textContent\s*=/g) || [];
   assert.strictEqual(writes.length, 2,
     `场景说明只应有「写入 dev 文案」与「清空」两处赋值，实得 ${writes.length}`);
   const changeHandlerAt = MODAL_JS.indexOf("input[name=\"mcm-scene\"]');");
@@ -249,7 +253,7 @@ test('modal supports flexible group chat creation', () => {
   assert.match(MODAL_JS, /mcm-add-member/);
   assert.match(MODAL_JS, /groupChat:\s*_isGroupChat/);
   assert.match(MODAL_JS, /groupMode:\s*_isGroupChat\s*\?\s*['"]deliberation['"]/);
-  assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*\(scene === \'dev\' \? \[slots\[0\]\.index\] : slots\.map/);
+  assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*\(orchestration \|\| scene === \'dev\' \? \[slots\[0\]\.index\] : slots\.map/);
   assert.ok(!/id="btn-group-chat"/.test(HTML), 'legacy standalone group-chat header button must stay removed');
   // 冷杉 v2 T0：场景按钮搬去 #scene-rail（排在侧栏之前），启动按钮留在侧栏头部。
   assert.match(HTML, /id="scene-rail"[\s\S]*?id="btn-home"[\s\S]*?id="btn-research"[\s\S]*?id="btn-new"/);

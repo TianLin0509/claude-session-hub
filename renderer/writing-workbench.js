@@ -20,6 +20,7 @@ const NARROW_PX = 980;
 
 function createWorkbench(ctx) {
   const { h, call, toast, guarded, paper, ipcRenderer, openMeeting, onChanged } = ctx;
+  let composer = null;
   const S = {
     dir: null, view: null, sigs: {}, answers: {}, versionOf: {}, tab: null, seen: {}, hadFinal: false,
     compare: (() => { try { return localStorage.getItem('writing-compare') === '1'; } catch { return false; } })(),
@@ -106,7 +107,10 @@ function createWorkbench(ctx) {
     const lines = commentLines(b);
     if (!lines.length) { toast('先划线点评或写几句意见', true); return; }
     const text = ['我的点评：', ...lines, '', '请各自按点评改一版，交完整的新版本（文章放在两行文章标记之间）。'].join('\n');
-    sendWith('点评已发出', text, {}, (dir) => saveBasket({ items: [], free: '' }, dir));
+    const recipientSids = Array.isArray(b.recipients)
+      ? b.recipients.filter(sid => S.view.columns.some(col => col.sid === sid)) : undefined;
+    if (recipientSids && !recipientSids.length) { toast('请至少选择一位接收成员', true); return; }
+    sendWith('点评已发出', text, { recipientSids }, (dir) => saveBasket({ items: [], free: '', recipients: b.recipients }, dir));
   }
 
   function sendFinalize(col) {
@@ -473,11 +477,11 @@ function createWorkbench(ctx) {
     const b = basket();
     const cols = (v.columns || []).filter((c) => c.sid);
     // 自由意见框不进签名：田哥正在打字时，轮询不能把输入框换掉
-    const sig = [b.items, S.sending, cols.map((c) => [c.sid, c.name])];
+    const sig = [b.items, b.recipients, S.sending, cols.map((c) => [c.sid, c.name])];
     if (!force && !changed('basket', sig)) return;
     if (force) S.sigs.basket = JSON.stringify(sig);
-    const free = h('textarea', { class: 'wr-input wb-free', rows: '1', placeholder: '写点评……也可以在稿里选中一段，点「点评这段」', oninput: (e) => { const nb = basket(); nb.free = e.target.value; saveBasket(nb); } });
-    free.value = b.free || '';
+    composer?.dispose(); composer = null;
+    const inputHost = h('div');
     const pick = h('select', { class: 'wr-select', title: '选一位 AI 汇总定稿' }, ...cols.map((c) => h('option', { value: c.sid, text: c.name })));
     const lastDone = cols.filter((c) => c.items.length).pop();
     if (lastDone) pick.value = lastDone.sid;
@@ -487,13 +491,29 @@ function createWorkbench(ctx) {
         h('span', { class: 'wr-muted', text: it.quote ? `${it.name} ·「${it.quote.length > 40 ? it.quote.slice(0, 40) + '…' : it.quote}」` : `${it.name} · 总评` }),
         h('span', { text: it.comment }),
         h('button', { class: 'wb-x', text: '×', title: '删掉这条', onclick: () => { const nb = basket(); nb.items.splice(i, 1); saveBasket(nb); renderBasket(true); } })))) : null,
+      h('div', { class: 'writing-recipient-row' }, h('span', { class: 'wr-muted', text: '发给' }), ...cols.map(col => {
+        const selected = !Array.isArray(b.recipients) || b.recipients.includes(col.sid);
+        return h('button', { type: 'button', class: 'composer-chip writing-recipient' + (selected ? ' selected' : ''), 'aria-pressed': String(selected), disabled: S.sending,
+          text: col.name, onclick: () => {
+            const nb = basket(), ids = new Set(nb.recipients || cols.map(c => c.sid));
+            if (ids.has(col.sid)) ids.delete(col.sid); else ids.add(col.sid);
+            nb.recipients = [...ids]; saveBasket(nb); renderBasket(true);
+          } });
+      })), inputHost,
       h('div', { class: 'wb-compose-row' },
-        free,
-        h('button', { class: 'wr-btn', disabled: S.sending, text: S.sending ? '正在发…' : '发出点评，各自改一版', onclick: sendComments }),
         cols.length ? h('span', { class: 'wb-row tight wb-finalize' }, h('span', { class: 'wr-muted', text: '请' }), pick,
           h('button', { class: 'wr-btn primary', disabled: S.sending, text: '汇总定稿', onclick: () => { const col = cols.find((c) => c.sid === pick.value); if (col) sendFinalize(col); } })) : null));
-    require('./composer-collapse').mountComposerCollapse({ document, host: el,
-      before: el.querySelector('.wb-compose-row > button'), input: free });
+    const dir = S.dir;
+    composer = require('./writing-composer').mountWritingComposer({ host: inputHost, h, ipcRenderer,
+      value: b.free || '', placeholder: '写点评，也可以在稿里选中一段，点「点评这段」…',
+      label: S.sending ? '正在发…' : '发出点评', disabled: S.sending,
+      allowEmpty: () => !!basket(dir).items.length,
+      canSend: () => !Array.isArray(basket(dir).recipients) || basket(dir).recipients.length > 0,
+      target: { id: `writing:${dir}`, project: dir, meetingId: v.meetingId },
+      referenceSession: typeof referenceSessionIntoInput === 'function' ? referenceSessionIntoInput : null,
+      onInput: text => { const nb = basket(dir); nb.free = text; saveBasket(nb, dir); }, onSend: sendComments,
+    });
+    composer.input.classList.add('wb-free');
   }
 
   function render() {
@@ -528,6 +548,7 @@ function createWorkbench(ctx) {
   }
 
   function mount(container, dir) {
+    composer?.dispose(); composer = null;
     if (S.resize) { S.resize.disconnect(); S.resize = null; }
     if (S.dir !== dir) { S.view = null; S.versionOf = {}; S.tab = null; S.seen = {}; S.hadFinal = false; }
     S.dir = dir;

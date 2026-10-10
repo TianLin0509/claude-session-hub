@@ -27,6 +27,8 @@
 
   let root = null;
   let pollTimer = null;
+  let composer = null;
+  const { mountWritingComposer, mountWritingMembers } = require('./writing-composer');
 
   /* ─────────────── 工具 ─────────────── */
 
@@ -180,7 +182,8 @@
         let tuning = m.model ? { model: m.model } : {};
         try { if (wc && typeof wc.buildSessionTuningOpts === 'function') tuning = wc.buildSessionTuningOpts(m.kind, m.model || '', {}) || tuning; } catch { /* 用默认调参 */ }
         if (m.model) tuning.model = m.model;
-        return { index: i, kind: m.kind, ...tuning };
+        return { index: i, kind: m.kind, ...tuning, ...(m.effort ? { effort: m.effort } : {}),
+          ...(m.codexSpeedTier ? { codexSpeedTier: m.codexSpeedTier } : {}), ...(typeof m.fastMode === 'boolean' ? { fastMode: m.fastMode } : {}) };
       });
       const meeting = await ipcRenderer.invoke('create-meeting', {
         mode: 'writing',
@@ -216,28 +219,39 @@
   }
 
   async function renderComposer(box) {
-    let members = [];
-    try { members = (await call('writing:article-defaults')).members; } catch { /* 下面按钮会灰掉 */ }
-    const picked = new Set(members.map((_, i) => i));
-    const ta = h('textarea', { class: 'wr-input wb-compose-text', rows: '8', placeholder: '这篇想写什么？说说中心思想、写给谁、想表达的观点。想到哪写到哪，AI 会补问。' });
-    ta.value = S.studio.draft || '';
-    const go = h('button', { class: 'wr-btn primary big', text: S.studio.creating ? '正在建写作群…' : '开始写',
-      onclick: () => startArticle(ta.value.trim(), members.filter((_, i) => picked.has(i))) });
-    const sync = () => { go.disabled = !ta.value.trim() || !picked.size || S.studio.creating; };
-    ta.addEventListener('input', () => { S.studio.draft = ta.value; sync(); });
-    sync();
-    box.replaceChildren(h('div', { class: 'wr-card wb-compose' },
+    const mode = box.dataset.mode;
+    if (!S.studio.members) {
+      try {
+        const saved = JSON.parse(localStorage.getItem('writing-members-v1') || 'null');
+        S.studio.members = Array.isArray(saved) && saved.every(m => m && typeof m.kind === 'string') ? saved : (await call('writing:article-defaults')).members;
+      } catch (error) { toast('读取写作成员失败：' + error.message, true); S.studio.members = []; }
+    }
+    if (!box.isConnected || box.dataset.mode !== mode) return;
+    composer?.dispose();
+    const members = h('div', { class: 'writing-members' });
+    const card = h('div', { class: 'wr-card wb-compose' },
       h('h2', { class: 'wb-title', text: '新文章' }),
-      ta,
-      h('div', { class: 'wb-row' },
-        h('span', { class: 'wr-muted', text: '请这几位一起写：' }),
-        ...members.map((m, i) => h('label', { class: 'wb-member' },
-          h('input', { type: 'checkbox', checked: true, onchange: (e) => { if (e.target.checked) picked.add(i); else picked.delete(i); sync(); } }),
-          `${kindLabel(m.kind)}${m.model ? ` · ${m.model}` : ''}`))),
-      h('div', { class: 'wr-muted', text: '点「开始写」后，Hub 在后台建一个写作群，把这段话发给大家。各家的稿会出现在这里，你在这里回答问题、点评、定稿；群聊只在想看过程时打开。' }),
-      h('div', { class: 'wb-row' }, go, S.studio.articles.length ? h('button', { class: 'wr-btn', text: '取消', onclick: () => { S.studio.composing = false; S.studio.sig = null; renderStudio(); } }) : null)));
-    require('./composer-collapse').mountComposerCollapse({ document, host: box.firstElementChild, before: go, input: ta });
-    setTimeout(() => ta.focus(), 0);
+      h('div', { class: 'wr-muted', text: '说说想写什么，选几位 AI 一起写。初稿、点评和定稿都留在这里。' }), members);
+    box.replaceChildren(card);
+    composer = mountWritingComposer({ host: card, h, ipcRenderer, value: S.studio.draft,
+      placeholder: '这篇想写什么？中心思想、读者、观点，想到哪说到哪…',
+      label: S.studio.creating ? '正在建写作群…' : '开始写', disabled: S.studio.creating,
+      canSend: () => !!S.studio.members.length,
+      target: { id: 'writing-new', project: '' },
+      referenceSession: typeof referenceSessionIntoInput === 'function' ? referenceSessionIntoInput : null,
+      onInput: text => { S.studio.draft = text; if (composer) composer.send.disabled = S.studio.creating || !text.trim() || !S.studio.members.length; },
+      onSend: text => { if (S.studio.members.length) return startArticle(text.trim(), S.studio.members); },
+    });
+    composer.input.classList.add('wb-compose-text');
+    mountWritingMembers({ host: members, h, members: S.studio.members.map(m => ({ ...m })), disabled: S.studio.creating,
+      onChange: selected => {
+        S.studio.members = selected;
+        try { localStorage.setItem('writing-members-v1', JSON.stringify(selected)); }
+        catch { toast('成员已选择，但本机保存失败；下次打开需重新选择', true); }
+        composer.send.disabled = S.studio.creating || !S.studio.draft.trim() || !selected.length;
+      } });
+    if (S.studio.articles.length) card.append(h('button', { class: 'wr-btn', text: '取消', disabled: S.studio.creating,
+      onclick: () => { S.studio.composing = false; S.studio.sig = null; renderStudio(); } }));
   }
 
   function renderStudio() {
@@ -268,7 +282,7 @@
     if (main.dataset.mode === mode && main.firstElementChild) return;
     main.dataset.mode = mode;
     if (st.composing || !st.current) { workbench.setVisible(false); renderComposer(main); }
-    else { workbench.mount(main, st.current); workbench.setVisible(S.opened && S.view === 'studio'); }
+    else { composer?.dispose(); composer = null; workbench.mount(main, st.current); workbench.setVisible(S.opened && S.view === 'studio'); }
   }
 
   /* ─────────────── 作品库（只读） ─────────────── */

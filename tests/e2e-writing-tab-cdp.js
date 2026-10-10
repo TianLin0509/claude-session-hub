@@ -187,7 +187,7 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
       await clickText('总评', '.wb-panel');
       await typeInto('.wb-pop-input', '写给做调度算法的工程师，多用调度里的例子');
       await clickText('放进点评篮（Ctrl+Enter）', '.wb-pop');
-      await clickText('发出点评，各自改一版', '.wb-basket');
+      await clickText('发出点评', '.wb-basket');
       await untilFs(() => userSaid(meeting.id).some((t) => t.includes('我的点评') && t.includes('调度算法')), 'comments sent', 60000);
       check('总评整理成一条点评消息发进群', true);
     }

@@ -280,3 +280,34 @@
 }
 #writing-panel .wb-actions { display: inline-flex; gap: 2px; margin-left: auto; flex: none; }
 #writing-panel .wb-panel .wb-empty-col { border-style: solid; border-color: var(--border-subtle); background: var(--surface-raised); }
+
+/* Same compact input affordances as the group composer, scoped to writing. */
+#writing-panel .writing-composer { display:flex; flex-direction:column; gap:8px; padding:10px; min-width:0; border:1px solid var(--border-subtle); border-radius:12px; background:var(--surface-raised); }
+#writing-panel .writing-composer:focus-within { border-color:var(--brand); }
+#writing-panel .writing-input { display:block; flex:none; min-height:90px; max-height:220px; width:100%; box-sizing:border-box; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; border:0; outline:0; background:transparent; font:14px/1.65 var(--font-sans); color:var(--fg-default); padding:4px; }
+#writing-panel .writing-input:empty::before { content:attr(data-placeholder); color:var(--fg-muted); pointer-events:none; }
+#writing-panel .writing-expanded .writing-input { min-height:260px; max-height:55vh; }
+#writing-panel .writing-input-rail { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:0; }
+#writing-panel .writing-input-rail .wr-spacer { flex:1; }
+#writing-panel .writing-input-rail .floating-input-send { width:auto; height:30px; flex:none; padding:4px 12px; font-size:12px; }
+#writing-panel .writing-input-hint { color:var(--fg-muted); font-size:11px; }
+#writing-panel .writing-input-status:empty { display:none; }
+#writing-panel .writing-members { display:flex; flex-direction:column; gap:6px; margin:12px 0; }
+#writing-panel .writing-members-head, #writing-panel .writing-member-row, #writing-panel .writing-recipient-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+#writing-panel .writing-members-head { justify-content:space-between; color:var(--fg-muted); font-size:12px; }
+#writing-panel .writing-member-row { padding:6px 8px; border-radius:8px; background:var(--surface-sunken); }
+#writing-panel .writing-member-kind { width:110px; }
+#writing-panel .writing-member-model { flex:1; min-width:130px; max-width:440px; }
+#writing-panel .writing-member-effort { width:105px; }
+#writing-panel .writing-member-speed { width:115px; }
+#writing-panel .writing-member-row .wr-select { font-size:12px; height:28px; padding:2px 6px; }
+#writing-panel .writing-member-remove { margin-left:auto; }
+#writing-panel .writing-recipient-row { margin:0 0 8px; }
+#writing-panel .writing-recipient.selected { color:var(--brand); border-color:var(--brand); background:var(--surface-sunken); }
+#writing-panel .writing-composer.composer-is-collapsed > :not(.composer-expand) { display:none!important; }
+#writing-panel .wb-compose { display:flex; flex-direction:column; gap:8px; }
+@media(max-width:900px) {
+ #writing-panel .writing-input-hint { display:none; }
+ #writing-panel .writing-member-model { min-width:120px; }
+ #writing-panel .writing-member-row { gap:4px; }
+}
