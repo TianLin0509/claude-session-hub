@@ -870,6 +870,7 @@ const modelUi = createModelUiController({
     codexProfile: session && session.codexProfile,
   }),
   getTerminalScreenText: sessionId => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
+  openCommandScreen: sessionId => require('./command-screen').openCommandScreen(ipcRenderer, sessionId),
   isSessionBusy: session => sessionRuntimeIsActive(session),
   // 头部徽章 T2 删了，模型名只剩 composer 底栏那个 chip。模型切换的每一步
   // （发起 / 确认 / 超时回滚）都要让它重画一次，否则会停在切换前的名字上。
