@@ -55,7 +55,7 @@ async function frameClient(hub) {
       label: 'chuxin-version', extraEnv: { CLAUDE_HUB_E2E: '1', CHUXIN_API_BASE: base, CHUXIN_WEB_BASE: base } });
     client = await connectFirstPage(hub, t => t.type === 'page' && /renderer[\\/]index\.html/.test(t.url || ''));
     await client.send('Runtime.enable'); await client.send('Page.enable');
-    await wait(client, 'document.querySelector("#btn-research") && window.__chuxinShow', 'Hub ready');
+    await wait(client, 'document.querySelector("#btn-research") && document.querySelector("[data-tab=lindang]") && window.__chuxinShow', 'Hub ready');
     await client.eval(`document.querySelector('#btn-research').click(); document.querySelector('[data-tab="lindang"]').click()`);
     await wait(client, 'document.querySelector("#toolbar-crumb .cx-ui-version")?.textContent === "UI 20261010.1"', 'loaded version in the requested title bar');
     embedded = await frameClient(hub);
@@ -111,7 +111,7 @@ async function frameClient(hub) {
         label: 'chuxin-real-version', extraEnv: { CLAUDE_HUB_E2E: '1', CHUXIN_API_BASE: api, CHUXIN_WEB_BASE: web } });
       client = await connectFirstPage(hub, t => t.type === 'page' && /renderer[\\/]index\.html/.test(t.url || ''));
       await client.send('Runtime.enable'); await client.send('Page.enable');
-      await wait(client, 'document.querySelector("#btn-research") && window.__chuxinShow', 'real-record Hub ready');
+      await wait(client, 'document.querySelector("#btn-research") && document.querySelector("[data-tab=lindang]") && window.__chuxinShow', 'real-record Hub ready');
       await client.eval(`document.querySelector('#btn-research').click(); document.querySelector('[data-tab="lindang"]').click()`);
       const release = await (await fetch(web + '/ui-version.json', { cache: 'no-store' })).json();
       await wait(client, `document.querySelector('.cx-ui-version')?.textContent === ${JSON.stringify('UI ' + release.version)}`, 'real document version receipt');
