@@ -281,6 +281,30 @@
 #writing-panel .wb-actions { display: inline-flex; gap: 2px; margin-left: auto; flex: none; }
 #writing-panel .wb-panel .wb-empty-col { border-style: solid; border-color: var(--border-subtle); background: var(--surface-raised); }
 
+/* 文稿优先：压缩外围留白，问题跟随各自的文章。 */
+#writing-panel .wb { gap:8px; }
+#writing-panel .wb-title { font-size:16px; }
+#writing-panel .wb-titlebar { gap:6px; }
+#writing-panel .wb-step { font-size:11px; padding:1px 6px; }
+#writing-panel .wb-progress { font-size:11px; color:var(--fg-muted); }
+#writing-panel .wb-progress summary { cursor:pointer; }
+#writing-panel .wb-progress .wb-steps { margin-top:4px; }
+#writing-panel .wb-idea { margin-top:2px; font-size:12px; }
+#writing-panel .wb-tab { padding:7px 12px; }
+#writing-panel .wb-articles-body { padding-top:6px; }
+#writing-panel .wb-panel-bar { padding-bottom:6px; }
+#writing-panel .wb-panel-bar, #writing-panel .wb-panel-body { max-width:1120px; }
+#writing-panel .wb-panel .wr-paper { padding:22px 30px 26px; }
+#writing-panel .wb-panel .wr-paper :is(p,ul,ol,h1,h2,h3,h4,blockquote) { max-width:none; }
+#writing-panel .wb-panel .wr-paper h1:first-child { font-size:24px; margin-bottom:16px; }
+#writing-panel .wb-member-questions { padding:12px 14px; }
+#writing-panel .wb-col .wr-paper { max-height:none; overflow:visible; }
+@media(max-width:900px) {
+  #writing-panel .wr-studio-split { grid-template-columns:minmax(0,1fr); }
+  #writing-panel .wr-version { display:none; }
+  #writing-panel .wb-panel .wr-paper { padding:18px 20px; }
+}
+
 /* Same compact input affordances as the group composer, scoped to writing. */
 #writing-panel .writing-composer { display:flex; flex-direction:column; gap:8px; padding:10px; min-width:0; border:1px solid var(--border-subtle); border-radius:12px; background:var(--surface-raised); }
 #writing-panel .writing-composer:focus-within { border-color:var(--brand); }
@@ -291,6 +315,7 @@
 #writing-panel .writing-input-rail .wr-spacer { flex:1; }
 #writing-panel .writing-input-rail .floating-input-send { width:auto; height:30px; flex:none; padding:4px 12px; font-size:12px; }
 #writing-panel .writing-input-hint { color:var(--fg-muted); font-size:11px; }
+#writing-panel .wb-basket .writing-input { min-height:40px; }
 #writing-panel .writing-input-status:empty { display:none; }
 #writing-panel .writing-members { display:flex; flex-direction:column; gap:6px; margin:12px 0; }
 #writing-panel .writing-members-head, #writing-panel .writing-member-row, #writing-panel .writing-recipient-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
@@ -302,7 +327,7 @@
 #writing-panel .writing-member-speed { width:115px; }
 #writing-panel .writing-member-row .wr-select { font-size:12px; height:28px; padding:2px 6px; }
 #writing-panel .writing-member-remove { margin-left:auto; }
-#writing-panel .writing-recipient-row { margin:0 0 8px; }
+#writing-panel .writing-recipient-row { margin:0; }
 #writing-panel .writing-recipient.selected { color:var(--brand); border-color:var(--brand); background:var(--surface-sunken); }
 #writing-panel .writing-composer.composer-is-collapsed > :not(.composer-expand) { display:none!important; }
 #writing-panel .wb-compose { display:flex; flex-direction:column; gap:8px; }
