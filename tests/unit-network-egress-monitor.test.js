@@ -151,3 +151,24 @@ test('curl probe forces IPv4 and chooses explicit proxy versus explicit direct r
   assert.equal(calls[0][calls[0].indexOf('--proxy') + 1], 'http://127.0.0.1:7890');
   assert.equal(calls[1][calls[1].indexOf('--noproxy') + 1], '*');
 });
+
+test('default curl probe starts its process off the main thread', async () => {
+  // 2026-10-11: two curl spawns per sample held Electron's main thread 50-125 ms each.
+  const childProcess = require('node:child_process');
+  const mainThreadCalls = [];
+  const originals = { execFile: childProcess.execFile, spawn: childProcess.spawn };
+  childProcess.execFile = (...args) => { mainThreadCalls.push(args[0]); return originals.execFile(...args); };
+  childProcess.spawn = (...args) => { mainThreadCalls.push(args[0]); return originals.spawn(...args); };
+  try {
+    const probe = createCurlGeoProbe({
+      curlBin: process.execPath,
+      endpoints: [{ name: 'fixture', url: 'http://127.0.0.1:9/never' }],
+      timeoutMs: 1000,
+    });
+    const result = await probe({ route: 'direct' });
+    assert.equal(result.ok, false, 'node is not curl: the probe reports a failure');
+    assert.deepEqual(mainThreadCalls, [], 'no process was created on the calling thread');
+  } finally {
+    Object.assign(childProcess, originals);
+  }
+});
