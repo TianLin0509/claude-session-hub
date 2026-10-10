@@ -66,5 +66,14 @@ function cellFrame(lines, top = 3) {
   talk.write('> Yes, I trust this folder is the option name in Claude Code.\r\nQuick safety check is its title.\r\n');
   assert.strictEqual(detectTrustDialogInLines(await talk.lines()), null, '没有确认底栏就不动手');
   screen.dispose(); idle.dispose(); talk.dispose();
+
+  // 2026-10-11：90 秒看门狗在读屏排队期间释放了终端，回调里 term 已是 null，
+  // 未捕获异常把整个 Hub 主进程打崩（退出码 7）。释放后读屏只能得到空屏。
+  const racing = createTrustScreen();
+  racing.write(frame);
+  const pending = racing.lines();
+  racing.dispose();
+  assert.deepStrictEqual(await pending, [], '释放后的读屏返回空屏，不抛异常');
+  assert.deepStrictEqual(await racing.lines(), [], '释放后再读也安全');
   console.log('unit-codeagent-trust-screen: OK');
 })().catch(error => { console.error(error); process.exit(1); });
