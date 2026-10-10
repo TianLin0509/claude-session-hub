@@ -12,11 +12,13 @@ const root = path.resolve(__dirname, '..');
 const out = path.join(root, 'output', '20261010-chuxin-version-codex');
 async function wait(client, expression, label, timeout = 15000) {
   const end = Date.now() + timeout;
+  let lastError = '';
   while (Date.now() < end) {
-    if (await client.eval(`Boolean(${expression})`)) return;
+    try { if (await client.eval(`Boolean(${expression})`)) return; }
+    catch (error) { lastError = error.message; }
     await _waitMs(150);
   }
-  throw new Error(`timeout: ${label}`);
+  throw new Error(`timeout: ${label}${lastError ? ': ' + lastError : ''}`);
 }
 async function frameClient(hub) {
   const targets = await listCdpTargets(hub);
@@ -59,6 +61,10 @@ async function frameClient(hub) {
     embedded = await frameClient(hub);
     assert.equal(await embedded.eval('document.querySelector("#candidates") === null'), true);
     checks.push('old live document reproduced; title reports loaded build');
+    await embedded.eval('window.__stableResearchDocument = "same-document"');
+    await client.eval(`document.querySelector('[data-tab="today"]').click(); document.querySelector('[data-tab="lindang"]').click()`);
+    assert.equal(await embedded.eval('window.__stableResearchDocument'), 'same-document', 'normal tab switches must preserve the mounted research document');
+    checks.push('normal research tab switching preserves shared page state');
     const before = await client.eval(`({src:document.querySelector('.cx-frame').src, workspace:localStorage.getItem('chuxin.hub.workspace')})`);
     version = '20261010.2';
     await client.eval('window.__chuxinCheckVersion()');

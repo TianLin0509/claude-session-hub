@@ -219,9 +219,6 @@
     }
     const navigate = () => {
       if (state.frame.dataset.hash !== tab.hash || state.frame.src !== frameUrl()) {
-        state.loadToken = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 7);
-        state.loadedVersion = '';
-        publishVersion();
         state.frame.dataset.hash = tab.hash;
         state.frame.src = frameUrl();
       }
