@@ -1,7 +1,7 @@
 {
   "$comment": "公司版发行目标：node scripts/community/export-community.js --target company --out <空目录>。在社区版基础上叠加 overlay/，并把仓库地址换成 repo。",
   "repo": "TianLin0509/ai-hub-codeagent",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）",
   "features": { "assistant": false }
 }

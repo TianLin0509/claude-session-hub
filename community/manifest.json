@@ -37,6 +37,9 @@
     "tests/diagnose-backstage-freeze.js",
     "tests/e2e-window-occlusion-keeps-rendering.js",
     "tests/unit-window-keep-rendering.test.js",
+    "tests/unit-backstage-path.test.js",
+    "tests/repro-backstage-render.js",
+    "tests/fixtures/codeagent-tui-standin/**",
     "tests/fixtures/codeagent-env-echo.cmd"
   ],
   "drop": [
