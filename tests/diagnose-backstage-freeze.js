@@ -76,16 +76,17 @@ function cpuLine(a, b) {
   for (const r of tree(b)) { const p = prev.get(r.pid); const k = group(r); const cur = g.get(k) || { cpu: 0, ws: 0, n: 0 }; cur.cpu += p ? Math.max(0, r.cpu - p.cpu) : 0; cur.ws += r.ws; cur.n++; g.set(k, cur); }
   return [...g.entries()].map(([k, v]) => `${k}×${v.n} ${Math.round(v.cpu / secs * 100)}% ${Math.round(v.ws / 2 ** 20)}MB`).join(' · ');
 }
-const MON = `(() => { if (window.__f) return 1; const m = window.__f = { bytes: {}, chunks: {}, frames: 0, lagMax: 0, long: 0, longMs: 0 };
+const MON = `(() => { if (window.__f) return 1; const m = window.__f = { bytes: {}, chunks: {}, frames: 0, lagMax: 0, long: 0, longMs: 0, vis: [] };
+  document.addEventListener('visibilitychange', () => m.vis.push(document.visibilityState));
   ipcRenderer.on('terminal-data', (_e, p) => { if (!p) return; m.bytes[p.sessionId] = (m.bytes[p.sessionId] || 0) + String(p.data || '').length; m.chunks[p.sessionId] = (m.chunks[p.sessionId] || 0) + 1; });
   const f = () => { m.frames++; requestAnimationFrame(f); }; requestAnimationFrame(f);
   let last = performance.now(); setInterval(() => { const n = performance.now(); m.lagMax = Math.max(m.lagMax, n - last - 100); last = n; }, 100);
   try { new PerformanceObserver(l => { for (const e of l.getEntries()) { m.long++; m.longMs += e.duration; } }).observe({ entryTypes: ['longtask'] }); } catch {}
   return 1; })()`;
-const TAKE = `(() => { const m = window.__f; const r = { bytes: m.bytes, chunks: m.chunks, frames: m.frames, lagMax: Math.round(m.lagMax), long: m.long, longMs: Math.round(m.longMs),
+const TAKE = `(() => { const m = window.__f; const r = { bytes: m.bytes, chunks: m.chunks, frames: m.frames, lagMax: Math.round(m.lagMax), long: m.long, longMs: Math.round(m.longMs), visNow: document.visibilityState, vis: m.vis.slice(),
   heapMB: Math.round(((performance.memory || {}).usedJSHeapSize || 0) / 1048576), dom: document.getElementsByTagName('*').length,
   terms: [...terminalCache.entries()].map(([k, v]) => ({ id: k.slice(0, 6), mode: v._rendererMode || '-', visible: !!(v.container && v.container.style.display !== 'none'), rows: v.terminal && v.terminal.buffer.active.length, alt: v.terminal && v.terminal.buffer.active.type })) };
-  Object.assign(m, { bytes: {}, chunks: {}, frames: 0, lagMax: 0, long: 0, longMs: 0 }); return r; })()`;
+  Object.assign(m, { bytes: {}, chunks: {}, frames: 0, lagMax: 0, long: 0, longMs: 0, vis: [] }); return r; })()`;
 
 async function phase(label, secs, ids, { profile = false } = {}) {
   await timed(TAKE, 10000);
@@ -108,7 +109,7 @@ async function phase(label, secs, ids, { profile = false } = {}) {
   const sorted = rtt.slice().sort((a, b) => a - b);
   const lines = [`### ${label}（${Math.round(el)} 秒）`, '',
     `- 界面响应往返 ms：p50 ${sorted[Math.floor(sorted.length / 2)] ?? '-'} / 最大 ${sorted.at(-1) ?? '-'}；超过 10 秒无响应 ${fails} 次${fails ? `（最长 ${Math.round(worst / 1000)} 秒）` : ''}`,
-    `- 画面帧数 ${t.ok ? Math.round(v.frames / el) : '?'} 帧/秒；主线程最大延迟 ${v.lagMax ?? '?'} ms；长任务 ${v.long ?? '?'} 次 共 ${v.longMs ?? '?'} ms；JS 堆 ${v.heapMB ?? '?'} MB；页面元素 ${v.dom ?? '?'} 个`,
+    `- 画面帧数 ${t.ok ? Math.round(v.frames / el) : '?'} 帧/秒；主线程最大延迟 ${v.lagMax ?? '?'} ms；长任务 ${v.long ?? '?'} 次 共 ${v.longMs ?? '?'} ms；JS 堆 ${v.heapMB ?? '?'} MB；页面元素 ${v.dom ?? '?'} 个；页面可见性 ${v.visNow ?? '?'}${(v.vis || []).length ? `（期间变化：${v.vis.join('→')}）` : ''}`,
     `- 终端数据：${ids.map((id, i) => `s${i + 1} ${(((v.bytes || {})[id] || 0) / el / 1024).toFixed(1)}KB/s ${Math.round(((v.chunks || {})[id] || 0) / el)}块/s`).join('；')}`,
     `- 终端：${(v.terms || []).map(x => `${x.id} ${x.mode}${x.visible ? ' 可见' : ''} ${x.alt === 'alternate' ? '全屏界面' : '普通'} ${x.rows}行`).join('；') || '无'}`,
     `- 全程各进程 CPU（单核=100%）：${cpuLine(s0, s1)}`, '', '每秒采样：', '```text', ...cpuTimeline.slice(0, 40), '```'];
@@ -179,6 +180,8 @@ main().catch(e => { md.push('## 致命错误', '```text', redact(e && e.stack ||
   .finally(async () => {
     try { if (hub) { const log = hub.log().filter(l => /gpu|render|crash|gone|unresponsive|OOM|memory|error|warn/i.test(l)).slice(-60).map(redact); if (log.length) md.push('## Hub 日志（相关行）', '```text', ...log, '```'); } } catch {}
     if (events.length) md.push('## 崩溃 / 无响应事件', '```text', ...events, '```');
+    // Hub 自己的窗口事件日志（v0.5.5 起）：页面被判成不可见、出帧停顿、无响应、进程退出都在这里。
+    try { const wl = fs.readFileSync(path.join(root, 'data', 'logs', 'window-events.log'), 'utf8').trim().split(/\r?\n/).slice(-40).map(redact); if (wl.length) md.push('## Hub 窗口事件日志（最后 40 行）', '```text', ...wl, '```'); } catch {}
     // 黑屏多半是某个进程崩溃：Windows 应用日志里有崩溃模块（最近 6 小时，含你平时使用时的崩溃）。显卡型号与驱动一并记下。
     try {
       const ps = "[Console]::OutputEncoding=[Text.Encoding]::UTF8;$ErrorActionPreference='SilentlyContinue';"

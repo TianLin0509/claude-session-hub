@@ -1130,6 +1130,32 @@ function scheduleSessionListRender() {
   sidebarRenderCoalescer.schedule();
 }
 
+// 画面停刷的现场记录（写进 <数据目录>/logs/window-events.log，见 core/window-keep-rendering.js）：
+// 页面被判成可见/不可见时记一笔；页面可见却超过 3 秒没出一帧，也记一笔（带当前视图与会话数），
+// 用来区分「窗口被当成看不见」和「真的画不动」。每秒只排一次 requestAnimationFrame，开销可忽略。
+(() => {
+  const report = (event, extra = {}) => {
+    try { ipcRenderer.send('hub:page-window-event', { event, view: typeof currentView === 'string' ? currentView : null, sessions: typeof sessions !== 'undefined' ? sessions.size : null, ...extra }); } catch {}
+  };
+  document.addEventListener('visibilitychange', () => report('visibility', { state: document.visibilityState }));
+  let pendingSince = 0;
+  let stalled = false;
+  setInterval(() => {
+    if (document.visibilityState !== 'visible') { pendingSince = 0; return; }
+    const now = performance.now();
+    if (pendingSince) {
+      if (!stalled && now - pendingSince > 3000) { stalled = true; report('frame-stall', { ms: Math.round(now - pendingSince) }); }
+      return;
+    }
+    pendingSince = now;
+    requestAnimationFrame(() => {
+      if (stalled) report('frame-resume', { ms: Math.round(performance.now() - pendingSince) });
+      stalled = false;
+      pendingSince = 0;
+    });
+  }, 1000);
+})();
+
 ipcRenderer.on('desktop-notification:open-session', (_event, payload = {}) => {
   const sessionId = String(payload.sessionId || '');
   if (!sessionId || !sessions.has(sessionId)) return;
