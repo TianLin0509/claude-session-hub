@@ -9,8 +9,8 @@
 (function () {
   const { ipcRenderer } = require('electron');
 
-  let API = 'http://127.0.0.1:3004';
-  let WEB = 'http://127.0.0.1:3003';
+  let API = process.env.CHUXIN_API_BASE || 'http://127.0.0.1:3004';
+  let WEB = process.env.CHUXIN_WEB_BASE || 'http://127.0.0.1:3003';
   const WS_KEY = 'chuxin.hub.workspace';
   const PRIMARY_WORKSPACE = 'hub-primary-workspace';
   const TAB_KEY = 'chuxin.hub.active-tab';
@@ -36,6 +36,10 @@
     opened: false,
     online: false,
     nativeTabActive: false,
+    loadToken: String(Date.now()),
+    loadedVersion: '',
+    availableVersion: '',
+    versionError: '',
   };
 
   // ---------- 小工具 ----------
@@ -201,19 +205,25 @@
     const returningFromNative = state.nativeTabActive;
     state.nativeTabActive = false;
     state.frameView.style.display = 'flex';
-    const target = WEB + '/?api=' + encodeURIComponent(API)
-      + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
+    const frameUrl = () => WEB + '/?api=' + encodeURIComponent(API)
+      + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub&hubUi=' + state.loadToken + '#' + tab.hash;
     if (!state.frame) {
       state.frame = document.createElement('iframe');
       state.frame.className = 'cx-frame';
       state.frame.name = 'hub-chuxin';
       state.frame.setAttribute('allow', 'clipboard-read; clipboard-write');
       state.frameView.append(state.frame);
+      state.frame.addEventListener('load', () => {
+        state.frame.contentWindow.postMessage({ source: 'hub', type: 'chuxin-ui-version-request', requestId: state.loadToken }, new URL(WEB).origin);
+      });
     }
     const navigate = () => {
-      if (state.frame.dataset.hash !== tab.hash || state.frame.src !== target) {
+      if (state.frame.dataset.hash !== tab.hash || state.frame.src !== frameUrl()) {
+        state.loadToken = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 7);
+        state.loadedVersion = '';
+        publishVersion();
         state.frame.dataset.hash = tab.hash;
-        state.frame.src = target;
+        state.frame.src = frameUrl();
       }
     };
     // Chromium may keep an OOP iframe document.hidden=true when navigation is
@@ -222,6 +232,46 @@
     if (returningFromNative) setTimeout(navigate, 50);
     else navigate();
   }
+
+  function validVersion(value) {
+    return typeof value === 'string' && /^\d{8}\.\d{1,3}$/.test(value) ? value : '';
+  }
+  function publishVersion() {
+    window.__chuxinVersionInfo = {
+      loaded: state.loadedVersion, available: state.availableVersion, error: state.versionError,
+    };
+    window.dispatchEvent(new CustomEvent('chuxin-version-changed'));
+  }
+  async function checkVersion() {
+    if (state.versionCheck) return state.versionCheck;
+    const base = WEB;
+    state.versionCheck = (async () => {
+      try {
+        const r = await fetch(base + '/ui-version.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const version = validVersion((await r.json()).version);
+        if (!version) throw new Error('版本信息不完整');
+        if (base !== WEB) return;
+        state.availableVersion = version;
+        state.versionError = '';
+      } catch (error) {
+        if (base !== WEB) return;
+        state.versionError = '更新检查失败：' + error.message;
+      } finally {
+        publishVersion();
+      }
+    })();
+    try { await state.versionCheck; } finally { state.versionCheck = null; }
+  }
+  function refreshResearch() {
+    state.loadToken = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 7);
+    state.loadedVersion = '';
+    publishVersion();
+    switchTab(localStorage.getItem(TAB_KEY));
+    void checkVersion();
+  }
+  window.__chuxinCheckVersion = checkVersion;
+  window.__chuxinRefresh = refreshResearch;
 
   // ---------- 作手林铛：把一次决策开成左侧栏里的普通会话 ----------
   //
@@ -255,6 +305,10 @@
     if (event.origin !== new URL(WEB).origin) return;
     const data = event.data;
     if (!data || typeof data !== 'object' || data.source !== 'chuxin') return;
+    if (data.type === 'chuxin-ui-version' && data.requestId === state.loadToken) {
+      const version = validVersion(data.version);
+      if (version) { state.loadedVersion = version; publishVersion(); }
+    }
     if (data.type === 'open-lindang-session') void openLindangSession(String(data.runId || ''));
     if (data.type === 'chuxin-view') rememberInnerView(String(data.hash || ''));
   });
@@ -278,7 +332,11 @@
     try {
       const s = await ipcRenderer.invoke('chuxin:status');
       if (s && s.api_base) API = s.api_base;
-      if (s && s.web_base) WEB = s.web_base;
+      if (s && s.web_base && WEB !== s.web_base) {
+        WEB = s.web_base;
+        state.availableVersion = '';
+        refreshResearch();
+      }
       state.online = !!s.online;
       if (root) root.classList.toggle('cx-online', state.online);
       if (state.online) {
@@ -289,6 +347,7 @@
         state.statusEl.title = '投研后端 ' + API.replace(/^https?:\/\//, '');
         state.startBtn.style.display = 'none';
         void refreshBadges(false);
+        void checkVersion();
       } else {
         state.statusEl.className = 'cx-status offline';
         state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">投研后端未启动</span>';

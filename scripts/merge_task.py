@@ -179,6 +179,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("branch", help="要合并的任务分支")
     ap.add_argument("--dry-run", action="store_true", help="只 rebase 和跑测试，不真合")
+    ap.add_argument("--no-push", action="store_true", help="完成本地合并，不推送远端")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -373,7 +374,9 @@ def main():
 
     # ⑥ 推远端（有就推，没有也不算失败 —— 远端只是备份，不是关卡）
     say("⑤ 推远端")
-    if run(["git", "remote", "get-url", "origin"], check=False).returncode == 0:
+    if args.no_push:
+        say("   --no-push：仅本地合并，未推送远端")
+    elif run(["git", "remote", "get-url", "origin"], check=False).returncode == 0:
         r = run(["git", "push", "origin", trunk], env=bypass, check=False)
         say("   已推送" if r.returncode == 0 else f"   推送失败（本地已合，不影响）：{(r.stderr or '').strip()[:200]}")
     else:

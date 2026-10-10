@@ -1879,7 +1879,8 @@ function paintAppToolbarForView(label) {
   toolbarActionsEl.replaceChildren();
   toolbarActionsEl.hidden = true;
   syncBackstageButton(false);
-  const signature = 'view:' + label;
+  const researchVersion = label === '投研' ? (window.__chuxinVersionInfo || {}) : null;
+  const signature = 'view:' + label + (researchVersion ? JSON.stringify(researchVersion) : '');
   if (toolbarCrumbEl.dataset.signature === signature) return;
   toolbarCrumbEl.dataset.signature = signature;
   toolbarCrumbEl.replaceChildren();
@@ -1887,6 +1888,19 @@ function paintAppToolbarForView(label) {
   name.className = 'crumb-view-name';
   name.textContent = label;
   toolbarCrumbEl.appendChild(name);
+  if (researchVersion) {
+    const version = document.createElement('button');
+    version.type = 'button';
+    version.className = 'cx-ui-version';
+    version.textContent = researchVersion.loaded ? 'UI ' + researchVersion.loaded : '版本待确认';
+    if (researchVersion.available && researchVersion.available !== researchVersion.loaded) {
+      version.textContent += ' · 更新至 ' + researchVersion.available;
+    }
+    version.title = '点击刷新投研页面，保留当前栏目。' + (researchVersion.error || '');
+    version.setAttribute('aria-label', version.textContent + '，点击刷新投研页面');
+    version.addEventListener('click', () => window.__chuxinRefresh?.());
+    toolbarCrumbEl.appendChild(version);
+  }
 }
 
 // 会话视图。下面这一整段就是 T2 的舞台头部原样搬上来的：面包屑三段 + 状态点、
@@ -2052,6 +2066,7 @@ function refreshAppToolbar() {
 }
 
 let _appToolbarRefreshRaf = null;
+window.addEventListener('chuxin-version-changed', scheduleAppToolbarRefresh);
 function scheduleAppToolbarRefresh() {
   if (_appToolbarRefreshRaf) return;
   _appToolbarRefreshRaf = requestAnimationFrame(() => {
