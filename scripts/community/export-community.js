@@ -260,6 +260,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
     }
     const versions = { edition: version || (targetSpec && targetSpec.version) || manifest.version, upstream: upstreamVersion };
     if (!versions.edition) throw new Error('缺少社区版版本号（manifest.version 或 --version）');
+    let imageShrink = null;
 
     const include = matcher(manifest.include);
     const drop = matcher(manifest.drop);
@@ -293,6 +294,20 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
       const dest = path.join(outDir, file);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, applyVersionTokens(fs.readFileSync(path.join(targetOverlayDir, file), 'utf8'), versions), 'utf8');
+    }
+
+    // 发行包里的大图缩到界面实际需要的尺寸（2026-10-10：38 张 1254px 的 PNG 占了 app.asar 的 34 MB，
+    // 界面只按 24-168px 显示）。只改导出结果，主仓库保留原图。
+    const shrink = manifest.shrinkImages && Object.keys(manifest.shrinkImages).length ? manifest.shrinkImages : null;
+    if (shrink) {
+      if (process.platform !== 'win32') throw new Error('shrinkImages 需要在 Windows 上导出（用 System.Drawing 缩图）');
+      const rules = Object.entries(shrink).map(([dir, max]) => `${dir}=${Number(max)}`).join(';');
+      const run = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', path.join(__dirname, 'shrink-images.ps1'), '-Root', outDir, '-Rules', rules], { encoding: 'utf8', windowsHide: true, timeout: 300000 });
+      const line = String(run.stdout || '').trim().split(/\r?\n/).pop() || '';
+      if (run.status !== 0 || !/^\d+\|\d+\|\d+$/.test(line)) throw new Error(`缩图失败：${(run.stderr || run.stdout || '').trim().slice(0, 500)}`);
+      const [count, before, after] = line.split('|').map(Number);
+      imageShrink = { count, beforeBytes: before, afterBytes: after };
     }
 
     fs.writeFileSync(path.join(outDir, 'community-edition.json'), JSON.stringify({
@@ -330,6 +345,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
       leftoverMarkers: leftover, unresolvedReferences: references, syntaxErrors: syntax, leaks,
       residue: { count: residue.length, files: [...new Set(residue.map(hit => hit.file))].length, hits: residue },
       publicAudit: { ok: publicAudit.ok === true, failures: publicAudit.failures || [] },
+      ...(imageShrink ? { imageShrink } : {}),
     };
     return report;
   } finally {
