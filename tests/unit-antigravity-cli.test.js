@@ -38,12 +38,15 @@ test('only fully idle normal Stop completes; errors and foreign hooks cannot com
   tap._read(s);assert.equal(s.turns.at(-1).nativeOutcome,null,'rewritten text cannot inherit a previous completion receipt');
  tap._event(s,{...e,event:'Stop',observedAt:2,fullyIdle:true,terminationReason:'error',error:'rate limit'});
  assert.equal(events.filter(e=>e.name==='turn-complete').length,1);assert.equal(events.at(-1).name,'turn-error');
+ tap._event(s,{...e,event:'Stop',observedAt:3,fullyIdle:true,terminationReason:'NO_TOOL_CALL'});
+ assert.equal(events.filter(e=>e.name==='turn-complete').length,2,'real agy 1.3.3 normal Stop is NO_TOOL_CALL');
  assert.throws(()=>tap._event(s,{...e,conversationId:'b1111111-2222-4333-8444-555555555555'}),/其他会话/);
 });
 test('model list accepts only official slug rows and preserves account-dependent choices',()=>{
  const {parseModels}=require('../core/antigravity-model-catalog');
  assert.deepEqual(parseModels('Fetching available models...\ngemini-3.8-flash-high  Gemini 3.8 Flash (High)\nclaude-sonnet-5-5  Claude Sonnet 5.5\nError: login failed').map(m=>m.id),['gemini-3.8-flash-high','claude-sonnet-5-5']);
  assert.deepEqual(parseModels('Fetching available models...'),[]);
+ assert.equal(parseModels('gemini-3.1-pro-high\tGemini 3.1 Pro (High)')[0].id,'gemini-3.1-pro-high','agy 1.3.3 uses a single tab separator');
 });
 test('MCP migration adds missing definitions and preserves new settings and legacy originals',t=>{
  const {root}=fixture(t),legacy=path.join(root,'.gemini','settings.json'),target=path.join(root,'.gemini','config','mcp_config.json');
@@ -63,6 +66,7 @@ test('hook setup preserves custom hooks, scopes receipts and refuses malformed c
  const {root}=fixture(t);const env={CLAUDE_HUB_HOME_DIR:root};const file=path.join(root,'.gemini','config','hooks.json');fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({personal:{enabled:true}}));
  cfg.installHooks(env,path.join(root,'data'),'hub1');const hooks=JSON.parse(fs.readFileSync(file));assert.ok(hooks.personal);assert.ok(hooks['ai-hub-lifecycle'].Stop);
  assert.equal(env.AI_HUB_ANTIGRAVITY_SESSION_ID,'hub1');
+ if(process.platform==='win32')assert.match(hooks['ai-hub-lifecycle'].Stop[0].command,/^powershell.exe .* -EncodedCommand [A-Za-z0-9+/=]+$/);
  fs.writeFileSync(file,'broken');assert.throws(()=>cfg.installHooks(env,root,'hub1'));assert.equal(fs.readFileSync(file,'utf8'),'broken');
 });
 test('old Gemini token cannot authenticate Antigravity and official auth failure is propagated',async t=>{

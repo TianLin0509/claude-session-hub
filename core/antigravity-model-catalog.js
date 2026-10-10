@@ -3,7 +3,7 @@ const {resolveCommand}=require('./antigravity-config');
 function parseModels(text){
   const seen=new Set(),models=[];
   for(const line of String(text).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').split(/\r?\n/)){
-    const m=/^\s*((?:gemini|claude|gpt-oss)[\w.-]+)\s{2,}(.+?)\s*$/.exec(line);
+    const m=/^\s*((?:gemini|claude|gpt-oss)[\w.-]+)\s+(.+?)\s*$/.exec(line);
     if(m&&!seen.has(m[1])){seen.add(m[1]);models.push({id:m[1],label:m[2]});}
   }
   return models;

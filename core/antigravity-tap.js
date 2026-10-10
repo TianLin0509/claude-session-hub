@@ -70,7 +70,9 @@ class AntigravityTap extends EventEmitter {
       const lastUser=s.turns.findLastIndex(t=>t.role==='user');
       const answer=s.turns.slice(lastUser+1).filter(t=>t.role==='assistant'&&t.text).at(-1);
       if(e.error||e.terminationReason==='error'){this.emit('turn-error',{...ev,error:e.error||'Antigravity 执行失败'});return;}
-      if(e.terminationReason!=='model_stop'){this.emit('turn-aborted',{...ev,reason:e.terminationReason||'未收到正常结束原因'});return;}
+      // 1.3.3 emits NO_TOOL_CALL for a successful final response; newer hook
+      // documentation calls the same normal completion model_stop.
+      if(!['model_stop','NO_TOOL_CALL'].includes(e.terminationReason)){this.emit('turn-aborted',{...ev,reason:e.terminationReason||'未收到正常结束原因'});return;}
       if(!answer)throw Error('Antigravity 已停止，但最终正文尚未写入原生记录');
       s.lastText=answer?.text||null;
       if(answer){

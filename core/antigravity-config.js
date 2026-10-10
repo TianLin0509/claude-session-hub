@@ -91,7 +91,14 @@ function installHooks(env, dataDir, id) {
   fs.copyFileSync(path.join(__dirname, '..', 'scripts', 'antigravity-hub-hook.cjs'), script);
   const node = process.execPath;
   const prefix = process.versions.electron ? process.platform==='win32' ? 'set "ELECTRON_RUN_AS_NODE=1" && ' : 'ELECTRON_RUN_AS_NODE=1 ' : '';
-  const cmd = event => prefix + '"' + node + '" "' + script + '" ' + event;
+  // agy's Go cmd /c launcher escapes embedded quotes on Windows. Encoding the
+  // PowerShell command preserves paths with spaces and inherited JSON stdin.
+  const cmd = event => {
+    if (process.platform !== 'win32') return prefix + '"' + node + '" "' + script + '" ' + event;
+    const ps = (process.versions.electron ? "$env:ELECTRON_RUN_AS_NODE='1'; " : '') +
+      '& ' + [node, script, event].map(quote).join(' ') + '; exit $LASTEXITCODE';
+    return 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + Buffer.from(ps, 'utf16le').toString('base64');
+  };
   config['ai-hub-lifecycle'] = {enabled:true,
     PreInvocation:[{type:'command',command:cmd('PreInvocation'),timeout:5}],
     PostInvocation:[{type:'command',command:cmd('PostInvocation'),timeout:5}],
