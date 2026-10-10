@@ -838,7 +838,10 @@ function createModelUiController({
         // Native Claude answers over the protocol; there is no terminal prompt
         // to inspect, and the old screen check would reject every switch.
         const nativeClaude = session.runtimeBackend === 'claude-stream-json';
-        if (!native && !nativeClaude && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),codexPty ? 'codex-picker' : 'claude-inline')) {
+        // Codex's IPC checks the authoritative PTY snapshot and waits for the
+        // CLI acknowledgement. The hidden renderer frame can be empty/stale
+        // in card view; it must not veto that independent readiness check.
+        if (!native && !nativeClaude && !codexPty && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),'claude-inline')) {
           throw new Error('终端输入框有草稿或不在主提示符，请先处理后再切换');
         }
         const response = await ipcRenderer.invoke(native ? 'codex:native-action' : codexPty ? 'codex:set-speed' : 'session:set-fast', native
