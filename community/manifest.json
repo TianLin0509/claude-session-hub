@@ -35,6 +35,8 @@
     "tests/e2e-codeagent-terminal-env.js",
     "tests/e2e-company-no-assistant.js",
     "tests/diagnose-backstage-freeze.js",
+    "tests/e2e-window-occlusion-keeps-rendering.js",
+    "tests/unit-window-keep-rendering.test.js",
     "tests/fixtures/codeagent-env-echo.cmd"
   ],
   "drop": [
