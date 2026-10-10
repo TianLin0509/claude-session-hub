@@ -558,7 +558,9 @@ sessionListEl.addEventListener('keydown', event => {
   function collectSidebarItems(sessionMap = getSessions()) {
     const memberIds = new Set(Object.values(getMeetings()).flatMap(m => m.subSessions || []));
     const regularSessions = Array.from(sessionMap.values())
-    .filter(s => !s.meetingId && !memberIds.has(s.id) && s.kind !== 'chuxin-run' && !s.hiddenFromSidebar && s.purpose !== 'chuxin-research');
+    .filter(s => !s.meetingId && !memberIds.has(s.id) && s.kind !== 'chuxin-run' && !s.hiddenFromSidebar && s.purpose !== 'chuxin-research'
+      // 关掉助理的发行版（公司版）：旧版本留下的助理会话不再出现在侧栏（它跑不起来，只会显示运行异常）。
+      && !(s.purpose === 'hub-assistant' && !require('../core/distribution').featureEnabled('assistant')));
 
   const meetingItems = Object.values(getMeetings()).map(m => ({
     id: m.id,
