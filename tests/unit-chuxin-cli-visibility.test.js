@@ -154,7 +154,7 @@ test('Chuxin exposes one nine-item workbench nav: eight research tabs plus accou
   assert.match(chuxin, /setBadge\('data', attention \? attention : '', 'warn'\)/);
   assert.match(chuxin, /cx-primary-nav/);
   // 2026-09-27 方案 D：导航只在这里的左侧 tab 列（初心页面不带自己的顶栏），iframe 不再带 nav=inner
-  assert.match(chuxin, /&embed=hub#/);
+  assert.match(chuxin, /&embed=hub(?:&hubUi=|#)/);
   assert.doesNotMatch(chuxin, /nav=inner|cx-inner-nav/);
   // tab 带计数；后端状态与启动按钮在 tab 列底部；页面内跳转回报给 Hub 高亮对应 tab
   assert.match(chuxin, /cx-tab-badge/);

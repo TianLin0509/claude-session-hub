@@ -85,6 +85,29 @@ test('测试没过就不合，并自动回滚（闸门的核心）', () => {
   assert.strictEqual(sh('git status --porcelain', SANDBOX).trim(), '', '回滚后工作区必须干净');
 });
 
+test('--no-push 仍执行真实合并闸门，有 origin 时也不触发推送', () => {
+  const remote = path.join(SANDBOX, 'remote.git');
+  sh(`git init -q --bare "${remote}"`, SANDBOX);
+  sh(`git remote add origin "${remote}"`, SANDBOX);
+  const before = sh('git rev-parse main', SANDBOX).trim();
+  sh('git checkout -q -b local-only-branch main', SANDBOX);
+  fs.writeFileSync(path.join(SANDBOX, 'local-only.txt'), 'local\n');
+  sh('git add local-only.txt && git commit -q -m local-only', SANDBOX);
+  sh('git checkout -q main', SANDBOX);
+  try {
+    const r = runMerge(['local-only-branch', '--no-push'], SANDBOX);
+    assert.strictEqual(r.code, 0, r.out);
+    assert(/value = good/.test(r.out), '必须实际运行检查');
+    assert(/--no-push/.test(r.out), '必须报告没有推送');
+    assert.notStrictEqual(sh('git rev-parse main', SANDBOX).trim(), before);
+    assert.strictEqual(sh(`git --git-dir="${remote}" for-each-ref`, SANDBOX).trim(), '');
+  } finally {
+    sh('git remote remove origin', SANDBOX);
+    assert(path.resolve(remote).startsWith(path.resolve(SANDBOX) + path.sep));
+    fs.rmSync(remote, { recursive: true });
+  }
+});
+
 test('正常路径：测试过了才真合进主干', () => {
   const before = sh('git rev-parse main', SANDBOX).trim();
   const r = runMerge(['good-branch'], SANDBOX);
