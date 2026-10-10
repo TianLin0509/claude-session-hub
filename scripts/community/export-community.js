@@ -296,7 +296,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
     }
 
     fs.writeFileSync(path.join(outDir, 'community-edition.json'), JSON.stringify({
-      edition: 'community', ...(targetSpec ? { target, repo: targetSpec.repo } : {}), version: versions.edition, upstreamVersion: versions.upstream,
+      edition: 'community', ...(targetSpec ? { target, repo: targetSpec.repo, ...(targetSpec.features ? { features: targetSpec.features } : {}) } : {}), version: versions.edition, upstreamVersion: versions.upstream,
       upstreamCommit: source.commit, upstreamDirty: source.dirty,
     }, null, 2) + '\n', 'utf8');
     updatePackage(outDir, manifest, versions);

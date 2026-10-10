@@ -8606,6 +8606,11 @@ const assistantPanel = require('./assistant-panel').createAssistantPanel({
   },
 });
 window.__assistantHide = () => assistantPanel.close();
+// 发行目标关掉了助理（公司版）：左侧「助理」入口不显示，主进程也没有启动助理服务。
+if (!require('../core/distribution').featureEnabled('assistant')) {
+  const assistantNav = document.getElementById('btn-assistant');
+  if (assistantNav) assistantNav.style.display = 'none';
+}
 window.__assistantSync = session => assistantPanel.syncSession(session);
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
