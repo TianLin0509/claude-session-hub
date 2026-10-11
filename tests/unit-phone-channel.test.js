@@ -25,6 +25,31 @@ test('all Hub backends use one phone pairing; native request identity resolves a
 });
 
 const packets=(h,prefix)=>h.s.outbox.filter(r=>r.id.startsWith(prefix)).map(r=>open(h.c.key,h.c.channel,r.id,'hub',r.payload));
+test('old uncertain request releases an idle queue without retry; late exact answer still reconciles',async()=>{
+ const h=harness(),old='old-request-123456',next='photo-request-123456',logs=[];
+ h.assistant.logDialog=e=>logs.push(e);h.assistant.sessionBusy=()=>false;
+ h.s.inbox.push({id:old,type:'text',text:'old question',state:'unknown',sessionId:'old-assistant',t:{dispatch:Date.now()-31*60000}});
+ h.incoming(next,{type:'text',text:'new photo',to:'assistant'});await h.channel.tick();
+ assert.equal(h.s.inbox[0].state,'unresolved');assert.deepEqual(h.calls.map(r=>r.requestId),[next]);
+ assert(logs.some(e=>e.id===next&&e.role==='delivery'&&e.state==='queued'));
+ assert(logs.some(e=>e.id===old&&e.role==='delivery'&&e.state==='unresolved'));
+ h.assistant.readLiveFinal=id=>({records:id==='old-assistant'?[{clientSubmissionId:old,text:'late old answer'}]:[{clientSubmissionId:next,text:'photo answer'}]});
+ await h.channel.tick();assert(h.s.inbox.every(r=>r.state==='answered'));
+ assert.equal(packets(h,'answer-'+old)[0].text,'late old answer');assert.equal(packets(h,'answer-'+next)[0].text,'photo answer');
+ assert.equal(h.calls.length,1,'never resends the old request');
+});
+test('uncertain active, recent or unobservable sessions continue blocking dispatch',async()=>{
+ for(const mode of ['busy','recent','unobservable']){
+  const h=harness();if(mode!=='unobservable')h.assistant.sessionBusy=()=>mode==='busy';
+  h.s.inbox.push({id:'old-request-123456',state:'unknown',sessionId:'old',t:{dispatch:Date.now()-(mode==='recent'?1000:31*60000)}});
+  h.incoming('new-request-123456',{type:'text',text:'next'});await h.channel.tick();assert.equal(h.calls.length,0,mode);
+ }
+});
+test('late receipt for a released uncertain request keeps it detached from the queue',async()=>{
+ const h=harness(),id='old-request-123456';h.s.inbox.push({id,state:'unresolved',sessionId:'old'});
+ h.channel.observeReceipt({status:'confirmed',sessionId:'old',clientSubmissionId:id,turnId:'late-turn'});
+ assert.equal(h.s.inbox[0].state,'unresolved');assert.equal(h.s.inbox[0].turnId,'late-turn');
+});
 test('voice_message is transcribed once and handed straight to the assistant as voice input',async()=>{
  const h=harness(),id=crypto.randomUUID();let transcribed=0;h.channel.transcribe=async()=>{transcribed++;return' 仿真跑完了没有 ';};
  h.assistant.overview=()=>({status:'running'});h.incoming(id,{type:'voice_message',pcm:'AQI=',durationMs:1200});await h.channel.tick();
@@ -155,7 +180,9 @@ test('phone dialog log keeps every message and reply with who answered, for the 
  h.channel.fastLane=new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['【交给助理】'])});h.channel.transcribe=async()=>'记一下明天出差';
  const voice=crypto.randomUUID();push(voice,{type:'voice_message',pcm:'AQI=',durationMs:3000});await h.channel.tick();
  h.assistant.readLiveFinal=()=>({records:[{clientSubmissionId:voice,text:'田哥，已记下。'}]});await h.channel.tick();
- const rows=log.recent();
+ const allRows=log.recent(),rows=allRows.filter(r=>r.role!=='delivery');
+ assert(allRows.some(r=>r.id===fast&&r.role==='delivery'&&r.state==='queued'));
+ assert(allRows.some(r=>r.id===voice&&r.role==='delivery'&&r.state==='received'));
  assert.deepEqual(rows.map(r=>[r.role,r.lane||r.input,r.text]),[['user','text','一加一等于几'],['assistant','fast','田哥，2。'],['user','voice','记一下明天出差'],['route','assistant',''],['assistant','assistant','田哥，已记下。']]);
  assert.match(rows[3].by,/Claude · Sonnet 5.5/,'交给助理会话时写明交给了谁');
  const answers=packets(h,'answer-');assert.equal(answers[0].lane,'fast');assert.equal(answers[0].by,'千问 3.8 Flash');assert.equal(answers.at(-1).lane,'assistant');assert.match(answers.at(-1).by,/Claude/);
