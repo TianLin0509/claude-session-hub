@@ -12,7 +12,7 @@ test('photo assistant is a single ordinary visible session independent of a busy
  assert.equal(a.session.title,'拍图助理');assert.equal(a.session.hiddenFromSidebar,false);assert.equal(a.session.mcpProfile,'none');assert.equal(a.session.purpose,PURPOSE);
  assert.equal(x.a.store.get('sessionId'),'daily-assistant');await x.photo.send({requestId:'photo-request-123456',text:'read image'});assert.equal(x.sent[0][0],a.sessionId);
  assert.equal((await new PhotoAssistant(x.a).ensureSession()).sessionId,a.sessionId);assert.equal(x.created.length,1);
- x.sessions.get(a.sessionId).status='running';await assert.rejects(x.photo.send({text:'second image'}),e=>e.notSent===true);assert.equal(x.sent.length,1);
+ x.sessions.get(a.sessionId).status='running';await x.photo.send({text:'second image'});assert.equal(x.sent.length,2,'native input accepts photos while the assistant works');
 });
 test('photo creation retries the reserved identity, and adopts explicitly marked precreated sessions',async t=>{
  const x=fixture(t),create=x.a.deps.createSession;x.a.deps.createSession=async()=>{throw Error('startup failed')};await assert.rejects(x.photo.ensureSession(),/startup failed/);const id=x.photo.saved.id;
