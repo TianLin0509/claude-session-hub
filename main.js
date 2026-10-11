@@ -3181,6 +3181,14 @@ const hubMemoryService = new HubMemoryService({
   sendPrompt:(...args)=>require('./core/group-chat-watcher').sendToPty(...args),
 });
 require('./main/ipc/hub-memory-handlers').registerHubMemoryIpc(ipcMain,hubMemoryService);
+// 「规则」页（2026-10-12）：通用规则 + 我的规则，随会话第一条消息送达；手动检查更新。
+try {
+  const hubRules=require('./core/hub-rules').createHubRulesStore({dataDir:getHubDataDir(),channel:require('./core/distribution').rulesChannel});
+  hubMemoryService.hubRules=hubRules;
+  require('./main/ipc/hub-rules-handlers').registerHubRulesIpc(ipcMain,{store:hubRules,memoryService:hubMemoryService,shell});
+} catch (e) {
+  console.warn('[hub-rules] 规则页初始化失败：', e && e.message);
+}
 require('./main/ipc/capability-handlers').registerCapabilityIpc(ipcMain,
   capabilityService);
 

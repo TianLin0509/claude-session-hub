@@ -494,6 +494,7 @@
       if (window.__chuxinHide) window.__chuxinHide();
       if (window.__studyHide) window.__studyHide();
       if (window.__ranHide) window.__ranHide();
+      window.__rulesHide?.();
       for (const id of ['terminal-panel', 'meeting-room-panel']) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
       const accountPage = document.getElementById('account-page');
       if (accountPage && !accountPage.hidden) document.getElementById('btn-rail-accounts')?.click();

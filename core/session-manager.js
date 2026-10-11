@@ -1360,6 +1360,12 @@ class SessionManager extends EventEmitter {
     if (this._isShuttingDown || this.restartPending) {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
+    // 「规则」页的通用规则：Claude 在启动时写进系统提示。随消息粘贴进去会被 CLI 包成
+    // <pasted_content> 并标注「未必是用户本人写的」，约束力打折扣（2026-10-12 真实 Haiku 实测）。
+    // 已带其他系统提示文件的会话（DeepSeek 记忆等）不改，仍随第一条消息送。
+    const hubRulesSystem = (kind === 'claude' || kind === 'claude-resume') ? this.hubRulesSystemPrompt(opts) : null;
+    if (hubRulesSystem) opts = { ...opts, appendSystemPromptFile: hubRulesSystem.file };
+    else if (this.memoryService?.hubRules?.isSystemPromptFile(opts.appendSystemPromptFile)) opts = { ...opts, appendSystemPromptFile: undefined };
     const id = opts.id || uuid();
     const freshLaunch = require('./session-history-state').isFreshLaunch(kind, opts);
     const isAcp = isAcpKind(kind);
@@ -1944,6 +1950,7 @@ class SessionManager extends EventEmitter {
       completionNotificationEnabled: opts.completionNotificationEnabled === true,
       ...(opts.purpose ? { purpose: String(opts.purpose) } : {}),
       ...(writingContextWarning ? { writingContextWarning } : {}),
+      ...(hubRulesSystem ? { hubRulesSystem: { version: hubRulesSystem.version, label: hubRulesSystem.label } } : {}),
       ...(opts.researchSessionId ? { researchSessionId: String(opts.researchSessionId) } : {}),
       ...(opts.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       currentModel,
@@ -3219,6 +3226,22 @@ class SessionManager extends EventEmitter {
   //   往 PTY 写启动命令重新拉起 CLI；不带 resume，启动新 session（context 干净）。
   //   命令前导空格抑制 shell 历史记录，避免污染。
   // 返回 true 已写命令，false 找不到 session 或 kind 不支持。
+  // 返回要写进 Claude 系统提示的规则文件；不适用时返回 null（见 _createSession 的说明）。
+  hubRulesSystemPrompt(opts = {}, purpose = opts.purpose) {
+    const store = this.memoryService?.hubRules;
+    if (!store) return null;
+    const { SKIP_PURPOSES } = require('./hub-rules');
+    if (SKIP_PURPOSES.has(purpose)) return null;
+    if (opts.appendSystemPromptFile && !store.isSystemPromptFile(opts.appendSystemPromptFile)) return null;
+    try {
+      const rules = store.injection();
+      return rules ? { file: store.systemPromptFile(rules), version: rules.version, label: rules.label } : null;
+    } catch (error) {
+      console.warn('[hub-rules] 规则写入系统提示失败，改为随第一条消息送达：', error && error.message);
+      return null;
+    }
+  }
+
   relaunchCli(sessionId, options = {}) {
     const s = this.sessions.get(sessionId);
     if (s && ['codex-app-server','acp'].includes(s.info.runtimeBackend)) {
@@ -3322,8 +3345,12 @@ class SessionManager extends EventEmitter {
         });
       const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
       const relaunchPermissionFlag = claudePermissionModeArg({ autonomous });
+      // 原地重拉是一个全新的 Claude 进程，按当前规则重新写进系统提示。
+      const relaunchRules = this.hubRulesSystemPrompt({}, s.info && s.info.purpose);
+      if (s.info) s.info.hubRulesSystem = relaunchRules ? { version: relaunchRules.version, label: relaunchRules.label } : undefined;
+      const rulesFlag = relaunchRules ? ` --append-system-prompt-file "${relaunchRules.file}"` : '';
       const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
-      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${addDirFlag}${isolation}\r\n`;
+      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${addDirFlag}${rulesFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
         mcpConfigFile: s.claudeMcpConfigFile,

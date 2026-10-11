@@ -44,10 +44,10 @@ const geometry = () => cdp.eval(`(()=>{const r=id=>{const b=document.getElementB
     check(initial.rail.width===162 && initial.sidebar.width===224 && initial.main.x===386,'独立导航列与会话列参与布局');
     await until('document.documentElement.classList.contains("navigation-artwork-ready")');
     const icons=await cdp.eval(`[...document.querySelectorAll('#scene-rail .rail-artwork')].map(e=>({display:getComputedStyle(e).display,width:e.getBoundingClientRect().width,src:e.getAttribute('src'),loaded:e.naturalWidth>0}))`);
-    check(icons.length===12 && icons.every(e=>e.display==='block' && e.loaded && e.src.includes('sticker-v2/')),'十二功能入口使用已选线描贴纸原图');
+    check(icons.length===13 && icons.every(e=>e.display==='block' && e.loaded && e.src.includes('sticker-v2/')),'十三个功能入口（含 2026-10-12 新增的规则）使用线描贴纸原图');
     check(await cdp.eval(`document.querySelector('#btn-assistant img').src.endsWith('assistant/penguin.png') && !document.querySelector('.nav-artwork')`),'助理保留企鹅，旧机器人精灵图不再注入');
     await screenshot('01-home');
-    const routes=[['btn-assistant','terminal-panel'],['btn-research','chuxin-panel'],['btn-study','study-panel'],['btn-ran','ran-panel'],['btn-rail-memo','hub-workspace'],['btn-rail-capabilities','hub-workspace'],['btn-rail-accounts','account-page'],['btn-writing','writing-panel']];
+    const routes=[['btn-rules','rules-panel'],['btn-assistant','terminal-panel'],['btn-research','chuxin-panel'],['btn-study','study-panel'],['btn-ran','ran-panel'],['btn-rail-memo','hub-workspace'],['btn-rail-capabilities','hub-workspace'],['btn-rail-accounts','account-page'],['btn-writing','writing-panel']];
     for(const [button,panel] of routes){
       await click('#'+button);
       await until(`document.querySelector('#${button}').classList.contains('cw-current')`);
