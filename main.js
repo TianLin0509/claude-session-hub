@@ -167,6 +167,7 @@ const {
   healPersistedCwds,
   projectSlug,
 } = require('./core/claude-transcript-locator.js');
+const { sameWorkDir, transcriptBucketMatches } = require('./core/hook-cwd-match');
 const {
   DEFAULT_CODEX_SESSIONS_ROOT,
   parseCodexRolloutToTurns,
@@ -1467,7 +1468,9 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   // 子进程会继承 CLAUDE_HUB_SESSION_ID，它的 Stop hook 会把本卡片重绑到子进程的
   // transcript 上；子进程目录一旦被清理，卡片视图就 ENOENT 打不开。
   // hook 上报的 cwd 与会话 cwd 不一致时一律不重绑（卡片仍可用 ccSessionId 回退查找）。
-  if (fields.cwd && current.cwd && normalizeWorkspaceKey(fields.cwd) !== normalizeWorkspaceKey(current.cwd)) {
+  // 短名与长名写法（C:\Users\X0012~1 与 C:\Users\x00123456）是同一目录，不算嵌套 CLI。
+  if (fields.cwd && current.cwd && normalizeWorkspaceKey(fields.cwd) !== normalizeWorkspaceKey(current.cwd)
+      && !sameWorkDir(fields.cwd, current.cwd)) {
     console.warn('[hook] ignored transcript rebind from a nested CLI:',
       `session=${String(hubSessionId).slice(0, 8)} reported=${fields.cwd} expected=${current.cwd}`);
     return null;
@@ -2601,16 +2604,10 @@ const hookServer = http.createServer((req, res) => {
         let initialCwdMismatch = false;
         let initialTranscriptBucketMismatch = false;
         if (!boundClaudeSessionId && parsed.cwd && hookTargetSession.cwd) {
-          try {
-            initialCwdMismatch = path.resolve(parsed.cwd).toLowerCase()
-              !== path.resolve(hookTargetSession.cwd).toLowerCase();
-          } catch {}
+          try { initialCwdMismatch = !sameWorkDir(parsed.cwd, hookTargetSession.cwd); } catch {}
         }
         if (!boundClaudeSessionId && parsed.transcriptPath && hookTargetSession.cwd) {
-          try {
-            initialTranscriptBucketMismatch = path.basename(path.dirname(parsed.transcriptPath)).toLowerCase()
-              !== projectSlug(hookTargetSession.cwd).toLowerCase();
-          } catch {}
+          try { initialTranscriptBucketMismatch = !transcriptBucketMatches(parsed.transcriptPath, hookTargetSession.cwd); } catch {}
         }
         // 公司 Code Agent 不认 --session-id，Hub 启动时无法预定身份（core/codeagent-config.js）。
         // 待绑定期间（新建、分支、没有记录可恢复的重启），工作目录与记录所在目录都对得上的第一个
@@ -2620,11 +2617,8 @@ const hookServer = http.createServer((req, res) => {
             && !parsed.agentId && incomingClaudeSessionId && hookTargetSession.cwd) {
           let sameCwd = false;
           let sameBucket = !parsed.transcriptPath;
-          try { sameCwd = !parsed.cwd || path.resolve(parsed.cwd).toLowerCase() === path.resolve(hookTargetSession.cwd).toLowerCase(); } catch {}
-          try {
-            if (parsed.transcriptPath) sameBucket = path.basename(path.dirname(parsed.transcriptPath)).toLowerCase()
-              === projectSlug(hookTargetSession.cwd).toLowerCase();
-          } catch {}
+          try { sameCwd = !parsed.cwd || sameWorkDir(parsed.cwd, hookTargetSession.cwd); } catch {}
+          try { if (parsed.transcriptPath) sameBucket = transcriptBucketMatches(parsed.transcriptPath, hookTargetSession.cwd); } catch {}
           if (sameCwd && sameBucket) {
             sessionManager.updateSessionMeta(parsed.sessionId, { codeagentIdentityPending: false, ccSessionId: null });
             const bound = updateSessionTranscriptBinding(parsed.sessionId, {
@@ -2693,7 +2687,8 @@ const hookServer = http.createServer((req, res) => {
           // Descendant/parallel Claude processes inherit environment variables.
           // A mismatched native session or first-hook cwd is not evidence for
           // this Hub session, even when it inherited the correct local token.
-          console.warn(`[claude hook] ignored foreign ${event} for ${parsed.sessionId.slice(0, 8)}`);
+          console.warn(`[claude hook] ignored foreign ${event} for ${parsed.sessionId.slice(0, 8)}`
+            + ` (${initialCwdMismatch ? 'cwd' : initialTranscriptBucketMismatch ? 'transcript-dir' : 'native-id'})`);
           res.writeHead(202); res.end('{"ignored":"foreign-session"}'); return;
         }
         // Prefer the UserPromptSubmit payload's `prompt` field when present —

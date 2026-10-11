@@ -11,6 +11,7 @@ const path = require('node:path');
 
 const MAIN_SRC = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 const { normalizeKey } = require('../core/workspace-service.js');
+const { sameWorkDir } = require('../core/hook-cwd-match.js');
 
 function test(name, fn) {
   try {
@@ -25,7 +26,8 @@ function test(name, fn) {
 
 // Mirrors the guard clause so the decision logic itself is exercised.
 function shouldRebind(reportedCwd, sessionCwd) {
-  if (reportedCwd && sessionCwd && normalizeKey(reportedCwd) !== normalizeKey(sessionCwd)) return false;
+  if (reportedCwd && sessionCwd && normalizeKey(reportedCwd) !== normalizeKey(sessionCwd)
+      && !sameWorkDir(reportedCwd, sessionCwd)) return false;
   return true;
 }
 
@@ -57,7 +59,8 @@ test('a hook payload without cwd is still accepted (older hook scripts)', () => 
 test('main.js wires the guard and forwards the hook cwd', () => {
   assert.match(
     MAIN_SRC,
-    /if \(fields\.cwd && current\.cwd && normalizeWorkspaceKey\(fields\.cwd\) !== normalizeWorkspaceKey\(current\.cwd\)\)/,
+    // 短名与长名写法算同一目录（公司 v0.5.8 验收：8.3 短名的临时目录绑不上记录）。
+    /if \(fields\.cwd && current\.cwd && normalizeWorkspaceKey\(fields\.cwd\) !== normalizeWorkspaceKey\(current\.cwd\)\s+&& !sameWorkDir\(fields\.cwd, current\.cwd\)\)/,
     'updateSessionTranscriptBinding must compare the reported cwd',
   );
   assert.match(
