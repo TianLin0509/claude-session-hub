@@ -264,7 +264,10 @@ function createResumeSessionHandler(deps) {
       && (isDevSeat || meta.nativeRuntime?.connection === 'unstarted');
     const isFileFlowMember = require('../../core/dev-file-workflow').enabled(managedMeeting)
       && managedMeeting.subSessions?.includes(meta.hubId);
-    const freshUnboundAgentLeague = unstartedCodex || codexNeverRan || (isAgentLeague || isFileFlowMember) && (
+    const antigravityNeverRan = isGemini && meta.kind === 'gemini'
+      && meta.geminiProjectHash === 'antigravity' && !meta.geminiChatId
+      && !meta.transcriptPath && !meta.lastRunStartedAt && !meta.lastCompletedAt;
+    const freshUnboundAgentLeague = unstartedCodex || codexNeverRan || antigravityNeverRan || (isAgentLeague || isFileFlowMember) && (
       codexMissingSid
       || (isClaudeCliResumable && !meta.ccSessionId)
       || (isGemini && !meta.geminiChatId)
