@@ -4956,7 +4956,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       ? require('./hub-feedback-health').healthText(now) : '';
     // hook 部署失败时状态只能靠落盘记录和屏幕，必须让用户看见，而不是静默降级。
     const hookWarning = session.hookIntegrationWarning ? '状态信号降级（hook 未部署）：' + session.hookIntegrationWarning : '';
-    const detailText = [localHealth, status.detail, hookWarning].filter(Boolean).join(' · ');
+    // 写作成员没能用上写作专用配置时同样要让人看见（core/session-manager.js 的写作目录准备）
+    const writingWarning = session.writingContextWarning ? '写作上下文降级：' + session.writingContextWarning : '';
+    const detailText = [localHealth, status.detail, hookWarning, writingWarning].filter(Boolean).join(' · ');
     const detail = detailText ? `· ${detailText}` : '';
     if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
     statusDetail.hidden = !detail;

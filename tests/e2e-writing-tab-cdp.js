@@ -3,7 +3,7 @@
  * 写作 Tab 真机 E2E：隔离 Hub + 模拟真人操作，全程只在写作 Tab 里写一篇文章，不打开群聊（2026-10-03 版）。
  *
  *   写作台  没有文章时直接是「新文章」输入框 → 写中心思想、点「开始写」（后台建写作群并发出，真实调用两位 Claude haiku）
- *           → 文风作为常驻指令装进成员（文章目录 AGENTS.md，Claude 带 --append-system-prompt-file）
+ *           → 文风作为常驻指令装进成员（文章目录 AGENTS.md，Claude 带 --system-prompt-file 整份替换系统提示）
  *           → 每位 AI 一个标签页，文章排版显示（文章放在两行标记之间，Hub 存成 drafts/Claude-1-v1.md）；
  *             切标签、切「并排对比」再切回
  *           → 问题卡：改答案、发给大家 → 出现 v2
@@ -132,16 +132,16 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     const members = await cdp.eval(`ipcRenderer.invoke("get-sessions").then(ss=>ss.filter(s=>s.meetingId===${JSON.stringify(meeting.id)}).map(s=>({kind:s.kind,purpose:s.purpose})))`);
     check('写作群成员标记为 purpose=writing', members.length === 2 && members.every((m) => m.purpose === 'writing'), JSON.stringify(members));
     const pack = path.join(dir, 'AGENTS.md');
-    check('文风写成文章目录的 AGENTS.md（Codex 自动加载）', fs.existsSync(pack) && fs.readFileSync(pack, 'utf8').includes('田哥文风') && fs.readFileSync(pack, 'utf8').includes('起草指南'));
+    check('写作须知写成文章目录的 AGENTS.md（Claude 与 Codex 的基础指令）', fs.existsSync(pack) && fs.readFileSync(pack, 'utf8').includes('田哥文风') && fs.readFileSync(pack, 'utf8').includes('起草指南'));
     // Claude 成员的真实启动命令行里要带上这份文件
     const cmdlines = await untilFs(() => {
       try {
         const outp = execFileSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name like 'claude%' or Name like 'node%'\" | ForEach-Object { $_.CommandLine }"], { encoding: 'utf8', windowsHide: true });
-        const hits = outp.split(/\r?\n/).filter((l) => l.includes('--append-system-prompt-file') && l.includes(path.basename(dir)));
+        const hits = outp.split(/\r?\n/).filter((l) => l.includes('--system-prompt-file') && l.includes(path.basename(dir)));
         return hits.length >= 2 ? hits : null;
       } catch { return null; }
     }, 'claude cmdline with voice pack', 60000).catch(() => []);
-    check('两位 Claude 启动时都带 --append-system-prompt-file 指向文风包', cmdlines.length >= 2, `${cmdlines.length} 个进程`);
+    check('两位 Claude 启动时都带 --system-prompt-file 指向写作须知', cmdlines.length >= 2, `${cmdlines.length} 个进程`);
     await untilFs(() => userSaid(meeting.id).some((t) => t.includes('分集增益')), 'idea sent to group', 60000);
     check('中心思想由 Tab 替你发进了群', true);
 
