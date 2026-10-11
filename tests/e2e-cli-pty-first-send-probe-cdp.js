@@ -71,7 +71,7 @@ async function main() {
       await c.eval(`applyViewMode('pty')`);
       await until(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯/.test(s);})()`, 'tui', 90000);
       await sleep(1500);
-      await c.eval(`window.__stuckLog=[];if(!window.__origMark){window.__origMark=markFloatingInputStuck;markFloatingInputStuck=function(bar,sid){window.__stuckLog.push({t:Date.now(),stack:new Error().stack.split(String.fromCharCode(10)).slice(2,5).join(' | '),del:JSON.stringify(floatingPromptDeliveries.get(sid))});return window.__origMark.apply(this,arguments);};}true`);
+      await c.eval('window.__stuckLog=[]');
       const text = `FIRST_SEND_${label}`;
       const sentAt = await c.eval(`(()=>{const box=document.querySelector('.floating-input-bar[data-session-id="${sid}"] .floating-input-box');box.textContent=${j(text)};box.dispatchEvent(new Event("input",{bubbles:true}));box.closest(".floating-input-bar").querySelector(".floating-input-send").click();return Date.now();})()`);
       let prompted = false;
@@ -106,27 +106,14 @@ async function main() {
       const resolveStuck = () => c.eval(`window.__uiPending.shift().resolve({ok:true,sendStatus:'stuck'});true`);
       const receipt = (id,status) => c.eval(`ipcRenderer.emit('session:prompt-receipt',{},${j({sessionId:sid,clientSubmissionId:id,status})});true`);
       const warning = () => c.eval(`document.querySelector('.fi-stuck')?.textContent||''`);
-      const first = await send('UI 未确认消息'); await resolveStuck();
-      await until(`!!document.querySelector('.fi-stuck')`, 'visible unconfirmed receipt');
-      assert.match(await warning(), /暂未确认/);
-      const screenshot = await c.send('Page.captureScreenshot', {format:'png'});
-      fs.writeFileSync(path.join(out,'unconfirmed-ui.png'),Buffer.from(screenshot.data,'base64'));
-      await c.eval(`document.querySelector('.fi-stuck-resend').click();true`);
-      await until('window.__uiResends.length===1', 'bound resend');
-      assert.equal(await c.eval('window.__uiResends[0].clientSubmissionId'),first);
-      await receipt(first,'confirmed'); assert.equal(await warning(),'');
-      const old = await send('UI A'); await resolveStuck();
-      const latest = await send('UI B'); await resolveStuck();
-      await until(`document.querySelector('.fi-stuck')?.dataset.submissionId===${j(latest)}`, 'B warning');
-      await receipt(old,'confirmed'); assert.match(await warning(),/暂未确认/);
-      await receipt(latest,'content-mismatch'); assert.match(await warning(),/换行或空白不同/);
-      assert.equal(await c.eval(`document.querySelector('.fi-stuck-resend').disabled`),true);
-      const dismissed = await send('UI 忽略提示'); await resolveStuck();
-      await until(`!!document.querySelector('.fi-stuck')`, 'dismiss warning');
-      await c.eval(`document.querySelector('.fi-stuck-dismiss').click();true`);
-      await receipt(dismissed,'unconfirmed'); assert.equal(await warning(),'');
+      for (const status of ['unconfirmed','content-mismatch','confirmed']) {
+        const id = await send('UI receipt '+status); await resolveStuck();
+        await receipt(id,status); assert.equal(await warning(),'');
+        assert.equal(await c.eval(`floatingPromptDeliveries.get(${j(sid)}).status`),status);
+      }
+      assert.equal(await c.eval('window.__uiResends.length'),0);
       await c.eval('ipcRenderer.invoke=window.__uiOriginalInvoke;true');
-      result.uiChecks = ['未确认可见','补发绑定本次消息','迟到确认清除提示','旧回执不覆盖新消息','内容不同禁用补发','忽略后不反复提示'];
+      result.uiChecks = ['receipt warnings removed', 'receipt state retained', 'no automatic resend'];
       console.log('[receipt-ui] PASS '+result.uiChecks.length+' isolated DOM checks (controlled IPC results)');
     }
   } catch (error) { result.error = error.stack; process.exitCode = 1; }

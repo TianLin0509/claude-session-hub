@@ -15,7 +15,7 @@ async function main(){
   const shot=async(name)=>{const v=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(v.data,'base64'));};
   const check=(name,value)=>{assert(value,name);result.checks.push(name);console.log('PASS '+name);};
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await port(),windowMode:'hidden',label:'working-tail',extraEnv:{CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.join(__dirname,'fixtures/claude-stream.js'),CLAUDE_HUB_CLAUDE_FIXTURE_MODE:'gated',CLAUDE_HUB_FIXTURE_GATE_DIR:path.join(root,'claude-gates')}});
+    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await port(),windowMode:'hidden',label:'working-tail',extraEnv:{CODEX_HOME:path.join(root,'codex-home'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.join(__dirname,'fixtures/claude-stream.js'),CLAUDE_HUB_CLAUDE_FIXTURE_MODE:'gated',CLAUDE_HUB_FIXTURE_GATE_DIR:path.join(root,'claude-gates')}});
     c=await connectFirstPage(hub);await wait('!!window.MeetingRoom');
     await c.send('Emulation.setDeviceMetricsOverride',{width:1500,height:950,deviceScaleFactor:1,mobile:false});
     const model={kind:'codex',model:'gpt-6-astra',effort:'high',mcpProfile:'none'};
@@ -28,7 +28,7 @@ async function main(){
     for(const theme of ['dark','codex']){
       await click('#btn-theme');await click(`[data-theme-id="${theme}"]`);await click('#btn-theme');
       await wait(tailProbe);check(theme+' tool-only running indicator remains visible below latest progress',await c.eval(tailProbe));
-      check(theme+' ordinary provider logo breathes',await c.eval(`getComputedStyle(document.querySelector('.session-item[data-session-id="${ordinary.id}"] .sl-kind')).animationName==='sl-logo-breathe'`));
+      check(theme+' ordinary provider logo has the static running ring',await c.eval(`(e=>{const cs=getComputedStyle(e);return cs.animationName==='none'&&cs.outlineStyle==='solid'&&parseFloat(cs.outlineWidth)>=1.5})(document.querySelector('.session-item[data-session-id="${ordinary.id}"] .sl-kind'))`));
       await shot(theme+'-tail');
     }
     await c.eval(`window.__tail=document.querySelector('#msg-overlay > .streaming-indicator');window.__tailAnimation=window.__tail.getAnimations()[0];window.__tailTime=window.__tailAnimation.currentTime;`);
@@ -46,7 +46,7 @@ async function main(){
     const groupSel=`.session-item[data-meeting-id="${group.id}"]`;
     await wait(`document.querySelector(${j(groupSel)})?.classList.contains('running')`);
     check('one working member overrides another waiting member',await c.eval(`document.querySelector(${j(groupSel+' .sl-group-icon')}).classList.contains('run')`));
-    check('group logos breathe while a member works',await c.eval(`[...document.querySelectorAll(${j(groupSel+' .sl-group-logos .ai-logo')})].every(e=>getComputedStyle(e).animationName==='sl-logo-breathe')`));
+    check('group logos carry the static running ring while a member works',await c.eval(`(e=>{const cs=getComputedStyle(e);return cs.animationName==='none'&&cs.outlineStyle==='solid'&&parseFloat(cs.outlineWidth)>=1.5})(document.querySelector(${j(groupSel+' .sl-group-logos')}))`));
     await shot('group-working');
     // Compact group members are revealed by a real pointer hover.
     const hover=await c.eval(`(()=>{const r=document.querySelector(${j(groupSel)}).getBoundingClientRect();return {x:r.left+40,y:r.top+r.height/2};})()`);

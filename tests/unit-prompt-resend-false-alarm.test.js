@@ -62,7 +62,7 @@ test('message left the input box while the agent is busy: delivered, no resend p
   // 之后逐字回报到达：升级为已确认。
   assert.strictEqual(h.receipts.observe({ sessionId: 's', text: '帮我再补充一下第二部分', submittedAt: Date.now(), signalSource: 'claude-user-prompt-submit' }), true);
   assert.strictEqual(receipt.status, 'confirmed');
-  // 渲染层：已送达不亮补发横幅（markFloatingInputStuck 把 delivered 当作无需提示）。
+  // 渲染层仍保留已送达状态，和逐字确认区分。
   const state = beginPromptDelivery('submission-1');
   assert.strictEqual(applyPromptReceipt(state, { clientSubmissionId: 'submission-1', status: 'delivered' }), true);
   assert.strictEqual(state.status, 'delivered');
@@ -74,7 +74,7 @@ test('the prompt still sitting in the input box is a real failure: one recovery 
   const { result, receipt } = await send(h, prompt);
   assert.strictEqual(h.enters, 2, '原文还在输入框：补一次回车');
   assert.strictEqual(result.sendStatus, 'stuck');
-  assert.strictEqual(receipt.status, 'unconfirmed', '仍提示补发');
+  assert.strictEqual(receipt.status, 'unconfirmed', '内部仍记录未确认');
 });
 
 test('a screen that never moved is still reported', async () => {
@@ -84,8 +84,8 @@ test('a screen that never moved is still reported', async () => {
   assert.strictEqual(receipt.status, 'unconfirmed');
 });
 
-test('renderer: delivered receipts never raise the resend banner', () => {
+test('renderer: receipt states never raise the removed resend banner', () => {
   const src = require('fs').readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
-  assert.match(src, /\['pending', 'confirmed', 'delivered', 'queued'\]\.includes\(delivery\.status\)/);
-  assert.match(src, /\['confirmed', 'delivered', 'queued'\]\.includes\(state\.status\)\) clearFloatingInputStuck\(bar\)/);
+  assert.doesNotMatch(src, /markFloatingInputStuck|fi-stuck-resend/);
+  assert.match(src, /applyPromptReceipt\(state, receipt\)/);
 });

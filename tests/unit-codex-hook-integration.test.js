@@ -184,3 +184,80 @@ test('scanner skips values that look like headers: multi-line strings and arrays
   assert.equal(doc.notes.includes("[hooks.state.'fake']"), true, 'string content untouched');
   assert.equal(doc.hooks.state.fake.trusted_hash, 'sha256:z');
 });
+
+// ---- 个人策略 hook 的信任（2026-10-11 DeepSeek 会话卡在 hook 审核页）----
+// 生产现场：个人策略 codexHooks 同步进 hooks.json，Hub 只信任自己的条目，Codex 0.159
+// 启动即弹「6 hooks need review」，Hub 发的 prompt 进不去。
+const { mergeHubCodexHooks, hubHookScriptPath } = require('../core/codex-hook-integration');
+const POLICY_HOOKS = { hooks: {
+  PreToolUse: [
+    { matcher: 'Bash', hooks: [{ type: 'command', command: REAL_BASH_GUARD, timeout: 10, statusMessage: 'Checking guards...' }] },
+    ...['Edit', 'Write', 'MultiEdit'].map(matcher => ({ matcher, hooks: [{ type: 'command',
+      command: 'python "C:\Users\lintian\.claude\scripts\file-scope-guard.py"', timeout: 5, statusMessage: 'Checking file scope...' }] })),
+  ],
+  PostToolUse: [{ matcher: '', hooks: [{ type: 'command', command: 'python "C:\Users\lintian\.claude\scripts\e2e_test_marker.py"', timeout: 5 }] }],
+  UserPromptSubmit: [{ hooks: [{ type: 'command', command: REAL_COMMAND, timeout: 5 }] }],
+  Stop: [{ hooks: [
+    { type: 'command', command: 'python "C:\Users\lintian\.claude\scripts\session-hub-hook.py" stop', timeout: 5 },
+    { type: 'command', command: 'python "C:\Users\lintian\.claude\scripts\file-scope-guard.py" --release', timeout: 5 },
+  ] }],
+} };
+
+function allHandlers(hooksFile) {
+  const out = [];
+  for (const [eventName, label] of HUB_CODEX_HOOKS) {
+    (hooksFile.hooks[eventName] || []).forEach((group, g) => group.hooks.forEach((handler, h) =>
+      out.push({ label, g, h, matcher: group.matcher, handler })));
+  }
+  return out;
+}
+
+test('personal policy hooks are trusted alongside Hub hooks; unknown or altered hooks are not', t => {
+  const home = tempHome(t);
+  const script = fakeScript(home);
+  const hooksPath = path.join(home, 'hooks.json');
+  // 与 agent-user-context 同步写出的内容一致：策略 + 补齐的 Hub 条目，共 12 条。
+  const synced = mergeHubCodexHooks(POLICY_HOOKS, hubHookScriptPath(home)).hooksFile;
+  assert.equal(allHandlers(synced).length, 12);
+  // 再手工追加两条来源不明的：一条全新命令，一条与策略同命令但 timeout 被改过。
+  const withManual = JSON.parse(JSON.stringify(synced));
+  withManual.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: 'python my-own.py', timeout: 5 }] });
+  withManual.hooks.PostToolUse.push({ matcher: '', hooks: [{ type: 'command',
+    command: 'python "C:\Users\lintian\.claude\scripts\e2e_test_marker.py"', timeout: 7 }] });
+  fs.writeFileSync(hooksPath, JSON.stringify(withManual, null, 2));
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model = "deepseek-v4-flash"\n\n[tui]\nscreen_reader_detection_done = true\n');
+
+  const result = ensureCodexHookIntegration({ codexHome: home, sourceScript: script, logger: {}, trustedHooks: POLICY_HOOKS });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.hooksChanged, false, 'synced hooks.json already carried every Hub event');
+  assert.equal(result.policyTrusted, 6, 'six personal guards (non session-hub-hook) trusted from policy');
+  const doc = parseTomlWithPython(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'));
+  const state = doc.hooks.state;
+  for (const { label, g, h, matcher, handler } of allHandlers(synced)) {
+    const key = `${hooksPath}:${label}:${g}:${h}`;
+    assert.ok(state[key], `${label}:${g}:${h} trusted`);
+    assert.equal(state[key].trusted_hash, codexHookTrustHash(label, typeof matcher === 'string' ? matcher : undefined, handler));
+  }
+  assert.equal(Object.keys(state).length, 12, 'exactly the 12 policy/Hub hooks, nothing else');
+  const syncedKeys = new Set(allHandlers(synced).map(x => `${x.label}:${x.g}:${x.h}`));
+  const manual = allHandlers(withManual).filter(x => !syncedKeys.has(`${x.label}:${x.g}:${x.h}`));
+  assert.equal(manual.length, 2);
+  for (const extra of manual) {
+    assert.equal(state[`${hooksPath}:${extra.label}:${extra.g}:${extra.h}`], undefined, `manual ${extra.label}:${extra.g} not trusted`);
+  }
+  assert.deepEqual(doc.tui, { screen_reader_detection_done: true }, 'unrelated tables untouched');
+  // 幂等
+  const again = ensureCodexHookIntegration({ codexHome: home, sourceScript: script, logger: {}, trustedHooks: POLICY_HOOKS });
+  assert.equal(again.trustChanged, false);
+  // 不传策略时退回旧行为：只信任 Hub 条目。
+  const bare = tempHome(t);
+  fs.writeFileSync(path.join(bare, 'hooks.json'), JSON.stringify(mergeHubCodexHooks(POLICY_HOOKS, hubHookScriptPath(bare)).hooksFile));
+  const hubOnly = ensureCodexHookIntegration({ codexHome: bare, sourceScript: fakeScript(bare), logger: {} });
+  assert.equal(hubOnly.policyTrusted, 0);
+  assert.equal(hubOnly.trusted.length, 6);
+});
+
+test('PTY Codex launch passes the personal policy hooks into the trust step', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
+  assert.match(src, /codexPolicyHooks\(sessionEnv, getHubDataDir\(\)\)[\s\S]{0,400}ensureCodexHookIntegration\(\{[\s\S]{0,120}trustedHooks/);
+});

@@ -79,7 +79,7 @@ async function main() {
     await until(`document.querySelector('.native-card-send-error')?.textContent.includes('AUDIT_REJECTED')`,'visible failed resend');
     await c.eval(`ipcRenderer.invoke=window.__auditInvoke;delete window.__auditInvoke`);
     report.checks.push('isolated UI fault injection: card resend rejection visibly reported');
-    await c.eval(`(()=>{const b=document.querySelector('.floating-input-bar');floatingPromptDeliveries.set(${j(s.id)},{status:'stuck'});markFloatingInputStuck(b,${j(s.id)});})()`);
+    await c.eval(`(()=>{floatingPromptDeliveries.set(${j(s.id)},{clientSubmissionId:'audit-quiet',status:'pending'});updateFloatingPromptReceipt({sessionId:${j(s.id)},clientSubmissionId:'audit-quiet',status:'unconfirmed'});})()`);
     assert.equal(await c.eval(`!!document.querySelector('.fi-stuck')`),false);
     await shot('cards-without-submit-banner'); report.checks.push('isolated UI receipt injection: no unconfirmed banner or resend button');
     await send(history.id,'/quit');
