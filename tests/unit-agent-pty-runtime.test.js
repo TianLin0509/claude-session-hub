@@ -63,6 +63,8 @@ test('PTY Claude launch fixes its identity before the CLI starts', t => {
   const assistant=buildClaudePtyLaunch('hub-assistant-launch','claude',{model:'m',purpose:'hub-assistant',autonomous:true},cwd,env,cv);
   const settingsOf=launch=>JSON.parse(fs.readFileSync(launch.cmd.match(/--settings\s+([^\s]+)/)[1],'utf8'));
   assert.equal(settingsOf(assistant).skipDangerousModePermissionPrompt,true,'explicit assistant grant stays in its launch overlay');
+  const photo=buildClaudePtyLaunch('hub-photo-launch','claude',{model:'m',purpose:'hub-photo-assistant',autonomous:true},cwd,env,cv);
+  assert.equal(settingsOf(photo).skipDangerousModePermissionPrompt,true,'photo assistant can start without an attended terminal');
   assert.notEqual(settingsOf(fresh).skipDangerousModePermissionPrompt,true,'ordinary session permissions remain unchanged');
 });
 

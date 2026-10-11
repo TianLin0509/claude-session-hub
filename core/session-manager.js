@@ -331,7 +331,7 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     overrides: { ...require('./agent-user-context').claudeSharedConfig(env,hubDataDir),fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
-      ...(opts.purpose === 'hub-assistant' && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
+      ...(['hub-assistant','hub-photo-assistant'].includes(opts.purpose) && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
   });
   const launchArgs = buildClaudeNativeArgs({ model: legacy ? normalizeLegacyDeepSeekClaudeModel(opts.model) : opts.model,
     effort: legacy || process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? null
@@ -397,7 +397,7 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     // @community-strip 社区版：自动执行档位只在 Hub 启动的会话里生效，免确认也只写进这一份会话配置
     overrides: { fastMode: fast, ...(cliTheme ? { theme: cliTheme } : {}),
-      ...(opts.purpose === 'hub-assistant' && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
+      ...(['hub-assistant','hub-photo-assistant'].includes(opts.purpose) && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
     // @community-else
     // overrides: { fastMode: fast, skipDangerousModePermissionPrompt: true, ...(cliTheme ? { theme: cliTheme } : {}) },
     // @community-end
@@ -2976,7 +2976,7 @@ class SessionManager extends EventEmitter {
     return entry.codexEditorInput.load(text, data => {
       if (this.sessions.get(sessionId) !== entry) throw Object.assign(new Error('会话已变化，未提交'), {notSent:true});
       this.writeToSession(sessionId, data);
-    }, {...options,preservePunctuation:entry.info.purpose==='hub-assistant'&&/[‘’“”]/.test(String(text))});
+    }, {...options,preservePunctuation:['hub-assistant','hub-photo-assistant'].includes(entry.info.purpose)&&/[‘’“”]/.test(String(text))});
   }
 
   getNativeCodex(sessionId) {
@@ -3221,7 +3221,7 @@ class SessionManager extends EventEmitter {
         const standardSettingsPath = resolveAsarUnpacked('claude-subscription-standard-settings.json');
         fastFlag = ` --settings "${standardSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
-      if (s.info?.purpose === 'hub-assistant' && autonomous) {
+      if (['hub-assistant','hub-photo-assistant'].includes(s.info?.purpose) && autonomous) {
         const fast = shouldUseClaudeFastSettings(cv, {fastMode:s.info.fastMode,autonomous});
         const settingsFile = require('./claude-native-launch').prepareClaudeSettingsOverlay(
           [ensureGroupChatSettings(getHubDataDir()),resolveAsarUnpacked(fast?'claude-subscription-fast-settings.json':'claude-subscription-standard-settings.json')],
