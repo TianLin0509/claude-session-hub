@@ -880,7 +880,8 @@ function ensureCodexApiProfile(cv, projectDir) {
   const projectKey = path.resolve(projectDir || os.homedir());
 
   fs.mkdirSync(codexHome, { recursive: true });
-  fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+  // 只接管 Hub 生成的顶层键，Codex 写下的 [hooks.state.*]、[tui] 等保留（同 DeepSeek profile）。
+  require('./codex-managed-config').writeHubManagedCodexConfig(path.join(codexHome, 'config.toml'), [
     'disable_response_storage = true',
     `model = ${tomlString(model)}`,
     `model_provider = ${tomlString(provider)}`,
@@ -904,7 +905,7 @@ function ensureCodexApiProfile(cv, projectDir) {
     `[projects.${tomlString(projectKey)}]`,
     'trust_level = "trusted"',
     '',
-  ].join('\n'), 'utf8');
+  ].join('\n'));
   fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
     OPENAI_API_KEY: cv.CODEX_API_KEY || '',
   }), 'utf8');
@@ -2327,8 +2328,13 @@ class SessionManager extends EventEmitter {
       });
       if (isCodexRuntime) {
         // hook 是 PTY Codex 的身份与状态来源；部署失败不拦启动，但要在会话上留痕。
+        // 个人策略同步进 hooks.json 的守卫一并信任，否则 Codex 0.159 起启动即停在 hook 审核页。
+        let trustedHooks = null;
+        try { trustedHooks = require('./agent-user-context').codexPolicyHooks(sessionEnv, getHubDataDir()); }
+        catch (error) { console.warn('[codex-hooks] 个人策略读取失败，仅信任 Hub hook:', error.message); }
         const hookResult = require('./codex-hook-integration').ensureCodexHookIntegration({
           codexHome: sessionEnv.CODEX_HOME || null,
+          trustedHooks,
         });
         info.hookIntegrationWarning = hookResult.errors.length ? hookResult.errors.join('；') : null;
         cmd += ` -c features.hooks=true`;
