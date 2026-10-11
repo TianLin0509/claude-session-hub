@@ -56,6 +56,7 @@ class AssistantService {
   captureContinuity(){for(const id of this.assistantIds()){const meta=this.sessionMetadata(id);if(!meta)continue;for(const row of this.liveHistory.read(meta).records)this.continuity.add({...row,provider:meta.kind,timestamp:row.timestamp||Date.now()});}}
   liveInventory(){return this.sessions().map(s=>{const result=s.isOpen?this.liveHistory.read(s):null;return{...s,nativeSessionId:nativeId(s),latestFinal:result?.records.at(-1)||null,liveIssue:result?.issue||null};});}
   get videos(){if(!this._videos)this._videos=new (require('./video-studio').VideoStudio)({assistant:this});return this._videos;}
+  get photo(){if(!this._photo)this._photo=new (require('./photo-assistant').PhotoAssistant)(this);return this._photo;}
   sessionCards(request){return require('./session-cards').sessionCards(this,request);}
   readLiveFinal(sessionId){const meta=this.sessionMetadata(sessionId);if(!meta)throw new Error('找不到原会话');const result=this.liveHistory.read(meta);return{sessionId,title:meta.title,...result};}
   // 不做固定频率的心跳：会话答完一轮由完成事件记账与提醒；换班按精确时间点（空闲 2 小时、每天 4 点）触发；
@@ -87,6 +88,7 @@ class AssistantService {
   }
   // 任一会话答完一轮：助理自己 → 记上下文用量并排好空闲换班；其他会话 → 立即记账，被关注则立即提醒。
   onTurnComplete(sessionId,event={}){
+    if(this.store.get('photoAssistant')?.id===sessionId){this.deps.onAssistantTurnComplete?.(sessionId);return;}
     const at=Number(event.completedAt)||Date.now();
     if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleCheckpoint(at);
       // 助理答完立刻让手机通道取答案推送，不等下一次定时处理。

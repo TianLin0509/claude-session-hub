@@ -331,7 +331,7 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     overrides: { ...require('./agent-user-context').claudeSharedConfig(env,hubDataDir),fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
-      ...(opts.purpose === 'hub-assistant' && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
+      ...(['hub-assistant','hub-photo-assistant'].includes(opts.purpose) && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
   });
   const launchArgs = buildClaudeNativeArgs({ model: legacy ? normalizeLegacyDeepSeekClaudeModel(opts.model) : opts.model,
     effort: legacy || process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? null
@@ -397,7 +397,7 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     // @community-strip 社区版：自动执行档位只在 Hub 启动的会话里生效，免确认也只写进这一份会话配置
     overrides: { fastMode: fast, ...(cliTheme ? { theme: cliTheme } : {}),
-      ...(opts.purpose === 'hub-assistant' && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
+      ...(['hub-assistant','hub-photo-assistant'].includes(opts.purpose) && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
     // @community-else
     // overrides: { fastMode: fast, skipDangerousModePermissionPrompt: true, ...(cliTheme ? { theme: cliTheme } : {}) },
     // @community-end
@@ -2232,6 +2232,7 @@ class SessionManager extends EventEmitter {
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
       if(opts.purpose==='hub-assistant')cmd+=' --skip-trust --allowed-mcp-server-names hub_assistant';
+      if(opts.purpose==='hub-photo-assistant')cmd+=' --skip-trust';
       cmd += ` --model ${opts.model || 'gemini-3-pro-preview'}`;
       if (opts.useResume && opts.geminiChatId && opts.geminiChatId.length > 8) {
         // Level 1: precise resume by full UUID.  The native id wins even when
@@ -2974,7 +2975,7 @@ class SessionManager extends EventEmitter {
     return entry.codexEditorInput.load(text, data => {
       if (this.sessions.get(sessionId) !== entry) throw Object.assign(new Error('会话已变化，未提交'), {notSent:true});
       this.writeToSession(sessionId, data);
-    }, {...options,preservePunctuation:entry.info.purpose==='hub-assistant'&&/[‘’“”]/.test(String(text))});
+    }, {...options,preservePunctuation:['hub-assistant','hub-photo-assistant'].includes(entry.info.purpose)&&/[‘’“”]/.test(String(text))});
   }
 
   getNativeCodex(sessionId) {
@@ -3199,7 +3200,7 @@ class SessionManager extends EventEmitter {
       });
       cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
-      cmd = ` gemini --approval-mode yolo${s.info.purpose==='hub-assistant'?' --skip-trust --allowed-mcp-server-names hub_assistant':''} --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
+      cmd = ` gemini --approval-mode yolo${s.info.purpose==='hub-assistant'?' --skip-trust --allowed-mcp-server-names hub_assistant':s.info.purpose==='hub-photo-assistant'?' --skip-trust':''} --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
       // 默认 --effort max（CLAUDE_HUB_NO_EFFORT_MAX=1 可关），但会话显式
       // 选过档位时必须沿用，不能在 CLI 原地重拉后静默回到 max。
@@ -3219,7 +3220,7 @@ class SessionManager extends EventEmitter {
         const standardSettingsPath = resolveAsarUnpacked('claude-subscription-standard-settings.json');
         fastFlag = ` --settings "${standardSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
-      if (s.info?.purpose === 'hub-assistant' && autonomous) {
+      if (['hub-assistant','hub-photo-assistant'].includes(s.info?.purpose) && autonomous) {
         const fast = shouldUseClaudeFastSettings(cv, {fastMode:s.info.fastMode,autonomous});
         const settingsFile = require('./claude-native-launch').prepareClaudeSettingsOverlay(
           [ensureGroupChatSettings(getHubDataDir()),resolveAsarUnpacked(fast?'claude-subscription-fast-settings.json':'claude-subscription-standard-settings.json')],

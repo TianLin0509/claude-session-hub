@@ -25,6 +25,16 @@ test('all Hub backends use one phone pairing; native request identity resolves a
 });
 
 const packets=(h,prefix)=>h.s.outbox.filter(r=>r.id.startsWith(prefix)).map(r=>open(h.c.key,h.c.channel,r.id,'hub',r.payload));
+test('capture uses its own queue even while the daily assistant runs, and replies keep exact photo identity',async()=>{
+ const h=harness(),id='400cee7c-6d3f-4862-9bbb-f5b5223e501b',photoCalls=[];
+ h.assistant.overview=()=>({status:'running'});
+ h.s.inbox.push({id:'daily-old-123456',state:'waiting',sessionId:'daily-session'});
+ h.assistant.photo={overview:()=>({status:'idle'}),ensureSession:async()=>({ok:true,sessionId:'photo-session'}),send:async r=>{photoCalls.push(r);return{receipt:{receipt:{status:'confirmed',turnId:'photo-turn'}}}}};
+ h.s.inbox.push({id,type:'text',text:'photo question',shared:'115509-capture-'+id+'.jpg',state:'queued'});
+ await h.channel.tick();assert.equal(photoCalls.length,1);assert.equal(h.calls.length,0);assert.equal(h.s.inbox[1].sessionId,'photo-session');
+ h.assistant.readLiveFinal=sessionId=>({records:sessionId==='photo-session'?[{clientSubmissionId:id,text:'photo answer'}]:[]});
+ await h.channel.tick();assert.equal(h.s.inbox[1].state,'answered');assert.equal(h.s.inbox[0].state,'waiting');assert.equal(packets(h,'answer-'+id)[0].by,'拍图助理');
+});
 test('old uncertain request releases an idle queue without retry; late exact answer still reconciles',async()=>{
  const h=harness(),old='old-request-123456',next='photo-request-123456',logs=[];
  h.assistant.logDialog=e=>logs.push(e);h.assistant.sessionBusy=()=>false;

@@ -1966,6 +1966,10 @@ const promptOperations = registerPromptSubmitIpc(ipcMain, {
   sessionManager, transcriptTap, sendToRenderer,
   onPromptReceipt: receipt => { assistantService?.observePromptReceipt?.(receipt); phoneService?.observeReceipt(receipt); },
   preparePrompt(request, session) {
+    if(session?.purpose==='hub-photo-assistant'){
+      if(!assistantService)throw new Error('拍图助理服务尚未就绪，消息未发送');
+      return assistantService.photo.ensureSession().then(()=>assistantService.photo.preparePrompt(request));
+    }
     if (session?.purpose !== 'hub-assistant') return request;
     if (!assistantService) throw new Error('助理服务尚未就绪，消息未发送');
     if (session.id !== request.sessionId || !assistantService.isAssistantSession(session.id)) throw new Error('请求不是固定助理会话，消息未发送');

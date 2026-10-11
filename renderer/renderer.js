@@ -8840,6 +8840,14 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
     scheduleSessionListRender();
     return;
   }
+  // 手机拍图在后台创建或唤醒；只在用户已经选中它时切入，保留其他会话的输入。
+  if (session.purpose === 'hub-photo-assistant') {
+    if (wasDormant && activeSessionId === session.id) {
+      await selectSession(session.id, { forceScrollBottom: pendingResume?.forceScrollBottom === true });
+    }
+    scheduleSessionListRender();
+    return;
+  }
   // Delegated work must not replace the conversation or the draft currently
   // being written in the assistant. Users open the target explicitly.
   if (assistantPanel.isOpen()) {
