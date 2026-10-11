@@ -26,12 +26,14 @@ function startRulesServer() {
   return new Promise(resolve => {
     rulesServer = http.createServer((req, res) => {
       const url = decodeURIComponent(req.url.split('?')[0]);
-      if (url === '/hub-rules/public/latest.json') {
+      // 公司版拉 company 频道、其余拉 public；假服务器两个频道内容相同。
+      const latestMatch = url.match(/^\/hub-rules\/(public|company)\/latest\.json$/);
+      if (latestMatch) {
         const v = published.get(latestVersion);
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({ schema: 1, channel: 'public', version: latestVersion, notes: v.notes, published_at: '2026-10-12T09:00:00+08:00', sha256: sha(v.text), bytes: Buffer.byteLength(v.text), md: `v/${latestVersion}.md` }));
+        return res.end(JSON.stringify({ schema: 1, channel: latestMatch[1], version: latestVersion, notes: v.notes, published_at: '2026-10-12T09:00:00+08:00', sha256: sha(v.text), bytes: Buffer.byteLength(v.text), md: `v/${latestVersion}.md` }));
       }
-      const m = url.match(/^\/hub-rules\/public\/v\/(\d+)\.md$/);
+      const m = url.match(/^\/hub-rules\/(?:public|company)\/v\/(\d+)\.md$/);
       if (m && published.has(Number(m[1]))) { res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' }); return res.end(published.get(Number(m[1])).text); }
       res.writeHead(404); res.end();
     });
@@ -68,7 +70,8 @@ const text = sel => cdp.eval(`document.querySelector(${JSON.stringify(sel)})?.te
   const workspace = path.join(temp, 'work'); fs.mkdirSync(workspace);
   const dataDir = path.join(temp, 'data');
   try {
-    const builtin = fs.readFileSync(path.join(repo, 'core', 'hub-rules-default.md'), 'utf8');
+    // 和真实服务器一样存 LF（git 检出的内置文件可能是 CRLF，客户端按 LF 口径比对）。
+    const builtin = fs.readFileSync(path.join(repo, 'core', 'hub-rules-default.md'), 'utf8').replace(/\r\n?/g, '\n');
     publish(1, builtin, '第一版');
     const rulesPort = await startRulesServer();
     hub = await launchIsolatedHub({ dataDir, port: await reservePort(), label: 'rules-tab', extraEnv: {
@@ -77,11 +80,15 @@ const text = sel => cdp.eval(`document.querySelector(${JSON.stringify(sel)})?.te
     cdp = await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await until('document.querySelector("#empty-state")?.dataset.homeReady === "true"', 'home ready', 300);
+    // 页面脚本按顺序加载，首页就绪时 rules.js 可能还没跑完（导出的发行版首次启动尤其明显）。
+    await until(`typeof window.__rulesShow === 'function'`, 'rules script loaded', 300);
 
     // 1. 导航位置
     const order = () => cdp.eval(`[...document.querySelectorAll('#scene-rail .rail-navigation .btn-shell-nav')].filter(e=>!e.hidden).map(e=>e.id)`);
     let ids = await order();
-    check(ids[0] === 'btn-home' && ids[1] === 'btn-rules' && ids[2] === 'btn-assistant', '左侧导航：规则在主页和助理之间');
+    // 公司版关掉了助理（target.json features.assistant=false），规则后面就是下一个可见按钮。
+    const hasAssistant = ids.includes('btn-assistant');
+    check(ids[0] === 'btn-home' && ids[1] === 'btn-rules' && (!hasAssistant || ids[2] === 'btn-assistant'), hasAssistant ? '左侧导航：规则在主页和助理之间' : '左侧导航：规则紧跟主页（本版没有助理）');
     check(await cdp.eval(`(()=>{const i=document.querySelector('#btn-rules img');return i.naturalWidth>0&&i.getBoundingClientRect().width>0})()`), '规则图标已加载');
 
     // 2. 打开规则页：内置第一版、默认开
@@ -164,8 +171,10 @@ const text = sel => cdp.eval(`document.querySelector(${JSON.stringify(sel)})?.te
     await cdp.send('Page.reload', {});
     await _waitMs(1500);
     await until('document.querySelector("#empty-state")?.dataset.homeReady === "true"', 'home ready after reload', 300);
+    await until(`typeof window.__rulesShow === 'function'`, 'rules script loaded after reload', 300);
     ids = await order();
-    check(ids[0] === 'btn-home' && ids[1] === 'btn-rules' && ids[2] === 'btn-assistant' && ids[3] === 'btn-rail-accounts', '旧的自定义顺序：规则插在主页和助理之间，其余顺序不变');
+    const expected = ['btn-home', 'btn-rules', ...(hasAssistant ? ['btn-assistant'] : []), 'btn-rail-accounts'];
+    check(expected.every((id, i) => ids[i] === id), '旧的自定义顺序：规则插在主页和助理之间，其余顺序不变');
     await shot('06-nav-migrated');
 
     report.ok = true;

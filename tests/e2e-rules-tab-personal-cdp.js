@@ -37,6 +37,8 @@ const check = (ok, label) => { assert(ok, label); checks.push(label); console.lo
     cdp = await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await until('document.querySelector("#empty-state")?.dataset.homeReady === "true"', 'home', 300);
+    // 页面脚本按顺序加载，首页就绪时 rules.js 可能还没跑完（导出的发行版首次启动尤其明显）。
+    await until(`typeof window.__rulesShow === 'function'`, 'rules script loaded', 300);
     await click('#btn-rules');
     await until(`!!document.querySelector('.rl-switch')`, 'rules page');
     check(await cdp.eval(`document.querySelector('.rl-switch').getAttribute('aria-checked')==='false'`), '已有个人基础规则：通用规则默认关');
