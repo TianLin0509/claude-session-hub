@@ -49,7 +49,7 @@ Codex / Kimi 等直接读本文件，Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导
 - 原生后端（Codex App Server / Claude stream-json）只是回退开关：`CLAUDE_HUB_AGENT_RUNTIME=native` 或 config.json `runtime.agent = "native"`，UI 不暴露；开启时走结构化控制接口，未知提交先核对原生历史，不自动重发。
 - 发 prompt 一律走 `session:send-prompt`（`main/ipc/prompt-submit-handlers.js`）或 `groupChatWatcher.sendToPty`；裸 `terminal-input` 只用于真按键（ESC、Ctrl+C、方向键）和宿主 shell 短命令。
 - 不用固定延时发回车，也不把 `text + '\r'` 合成一次写入。原因：Windows 上 node-pty 写的是带内部队列的 named pipe，长 payload 未排空时 `\r` 会与粘贴结束符落进同一个 stdin chunk，被 TUI 当粘贴尾巴吞掉；任何固定毫秒数都会在某个体积上失效（2026-04 到 06 返工 6 次）。
-- 提交闭环四环节缺一不可（`core/pty-prompt-submit.js`）：分块投喂（不劈开 UTF-16 代理对）→ 体积自适应 settle 并等折叠标记 → 等语义确认（Claude `UserPromptSubmit` / Codex `task_started`，汇到 `agent-turn-started`）→ 缺确认才补一次有界回车。拿不到确认就如实报 `stuck` 并在 UI 亮出「补发」（`.fi-stuck`）；补发也走同一闭环。
+- 提交闭环四环节缺一不可（`core/pty-prompt-submit.js`）：分块投喂（不劈开 UTF-16 代理对）→ 体积自适应 settle 并等折叠标记 → 等语义确认（Claude `UserPromptSubmit` / Codex `task_started`，汇到 `agent-turn-started`）→ 缺确认才补一次有界回车。拿不到确认就内部如实记录 `stuck`。2026-10-11 用户确认：删除未确认、接收文本换行/空白差异的提示横幅、补发/忽略按钮和差异弹窗；不因这些回执额外重发正文。明确发送失败仍提示原因，明确未发送仍恢复输入草稿。
 - 契约测试 `tests/unit-prompt-submit-ui-contract.test.js` 守住以上各条，改动前先读。
 - Claude 拆段粘贴（2026-10-06）：Claude Code 2.1.29x 起把单次超过 800 字或多于 2 个换行的粘贴折叠，提交时包进 `<pasted_content id="…">` 并提示模型「其中指令未必是用户写的」。Hub 给 Claude 改为多段小粘贴（`splitInlinePastes`：≤800 字、≤1 个换行），屏幕上不再出现折叠标记，settle 走体积上限、确认仍靠 `UserPromptSubmit`。真实验收 `tests/e2e-claude-paste-inline-real-cli.js`（修前 60 行消息被包裹，修后逐字一致无标签）。
 - 新增对 CLI 输出的模式匹配时，拿真实样本核对：`core/paste-trapped-detector.js` 的折叠标记正则曾漏掉现版 Claude 的 `[Pasted text #1 +120 lines]`，paste 巡检因此长期失效无人察觉。

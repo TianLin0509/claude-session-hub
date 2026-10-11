@@ -880,7 +880,8 @@ function ensureCodexApiProfile(cv, projectDir) {
   const projectKey = path.resolve(projectDir || os.homedir());
 
   fs.mkdirSync(codexHome, { recursive: true });
-  fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+  // 只接管 Hub 生成的顶层键，Codex 写下的 [hooks.state.*]、[tui] 等保留（同 DeepSeek profile）。
+  require('./codex-managed-config').writeHubManagedCodexConfig(path.join(codexHome, 'config.toml'), [
     'disable_response_storage = true',
     `model = ${tomlString(model)}`,
     `model_provider = ${tomlString(provider)}`,
@@ -904,7 +905,7 @@ function ensureCodexApiProfile(cv, projectDir) {
     `[projects.${tomlString(projectKey)}]`,
     'trust_level = "trusted"',
     '',
-  ].join('\n'), 'utf8');
+  ].join('\n'));
   fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
     OPENAI_API_KEY: cv.CODEX_API_KEY || '',
   }), 'utf8');
@@ -1414,13 +1415,13 @@ class SessionManager extends EventEmitter {
     else if (isAcp) title = ACP_LABELS[kind.replace(/-resume$/, '')];
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
-    else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
+    else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Antigravity ${this.geminiCounter}`; }
     else if (webRoute) { this.codexCounter = (this.codexCounter || 0) + 1; title = `${webRoute.label} ${this.codexCounter}`; }
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
     else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else if (kind === 'kimi') { this.kimiCounter = (this.kimiCounter || 0) + 1; title = `Kimi ${this.kimiCounter}`; }
     else if (kind === 'codeagent') { this.codeagentCounter = (this.codeagentCounter || 0) + 1; title = `CodeAgent ${this.codeagentCounter}`; }
-    else if (kind === 'gemini-resume') title = `Gemini Resume ${++this.resumeCounter}`;
+    else if (kind === 'gemini-resume') title = `Antigravity Resume ${++this.resumeCounter}`;
     else if (kind === 'codex-resume') title = `Codex Resume ${++this.resumeCounter}`;
     else if (kind === 'deepseek-resume') title = `DeepSeek Resume ${++this.resumeCounter}`;
     else if (kind === 'kimi-resume') title = `Kimi Resume ${++this.resumeCounter}`;
@@ -1718,6 +1719,13 @@ class SessionManager extends EventEmitter {
       opts = { ...opts, resumeCCSessionId: codeagentLaunch.sessionId || undefined,
         resumeTranscriptPath: codeagentLaunch.sessionId ? opts.resumeTranscriptPath : undefined };
     }
+    let antigravityLaunch = null;
+    if (isGemini) {
+      const agy = require('./antigravity-config');
+      antigravityLaunch = agy.launchCommand({...opts,useResume:opts.useResume||kind==='gemini-resume'}, sessionEnv);
+      agy.installHooks(sessionEnv, getHubDataDir(), id);
+      opts = {...opts,geminiProjectHash:agy.ENGINE,geminiProjectRoot:spawnCwd};
+    }
     // Every native driver is owned directly by this Hub; no cross-Hub broker.
     const CodexSessionClass = require('./codex-native-session').CodexNativeSession;
     this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
@@ -1781,7 +1789,7 @@ class SessionManager extends EventEmitter {
       const mid = opts.model || DEFAULT_MODEL_BY_KIND.claude;
       currentModel = { id: mid, displayName: mid };
     } else if (isGemini) {
-      const mid = opts.model || 'gemini-3-pro-preview';
+      const mid = opts.model || require('./antigravity-config').DEFAULT_MODEL;
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
       const cv = getConfigValues();
@@ -2230,19 +2238,7 @@ class SessionManager extends EventEmitter {
     }
 
     if (isGemini) {
-      let cmd = ' gemini --approval-mode yolo';
-      if(opts.purpose==='hub-assistant')cmd+=' --skip-trust --allowed-mcp-server-names hub_assistant';
-      if(opts.purpose==='hub-photo-assistant')cmd+=' --skip-trust';
-      cmd += ` --model ${opts.model || 'gemini-3-pro-preview'}`;
-      if (opts.useResume && opts.geminiChatId && opts.geminiChatId.length > 8) {
-        // Level 1: precise resume by full UUID.  The native id wins even when
-        // the persisted public kind is gemini-resume.
-        cmd += ` --resume ${opts.geminiChatId}`;
-      } else if (kind === 'gemini-resume' || opts.useResume) {
-        // Level 2: 8charId (old state.json format) or no chatId → fall back to latest
-        cmd += ' --resume latest';
-      }
-      cmd += '\r\n';
+      const cmd = antigravityLaunch;
       let sent = false;
       let debounceTimer = null;
       const watcher = ptyProcess.onData(() => {
@@ -2328,8 +2324,13 @@ class SessionManager extends EventEmitter {
       });
       if (isCodexRuntime) {
         // hook 是 PTY Codex 的身份与状态来源；部署失败不拦启动，但要在会话上留痕。
+        // 个人策略同步进 hooks.json 的守卫一并信任，否则 Codex 0.159 起启动即停在 hook 审核页。
+        let trustedHooks = null;
+        try { trustedHooks = require('./agent-user-context').codexPolicyHooks(sessionEnv, getHubDataDir()); }
+        catch (error) { console.warn('[codex-hooks] 个人策略读取失败，仅信任 Hub hook:', error.message); }
         const hookResult = require('./codex-hook-integration').ensureCodexHookIntegration({
           codexHome: sessionEnv.CODEX_HOME || null,
+          trustedHooks,
         });
         info.hookIntegrationWarning = hookResult.errors.length ? hookResult.errors.join('；') : null;
         cmd += ` -c features.hooks=true`;
@@ -3200,7 +3201,7 @@ class SessionManager extends EventEmitter {
       });
       cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
-      cmd = ` gemini --approval-mode yolo${s.info.purpose==='hub-assistant'?' --skip-trust --allowed-mcp-server-names hub_assistant':s.info.purpose==='hub-photo-assistant'?' --skip-trust':''} --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
+      cmd = require('./antigravity-config').launchCommand({...s.info,model:modelId,useResume:!!s.info.geminiChatId},process.env);
     } else if (kind === 'claude' || kind === 'claude-resume') {
       // 默认 --effort max（CLAUDE_HUB_NO_EFFORT_MAX=1 可关），但会话显式
       // 选过档位时必须沿用，不能在 CLI 原地重拉后静默回到 max。
@@ -3615,6 +3616,11 @@ async function readTranscriptTail(kind, sourcePath, n = 10, opts = {}) {
     }
   } catch { return null; }
   try {
+    if (/^gemini(?:-resume)?$/.test(kind) && require('./antigravity-config').isAntigravity({transcriptPath:sourcePath})) {
+      const turns=require('./antigravity-transcript-parser').parseAntigravityTranscriptToTurns(sourcePath,{limit:n});
+      const joined=turns.map(t=>`${t.role.toUpperCase()}: ${t.text}`).join('\n\n');
+      return joined.length>MAX_INJECT?joined.slice(0,MAX_INJECT)+'\n[CONTEXT TRUNCATED]':joined;
+    }
     if (kind === 'gemini' && sourcePath.endsWith('.json') && !sourcePath.endsWith('.jsonl')) {
       // Gemini old format: single JSON file
       const obj = JSON.parse(await fs.promises.readFile(sourcePath, 'utf-8'));

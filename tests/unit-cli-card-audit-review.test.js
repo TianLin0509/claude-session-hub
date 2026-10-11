@@ -9,17 +9,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const read = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 
-test('explicit send failures return the text; unconfirmed has a receipt-bound recovery entry', () => {
+test('explicit send failures return the text; receipt uncertainty stays quiet', () => {
   const src = read('renderer/renderer.js');
   assert.match(src, /function reportFloatingSendFailure\(sessionId, inputBox, text, reason\) \{/);
   assert.match(src, /if \(restored\) \{ replaceContenteditableText\(inputBox, text\); saveFloatingInputDraft\(sessionId, inputBox\); \}/);
   assert.match(src, /if \(!result\?\.ok && !result\?\.unconfirmed\) \{\s*reportFloatingSendFailure\(/, 'a failed result reaches the user');
   assert.match(src, /else reportFloatingSendFailure\(sessionId, inputBox, text, err && err\.message/, 'IPC failure of a PTY send is visible too');
-  assert.match(src, /if \(result\?\.sendStatus === 'content-mismatch'\) \{ notifyPromptContentMismatch\(delivery\); return; \}/);
-  assert.match(src, /if \(state\.status === 'content-mismatch' && !state\.dismissed\) notifyPromptContentMismatch\(state\);/);
-  // 当前用户提供的项目规则要求未确认可见，补发绑定本次消息。
-  assert.match(src, /resend\.className = 'fi-stuck-resend'/);
-  assert.match(src, /invoke\('session:resend-prompt', \{ sessionId, clientSubmissionId: delivery.clientSubmissionId \}\)/);
+  assert.match(src, /if \(result\?\.sendStatus === 'content-mismatch'\) return;/);
+  assert.doesNotMatch(src, /notifyPromptContentMismatch|markFloatingInputStuck|fi-stuck-resend/);
 });
 
 test('unknown results keep their unconfirmed flag through the submit handler', () => {

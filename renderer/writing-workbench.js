@@ -14,7 +14,7 @@
 
 const STEPS = [['idea', '说想法'], ['draft', '初稿'], ['review', '你点评'], ['revise', '改稿'], ['final', '定稿']];
 const STATUS_LABEL = { working: '正在写…', error: '出错', stopped: '已停止', dormant: '休眠中' };
-const KIND_LABEL = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi' };
+const KIND_LABEL = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek', gemini: 'Antigravity', kimi: 'Kimi' };
 const POLL_MS = 3000;
 const NARROW_PX = 980;
 

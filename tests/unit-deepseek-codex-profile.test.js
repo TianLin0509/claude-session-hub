@@ -87,6 +87,88 @@ test('trusted cwd entries accumulate instead of replacing another live session',
   }
 });
 
+function parseToml(text) {
+  const result = require('node:child_process').spawnSync('python', ['-c',
+    'import sys,json,tomllib;print(json.dumps(tomllib.loads(sys.stdin.read())))'], {
+    input: text, encoding: 'utf8', windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' } });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+// 2026-10-11：每次启动整份重写 config.toml，用户在 /hooks 审核页点的信任和 Codex 写的 [tui]
+// 都被抹掉，下次启动又停在审核页。现在只接管 Hub 生成的顶层键。
+test('repeated launches keep Codex-written [hooks.state.*] and [tui] while Hub keys are refreshed', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ds-keep-'));
+  try {
+    const dataDir = path.join(root, 'hub-data');
+    const first = path.join(root, 'one');
+    const second = path.join(root, 'two');
+    fs.mkdirSync(first, { recursive: true });
+    fs.mkdirSync(second, { recursive: true });
+    const profile = ensureDeepSeekCodexProfile(first, { dataDir });
+    const hooksJson = path.join(profile.codexHome, 'hooks.json');
+    const stateKey = `${hooksJson}:pre_tool_use:0:0`;
+    // 模拟 Codex 与用户：信任一条 hook、禁用一条、写 [tui]；同时 Hub 键被改坏、[notice] 多了键。
+    const userTail = [
+      '',
+      '[hooks.state]',
+      '',
+      `[hooks.state.'${stateKey}']`,
+      'trusted_hash = "sha256:user-approved" # 用户在 /hooks 点的信任',
+      '',
+      `[hooks.state.'${hooksJson}:stop:0:1']`,
+      'enabled = false',
+      '',
+      '[tui]',
+      'screen_reader_detection_done = true',
+      '',
+      '[tui.model_availability_nux]',
+      '"deepseek-v4-flash" = 2',
+      '',
+    ].join('\r\n');
+    const tampered = fs.readFileSync(profile.configPath, 'utf8')
+      .replace('model = "deepseek-v4-flash"', 'model = "something-else"')
+      .replace('hide_full_access_warning = true', 'hide_full_access_warning = false\nextra_notice = 1');
+    fs.writeFileSync(profile.configPath, tampered + userTail);
+
+    const again = ensureDeepSeekCodexProfile(second, { dataDir });
+    assert.strictEqual(again.configWarning, null);
+    const text = fs.readFileSync(again.configPath, 'utf8');
+    const doc = parseToml(text);
+    assert.strictEqual(doc.model, 'deepseek-v4-flash', 'Hub key refreshed');
+    assert.deepStrictEqual(doc.notice, { hide_rate_limit_model_nudge: true, hide_full_access_warning: true }, 'Hub-owned table regenerated');
+    assert.strictEqual(doc.projects[path.resolve(second)].trust_level, 'trusted', 'new cwd trusted');
+    assert.strictEqual(doc.projects[path.resolve(first)].trust_level, 'trusted', 'old cwd kept');
+    assert.deepStrictEqual(doc.hooks.state[stateKey], { trusted_hash: 'sha256:user-approved' });
+    assert.deepStrictEqual(doc.hooks.state[`${hooksJson}:stop:0:1`], { enabled: false });
+    assert.deepStrictEqual(doc.tui, { screen_reader_detection_done: true, model_availability_nux: { 'deepseek-v4-flash': 2 } });
+    assert.ok(text.includes('# 用户在 /hooks 点的信任'), 'preserved tables keep their original text');
+
+    // 第三次：内容稳定，不再改写；Hub 键与保留表都不变。
+    const before = fs.readFileSync(again.configPath, 'utf8');
+    ensureDeepSeekCodexProfile(second, { dataDir });
+    assert.strictEqual(fs.readFileSync(again.configPath, 'utf8'), before);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an unreadable existing config.toml falls back to the plain Hub config instead of a broken merge', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ds-bad-'));
+  try {
+    const dataDir = path.join(root, 'hub-data');
+    const profile = ensureDeepSeekCodexProfile(root, { dataDir });
+    const clean = fs.readFileSync(profile.configPath, 'utf8');
+    fs.writeFileSync(profile.configPath, clean + '\n[hooks.state\nbroken = \n');
+    const again = ensureDeepSeekCodexProfile(root, { dataDir, logger: {} });
+    assert.match(again.configWarning, /无法识别/);
+    assert.strictEqual(fs.readFileSync(profile.configPath, 'utf8'), clean);
+    parseToml(clean);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('session launch exports only the DeepSeek key and preserves the selected DeepSeek model', () => {
   assert.match(SESSION_MANAGER_SRC, /sessionEnv\.DEEPSEEK_API_KEY = cv\.DEEPSEEK_API_KEY/);
   assert.match(SESSION_MANAGER_SRC, /delete sessionEnv\.ANTHROPIC_BASE_URL/);

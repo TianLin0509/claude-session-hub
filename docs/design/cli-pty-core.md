@@ -35,7 +35,9 @@ Codex 0.153 只执行「已信任」的 hook，信任记录存在 `config.toml` 
 
 1. 把 `session-hub-hook.py` 复制到 `<CODEX_HOME>/hub-scripts/`；
 2. 在 `hooks.json` 里补齐缺的事件。已有的 session-hub-hook 条目原样复用，不重复部署；
-3. 为命令里带 `session-hub-hook` 的条目写 `trusted_hash`。这等价于用户在 `/hooks` 里点了一次信任，Hub 绝不替用户信任别的 hook。
+3. 为两类条目写 `trusted_hash`：命令里带 `session-hub-hook` 的 Hub 条目；与个人策略 `~/.agents/context-policy.json` 的 `codexHooks` 逐字相同（事件、matcher、handler 全文）的条目——这些是用户本人写下、由 `core/agent-user-context.js` 同步进 hooks.json 的守卫。这等价于用户在 `/hooks` 里点了一次信任；来源不明的手工 hook，Hub 绝不替用户信任。2026-10-11 起：Codex 0.159 遇到未信任 hook 会在启动时停在「hooks need review」审核页，Hub 的 prompt 进不去，所以策略条目必须一并信任。
+
+Hub 自己生成的 Codex home（DeepSeek `core/deepseek-codex-profile.js`、API 模式 `ensureCodexApiProfile`）每次启动重写 `config.toml`，经 `core/codex-managed-config.js` 只接管 Hub 生成文本里出现的顶层键（`model`、`notice`、`windows`、`model_providers`、`projects` 等），`[hooks.state.*]`、`[tui]` 等其余顶层键原文保留；合并结果先做语义比对，失败退回只写 Hub 内容，不写坏配置。以前整份覆盖，用户在 `/hooks` 点的信任每次启动都被抹掉。
 
 写 `config.toml` 按 TOML 语义来，不按字符串（`core/toml-statements.js`）：
 - 同一张表的单引号、双引号（含转义）、点号两侧空白、行尾注释，都认作同一张表；
