@@ -25,7 +25,8 @@ test('Claude official lifecycle hooks reach the renderer with bounded evidence',
   assert.match(main, /const isSubagentContext = !!parsed\.agentId/);
   assert.match(main, /ignored foreign \$\{event\}/,
     'main hook server must reject inherited-env events from another native Claude session');
-  assert.match(main, /initialTranscriptBucketMismatch[\s\S]{0,500}projectSlug\(hookTargetSession\.cwd\)/,
+  // 比对同时认短名与长名写法（core/hook-cwd-match.js，tests/unit-hook-cwd-match.test.js）。
+  assert.match(main, /initialTranscriptBucketMismatch = !transcriptBucketMatches\(parsed\.transcriptPath, hookTargetSession\.cwd\)/,
     'an unbound session must reject a first hook from another Claude project bucket');
   assert.match(main, /!isSubagentContext && \(parsed\.claudeSessionId \|\| parsed\.transcriptPath\)/,
     'subagent hooks must never replace the parent transcript binding');
