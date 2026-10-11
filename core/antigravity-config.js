@@ -20,6 +20,18 @@ function resolveCommand(env = process.env) {
   }
   return process.platform === 'win32' ? 'agy.exe' : 'agy';
 }
+// Google OAuth refresh and model calls cross the same proxy as the session PTY.
+// A Hub started from the desktop shortcut has no proxy env; without this agy
+// waits 10 s on the expired-token refresh and then reports "not logged in".
+function cliEnv(env = process.env, proxy = require('./hub-config').getConfig().proxy) {
+  const out = {...env};
+  const value = String(proxy || '').trim();
+  if (!value) return out;
+  for (const key of Object.keys(out)) if (/^(https?|all|no)_proxy$/i.test(key)) delete out[key];
+  Object.assign(out, {HTTP_PROXY:value, HTTPS_PROXY:value, http_proxy:value, https_proxy:value,
+    NO_PROXY:'localhost,127.0.0.1', no_proxy:'localhost,127.0.0.1'});
+  return out;
+}
 function isAntigravity(session = {}) {
   return session.geminiProjectHash === ENGINE || /[\\/]antigravity-cli[\\/]brain[\\/]/i.test(session.transcriptPath || session.resumeTranscriptPath || '');
 }
@@ -27,7 +39,9 @@ function launchArgs(opts = {}) {
   // Never send a legacy Gemini UUID to an unrelated Antigravity conversation.
   if (opts.useResume && opts.geminiChatId && !isAntigravity(opts))
     throw new Error('这是旧 Gemini CLI 历史，可继续查看；请新建 Antigravity 会话，旧会话 ID 不能直接迁移。');
-  const args = [];
+  // Hub runs every agent unattended (Codex/Claude also bypass approvals); a tool
+  // review prompt would stall group-chat members that must write answer files.
+  const args = ['--dangerously-skip-permissions'];
   const model = opts.model || DEFAULT_MODEL;
   if (!/^[\w.-]+$/.test(model)) throw new Error('Antigravity 模型 ID 无效');
   args.push('--model', model);
@@ -40,6 +54,25 @@ function launchArgs(opts = {}) {
     args.push('--conversation', opts.geminiChatId);
   } else if (opts.useResume) throw Error('请从历史记录选择具体的 Antigravity 会话；缺少会话 ID，无法安全恢复。');
   return args;
+}
+// agy asks "Do you trust the contents of this project?" for every new folder,
+// and Hub creates a fresh folder per default session, so the TUI would sit on
+// that prompt. Same pre-trust as Claude's hasTrustDialogAccepted.
+function ensureWorkspaceTrusted(cwd, env = process.env) {
+  if (!cwd) return false;
+  const file = path.join(configRoot(env), 'settings.json'), target = path.resolve(cwd);
+  let settings = {};
+  if (fs.existsSync(file)) settings = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '').trim() || '{}');
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Antigravity settings.json 格式无效');
+  const list = Array.isArray(settings.trustedWorkspaces) ? settings.trustedWorkspaces : [];
+  const same = value => process.platform === 'win32' ? String(value).toLowerCase() === target.toLowerCase() : value === target;
+  if (list.some(same)) return false;
+  settings.trustedWorkspaces = [...list, target];
+  fs.mkdirSync(path.dirname(file), {recursive:true});
+  const tmp = file + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, file);
+  return true;
 }
 function launchCommand(opts, env) { return ' & ' + [resolveCommand(env), ...launchArgs(opts)].map(quote).join(' ') + '\r\n'; }
 function eventsFile(dataDir, id) {
@@ -115,4 +148,4 @@ function installHooks(env, dataDir, id) {
   env.AI_HUB_ANTIGRAVITY_SESSION_ID = id;
   return {eventsFile:file, configFile};
 }
-module.exports = {ENGINE, UUID, DEFAULT_MODEL, home, configRoot, resolveCommand, isAntigravity, launchArgs, launchCommand, eventsFile, receiptsFile, migrateConfiguration, installHooks};
+module.exports = {ENGINE, UUID, DEFAULT_MODEL, home, configRoot, resolveCommand, cliEnv, ensureWorkspaceTrusted, isAntigravity, launchArgs, launchCommand, eventsFile, receiptsFile, migrateConfiguration, installHooks};

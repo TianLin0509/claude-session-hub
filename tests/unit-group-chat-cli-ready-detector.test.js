@@ -11,7 +11,10 @@ function sleep(ms) {
   const agyFrame = '\n────────────────\n>\n────────────────\n? for shortcuts';
   assert.equal(ready.isReady('agy-modal','gemini','x'.repeat(600)+'\nesc to dismiss\n? for shortcuts'),false);
   assert.equal(ready.isReady('agy-after-modal','gemini','x'.repeat(600)+'\nesc to dismiss'+agyFrame),true);
-  assert.equal(ready.isReady('agy-logged-out','gemini','x'.repeat(600)+'\nnot signed in'+agyFrame),false);
+  // Real agy 1.3.3 launch: the transient sign-in banner precedes the input frame every time.
+  assert.equal(ready.isReady('agy-launch','gemini','x'.repeat(600)+'\nWelcome to the Antigravity CLI. You are currently not signed in.\n⣷  Signing in...'+agyFrame),true);
+  assert.equal(ready.isReady('agy-signing-in','gemini','x'.repeat(600)+agyFrame+'\nYou are currently not signed in.\n⣷  Signing in...'),false);
+  assert.equal(ready.isReady('agy-logged-out','gemini','x'.repeat(600)+'\nnot signed in'+agyFrame+'\nSelect login method'),false);
   assert.ok(
     ready.MARKERS.codex.every(marker => typeof marker !== 'string' || !/gpt-|send/i.test(marker)),
     'Codex ready markers must not include model ids or generic send text'

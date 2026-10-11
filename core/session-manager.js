@@ -1722,8 +1722,13 @@ class SessionManager extends EventEmitter {
     let antigravityLaunch = null;
     if (isGemini) {
       const agy = require('./antigravity-config');
+      // agy finds hooks.json, trust list and brain under USERPROFILE; an isolated Hub
+      // installs them under its own home, so the CLI must look there too. Login
+      // lives in the OS keyring and is unaffected.
+      if (sessionEnv.CLAUDE_HUB_HOME_DIR) sessionEnv.USERPROFILE = sessionEnv.HOME = agy.home(sessionEnv);
       antigravityLaunch = agy.launchCommand({...opts,useResume:opts.useResume||kind==='gemini-resume'}, sessionEnv);
       agy.installHooks(sessionEnv, getHubDataDir(), id);
+      agy.ensureWorkspaceTrusted(spawnCwd, sessionEnv);
       opts = {...opts,geminiProjectHash:agy.ENGINE,geminiProjectRoot:spawnCwd};
     }
     // Every native driver is owned directly by this Hub; no cross-Hub broker.

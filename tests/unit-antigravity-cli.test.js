@@ -6,7 +6,7 @@ const {parseGeminiTranscriptToTurns:parse}=require('../core/gemini-transcript-pa
 const SID='a1111111-2222-4333-8444-555555555555';
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-agy-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const file=path.join(root,'.gemini','antigravity-cli','brain',SID,'.system_generated','logs','transcript.jsonl');fs.mkdirSync(path.dirname(file),{recursive:true});return {root,file};}
 test('launch preserves precise identity and rejects legacy Gemini resume',()=>{
- assert.deepEqual(cfg.launchArgs({model:'gemini-3.1-pro-high',useResume:true,geminiChatId:SID,geminiProjectHash:'antigravity'}),['--model','gemini-3.1-pro-high','--conversation',SID]);
+ assert.deepEqual(cfg.launchArgs({model:'gemini-3.1-pro-high',useResume:true,geminiChatId:SID,geminiProjectHash:'antigravity'}),['--dangerously-skip-permissions','--model','gemini-3.1-pro-high','--conversation',SID]);
  assert.throws(()=>cfg.launchArgs({useResume:true,geminiChatId:SID}),/旧 Gemini/);
   assert.throws(()=>cfg.launchArgs({model:"x'; Remove-Item"}),/模型/);
   assert.throws(()=>cfg.launchArgs({useResume:true}),/缺少会话 ID/);
@@ -40,7 +40,38 @@ test('only fully idle normal Stop completes; errors and foreign hooks cannot com
  assert.equal(events.filter(e=>e.name==='turn-complete').length,1);assert.equal(events.at(-1).name,'turn-error');
  tap._event(s,{...e,event:'Stop',observedAt:3,fullyIdle:true,terminationReason:'NO_TOOL_CALL'});
  assert.equal(events.filter(e=>e.name==='turn-complete').length,2,'real agy 1.3.3 normal Stop is NO_TOOL_CALL');
- assert.throws(()=>tap._event(s,{...e,conversationId:'b1111111-2222-4333-8444-555555555555'}),/其他会话/);
+ assert.throws(()=>tap._event(s,{...e,conversationId:'b1111111-2222-4333-8444-555555555555'}),/转录路径身份无效/,'a conversation id must own its transcript path');
+ assert.throws(()=>tap._event(s,{...e,hubSessionId:'other-hub'}),/身份无效/);
+});
+test('Stop that arrives before the final text is flushed completes later instead of failing',t=>{
+ const {root,file}=fixture(t);fs.writeFileSync(file,JSON.stringify({step_index:0,source:'USER_EXPLICIT',type:'USER_INPUT',content:'ping'})+'\n');
+ const tap=new AntigravityTap();t.after(()=>tap.unregisterSession('late'));
+ tap.registerSession('late',{antigravityEventsFile:path.join(root,'late.jsonl'),cwd:root});
+ const s=tap._bound.get('late'),events=[];for(const name of ['turn-complete','turn-error'])tap.on(name,e=>events.push({name,...e}));
+ const e={hubSessionId:'late',conversationId:SID,transcriptPath:file,observedAt:1,executionNum:0};
+ tap._event(s,{...e,event:'PreInvocation'});
+ tap._event(s,{...e,event:'Stop',fullyIdle:true,terminationReason:'NO_TOOL_CALL'});
+ assert.equal(events.length,0,'no false failure while agy is still writing');
+ fs.appendFileSync(file,JSON.stringify({step_index:1,source:'MODEL',type:'PLANNER_RESPONSE',content:'迟到的正文'})+'\n');
+ tap._poll(s);
+ assert.deepEqual(events.map(e=>[e.name,e.text]),[['turn-complete','迟到的正文']]);
+});
+test('switching conversations inside agy rebinds the Hub session instead of rejecting it',t=>{
+ const {root,file}=fixture(t),other='b1111111-2222-4333-8444-555555555555',otherFile=file.replace(SID,other);
+ fs.writeFileSync(file,[{step_index:0,source:'USER_EXPLICIT',type:'USER_INPUT',content:'old'},{step_index:1,source:'MODEL',type:'PLANNER_RESPONSE',content:'old answer'}].map(JSON.stringify).join('\n'));
+ fs.mkdirSync(path.dirname(otherFile),{recursive:true});
+ fs.writeFileSync(otherFile,[{step_index:0,source:'USER_EXPLICIT',type:'USER_INPUT',content:'new'},{step_index:1,source:'MODEL',type:'PLANNER_RESPONSE',content:'new answer'}].map(JSON.stringify).join('\n'));
+ const events=path.join(root,'switch.jsonl'),tap=new AntigravityTap(),seen=[];t.after(()=>tap.unregisterSession('sw'));
+ for(const name of ['session-bound','turn-started','turn-complete','turn-error'])tap.on(name,e=>seen.push({name,...e}));
+ const base={hubSessionId:'sw',observedAt:1,executionNum:0};
+ fs.writeFileSync(events,[{...base,event:'PreInvocation',conversationId:SID,transcriptPath:file},{...base,event:'Stop',conversationId:SID,transcriptPath:file,fullyIdle:true,terminationReason:'NO_TOOL_CALL'},
+  {...base,observedAt:2,event:'PreInvocation',conversationId:other,transcriptPath:otherFile},{...base,observedAt:2,event:'Stop',conversationId:other,transcriptPath:otherFile,fullyIdle:true,terminationReason:'NO_TOOL_CALL'}].map(JSON.stringify).join('\n')+'\n');
+ tap.registerSession('sw',{antigravityEventsFile:events,cwd:root});
+ assert.deepEqual(seen.filter(e=>e.name==='session-bound').map(e=>e.geminiChatId),[SID,other]);
+ assert.deepEqual(seen.filter(e=>e.name==='turn-complete').map(e=>e.text),['old answer','new answer']);
+ assert.equal(seen.filter(e=>e.name==='turn-started').length,2);assert.equal(seen.filter(e=>e.name==='turn-error').length,0);
+ tap._poll(tap._bound.get('sw'));
+ assert.equal(seen.filter(e=>e.name==='turn-started').length,2,'polling again never replays processed lines');
 });
 test('streaming a new turn never repeats the preceding assistant answer',t=>{
  const tap=new AntigravityTap();
@@ -85,4 +116,32 @@ test('old Gemini token cannot authenticate Antigravity and official auth failure
  let call;const adapters=createAccountAdapters({dataDir:root,homeDir:root,env:{},browser:{},runImpl:async(cmd,args)=>{call={cmd,args};return {code:1,stdout:'',stderr:'Please sign in to view available models.'};}});
  assert.equal((await adapters.check({provider:'gemini',home:root})).state,'login_required');assert.deepEqual(call.args,['models']);
  adapters.dispose();
+});
+
+test('background agy calls use the configured proxy, not the shortcut-launched Hub env',()=>{
+ const env=cfg.cliEnv({PATH:'x',all_proxy:'socks5://other',https_proxy:'http://stale'},'http://127.0.0.1:7890');
+ assert.equal(env.HTTPS_PROXY,'http://127.0.0.1:7890');assert.equal(env.https_proxy,'http://127.0.0.1:7890');
+ assert.equal(env.all_proxy,undefined,'a second inherited proxy cannot win');assert.equal(env.PATH,'x');
+ assert.equal(cfg.cliEnv({HTTPS_PROXY:'keep'},'').HTTPS_PROXY,'keep','empty config keeps the user env');
+});
+test('new workspaces are pre-trusted once so the TUI never waits on the trust prompt',t=>{
+ const {root}=fixture(t),env={CLAUDE_HUB_HOME_DIR:root},file=path.join(cfg.configRoot(env),'settings.json');
+ fs.writeFileSync(file,'\uFEFF'+JSON.stringify({trustedWorkspaces:['C:\old'],keep:1}));
+ assert.equal(cfg.ensureWorkspaceTrusted(path.join(root,'工作 1'),env),true);
+ const saved=JSON.parse(fs.readFileSync(file,'utf8'));
+ assert.deepEqual(saved.trustedWorkspaces,['C:\old',path.join(root,'工作 1')]);assert.equal(saved.keep,1);
+ assert.equal(cfg.ensureWorkspaceTrusted(path.join(root,'工作 1'),env),false,'no duplicate entry');
+ if(process.platform==='win32')assert.equal(cfg.ensureWorkspaceTrusted(path.join(root,'工作 1').toUpperCase(),env),false);
+});
+test('model catalog is shared between dialog open and submit, and failures retry soon',async()=>{
+ const cat=require('../core/antigravity-model-catalog');cat.resetModelCatalogCache();
+ let calls=0,clock=0,code=0;const runImpl=async(cmd,args,env)=>{calls++;assert.equal(env.HTTPS_PROXY!==undefined,true);return {code,stdout:code?'Please sign in':'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',stderr:''};};
+ const opts={env:{AI_HUB_ANTIGRAVITY_COMMAND:'agy.exe'},runImpl,now:()=>clock};
+ const [a,b]=await Promise.all([cat.readModelCatalog(opts),cat.readModelCatalog(opts)]);
+ assert.equal(calls,1,'concurrent callers share one agy process');assert.equal(a,b);assert.equal(a.ok,true);
+ clock=9*60*1000;await cat.readModelCatalog(opts);assert.equal(calls,1);
+ clock=11*60*1000;code=1;const failed=await cat.readModelCatalog(opts);assert.equal(calls,2);assert.match(failed.error,/登录/);
+ clock+=30*1000;await cat.readModelCatalog(opts);assert.equal(calls,2);
+ clock+=31*1000;await cat.readModelCatalog(opts);assert.equal(calls,3);
+ cat.resetModelCatalogCache();
 });
