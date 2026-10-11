@@ -14,6 +14,11 @@ process.env.HUB_E2E_SHOW_WINDOWS = '1';
 const ps = script => String(spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 30000 }).stdout || '').trim();
 const WIN32 = `Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr a, int x, int y, int cx, int cy, uint f);'`;
 const j = JSON.stringify, sleep = ms => new Promise(r => setTimeout(r, ms));
+// 窗口挪到屏幕外时 Windows 不再主动给它推新帧：切到后台后 xterm 等的那一帧、IntersectionObserver 回调都要等别的东西
+// 触发重画才来（2026-10-11 侧栏去掉连续动画后稳定复现；同一测试窗口放回屏幕内三项全过）。比对前强制出帧，
+// 等价于屏幕上窗口的正常出帧节奏。
+// 用 CDP 截一张小图强制合成器画一帧（屏幕外窗口上 rAF 本身也可能等不到），再给 xterm 的回调留一点时间。
+const pumpFrame = async c => { for (let i = 0; i < 2; i++) { await c.send('Page.captureScreenshot', { format: 'jpeg', quality: 10 }); await sleep(250); } };
 const freePort = () => new Promise((res, rej) => { const s = net.createServer(); s.on('error', rej); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
 const STANDIN = path.join(__dirname, 'fixtures', 'codeagent-tui-standin', 'codeagent.cmd');
 
@@ -40,7 +45,7 @@ async function main() {
     for (let i = 0; i < 150 && !(await c.eval('typeof sessions !== "undefined" && typeof selectSession === "function"').catch(() => false)); i++) await sleep(400);
     let hwnd = '0'; for (let i = 0; i < 30 && hwnd === '0'; i++) { hwnd = ps(`(Get-Process -Id ${hub.pid}).MainWindowHandle.ToInt64()`) || '0'; if (hwnd === '0') await sleep(500); }
     ps(`${WIN32}; [W.U]::SetWindowPos([IntPtr]${hwnd}, [IntPtr]::Zero, -24000, -24000, 1400, 900, 0x14) | Out-Null`);
-    await sleep(800);
+    for (let i = 0; i < 20 && await c.eval('document.visibilityState') !== 'visible'; i++) { await pumpFrame(c); await sleep(500); }
     assert.equal(await c.eval('document.visibilityState'), 'visible', 'window must render frames');
     const ids = [];
     for (let i = 0; i < 3; i++) { const s = await c.eval(`ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd: work, effort: 'low' } })})`); ids.push(s.id); await sleep(1000); }
@@ -52,11 +57,13 @@ async function main() {
     if (process.env.HUB_DISABLE_HIDDEN_RENDER_GUARD !== '1') assert.ok(guard.every(n => typeof n === 'number') && guard.reduce((a, b) => a + b, 0) > 0, 'the guard must skip hidden full redraws: ' + j(guard));
     console.log('PASS ① 藏起来时拦下整屏重画：' + j(guard));
     await c.eval(`applyViewMode('pty')`); await sleep(1500);
+    await pumpFrame(c);
     const a = await c.eval(COMPARE);
     assert.equal(a.mode, 'dom'); assert.ok(a.nonEmpty > 5, 'terminal has content ' + j(a));
     assert.equal(a.mismatches, 0, 'visible rows match the buffer after 后台: ' + j(a));
     console.log(`PASS ② 点后台后 ${a.rows} 行全部与缓冲区一致（非空 ${a.nonEmpty} 行）`);
     await c.eval(`selectSession(${j(ids[1])})`); await sleep(800); await c.eval(`applyViewMode('pty')`); await sleep(1500);
+    await pumpFrame(c);
     const b = await c.eval(COMPARE);
     assert.equal(b.mismatches, 0, 'visible rows match the buffer after switching: ' + j(b));
     console.log(`PASS ③ 后台里切会话后 ${b.rows} 行全部与缓冲区一致（非空 ${b.nonEmpty} 行）`);
