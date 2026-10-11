@@ -95,7 +95,7 @@ async function main() {
   const model = { kind: 'codex', model: 'gpt-6-astra', effort: 'high', mcpProfile: 'none' };
   const send = (sessionId, text) => invoke('session:send-prompt', {sessionId, text});
   try {
-    hub = await launchIsolatedHub({dataDir:DATA_DIR, port:await reservePort(), label:'sidebar-state', windowMode:'hidden', extraEnv:{AI_HUB_WORKSPACE_ROOT:WORKSPACE_ROOT, CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
+    hub = await launchIsolatedHub({dataDir:DATA_DIR, port:await reservePort(), label:'sidebar-state', windowMode:'hidden', extraEnv:{CODEX_HOME:path.join(TEMP_ROOT,'codex-home'), AI_HUB_WORKSPACE_ROOT:WORKSPACE_ROOT, CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
     client = await connectFirstPage(hub);
     await client.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
     await client.send('Emulation.setDeviceMetricsOverride',{width:1500,height:950,deviceScaleFactor:0,mobile:false});
@@ -118,8 +118,9 @@ async function main() {
     await clickPoint(client,row(ready.id));
     assert.equal((await send(a,'fixture:hold')).ok,true);
     await waitFor('group running',()=>client.eval(`!!document.querySelector(${JSON.stringify(groupRow(group.id)+' .sl-group-icon.run')})`));
-    result.pulse = await client.eval(`getComputedStyle(document.querySelector(${JSON.stringify(groupRow(group.id)+' .sl-group-icon')})).animationName`);
-    assert.equal(result.pulse,'sidebar-group-pulse');
+    // 2026-10-11：运行中改为静态绿环（圈住整组图标），不再挂无限循环动画。
+    result.pulse = await client.eval(`(()=>{const i=document.querySelector(${JSON.stringify(groupRow(group.id)+' .sl-group-icon')}),g=i.closest('.sl-group-logos');return getComputedStyle(i).animationName+'|'+getComputedStyle(g).outlineStyle})()`);
+    assert.equal(result.pulse,'none|solid');
     assert.equal((await send(b,'fixture:normal')).ok,true);
     await waitFor('member completed',()=>client.eval(`sessions.get(${JSON.stringify(b)}).nativeRuntime.state==='completed'`));
     // Member attention is a fixture: group delivery normally owns its own unread
@@ -130,7 +131,7 @@ async function main() {
     await waitFor('member unread group',async()=>/sec-unread/.test(await section(groupRow(group.id))));
     // Group placement uses member attention; pulse uses the real native running state.
     assert.equal(await client.eval(`!!document.querySelector(${JSON.stringify(groupRow(group.id)+' .sl-group-icon.run')})`),true);
-    result.checks.push('成员未读状态夹具令群聊进入未读；另一成员真实原生运行状态仍闪烁');
+    result.checks.push('成员未读状态夹具令群聊进入未读；另一成员真实原生运行状态仍标为运行中');
     await shot('dark-unread');
     await clickPoint(client,groupRow(group.id)+' .sl-title');
     assert.equal(await client.eval(`sessions.get(${JSON.stringify(b)}).unreadCount`),1,'opening the room does not read every member');

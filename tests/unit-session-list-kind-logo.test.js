@@ -175,14 +175,22 @@ test('运行中的普通会话带 running class，等待/空闲/休眠都不带'
     '休眠行不该闪');
 });
 
-// ---------------- 用例 8：呼吸动画本体必须在样式表里 ----------------
-test('侧栏样式表里有 .running .sl-kind 的呼吸动画', () => {
+// ---------------- 用例 8：运行中用静态绿环标出，不再用连续动画 ----------------
+// 2026-10-11 用户拍板：呼吸动画让界面一直按屏幕刷新率重画（3 个 logo 显卡 15–21% → 静态 4–5%），
+//   而且 Windows 关「动画效果」时会被整条关掉，运行中和空闲看起来一样。改成静态绿环 + 光晕。
+test('运行中的 logo 用静态绿环标出，侧栏不挂无限循环动画', () => {
   const fs = require('fs');
-  const css = fs.readFileSync(
-    path.join(__dirname, '..', 'renderer', 'styles', 'shell-sidebar-terminal.css'), 'utf8');
-  assert.ok(/\.session-item\.slim\.running \.sl-kind\s*\{[^}]*animation:\s*sl-logo-breathe/.test(css),
-    'logo 呼吸动画应挂在运行中的普通会话行上');
-  assert.ok(/@keyframes sl-logo-breathe/.test(css), '关键帧本体不能少');
+  const read = (...p) => fs.readFileSync(path.join(__dirname, '..', 'renderer', ...p), 'utf8');
+  const presets = read('styles', 'display-presets.css');
+  assert.ok(/#session-list \.sl-kind:is\(\[data-state='run'\],\[data-state='start'\]\)[^{]*\{[^}]*outline:2px solid var\(--sl-run-ring\)/.test(presets),
+    '运行中 / 唤醒中的 logo 要有 2px 绿环');
+  assert.ok(/#session-list \.sl-group-logos:is\(\[data-state='run'\],\[data-state='start'\]\)\s*\{[^}]*outline:2px solid var\(--sl-run-ring\)/.test(presets),
+    '群聊有人在干活时圈住整组 logo');
+  assert.ok(/--sl-run-ring:/.test(read('styles', 'base.css')), '绿环颜色变量要定义');
+  for (const file of [['styles', 'display-presets.css'], ['styles', 'sidebar-v2.css'], ['styles', 'shell-sidebar-terminal.css'], ['session-details.css']]) {
+    const css = read(...file);
+    assert.ok(!/sl-logo-breathe|sidebar-group-pulse/.test(css), `${file.join('/')} 不该再有 logo 呼吸动画`);
+  }
 });
 
 if (failed) {
