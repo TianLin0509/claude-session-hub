@@ -42,6 +42,16 @@ test('only fully idle normal Stop completes; errors and foreign hooks cannot com
  assert.equal(events.filter(e=>e.name==='turn-complete').length,2,'real agy 1.3.3 normal Stop is NO_TOOL_CALL');
  assert.throws(()=>tap._event(s,{...e,conversationId:'b1111111-2222-4333-8444-555555555555'}),/其他会话/);
 });
+test('streaming a new turn never repeats the preceding assistant answer',t=>{
+ const tap=new AntigravityTap();
+ tap._bound.set('stream',{active:true,turns:[{role:'user',text:'old question'},
+   {role:'assistant',text:'old answer'},{role:'user',text:'new question'}]});
+ t.after(()=>tap.unregisterSession('stream'));
+ assert.equal(tap.getStreamingText('stream'),null);
+ tap._bound.get('stream').turns.push({role:'assistant',text:'new answer'});
+ assert.deepEqual(tap.getStreamingText('stream'),[{type:'text',text:'new answer'}]);
+});
+
 test('model list accepts only official slug rows and preserves account-dependent choices',()=>{
  const {parseModels}=require('../core/antigravity-model-catalog');
  assert.deepEqual(parseModels('Fetching available models...\ngemini-3.8-flash-high  Gemini 3.8 Flash (High)\nclaude-sonnet-5-5  Claude Sonnet 5.5\nError: login failed').map(m=>m.id),['gemini-3.8-flash-high','claude-sonnet-5-5']);

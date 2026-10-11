@@ -86,7 +86,10 @@ class AntigravityTap extends EventEmitter {
     }
   }
   getLastAssistantText(id){return this._bound.get(id)?.lastText||null;}
-  getStreamingText(id){const s=this._bound.get(id);if(!s?.active)return null;const a=s.turns.filter(t=>t.role==='assistant'&&t.text).at(-1);return a?[{type:'text',text:a.text}]:null;}
+  getStreamingText(id){const s=this._bound.get(id);if(!s?.active)return null;
+    const lastUser=s.turns.findLastIndex(t=>t.role==='user');
+    const a=s.turns.slice(lastUser+1).filter(t=>t.role==='assistant'&&t.text).at(-1);
+    return a?[{type:'text',text:a.text}]:null;}
   clearStreamingBuf(){}
   getLastTokens(){return null;}
   clearLastTokens(){}
