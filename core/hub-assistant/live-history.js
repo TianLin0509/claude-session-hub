@@ -19,6 +19,13 @@ function nativeId(meta){
 }
 function finalLineFilter(prefix,context){const e=inspectCodexEnvelope(prefix);if(e.recordType==='response_item'){if(!e.payloadType)return context.final?false:null;if(e.payloadType!=='message')return false;if(!e.role)return context.final?false:null;return e.role==='assistant';}return codexLineFilter(prefix,context,'turns');}
 function claudeHeaderMatches(file,identity){const fd=fs.openSync(file,'r');try{const buffer=Buffer.alloc(1024*1024),n=fs.readSync(fd,buffer,0,buffer.length,0);for(const line of buffer.subarray(0,n).toString('utf8').split('\n')){try{const row=JSON.parse(line);if(row.sessionId)return row.sessionId===identity;}catch{}}return false;}finally{fs.closeSync(fd);}}
+function claudeUserSubmission(row,identity){
+  // Claude emits image dimensions as a user-shaped, meta turn companion.
+  // It belongs to the current request, including when cold-scanning backwards.
+  if(row.sessionId!==identity||row.type!=='user'||row.isSidechain||row.isMeta||row.turnCompanion)return false;
+  const body=row.message?.content;
+  return typeof body==='string'||Array.isArray(body)&&body.some(c=>c.type==='text')&&!body.some(c=>c.type==='tool_result');
+}
 function readFinals(meta,{cursor=null,tailBytes=1024*1024,maxReadBytes=8*1024*1024,startOffset}={}){
   const identity=nativeId(meta),file=meta?.transcriptPath;
   const empty={available:false,records:[],identity,cursor};
@@ -45,7 +52,7 @@ function readFinals(meta,{cursor=null,tailBytes=1024*1024,maxReadBytes=8*1024*10
       }
     }else{
       if(row.sessionId===identity)claudeIdentitySeen=true;
-      if(row.sessionId===identity&&row.type==='user'&&!row.isSidechain){
+      if(claudeUserSubmission(row,identity)){
         const body=row.message?.content;
         const blocks=Array.isArray(body)?body:[];
         if(typeof body==='string'||blocks.some(c=>c.type==='text')&&!blocks.some(c=>c.type==='tool_result')){
@@ -84,8 +91,8 @@ function coldFinalStart(meta,size){
     if(found!=null){
       if(meta.kind==='claude'&&/"type"\s*:\s*"user"/.test(text)){
         const bytes=Buffer.alloc(end-start);fs.readSync(fd,bytes,0,bytes.length,start);
-        try{const row=JSON.parse(bytes.toString('utf8')),c=row.message?.content;
-          if(row.sessionId===nativeId(meta)&&!row.isSidechain&&(typeof c==='string'||Array.isArray(c)&&c.some(b=>b.type==='text')&&!c.some(b=>b.type==='tool_result')))return start;
+        try{const row=JSON.parse(bytes.toString('utf8'));
+          if(claudeUserSubmission(row,nativeId(meta)))return start;
         }catch{}
       }
       return null;
