@@ -113,8 +113,13 @@ test('hook setup preserves custom hooks, scopes receipts and refuses malformed c
 test('old Gemini token cannot authenticate Antigravity and official auth failure is propagated',async t=>{
  const {root}=fixture(t);fs.writeFileSync(path.join(root,'oauth_creds.json'),JSON.stringify({refresh_token:'fixture'}));
  const {createAccountAdapters}=require('../core/account-adapters');
- let call;const adapters=createAccountAdapters({dataDir:root,homeDir:root,env:{},browser:{},runImpl:async(cmd,args)=>{call={cmd,args};return {code:1,stdout:'',stderr:'Please sign in to view available models.'};}});
+ require('../core/antigravity-model-catalog').resetModelCatalogCache();
+ let call,calls=0;const adapters=createAccountAdapters({dataDir:root,homeDir:root,env:{},browser:{},getConfig:()=>({proxy:'http://127.0.0.1:7890'}),runImpl:async(cmd,args,env)=>{calls++;call={cmd,args,env};return {code:1,stdout:'',stderr:'Please sign in to view available models.'};}});
  assert.equal((await adapters.check({provider:'gemini',home:root})).state,'login_required');assert.deepEqual(call.args,['models']);
+ assert.equal(call.env.HTTPS_PROXY,'http://127.0.0.1:7890','the launch check refreshes OAuth through the proxy');
+ assert.equal((await adapters.check({provider:'gemini',home:root})).state,'login_required');
+ assert.equal(calls,1,'back-to-back launches share one agy models run');
+ require('../core/antigravity-model-catalog').resetModelCatalogCache();
  adapters.dispose();
 });
 
@@ -144,4 +149,44 @@ test('model catalog is shared between dialog open and submit, and failures retry
  clock+=30*1000;await cat.readModelCatalog(opts);assert.equal(calls,2);
  clock+=31*1000;await cat.readModelCatalog(opts);assert.equal(calls,3);
  cat.resetModelCatalogCache();
+});
+test('branch clones the native conversation under a new id and never touches the source',t=>{
+ const {root}=fixture(t),env={CLAUDE_HUB_HOME_DIR:root},base=cfg.configRoot(env),TRAJ='c2222222-3333-4444-8555-666666666666';
+ const {DatabaseSync}=require('node:sqlite');fs.mkdirSync(path.join(base,'conversations'),{recursive:true});
+ const src=path.join(base,'conversations',SID+'.db'),db=new DatabaseSync(src);
+ db.exec('CREATE TABLE trajectory_meta (trajectory_id text PRIMARY KEY, cascade_id text); CREATE TABLE steps (idx integer PRIMARY KEY, step_payload blob)');
+ db.prepare('INSERT INTO trajectory_meta VALUES (?,?)').run(TRAJ,SID);
+ db.prepare('INSERT INTO steps VALUES (0,?)').run(Buffer.concat([Buffer.from([8,1,18,36]),Buffer.from(SID),Buffer.from('中文 payload '+TRAJ)]));db.close();
+ const logs=path.join(base,'brain',SID,'.system_generated','logs');fs.mkdirSync(logs,{recursive:true});
+ fs.writeFileSync(path.join(logs,'transcript.jsonl'),JSON.stringify({step_index:0,type:'USER_INPUT',content:'在 '+SID+' 里'})+'\n');
+ fs.mkdirSync(path.join(base,'annotations'));fs.writeFileSync(path.join(base,'annotations',SID+'.pbtxt'),'title:"分支源"');
+ const before=fs.readFileSync(src);
+ const {forkConversation}=require('../core/antigravity-fork'),NEW='d3333333-4444-4555-8666-777777777777';
+ const out=forkConversation(SID,{env,newId:NEW});
+ assert.equal(out.conversationId,NEW);assert.ok(out.transcriptPath.includes(path.join('brain',NEW)));
+ assert.deepEqual(fs.readFileSync(src),before,'source database unchanged');
+ const copy=new DatabaseSync(path.join(base,'conversations',NEW+'.db'),{readOnly:true});
+ const meta=copy.prepare('SELECT * FROM trajectory_meta').get(),payload=Buffer.from(copy.prepare('SELECT step_payload FROM steps').get().step_payload);copy.close();
+ assert.equal(meta.cascade_id,NEW);assert.notEqual(meta.trajectory_id,TRAJ);assert.match(meta.trajectory_id,cfg.UUID);
+ assert.equal(payload.length,4+36+Buffer.byteLength('中文 payload ')+36,'protobuf lengths stay valid');
+ assert.ok(payload.includes(NEW)&&!payload.includes(SID)&&payload.includes(meta.trajectory_id));
+ assert.match(fs.readFileSync(out.transcriptPath,'utf8'),new RegExp(NEW));
+ assert.equal(fs.readFileSync(path.join(base,'annotations',NEW+'.pbtxt'),'utf8'),'title:"分支源"');
+ assert.throws(()=>forkConversation(SID,{env,newId:NEW}),/已存在/);
+ assert.throws(()=>forkConversation('e4444444-5555-4666-8777-888888888888',{env}),/找不到/);
+});
+test('continue-latest picks the newest conversation that has a user message',t=>{
+ const {root,file}=fixture(t),env={CLAUDE_HUB_HOME_DIR:root};
+ fs.writeFileSync(file,JSON.stringify({step_index:0,type:'USER_INPUT',content:'hi'})+'\n');
+ const empty=file.replace(SID,'f5555555-6666-4777-8888-999999999999');fs.mkdirSync(path.dirname(empty),{recursive:true});fs.writeFileSync(empty,'');
+ const later=new Date(Date.now()+5000);fs.utimesSync(empty,later,later);
+ assert.equal(cfg.latestConversation(env).conversationId,SID,'an empty newer shell is skipped');
+ assert.equal(cfg.latestConversation({CLAUDE_HUB_HOME_DIR:path.join(root,'none')}),null);
+});
+test('Antigravity sessions can branch; legacy Gemini history cannot',()=>{
+ const {planSessionFork}=require('../core/session-fork-plan');const {supportsForkSession}=require('../core/session-capabilities');
+ const source={id:'hub-a',kind:'gemini',cwd:'C:\w',geminiChatId:SID,geminiProjectHash:'antigravity',currentModel:{id:'gemini-3.8-flash-high'}};
+ const plan=planSessionFork({source});
+ assert.equal(plan.ok,true);assert.equal(plan.kind,'gemini');assert.equal(plan.opts.antigravityForkFrom,SID);assert.equal(plan.opts.model,'gemini-3.8-flash-high');
+ assert.equal(supportsForkSession({...source,geminiProjectHash:'lintian'}),false);
 });

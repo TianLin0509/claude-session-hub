@@ -790,6 +790,14 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       return { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-busy-rejected', enterAttempts, acknowledgementSource: null,
         message: 'Codex 仍在处理上一轮，命令被拒绝、没有执行；请稍后再发' };
     }
+    // Antigravity left the legacy restart branch for this fast path; keep writing
+    // the restart receipt that hub-restart's resumeGroup waits on.
+    if (isAntigravityKind(kind) && acknowledgement
+        && (options.restartContinuation || sessionManager.restartContinuationSessions?.has(sid))) {
+      sessionManager.restartContinuationReceipts ||= new Map();
+      sessionManager.restartContinuationReceipts.set(sid, { id: options.clientSubmissionId || require('crypto').randomUUID(), status: 'accepted' });
+      sessionManager.restartContinuationSessions?.delete(sid);
+    }
     return {
       ok: sendStatus !== 'content-mismatch',
       sendStatus,

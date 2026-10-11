@@ -44,7 +44,7 @@ test('legacy resumed providers use their real CLI readiness family',async()=>{
 
 test('group legacy continuation publishes a receipt only after exact transcript acceptance',async()=>{
   const watcher=require('../core/group-chat-watcher');
-  for(const [kind,signalSource] of [['kimi','kimi_wire_turn_prompt'],['gemini','gemini_user_message'],['deepseek','item_completed_user_message']]){
+  for(const [kind,signalSource] of [['kimi','kimi_wire_turn_prompt'],['deepseek','item_completed_user_message']]){
     const tap=new EventEmitter(),writes=[];
     const sm={restartContinuationSessions:new Set(['s']),getSession:()=>({kind}),getGroupChatReady:()=>true,getSessionBuffer:()=>'',
       writeToSession:(_id,text)=>{writes.push(text);if(text==='\r')tap.emit('prompt-submitted',{hubSessionId:'s',text:'continue task',signalSource,submittedAt:Date.now()});}};
@@ -54,6 +54,21 @@ test('group legacy continuation publishes a receipt only after exact transcript 
     assert.deepEqual(sm.restartContinuationReceipts.get('s'),{id:'group-current-stage',status:'accepted'});
     assert.equal(writes.filter(x=>x==='\r').length,1);assert.equal(sm.restartContinuationSessions.size,0);
   }
+});
+
+test('Antigravity restart continuation uses bracketed paste and still publishes the restart receipt',async()=>{
+  const watcher=require('../core/group-chat-watcher');
+  const sm=new EventEmitter(),writes=[];let seq=0;
+  Object.assign(sm,{restartContinuationSessions:new Set(['s']),getSession:()=>({kind:'gemini'}),getGroupChatReady:()=>true,
+    getSessionBuffer:()=>'',getGroupChatLastActivity:()=>0,getSessionOutputMark:()=>0,getSessionOutputSince:()=>'',getAgentTurnStartSeq:()=>seq,
+    writeToSession:(_id,text)=>{writes.push(text);if(text==='\r')setTimeout(()=>sm.emit('agent-turn-started',{sessionId:'s',seq:++seq,signalSource:'antigravity_hook'}),5);}});
+  watcher.init({sessionManager:sm,transcriptTap:new EventEmitter(),bracketedPasteSettleMs:5});
+  const result=await watcher.sendToPty('s','continue task','gemini',{clientSubmissionId:'group-current-stage'});
+  assert.equal(result.ok,true);assert.equal(result.acknowledgementSource,'antigravity_hook');
+  assert.ok(writes.join('').includes('\x1b[200~continue task\x1b[201~'),'agy receives one bracketed paste');
+  assert.equal(writes.filter(x=>x==='\r').length,1,'acknowledged by the hook: no recovery Enter');
+  assert.deepEqual(sm.restartContinuationReceipts.get('s'),{id:'group-current-stage',status:'accepted'});
+  assert.equal(sm.restartContinuationSessions.size,0);
 });
 
 test('fixture writer marker survives unsubscribe and is removed on actual exit',async t=>{

@@ -137,3 +137,15 @@ function sleep(ms) {
   console.error(err && err.stack || err);
   process.exit(1);
 });
+
+// agy first-run onboarding is the user's choice: report it as a pending dialog, never ready.
+{
+  const r = require('../core/group-chat-cli-ready-detector.js');
+  const frame = '\n────────────────\n>\n────────────────\n? for shortcuts';
+  const scheme = 'x'.repeat(600) + '\nWelcome to Antigravity CLI!\nChoose your color scheme:\n  > terminal\n    light';
+  if (r.isReady('agy-onboard', 'gemini', scheme) !== false) throw new Error('onboarding must block readiness');
+  if (r.isChoiceDialogVisible('gemini', scheme) !== true) throw new Error('onboarding must be reported as a pending choice');
+  if (r.isChoiceDialogVisible('gemini', scheme + '\nTerms of Service & Data Use\n[Previous]      [Done]' + frame) !== false) throw new Error('answered onboarding is stale once the input frame is drawn');
+  if (r.isReady('agy-onboarded', 'gemini', scheme + frame) !== true) throw new Error('input frame after onboarding is ready');
+  console.log('agy onboarding detection: ok');
+}

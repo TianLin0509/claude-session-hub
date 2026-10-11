@@ -16,7 +16,8 @@ async function fetchModelCatalog({env,runImpl}){
   if(env.CLAUDE_HUB_HOME_DIR&&!env.AI_HUB_ANTIGRAVITY_COMMAND)return {ok:false,models:[],error:'隔离 Hub 不读取真实 Antigravity 账号'};
   try{
     const e=cliEnv(env),r=await runImpl(resolveCommand(e),['models'],e,30000),models=parseModels(r.stdout);
-    if(r.code!==0||!models.length)return {ok:false,models:[],error:/sign in|not logged in/i.test(r.stdout+r.stderr)?'请先完成 Antigravity Google 登录':'未收到有效的 Antigravity 模型清单'};
+    const loginRequired=/please sign in|not signed in|sign in to view|not logged in/i.test(r.stdout+'\n'+r.stderr);
+    if(r.code!==0||!models.length)return {ok:false,models:[],loginRequired,error:loginRequired?'请先完成 Antigravity Google 登录':'未收到有效的 Antigravity 模型清单'};
     return {ok:true,models,source:'agy models',observedAt:Date.now()};
   }catch(error){return {ok:false,models:[],error:error.message};}
 }

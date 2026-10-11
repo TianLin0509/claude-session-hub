@@ -8019,7 +8019,9 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
   //   见 terminal-activity-monitor.js），所以这条一早退，就再没有别的东西会标记它在跑。
   //   claude 走 hook 路径本来就没有这层早退，这也是为什么之前只有 codex/kimi 不亮灯。
   // 卡片/预览/未读仍然归 meeting-room.js 那条流水线管，这里只认领"会话自身在不在干活"。
-  const workingSource = signalSource === 'task_started'
+  // agy's PreInvocation hook fires when the model call really starts: same
+  // authority as Codex task_started, so the dot shows running, not starting.
+  const workingSource = signalSource === 'task_started' || signalSource === 'antigravity_hook'
     ? 'rollout_task_started'
     : 'rollout_user_message';
 

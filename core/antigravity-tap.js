@@ -37,12 +37,13 @@ class AntigravityTap extends EventEmitter {
       if(fs.existsSync(s.antigravityEventsFile) && fs.statSync(s.antigravityEventsFile).size!==s.bytes){
         const raw=fs.readFileSync(s.antigravityEventsFile,'utf8');
         if(raw.length<s.offset)throw Error('Antigravity 事件记录意外被截断');
+        if(!s.offset)s.bytes=0;
         const end=raw.lastIndexOf('\n')+1;
         // Advance past each line before handling it: one bad line must not make
         // the next poll replay the lines before it (a second turn-started).
         while(s.offset<end){
           const next=raw.indexOf('\n',s.offset)+1,line=raw.slice(s.offset,next-1);
-          s.offset=next;s.bytes=Buffer.byteLength(raw.slice(0,next),'utf8');
+          s.offset=next;s.bytes=(s.bytes||0)+Buffer.byteLength(line,'utf8')+1;
           if(!line.trim())continue;
           try{this._event(s,JSON.parse(line));}catch(error){this._fail(s,error);}
         }
@@ -105,10 +106,15 @@ class AntigravityTap extends EventEmitter {
       this.emit('turn-error',{...p.ev,error,message:error});return;
     }
     s.pendingStop=null;s.lastText=answer.text;
-    const file=this._receiptPath(s),receipts=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};
-    receipts[answer.id]={ts:answer.ts,textHash:hash(answer.text),outcome:'completed',completedAt:p.observedAt};
-    const tmp=file+'.'+process.pid+'.tmp';fs.writeFileSync(tmp,JSON.stringify(receipts),'utf8');fs.renameSync(tmp,file);
-    this._read(s);
+    // The receipt only upgrades the card label to final; failing to write it must
+    // never swallow the completion that group chat and status are waiting for.
+    const file=this._receiptPath(s),tmp=file+'.'+process.pid+'.tmp';
+    try{
+      let receipts={};try{receipts=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};}catch{receipts={};}
+      receipts[answer.id]={ts:answer.ts,textHash:hash(answer.text),outcome:'completed',completedAt:p.observedAt};
+      fs.writeFileSync(tmp,JSON.stringify(receipts),'utf8');fs.renameSync(tmp,file);
+      this._read(s);
+    }catch(error){console.warn('[antigravity-tap]',s.id,'completion receipt not written:',error.message);try{fs.rmSync(tmp,{force:true});}catch{}}
     s.lastStop=p.key;
     this.emit('turn-complete',{...p.ev,text:s.lastText||'',completedAt:p.observedAt});
   }
