@@ -38,7 +38,10 @@ async function main(){
   const nativeId=again.session.ccSessionId;
   const closed=await c.eval(`ipcRenderer.invoke('close-session',${j(sid)})`);assert.notEqual(closed?.ok,false);
   await until('session fully suspended',()=>c.eval(`ipcRenderer.invoke('get-sessions').then(rows=>!rows.some(s=>s.id===${j(sid)}))`));
+  // 隔离夹具模拟旧版 Hub 的真实落盘：专用 purpose 已保存，后台标记缺失。
+  const legacyFile=path.join(data,'sessions',sid+'.json'),legacyMeta=JSON.parse(fs.readFileSync(legacyFile,'utf8'));delete legacyMeta.autonomous;fs.writeFileSync(legacyFile,j(legacyMeta));
   const resumed=await c.eval('ipcRenderer.invoke("assistant:ensure-photo-session")');assert.equal(resumed.sessionId,sid);assert.equal(resumed.session.ccSessionId,nativeId);
+  assert.equal(resumed.session.autonomous,true);
   const followup=await c.eval(`ipcRenderer.invoke('session:send-prompt',{sessionId:${j(sid)},clientSubmissionId:'photo-resume-'+${j(id)},text:'刚才照片的计算结果是什么？只回复结果数字。',waitForCliReady:true})`);assert.equal(followup.ok,true,JSON.stringify(followup));
   assert.equal(followup.receipt?.status,'confirmed',JSON.stringify(followup));
   await until('resumed answer finished',()=>{const meta=JSON.parse(fs.readFileSync(path.join(data,'sessions',sid+'.json'),'utf8'));return require('../core/hub-assistant/live-history').readFinals(meta).records.some(x=>x.clientSubmissionId==='photo-resume-'+id&&x.text.includes('817'));});

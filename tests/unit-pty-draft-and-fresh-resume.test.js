@@ -89,6 +89,13 @@ async function resume(meta) {
   return calls[0];
 }
 
+test('precreated photo assistant resumes in background even when old Hub omitted autonomous',async()=>{
+  const opts=await resume({hubId:'photo-precreated',kind:'claude',purpose:'hub-photo-assistant',ccSessionId:'photo-native-id'});
+  assert.equal(opts.autonomous,true);assert.equal(opts.noInheritCursor,true);assert.equal(opts.resumeCCSessionId,'photo-native-id');
+  const normal=await resume({hubId:'normal-precreated',kind:'claude',ccSessionId:'normal-native-id'});
+  assert.notEqual(normal.autonomous,true);
+});
+
 test('a Codex session that never ran a turn starts fresh instead of opening the history picker', async () => {
   // 原生时代建的：App Server 建过 thread，但一轮没跑、rollout 从未落盘。
   const migrated = await resume({ hubId: 'm1', kind: 'codex', codexSid: 'thread-without-rollout',

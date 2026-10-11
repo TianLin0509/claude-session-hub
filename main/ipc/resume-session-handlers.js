@@ -91,7 +91,8 @@ function createResumeSessionHandler(deps) {
     // @community-end
 
     let resumeOpts = {};
-    if(meta.purpose==='hub-photo-assistant')resumeOpts.noInheritCursor=true;
+    // 旧版 Hub 可先建侧栏会话，但未必保存 autonomous；专用拍图会话恢复时补齐后台档位。
+    if(meta.purpose==='hub-photo-assistant')resumeOpts={noInheritCursor:true,autonomous:true};
     if (meta.purpose === 'hub-assistant') {
       if (!require('../../core/hub-assistant/backends').BACKENDS.includes(meta.kind) || typeof deps.prepareAssistantResume !== 'function') {
         throw new Error('助理恢复配置不可用，未启动替代会话');
