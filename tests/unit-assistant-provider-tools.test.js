@@ -20,7 +20,7 @@ test('every Hub AI backend has its own retained manager identity and scoped tool
 test('project tool registration preserves other settings and rejects a different assistant identity',t=>{
   const cwd=temp(t),entry={name:'hub_assistant',command:'node',args:['bridge.js'],env:{HUB_ASSISTANT_SESSION_ID:'fixed-a'}};
   for(const kind of ['gemini','kimi']){
-    const dir=path.join(cwd,kind==='gemini'?'.gemini':'.kimi-code'),file=path.join(dir,kind==='gemini'?'settings.json':'mcp.json');fs.mkdirSync(dir);
+    const dir=path.join(cwd,kind==='gemini'?'.agents':'.kimi-code'),file=path.join(dir,kind==='gemini'?'mcp_config.json':'mcp.json');fs.mkdirSync(dir);
     fs.writeFileSync(file,JSON.stringify({theme:'user-choice',mcpServers:{existing:{command:'own-tool'}}}));
     configureProjectTools(kind,{id:'fixed-a',purpose:'hub-assistant',assistantMcpEntry:entry},cwd);
     const saved=JSON.parse(fs.readFileSync(file));assert.equal(saved.theme,'user-choice');assert.equal(saved.mcpServers.existing.command,'own-tool');

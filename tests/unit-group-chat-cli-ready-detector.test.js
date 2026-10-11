@@ -8,6 +8,10 @@ function sleep(ms) {
 }
 
 (async () => {
+  const agyFrame = '\n────────────────\n>\n────────────────\n? for shortcuts';
+  assert.equal(ready.isReady('agy-modal','gemini','x'.repeat(600)+'\nesc to dismiss\n? for shortcuts'),false);
+  assert.equal(ready.isReady('agy-after-modal','gemini','x'.repeat(600)+'\nesc to dismiss'+agyFrame),true);
+  assert.equal(ready.isReady('agy-logged-out','gemini','x'.repeat(600)+'\nnot signed in'+agyFrame),false);
   assert.ok(
     ready.MARKERS.codex.every(marker => typeof marker !== 'string' || !/gpt-|send/i.test(marker)),
     'Codex ready markers must not include model ids or generic send text'

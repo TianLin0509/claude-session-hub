@@ -122,7 +122,7 @@ function providerStatus({ hubDataDir, env = process.env } = {}) {
       reason: !codexJs ? '找不到 Codex CLI' : !sub ? '没有订阅登录（只用订阅，不用 API Key）' : '',
     },
     { id: 'deepseek', label: 'DeepSeek', model: env.CLAUDE_HUB_WRITING_DEEPSEEK_MODEL || 'deepseek-v4-pro', available: !!ds, reason: ds ? '' : 'Hub 里没有配置 DeepSeek（百炼）密钥' },
-    { id: 'gemini', label: 'Gemini', available: false, reason: '个人免费档已不支持 Gemini CLI，本机也没有 Gemini API key' },
+    { id: 'gemini', label: 'Antigravity', available: false, reason: '纯文字写作入口尚未适配 Antigravity 的上下文隔离；可使用普通 Antigravity 会话' },
     { id: 'kimi', label: 'Kimi', available: false, reason: '当前 Kimi Code 订阅对 kimi-for-coding 返回 403' },
   ];
 }

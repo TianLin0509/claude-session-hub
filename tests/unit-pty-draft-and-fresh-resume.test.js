@@ -103,6 +103,14 @@ test('a Codex session that never ran a turn starts fresh instead of opening the 
   assert.equal(unused.codexResumePicker, false);
 });
 
+test('unused Antigravity reopens fresh but existing or uncertain history requires exact resume', async () => {
+  const meta = {hubId:'agy-empty',kind:'gemini',geminiProjectHash:'antigravity'};
+  assert.equal((await resume(meta)).useResume,false);
+  assert.equal((await resume({...meta,geminiChatId:'native-id'})).useResume,true);
+  assert.equal((await resume({...meta,lastRunStartedAt:1790000000000})).useResume,true);
+  assert.equal((await resume({...meta,geminiProjectHash:'legacy'})).useResume,true);
+});
+
 test('any evidence of a past turn keeps the safe resume paths', async () => {
   // 有 id 且有 rollout：精确恢复。
   const bound = await resume({ hubId: 'b1', kind: 'codex', codexSid: 'has-rollout' });

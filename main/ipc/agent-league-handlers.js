@@ -63,7 +63,7 @@ const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
 const PROVIDERS = Object.freeze({
   'codex-cli': { kind: 'codex', label: 'Codex', mark: 'CX' },
   'claude-cli': { kind: 'claude', label: 'Claude', mark: 'CL' },
-  'gemini-cli': { kind: 'gemini', label: 'Gemini', mark: 'GM' },
+  'gemini-cli': { kind: 'gemini', label: 'Antigravity', mark: 'AG' },
   'kimi-cli': { kind: 'kimi', label: 'Kimi', mark: 'KM' },
   'deepseek-cli': { kind: 'deepseek', label: 'DeepSeek', mark: 'DS' },
 });
@@ -2708,7 +2708,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     } else {
       add('decision-truth', '决策完整性', 'pass', decisionDashboard.headline, decisionDashboard.current);
     }
-    const commandByProvider = { 'codex-cli': 'codex', 'claude-cli': 'claude', 'gemini-cli': 'gemini', 'kimi-cli': 'kimi', 'deepseek-cli': 'codex' };
+    const commandByProvider = { 'codex-cli': 'codex', 'claude-cli': 'claude', 'gemini-cli': require('../../core/antigravity-config').resolveCommand(), 'kimi-cli': 'kimi', 'deepseek-cli': 'codex' };
     const providers = [...new Set(rows.map((row) => row.agent.provider))];
     for (const provider of providers) {
       const command = commandByProvider[provider];

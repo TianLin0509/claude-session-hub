@@ -6,6 +6,8 @@ const at=value=>typeof value==='number'?value:Date.parse(value)||null;
 // Gemini 0.38 stored one JSON document; 0.39+ appends native message rows.
 // This is a display projection only. It never supplies runtime completion.
 function parseGeminiTranscriptToTurns(file,options={}){
+  if (require('./antigravity-config').isAntigravity({transcriptPath:file}))
+    return require('./antigravity-transcript-parser').parseAntigravityTranscriptToTurns(file,options);
   const raw=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'');let metadata,rows;
   if(file.endsWith('.jsonl')){
     const lines=raw.split('\n');rows=[];

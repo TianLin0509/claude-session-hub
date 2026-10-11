@@ -348,13 +348,13 @@ function ensureGeminiMcpInstalled() {
   // Their fake Gemini process does not need the persistent arena registration.
   if (isIsolatedHub()) return;
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  const geminiDir = path.join(home, '.gemini');
-  if (!fs.existsSync(geminiDir)) return;
-  const settingsPath = path.join(geminiDir, 'settings.json');
+  const geminiDir = path.join(home, '.gemini', 'config');
+  fs.mkdirSync(geminiDir,{recursive:true});
+  const settingsPath = path.join(geminiDir, 'mcp_config.json');
   let settings = {};
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-  } catch { settings = {}; }
+  } catch(error) { if(error.code!=='ENOENT'){console.warn('[antigravity-mcp] 保留无法解析的配置:',error.message);return;} settings = {}; }
   if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
     settings.mcpServers = {};
   }
@@ -372,7 +372,7 @@ function ensureGeminiMcpInstalled() {
   if (!dirty) return;
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log('[群聊] arena-research MCP installed into Gemini settings.json');
+    console.log('[群聊] arena-research MCP installed into Antigravity mcp_config.json');
   } catch (e) {
     console.warn('[群聊] gemini mcp install failed:', e.message);
   }
@@ -887,6 +887,7 @@ transcriptTap.on('session-bound', (ev) => {
         geminiChatId: ev.geminiChatId,
         geminiProjectHash: ev.geminiProjectHash,
         geminiProjectRoot: ev.geminiProjectRoot,
+        transcriptPath: ev.sessionPath,
       });
     } else if (isKimiCliKind(ev.kind) && (ev.kimiSid || ev.wirePath || ev.sessionDir)) {
       sendToRenderer('session-meta-updated', {
@@ -919,6 +920,7 @@ transcriptTap.on('session-bound', (ev) => {
     changed = true;
   }
   if (ev.kind === 'gemini') {
+    if (ev.sessionPath && cur.transcriptPath !== ev.sessionPath) { cur.transcriptPath = ev.sessionPath; changed = true; }
     if (ev.geminiChatId && cur.geminiChatId !== ev.geminiChatId) { cur.geminiChatId = ev.geminiChatId; changed = true; }
     if (ev.geminiProjectHash && cur.geminiProjectHash !== ev.geminiProjectHash) { cur.geminiProjectHash = ev.geminiProjectHash; changed = true; }
     if (ev.geminiProjectRoot && cur.geminiProjectRoot !== ev.geminiProjectRoot) { cur.geminiProjectRoot = ev.geminiProjectRoot; changed = true; }
@@ -1416,6 +1418,9 @@ function registerSessionForTap(session) {
       sessionsRoot: session.codexSessionsRoot || undefined,
       codexSid: session.codexSid || undefined,
       kimiSid: session.kimiSid || undefined,
+      geminiChatId: session.geminiChatId || undefined,
+      geminiProjectHash: session.geminiProjectHash || undefined,
+      antigravityEventsFile: /^gemini(?:-resume)?$/.test(session.kind) ? require('./core/antigravity-config').eventsFile(getHubDataDir(),session.id) : undefined,
       sessionDir: session.kimiSessionDir || undefined,
       registeredAt: session.createdAt || Date.now(),
       allowMtimeFallback: !!session.codexAllowMtimeFallback,
@@ -3254,6 +3259,8 @@ async function scanAgentSessions(opts = {}) {
   for (const s of allSessions) {
     if (['codex-app-server','acp'].includes(s.runtimeBackend)) continue;
     const runtimeKind = s.transcriptKind || s.kind;
+    // agy reports quota via /usage; retired Gemini footer parsing is not evidence.
+    if (/^gemini(?:-resume)?$/.test(runtimeKind) && require('./core/antigravity-config').isAntigravity(s)) continue;
     const isOpenAiCodex = s.kind === 'codex' || s.kind === 'codex-resume';
     if (runtimeKind !== 'gemini' && !isCodexBaseKind(runtimeKind) && !isKimiCliKind(runtimeKind)) continue;
     if (s.status === 'dormant') continue;
