@@ -36,7 +36,7 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
   assert.match(modelIds, /claude-opus-5\[1m\]/);
   assert.match(modelIds, /claude-fable-5/);
   assert.match(modelIds, /claude-opus-4-8\[1m\]/);
-  assert.match(modelIds, /gemini-2.5-flash/);
+  assert.match(modelIds, /gemini-3.1-pro-high/); // Antigravity default; the rest comes from `agy models`
   assert.match(modelIds, /gpt-6-astra/);
   assert.match(modelIds, /gpt-5.6-sol/);
   assert.match(modelIds, /deepseek-v4-flash/);
@@ -58,7 +58,7 @@ test('group defaults to Claude + Codex and keeps DeepSeek as the optional third 
   assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS\s*=\s*DEFAULT_SLOTS\.slice\(0,\s*2\)/);
   assert.match(MODAL_JS, /\{ KIND_LABELS, GROUP_MEMBER_KINDS \} = require\('\.\.\/core\/ai-kinds.js'\)/);
   assert.deepStrictEqual(require('../core/ai-kinds').GROUP_MEMBER_KINDS,
-    ['claude','codex','deepseek','qwen','deepseek-acp','glm','codeagent']);
+    ['claude','codex','deepseek','qwen','deepseek-acp','glm','codeagent','gemini']);
 });
 
 test('group membership is a default, not a cap: same kind may repeat and the roster is unbounded', () => {

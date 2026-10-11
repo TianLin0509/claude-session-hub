@@ -411,6 +411,9 @@ function registerSessionIpc(ipcMain, deps) {
         ? isClaudeModelSelection(modelId)
         : kind==='deepseek'&&!session.deepseekLegacyClaude
           ? require('../../core/deepseek-codex-profile').DEEPSEEK_CODEX_MODELS.includes(modelId)
+        // agy slugs; the CLI itself already accepted it with "Model set to".
+        : kind === 'gemini'
+          ? /^(?:gemini|claude|gpt-oss)[\w.-]+$/.test(modelId)
         : false;
     if (!valid) return { ok: false, error: 'invalid-model', message: '该模型不属于当前 CLI 的会话模型目录' };
     if (kind === 'codex') modelId = require('../../core/model-options').normalizeCodexSessionModel(modelId);

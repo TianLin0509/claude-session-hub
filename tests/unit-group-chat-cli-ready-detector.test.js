@@ -11,7 +11,10 @@ function sleep(ms) {
   const agyFrame = '\n────────────────\n>\n────────────────\n? for shortcuts';
   assert.equal(ready.isReady('agy-modal','gemini','x'.repeat(600)+'\nesc to dismiss\n? for shortcuts'),false);
   assert.equal(ready.isReady('agy-after-modal','gemini','x'.repeat(600)+'\nesc to dismiss'+agyFrame),true);
-  assert.equal(ready.isReady('agy-logged-out','gemini','x'.repeat(600)+'\nnot signed in'+agyFrame),false);
+  // Real agy 1.3.3 launch: the transient sign-in banner precedes the input frame every time.
+  assert.equal(ready.isReady('agy-launch','gemini','x'.repeat(600)+'\nWelcome to the Antigravity CLI. You are currently not signed in.\n⣷  Signing in...'+agyFrame),true);
+  assert.equal(ready.isReady('agy-signing-in','gemini','x'.repeat(600)+agyFrame+'\nYou are currently not signed in.\n⣷  Signing in...'),false);
+  assert.equal(ready.isReady('agy-logged-out','gemini','x'.repeat(600)+'\nnot signed in'+agyFrame+'\nSelect login method'),false);
   assert.ok(
     ready.MARKERS.codex.every(marker => typeof marker !== 'string' || !/gpt-|send/i.test(marker)),
     'Codex ready markers must not include model ids or generic send text'
@@ -134,3 +137,15 @@ function sleep(ms) {
   console.error(err && err.stack || err);
   process.exit(1);
 });
+
+// agy first-run onboarding is the user's choice: report it as a pending dialog, never ready.
+{
+  const r = require('../core/group-chat-cli-ready-detector.js');
+  const frame = '\n────────────────\n>\n────────────────\n? for shortcuts';
+  const scheme = 'x'.repeat(600) + '\nWelcome to Antigravity CLI!\nChoose your color scheme:\n  > terminal\n    light';
+  if (r.isReady('agy-onboard', 'gemini', scheme) !== false) throw new Error('onboarding must block readiness');
+  if (r.isChoiceDialogVisible('gemini', scheme) !== true) throw new Error('onboarding must be reported as a pending choice');
+  if (r.isChoiceDialogVisible('gemini', scheme + '\nTerms of Service & Data Use\n[Previous]      [Done]' + frame) !== false) throw new Error('answered onboarding is stale once the input frame is drawn');
+  if (r.isReady('agy-onboarded', 'gemini', scheme + frame) !== true) throw new Error('input frame after onboarding is ready');
+  console.log('agy onboarding detection: ok');
+}

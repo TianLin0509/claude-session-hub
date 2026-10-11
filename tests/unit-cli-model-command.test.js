@@ -18,3 +18,13 @@ test('confirmation navigation follows the native highlight instead of a fixed En
   const moved=actual.replace('❯ 1.','  1.').replace('  2.','❯ 2.');
   assert.equal(parseClaudeModelSwitchConfirmation(moved,'sonnet').cursor,2);
 });
+test('Antigravity /model <id> is an in-place switch confirmed only by fresh agy output',()=>{
+  const {modelCommandType}=require('../core/cli-model-command');
+  assert.equal(modelCommandType('gemini','/model gemini-3.8-flash-medium'),'agy-inline');
+  assert.equal(modelCommandType('gemini-resume',' /model claude-sonnet-4-6 '),'agy-inline');
+  assert.equal(modelCommandType('gemini','/model'),null,'the bare picker is not driven from Hub');
+  // Real agy 1.3.3 output after Enter.
+  assert.equal(modelCommandAcknowledged('agy-inline','',"> /model\n  ⎿  Model set to Gemini 3.8 Flash (Medium)"),true);
+  assert.equal(modelCommandAcknowledged('agy-inline','  ⎿  Model set to Gemini 3.8 Flash (Low)',''),false,'an earlier switch on screen is not a receipt');
+  assert.equal(require('../core/model-options').modelSwitchStrategy('gemini'),'agy-inline');
+});

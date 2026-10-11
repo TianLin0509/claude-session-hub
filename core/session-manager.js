@@ -1720,10 +1720,37 @@ class SessionManager extends EventEmitter {
         resumeTranscriptPath: codeagentLaunch.sessionId ? opts.resumeTranscriptPath : undefined };
     }
     let antigravityLaunch = null;
+    let antigravityForkCleanup = null;
     if (isGemini) {
       const agy = require('./antigravity-config');
-      antigravityLaunch = agy.launchCommand({...opts,useResume:opts.useResume||kind==='gemini-resume'}, sessionEnv);
+      // agy finds hooks.json, trust list and brain under USERPROFILE; an isolated Hub
+      // installs them under its own home, so the CLI must look there too. Login
+      // lives in the OS keyring and is unaffected.
+      if (sessionEnv.CLAUDE_HUB_HOME_DIR) sessionEnv.USERPROFILE = sessionEnv.HOME = agy.home(sessionEnv);
+      if (!opts.geminiChatId && (opts.useResume || kind === 'gemini-resume')) {
+        // agy --continue does not reliably pick this folder's conversation (live check
+        // 2026-10-12). "Continue latest" opens the newest native conversation by exact
+        // id; a woken session that never bound an id starts fresh rather than guessing.
+        const latest = kind === 'gemini-resume' ? agy.latestConversation(sessionEnv) : null;
+        opts = latest
+          ? {...opts, geminiChatId: latest.conversationId, geminiProjectHash: agy.ENGINE,
+            resumeTranscriptPath: latest.transcriptPath, useResume: true}
+          : {...opts, useResume: false};
+      }
       agy.installHooks(sessionEnv, getHubDataDir(), id);
+      // Pre-trust only saves a prompt; an unreadable settings.json must not block sessions.
+      try { agy.ensureWorkspaceTrusted(spawnCwd, sessionEnv); }
+      catch (error) { console.warn('[antigravity] workspace pre-trust skipped:', error.message); }
+      if (opts.antigravityForkFrom && !opts.geminiChatId) {
+        // Branch = a cloned native conversation resumed under its own id. Cloned
+        // last among the throwing steps; antigravityForkCleanup undoes it if spawn fails.
+        agy.launchArgs({...opts, geminiChatId: undefined, useResume: false});
+        const fork = require('./antigravity-fork').forkConversation(opts.antigravityForkFrom, {env: sessionEnv});
+        antigravityForkCleanup = fork.dispose;
+        opts = {...opts, geminiChatId: fork.conversationId, geminiProjectHash: agy.ENGINE,
+          resumeTranscriptPath: fork.transcriptPath, useResume: true};
+      }
+      antigravityLaunch = agy.launchCommand(opts, sessionEnv);
       opts = {...opts,geminiProjectHash:agy.ENGINE,geminiProjectRoot:spawnCwd};
     }
     // Every native driver is owned directly by this Hub; no cross-Hub broker.
@@ -1780,7 +1807,7 @@ class SessionManager extends EventEmitter {
       // cursor makes Windows ConPTY more prone to transient cursor ghosts.
       conptyInheritCursor: (isCodexRuntime || isKimi) ? false : !opts.noInheritCursor,
     });
-    } catch (error) { codexEditorInput?.dispose(); throw error; }
+    } catch (error) { codexEditorInput?.dispose(); antigravityForkCleanup?.(); throw error; }
 
     let currentModel = null;
     if (isClaude) {
