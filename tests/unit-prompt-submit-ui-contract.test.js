@@ -45,8 +45,8 @@ assert.ok(!/setTimeout\([^)]*'\\r'/.test(sendInputBody),
   "浮动输入框不得再按固定毫秒盲发 '\\r'（长 prompt 时三次全会被吞）");
 assert.ok(!/data:\s*text\s*\+\s*'\\r'/.test(sendInputBody),
   '浮动输入框不得把正文和回车合并成一次 write');
-assert.ok(/markFloatingInputStuck/.test(sendInputBody),
-  'sendStatus=stuck 必须在 UI 上可见 —— 失败得无声无息正是这个 bug 最伤的部分');
+assert.ok(/reportFloatingSendFailure/.test(sendInputBody),
+  '明确发送失败仍需提示，不能随送达校验横幅一起隐藏');
 
 // --- 2. 卡片「↺ 重发」：同一条闭环 --------------------------------------------
 assert.ok(!/data:\s*promptText\s*\+\s*'\\r'/.test(rendererSrc),
@@ -161,10 +161,8 @@ const orchestratorSrc = read('core', 'group-chat-orchestrator.js');
 assert.ok(/clientMessageId \? \{ clientMessageId \} : \{\}/.test(orchestratorSrc),
   'orchestrator 要把 id 写进权威 user 消息，且没有 id 时不留空字段');
 
-// 当前用户提供的项目规则要求未确认结果可见，补发必须绑定本次提交。
-const markStuck = sliceFn(rendererSrc, 'function markFloatingInputStuck(', 'function reportFloatingSendFailure(', 'markStuck');
-assert.ok(/createElement/.test(markStuck) && /fi-stuck-resend/.test(markStuck), '未确认结果必须显示提示和补发入口');
-assert.ok(/session:resend-prompt/.test(markStuck) && /clientSubmissionId: delivery.clientSubmissionId/.test(markStuck), '补发必须带当前提交身份，交给现有安全核对路径');
-assert.ok(!/terminal-input/.test(markStuck), '渲染层不能盲发回车');
+// 2026-10-11 用户要求：移除未确认/内容差异横幅和补发按钮，回执仍内部记录。
+assert.ok(!/markFloatingInputStuck|notifyPromptContentMismatch|fi-stuck-resend/.test(rendererSrc), '不再创建送达校验提示或补发入口');
+assert.ok(/applyPromptReceipt\(state, receipt\)/.test(rendererSrc), '仍记录真实回执，不把未知结果改成已确认');
 
 console.log('Prompt submit reliability contract: ok');
