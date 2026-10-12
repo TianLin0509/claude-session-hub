@@ -9129,6 +9129,8 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.acpProfileId) local.acpProfileId = session.acpProfileId;
   if (session.acpCapabilities) local.acpCapabilities = session.acpCapabilities;
   if (Object.hasOwn(session,'cliRuntime')) local.cliRuntime = session.cliRuntime;
+  // 终端型 ACP 会话（千问 / GLM CLI）的卡片提示也以主进程为准，重启后不留旧进程的退出提示。
+  if (Object.hasOwn(session,'nativeActionError')) local.nativeActionError = session.nativeActionError;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
   if (session.codexProfile) local.codexProfile = session.codexProfile;
