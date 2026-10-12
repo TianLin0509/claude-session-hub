@@ -95,7 +95,9 @@ async function main() {
     await wait("[...sessions.values()].filter(s=>s.meetingId).every(s=>s.status!=='running')",'group idle');
     await click('.writing-recipient:first-of-type');
     await click('.wb-basket .writing-input');await c.send('Input.insertText',{text:'只请选中的成员调整开头。'});
-    await click('.wb-basket .floating-input-send');
+    // 测试夹具里的 Codex 不交稿，这一轮的派发记录停在进行中：工作台先提示「还在写，6 秒内再点一次」，按真实操作再点一次确认。
+    await click('.wb-basket .floating-input-send');await sleep(800);
+    if(await c.eval("__writingCalls.filter(x=>x.channel==='groupchat:turn').length<2"))await click('.wb-basket .floating-input-send');
     await wait("__writingCalls.filter(x=>x.channel==='groupchat:turn').length>=2",'selected recipient send');
     const last=await c.eval("__writingCalls.filter(x=>x.channel==='groupchat:turn').at(-1).payload");
     check('review sends only to selected member',last.recipientSids?.length===1&&last.userInput.includes('调整开头'));
