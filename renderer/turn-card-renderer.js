@@ -76,7 +76,16 @@ function createTurnCardRenderer(options = {}) {
     const presentation = buildTurnPresentation(presentationTurn, {
       cwd: session && session.cwd || opts.cwd || null,
     });
-    return { ...presentationTurn, simpleChat: true, presentation, assistantIdentity: session?.purpose === 'hub-assistant' };
+    return { ...presentationTurn, kind: assistantKindFor(session, presentationTurn), simpleChat: true, presentation,
+      assistantIdentity: session?.purpose === 'hub-assistant' };
+  }
+
+  // 2026-10-12：DeepSeek 跑在 Claude Code 上时记录是 Claude 格式，解析出的回答身份是 claude；
+  // 头像跟着会话走，显示 DeepSeek 自己的画像。
+  function assistantKindFor(session, turn) {
+    const sessionKind = String(session?.kind || '');
+    if (!sessionKind || (turn.kind && turn.kind !== 'claude')) return turn.kind;
+    return require('../core/ai-kinds').canonicalAiKind(sessionKind.replace(/-resume$/, '')) === 'deepseek' ? sessionKind : turn.kind;
   }
 
   function publishTurnPresentation(sessionId, turn) {
