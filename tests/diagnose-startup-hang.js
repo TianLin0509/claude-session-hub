@@ -5,9 +5,15 @@
 // 同时保留卡住前每 10 秒一段的 CPU 剖析、每秒的帧数 / 堆 / 页面元素 / 各进程 CPU、界面报错。
 // 静置期间没卡住，再点开最近的几个 CodeAgent 会话、在卡片和终端之间来回切，继续观察。
 //
+// 2026-10-12：副本模式在公司没复现。隔离实例和真实启动有几处结构差别：隔离实例不预热会话搜索索引、
+// 不给真实 ~/.claude 部署 hook、Chromium 存储（界面状态）用全新目录。--real-data 改用真实数据目录、
+// 和使用者平时一样启动（只多一个调试端口），要求使用者先退出正在用的 Hub；启动前把数据目录完整备份一份。
+//
 // 用法：node tests/diagnose-startup-hang.js --exe "<AI Hub Community.exe>" [--seconds 150] [--label v059] [--report <file>]
 //   --data-src <目录>        要复制的数据目录，默认 %USERPROFILE%\.ai-hub-community
 //   --self-test-hang <秒>    自测：到点在界面里制造一个死循环，检查能否抓到调用栈
+//   --real-data              用真实数据目录启动（先退出正在用的 Hub），启动前完整备份数据目录
+//   --test-home <目录>       仅供本机自测 --real-data：数据目录取 <目录>\.ai-hub-community，并以隔离实例启动
 const fs = require('fs'), os = require('os'), path = require('path'), net = require('net');
 const { spawnSync } = require('child_process');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
@@ -20,7 +26,9 @@ const quietSecs = Math.max(30, Number(arg('--seconds', 150)));
 const label = arg('--label', path.basename(path.dirname(exe || 'hub')));
 const reportCopy = arg('--report', '');
 const selfTest = Number(arg('--self-test-hang', 0)) || 0;
-const home = process.env.USERPROFILE || os.homedir();
+const realData = argv.includes('--real-data');
+const testHome = arg('--test-home', '');
+const home = testHome ? path.resolve(testHome) : (process.env.USERPROFILE || os.homedir());
 const dataSrc = path.resolve(arg('--data-src', path.join(home, '.ai-hub-community')));
 const cacSrc = path.resolve(process.env.AI_HUB_CODEAGENT_CONFIG_DIR || process.env.CODEAGENT3_CONFIG_DIR || path.join(home, '.cac'));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-startup-hang-'));
@@ -30,12 +38,14 @@ process.env.HUB_TEST_PRIORITY = 'normal';
 
 const j = JSON.stringify;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const httpJson = url => new Promise(res => { const req = require('http').get(url, { timeout: 1500 }, r => { let b = ''; r.on('data', d => b += d); r.on('end', () => { try { res(JSON.parse(b)); } catch { res(null); } }); }); req.on('error', () => res(null)); req.on('timeout', () => { req.destroy(); res(null); }); });
 const freePort = () => new Promise((res, rej) => { const s = net.createServer(); s.on('error', rej); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
 const user = path.basename(home);
 const redact = t => String(t || '').split(home).join('%USERPROFILE%').split(user).join('<USER>').replace(/https?:\/\/[^\s'"]+/g, '<URL>');
 const shortUrl = u => redact(String(u || '').replace(/^file:\/+/, '').replace(/^.*?(app\.asar|resources)[\\/]/, ''));
 
-let hub = null, c = null, crashed = false, t0 = 0;
+let hub = null, c = null, crashed = false, t0 = 0, backupDir = '';
+const copySkipped = [];
 const timeline = [], events = [], consoleLines = [], exceptions = [], stacks = [], profiles = [];
 const scripts = new Map();
 const pausedWaiters = [];
@@ -127,9 +137,52 @@ async function captureStacks(reason) {
   }
 }
 
+// 逐个文件复制：正在用的 Hub 锁住的文件（hub-chrome 的 Cookies 等）跳过并记下，不让整次复制失败。
+function copyTree(src, dest, skip) {
+  const walk = (from, to) => {
+    let entries; try { entries = fs.readdirSync(from, { withFileTypes: true }); } catch (e) { copySkipped.push(`${redact(from)}（${e.code || e.message}）`); return; }
+    fs.mkdirSync(to, { recursive: true });
+    for (const e of entries) {
+      const f = path.join(from, e.name), t = path.join(to, e.name);
+      if (skip && skip.test(f)) continue;
+      if (e.isDirectory()) walk(f, t);
+      else if (e.isFile()) { try { fs.copyFileSync(f, t); } catch (err) { copySkipped.push(`${redact(f)}（${err.code || err.message}）`); } }
+    }
+  };
+  walk(src, dest);
+}
 function copyData(dest) {
   if (!fs.existsSync(dataSrc)) throw new Error('没有找到数据目录：' + redact(dataSrc));
-  fs.cpSync(dataSrc, dest, { recursive: true, filter: s => !/[\\/](electron-userdata|cache|Cache|GPUCache|Code Cache|logs)([\\/]|$)/.test(s) });
+  copyTree(dataSrc, dest, /[\\/](electron-userdata|cache|Cache|GPUCache|Code Cache|logs)([\\/]|$)/);
+}
+function runningHubPids() {
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='SilentlyContinue';(Get-CimInstance Win32_Process -Filter \"Name='AI Hub Community.exe'\").ProcessId"], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+  return String(r.stdout || '').split(/\s+/).filter(Boolean).map(Number);
+}
+// 和使用者平时一样启动：真实数据目录、真实主目录，只多一个调试端口；去掉测试用的环境变量。
+async function launchRealHub(port) {
+  const env = { ...process.env };
+  for (const k of ['CLAUDE_HUB_DATA_DIR', 'CLAUDE_HUB_HOME_DIR', 'CLAUDE_HUB_E2E', 'CLAUDE_HUB_E2E_WINDOW_MODE', 'ELECTRON_RUN_AS_NODE', 'HUB_E2E_SHOW_WINDOWS', 'HUB_TEST_PRIORITY']) delete env[k];
+  // 本机自测：打包版在伪造主目录下取不到「桌面」路径、建不了开始菜单快捷方式，窗口出不来；
+  // 而真按生产方式跑又会改本机真实的快捷方式和 ~/.claude。所以自测只把数据圈进隔离目录，验证启动、附着、抓栈、退出、报告这条链。
+  if (testHome) Object.assign(env, { CLAUDE_HUB_DATA_DIR: dataSrc, CLAUDE_HUB_HOME_DIR: path.join(home, 'isolated-home') });
+  const { spawn } = require('child_process');
+  const child = spawn(exe, [`--remote-debugging-port=${port}`], { env, cwd: path.dirname(exe), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
+  const lines = []; let exited = false, exitCode = null;
+  const keep = d => { lines.push(...String(d).split(/\r?\n/).filter(Boolean)); if (lines.length > 500) lines.splice(0, lines.length - 500); };
+  child.stdout.on('data', keep); child.stderr.on('data', keep);
+  child.on('exit', code => { exited = true; exitCode = code; });
+  for (let i = 0; i < 100 && !exited && !(await httpJson(`http://127.0.0.1:${port}/json/version`)); i++) await sleep(300);
+  for (let i = 0; i < 100 && !exited && !((await httpJson(`http://127.0.0.1:${port}/json/list`)) || []).some(t => t.type === 'page'); i++) await sleep(300);
+  if (exited) throw new Error(`Hub 启动后立刻退出（退出码 ${exitCode}）：${redact(lines.slice(-5).join(' | '))}`);
+  return { pid: child.pid, port, child, label: 'real-data', cdpHttpBase: `http://127.0.0.1:${port}`, log: () => lines.slice(), isAlive: () => !exited };
+}
+async function quitRealHub() {
+  const targets = await httpJson(`${hub.cdpHttpBase}/json/list`) || [];
+  const page = targets.find(t => t.type === 'page');
+  if (page) await new Promise(res => { const req = require('http').get(`${hub.cdpHttpBase}/json/close/${encodeURIComponent(page.id)}`, r => { r.resume(); r.on('end', res); }); req.on('error', res); });
+  for (let i = 0; i < 60 && hub.isAlive(); i++) await sleep(500);
+  if (hub.isAlive()) { note('Hub 30 秒内没退出，结束本工具启动的这个进程'); try { hub.child.kill(); } catch {} }
 }
 function copyCacTopFiles(dest) {
   fs.mkdirSync(dest, { recursive: true });
@@ -142,11 +195,13 @@ function dirSizeMB(p) {
 
 async function monitor(secs, phase) {
   note(`阶段：${phase}（${secs} 秒）`);
-  const end = Date.now() + secs * 1000; let misses = 0, captured = false, lastProc = processSample(), lastRotate = Date.now(), tick = 0;
+  const end = Date.now() + secs * 1000; let misses = 0, captured = false, lastProc = processSample(), lastRotate = Date.now(), tick = 0, lowFrames = 0, warnedHidden = false;
   while (Date.now() < end && !crashed) {
     const r = await timed(TAKE, 3000);
     if (r.ok) {
       misses = 0; const v = r.v || {};
+      lowFrames = (v.frames ?? 99) < 3 ? lowFrames + 1 : 0;
+      if (lowFrames >= 5 && !warnedHidden) { warnedHidden = true; note('窗口连续约 5 秒几乎不出帧：多半被最小化或被别的窗口挡住，这段不代表前台情况，请把 Hub 窗口放回前台'); }
       let proc = '';
       if (++tick % 3 === 0) { const now = processSample(); proc = ' | ' + cpuLine(lastProc, now); lastProc = now; }
       timeline.push(`${since()} 帧 ${v.frames ?? '?'} 延迟 ${v.lagMax}ms 长任务 ${v.long}/${v.longMs}ms 堆 ${v.heapMB}MB 元素 ${v.dom} 会话 ${v.sessions} ${v.vis}${proc}`);
@@ -164,11 +219,22 @@ async function monitor(secs, phase) {
 
 async function main() {
   if (!exe || !fs.existsSync(exe)) throw new Error('请用 --exe 指定「AI Hub Community.exe」的完整路径');
-  const dataDir = path.join(root, 'data'), cacDir = path.join(root, 'cac');
-  copyData(dataDir); copyCacTopFiles(cacDir);
   const gpuOff = fs.existsSync(path.join(dataSrc, 'gpu-disabled.json'));
+  const dataDir = realData ? dataSrc : path.join(root, 'data'), cacDir = path.join(root, 'cac');
+  if (realData) {
+    t0 = Date.now();
+    const running = runningHubPids();
+    if (running.length) throw new Error(`还有 ${running.length} 个 AI Hub Community 进程在运行，请先关闭正在用的 Hub 窗口（任务栏图标也要消失）再运行`);
+    if (!fs.existsSync(dataSrc)) throw new Error('没有找到数据目录：' + redact(dataSrc));
+    backupDir = path.join(os.tmpdir(), `hub-data-backup-${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}`);
+    note(`备份数据目录到 ${redact(backupDir)}`);
+    copyTree(dataSrc, backupDir, /[\\/](Cache|GPUCache|Code Cache)([\\/]|$)/);
+    hub = await launchRealHub(await freePort());
+  } else {
+  copyData(dataDir); copyCacTopFiles(cacDir);
   hub = await launchIsolatedHub({ dataDir, port: await freePort(), executablePath: exe, windowMode: 'visible', label: 'startup-hang', allowExternalState: true,
     extraEnv: { AI_HUB_CODEAGENT_CONFIG_DIR: cacDir, CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '', ...(gpuOff ? { AI_HUB_DISABLE_GPU: '1' } : {}) } });
+  }
   t0 = Date.now();
   c = await connectFirstPage(hub);
   c.ws.on('message', data => {
@@ -186,7 +252,7 @@ async function main() {
   for (const m of ['Inspector.enable', 'Runtime.enable', 'Debugger.enable', 'Profiler.enable']) await c.send(m).catch(() => {});
   for (let i = 0; i < 100 && !(await timed('document.readyState === "complete" && typeof sessions !== "undefined"', 3000)).v; i++) await sleep(300);
   await timed(MON, 5000);
-  const env = { label, hub: (await timed('document.title', 3000)).v, exe: redact(exe), gpu: gpuOff ? '关闭（数据目录有 gpu-disabled.json）' : '开启',
+  const env = { label, mode: realData ? '真实数据目录（和平时一样启动）' : '数据副本（隔离实例）', hub: (await timed('document.title', 3000)).v, exe: redact(exe), gpu: gpuOff ? '关闭（数据目录有 gpu-disabled.json）' : '开启',
     dataMB: dirSizeMB(dataDir), sessions: (await timed('sessions.size', 3000)).v,
     codeagentSessions: (await timed('[...sessions.values()].filter(s => /^codeagent/.test(s.kind)).length', 3000)).v,
     backstage: (await timed("require('../core/backstage-path.js').backstagePath()", 3000)).v || '（旧版无此开关）',
@@ -216,9 +282,14 @@ main().then(r => r, e => { note('致命错误：' + redact(e && e.message)); ret
   if (exceptions.length) md.push('## 界面未捕获异常', '```text', ...exceptions, '```', '');
   if (consoleLines.length) md.push('## 界面报错与警告（前 80 条）', '```text', ...consoleLines, '```', '');
   try { const log = hub.log().filter(l => /error|warn|fail|crash|gone|unresponsive|memory|timeout|超时|失败/i.test(l)).slice(-50).map(redact); if (log.length) md.push('## Hub 主进程日志（相关行）', '```text', ...log, '```', ''); } catch {}
-  try { const wl = fs.readFileSync(path.join(root, 'data', 'logs', 'window-events.log'), 'utf8').trim().split(/\r?\n/).slice(-30).map(redact); md.push('## 窗口事件日志（副本实例）', '```text', ...wl, '```', ''); } catch {}
+  const logRoot = realData ? dataSrc : path.join(root, 'data');
+  try { const wl = fs.readFileSync(path.join(logRoot, 'logs', 'window-events.log'), 'utf8').trim().split(/\r?\n/).slice(-30).map(redact); md.push(`## 窗口事件日志（${realData ? '真实数据目录' : '副本实例'}，最后 30 行）`, '```text', ...wl, '```', ''); } catch {}
+  try { if (hub) { const lc = fs.readFileSync(path.join(logRoot, 'diagnostics', `process-lifecycle-${hub.pid}.jsonl`), 'utf8').trim().split(/\r?\n/).slice(-30).map(redact); md.push('## 本次进程生命周期日志', '```text', ...lc, '```', ''); } } catch {}
+  if (backupDir) md.push('## 数据备份', `启动前已完整备份到 ${redact(backupDir)}；Hub 数据如有异常，关掉 Hub 后用它覆盖回 ${redact(dataSrc)}。`, '');
+  if (copySkipped.length) md.push('## 复制时跳过的文件（被占用或无权限）', '```text', ...copySkipped.slice(0, 30), ...(copySkipped.length > 30 ? [`…共 ${copySkipped.length} 个`] : []), '```', '');
   try { if (c) c.close(); } catch {}
-  if (hub) {
+  if (hub && realData) await quitRealHub();
+  else if (hub) {
     const quit = await Promise.race([gracefulQuit(hub, { allowAlreadyExited: true }).then(() => 'ok', e => e.message), sleep(25000).then(() => 'timeout')]);
     if (quit !== 'ok' && hub.isAlive()) { try { hub.child.kill(); } catch {} }
   }
