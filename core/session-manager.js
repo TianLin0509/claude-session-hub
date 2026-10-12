@@ -1922,6 +1922,8 @@ class SessionManager extends EventEmitter {
       ...(isAcp ? {runtimeBackend:'acp',nativeRuntime:ptyProcess.runtime,acpSid:opts.acpSid || null,
         cliRuntime:isProviderCli?{...ptyProcess.runtime,source:'provider-cli',observedAt:Date.now()}:null,
         acpProfileId:ptyProcess.options.profileId,acpCapabilities:{},acpConfigOptions:[]} : {}),
+      // Token Plan 额度用完期间新开或恢复的套餐会话直接走 DeepSeek API：卡片上说清楚在花哪份钱。
+      ...(isAcp && ptyProcess.options.tokenPlanRoute === 'deepseek' ? {nativeActionError:require('./token-plan-fallback').deepseekRouteNotice(ptyProcess.options.model,getHubDataDir())} : {}),
       connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,
       lastOutputPreview: opts.lastOutputPreview || '',
@@ -3354,7 +3356,8 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
-      ...(isAcpKind(info.kind) ? {cliRuntime:info.cliRuntime||null} : {}),
+      // 千问 / GLM 走终端时没有 runtimeBackend，卡片提示（如 Token Plan 改道说明）也要随更新送到界面。
+      ...(isAcpKind(info.kind) ? {cliRuntime:info.cliRuntime||null,nativeActionError:info.nativeActionError || null} : {}),
       ...(isAcpKind(info.kind) ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
         acpCapabilities:info.acpCapabilities,acpConfigOptions:info.acpConfigOptions} : {}),
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,

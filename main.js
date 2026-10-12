@@ -510,8 +510,12 @@ sessionManager.on('codex-locate-request', ({ sessionId }) => {
     sendToRenderer('codex-focus-session', { sessionId });
   }
 });
+// Token Plan 额度用完的改道控制器（main/token-plan-fallback-controller.js），会话操作就绪后才创建。
+let tokenPlanFallback = null;
 sessionManager.on('codex-lifecycle', event => {
-  transcriptTap.emit(event.type, event);
+  // 千问把额度墙包成普通回答：先改成本轮失败，再交给群聊、通知与卡片。
+  const ev = tokenPlanFallback ? tokenPlanFallback.filterLifecycle(event) : event;
+  transcriptTap.emit(ev.type, ev);
 });
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
@@ -2078,6 +2082,15 @@ try {
 } catch (error) { console.error('[orchestration] service unavailable:', error.message); }
 // 原生 Claude 额度看门狗。同样依赖 sendToPty 的 _deps，所以排在这之后。
 claudeQuotaResume.start();
+try {
+  tokenPlanFallback = require('./main/token-plan-fallback-controller').createTokenPlanFallbackController({
+    sessionManager, getConfig: getHubConfig, dataDir: getHubDataDir(),
+    restartSession: (id, overrides, options) => sessionOperations.restartSession(id, overrides, options),
+    readUsage: () => refreshTokenPlanUsage(true),
+  });
+  // groupChatWatcher.sendToPty 发送前经它检查：套餐已用完就先把会话改道到 DeepSeek API。
+  sessionManager.tokenPlanFallback = tokenPlanFallback;
+} catch (error) { console.error('[token-plan-fallback] unavailable:', error.message); }
 registerClaudeQuotaIpc(ipcMain, claudeQuotaResume);
 require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain, {sessionManager});
 
@@ -3054,7 +3067,12 @@ const tokenPlanUsage = createTokenPlanUsageService({
 });
 
 async function refreshTokenPlanUsage(force = false) {
-  try { return await tokenPlanUsage.refresh(force); }
+  try {
+    const snapshot = await tokenPlanUsage.refresh(force);
+    // 读到 100% 就记下「已用完」，之后新开或发送的套餐会话直接走 DeepSeek API。
+    tokenPlanFallback?.observeUsage(snapshot);
+    return snapshot;
+  }
   finally { sendToRenderer('agent-usage', { tokenPlan: tokenPlanUsage.snapshot() }); }
 }
 
