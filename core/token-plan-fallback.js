@@ -103,7 +103,8 @@ function fallbackModel(model) {
 
 // 套餐用完且配了 DeepSeek Key 才改道；任一条件不满足都留在套餐上（报错照常可见）。
 // 只有这些外壳在套餐用完时改走 DeepSeek API；其余等重置。
-const FALLBACK_KINDS = Object.freeze(['deepseek-acp']);
+// 2026-10-12：DeepSeek on Claude Code（deepseek-claude）选了 Token Plan 时同样改走 DeepSeek 官方 API。
+const FALLBACK_KINDS = Object.freeze(['deepseek-acp', 'deepseek-claude']);
 function canFallback(kind) { return FALLBACK_KINDS.includes(String(kind || '').replace(/-resume$/, '')); }
 
 // 套餐用完、外壳允许改道、且配了 DeepSeek Key 才改道；否则留在套餐上等重置（waitForReset）。

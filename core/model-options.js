@@ -55,10 +55,14 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'gpt-5.4',       label: 'GPT-5.4' },
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
   ],
+  // 旧 Codex 运行时的 DeepSeek 会话（kind = 'deepseek'），只供恢复与会话内切换。
   deepseek: [
     { id: 'deepseek-v4-pro',   label: 'DeepSeek V4 Pro · Codex (1M)' },
     { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash · Codex (1M)' },
   ],
+  // 2026-10-11 起新建的 DeepSeek 会话跑 Claude Code；两条接入方式的真实模型名由
+  // core/deepseek-claude-profile.js 按接入方式映射，这里只放显示用的 id。
+  'deepseek-claude': require('./deepseek-claude-profile').modelOptions(),
   kimi: [
     { id: 'kimi-code/k3', label: 'Kimi K3' },
   ],
@@ -117,6 +121,7 @@ const DEFAULT_MODEL_BY_KIND = {
   gemini: 'gemini-3.1-pro-high',
   codex: 'gpt-6-astra',
   deepseek: 'deepseek-v4-flash',
+  'deepseek-claude': 'deepseek-v4.1-flash',
   kimi: 'kimi-code/k3',
   codeagent: 'GLM-5.2-WX-Auto',
 };
@@ -189,6 +194,7 @@ const MODEL_SWITCH_STRATEGY_BY_KIND = Object.freeze({
   claude: 'claude-inline',
   codex: 'codex-picker',
   deepseek: 'codex-picker',
+  'deepseek-claude': 'claude-inline',
   qwen: 'acp-native',
   'deepseek-acp': 'acp-native',
   glm: 'acp-native',

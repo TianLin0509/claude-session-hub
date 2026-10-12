@@ -20,9 +20,10 @@ assert.match(renderer, /data-gc-member-remove-sid=/, 'member rows need a remove 
 assert.match(renderer, /data-gc-add-member=/, 'member sidebar needs an add action');
 assert.match(renderer, /if \(!meeting \|\| \(!meeting\.groupChat && meeting\.subSessions\.length >= 3\)\) return;/,
   'the three-slot cap stays scoped to non-group meetings; group rooms take as many members as the user wants');
-assert.match(renderer, /meeting\.groupChat\s*\?\s*\['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm', 'gemini', \.\.\.\(allowedKinds \? \['codeagent'\] : \[\]\)\]/,
-  'group add menu offers existing providers, the three native ACP harnesses and Antigravity (an edition limited to CodeAgent offers CodeAgent)');
-assert.match(renderer, /: ALL_AI_KINDS\)\.filter\(kindAllowed\);/, 'editions that keep only some kinds list only those');
+// 2026-10-11：新增 DeepSeek 成员一律跑 Claude Code；旧 Codex / 旧 Harness DeepSeek 不再从入口新增。
+assert.match(renderer, /meeting\.groupChat\s*\?\s*\['claude', 'codex', 'deepseek-claude', 'qwen', 'glm', 'gemini', \.\.\.\(allowedKinds \? \['codeagent'\] : \[\]\)\]/,
+  'group add menu offers existing providers, DeepSeek on Claude Code, Qwen / GLM and Antigravity (an edition limited to CodeAgent offers CodeAgent)');
+assert.match(renderer, /: ALL_AI_KINDS\.filter\(k => k !== 'deepseek' && k !== 'deepseek-acp'\)\)\.filter\(kindAllowed\);/, 'editions that keep only some kinds list only those');
 assert.doesNotMatch(renderer, /\['claude', 'codex', 'deepseek'\]\s*\.filter\(/,
   'group add menu must not drop a provider just because one of that kind is already in the room');
 assert.match(renderer, /response\.meeting/, 'participant writes must consume the explicit meeting response');

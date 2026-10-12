@@ -217,7 +217,8 @@ test('session-manager links memory only for Claude-family consumers and skips is
   // ensureMemoryLink 的返回值要被接住）。锁死行内写法会让每次正当重构都撞一次，
   // 所以改成结构性断言：只验证两层守卫的嵌套顺序，不管里面怎么写。
   const guardAt = SESSION_MANAGER_SRC.search(/if \(!process\.env\.CLAUDE_HUB_DATA_DIR\) \{/);
-  const familyAt = SESSION_MANAGER_SRC.indexOf('if (isClaude || isDeepSeekLegacy) {', guardAt);
+  // 2026-10-11：DeepSeek on Claude Code（deepseek-claude）同样消费 .claude-deepseek 的 memory bucket。
+  const familyAt = SESSION_MANAGER_SRC.indexOf('if (isClaude || isDeepSeekLegacy || isDeepSeekClaude) {', guardAt);
   const linkAt = SESSION_MANAGER_SRC.indexOf('ensureMemoryLink(spawnCwd,', familyAt);
   assert.ok(
     guardAt > 0 && familyAt > guardAt && linkAt > familyAt,

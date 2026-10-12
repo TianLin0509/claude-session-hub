@@ -429,7 +429,10 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       text=>sendToPtyImpl(sid,text,kind,{...options,workspaceRulesPrepared:true}));
   }
   // Token Plan 额度已用完时，套餐会话先改走 DeepSeek API 再发（重启后是新的会话对象）。
-  if (sessionManager.tokenPlanFallback && sessionManager.getNativeSession?.(sid)) await sessionManager.tokenPlanFallback.beforeSend(sid);
+  if (sessionManager.tokenPlanFallback && (sessionManager.getNativeSession?.(sid)
+      || require('./deepseek-claude-profile').isDeepSeekClaudeKind(sessionManager.getSession?.(sid)?.kind))) {
+    await sessionManager.tokenPlanFallback.beforeSend(sid);
+  }
   const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
     ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,
