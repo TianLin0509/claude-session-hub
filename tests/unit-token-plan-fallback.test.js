@@ -62,8 +62,15 @@ test('exhaustion state expires at reset, follows usage readings and needs a Deep
   const other = tmp(t);
   fallback.markExhausted(other, { now: NOW });
   assert.equal(fallback.exhaustedUntil(other, NOW), NOW + 3600_000);
-  assert.deepEqual(['qwen3.8-max', 'qwen3.8-flash', 'glm-5.2', 'deepseek-v4-flash-0731', 'deepseek-v4-pro'].map(fallback.fallbackModel),
-    ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-pro']);
+  // 2026-10-13：官方 API 的 Flash 用新名 deepseek-flash（V4.1 Flash），Pro 仍是 deepseek-v4-pro。
+  assert.deepEqual(['qwen3.8-max', 'qwen3.8-flash', 'glm-5.2', 'deepseek-v4-flash-0731', 'deepseek-v4-pro', 'deepseek-v4.1-flash', 'deepseek-flash', 'deepseek-v4-flash'].map(fallback.fallbackModel),
+    ['deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-flash', 'deepseek-flash']);
+  assert.deepEqual(fallback.FALLBACK_MODELS, ['deepseek-v4-pro', 'deepseek-flash']);
+  // 回到套餐：Flash 回到套餐上的 deepseek-v4.1-flash，Pro 名字不变。
+  assert.deepEqual(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro'].map(fallback.tokenPlanModel),
+    ['deepseek-v4.1-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro']);
+  assert.deepEqual(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4.1-flash', 'qwen3.8-max'].map(fallback.isApiModel),
+    [true, true, true, false, false]);
 });
 
 test('only the DeepSeek harness moves to the DeepSeek API; Qwen and GLM stay on the plan and wait', t => {
@@ -86,7 +93,7 @@ test('only the DeepSeek harness moves to the DeepSeek API; Qwen and GLM stay on 
   fallback.markExhausted(root, { resetsAt: Date.now() + 3600_000 });
   const dsh = buildAcpOptions('deepseek-acp', { id: 'd1', cwd: root, effort: 'low' }, config, root, env);
   assert.equal(dsh.profileId, 'deepseek-api:deepseek-acp');
-  assert.equal(dsh.model, 'deepseek-v4-flash');
+  assert.equal(dsh.model, 'deepseek-flash');
   assert.equal(dsh.effort, undefined, 'low is not offered on the DeepSeek route');
   assert.equal(dsh.launch.env.BAILIAN_API_KEY, 'ds-secret');
   assert.equal(dsh.authMeta['api-key'].apiKey, 'ds-secret');
@@ -95,7 +102,7 @@ test('only the DeepSeek harness moves to the DeepSeek API; Qwen and GLM stay on 
   const patches = JSON.parse(fs.readFileSync(dsh.launch.args[dsh.launch.args.indexOf('--patch') + 1], 'utf8'));
   const provider = patches.find(p => p.id === 'llm-pi-ai').config.providers['bailian-tpp'];
   assert.equal(provider.baseURL, 'https://api.deepseek.com/v1');
-  assert.deepEqual(provider.models.map(m => m.id), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+  assert.deepEqual(provider.models.map(m => m.id), ['deepseek-v4-pro', 'deepseek-flash']);
   dropLink(dsh);
 
   // 千问 / GLM：照旧挂在套餐上，带上「等重置」标记，绝不拿 DeepSeek Key。
@@ -108,27 +115,42 @@ test('only the DeepSeek harness moves to the DeepSeek API; Qwen and GLM stay on 
   const noKey = buildAcpOptions('deepseek-acp', { id: 'd2', cwd: root }, { ...config, deepseekApiKey: '' }, root, env);
   assert.deepEqual([noKey.profileId, noKey.tokenPlanWait], ['aliyun-token-plan:deepseek-acp', { missingKey: true }]);
   dropLink(noKey);
-  // 重置以后：回到套餐，备用期间记下的 DeepSeek 模型换回配置模型；旧版本切过去的千问也换回自己的模型。
+  // 重置以后：回到套餐，备用期间记下的 DeepSeek Flash（新名与 2026-10-13 前的旧名）回到套餐上的 V4.1 Flash，
+  // Pro 两边同名照旧；旧版本切过去的千问换回自己的配置模型。
   fallback.clearExhausted(root);
-  const back = buildAcpOptions('deepseek-acp', { id: 'd3', cwd: root, model: 'deepseek-v4-flash' }, config, root, env);
-  assert.deepEqual([back.profileId, back.model, back.tokenPlanWait], ['aliyun-token-plan:deepseek-acp', 'deepseek-v4-flash-0731', null]);
-  dropLink(back);
+  for (const [id, model] of [['d3', 'deepseek-flash'], ['d4', 'deepseek-v4-flash']]) {
+    const back = buildAcpOptions('deepseek-acp', { id, cwd: root, model }, config, root, env);
+    assert.deepEqual([back.profileId, back.model, back.tokenPlanWait], ['aliyun-token-plan:deepseek-acp', 'deepseek-v4.1-flash', null], model);
+    dropLink(back);
+  }
+  const backPro = buildAcpOptions('deepseek-acp', { id: 'd5', cwd: root, model: 'deepseek-v4-pro' }, config, root, env);
+  assert.equal(backPro.model, 'deepseek-v4-pro');
+  dropLink(backPro);
+  // 没点名模型的新会话：用配置里的模型（这里是 deepseek-v4-flash-0731），不被默认值覆盖。
+  const configured = buildAcpOptions('deepseek-acp', { id: 'd6', cwd: root }, config, root, env);
+  assert.equal(configured.model, 'deepseek-v4-flash-0731');
+  dropLink(configured);
   assert.equal(buildAcpOptions('qwen', { id: 'q4', cwd: root, model: 'deepseek-v4-pro' }, config, root, env).model, 'qwen3.8-max');
 });
 
+const clockFixed = new WeakSet();
 function harness(t, { kind = 'deepseek-acp', meetingId = null, deepseekApiKey = 'ds-key' } = {}) {
+  // 控制器内部用真实时钟：固定在报文里的重置时间之前，过了北京时间 10-13 00:00 测试也不会变。
+  if (!clockFixed.has(t)) { clockFixed.add(t); t.mock.timers.enable({ apis: ['Date'], now: NOW }); }
   const dataDir = tmp(t, 'hub-tp-ctl-');
   const session = { id: 's1', kind, acpProfileId: 'aliyun-token-plan:' + kind, meetingId, currentModel: { id: 'deepseek-v4-pro' } };
   const notices = [], restarts = [], sends = [];
   const native = { emit: (name, message) => notices.push([name, message]), start: async () => {} };
   const sessionManager = { getSession: id => (id === 's1' ? session : null), getNativeSession: () => native };
+  // 固定时钟：真实报文的重置时刻（10-12 16:00 UTC）已经过去，用墙钟会让「还在用完期」的判断随日期翻转。
+  const now = () => NOW;
   const controller = createTokenPlanFallbackController({
-    sessionManager, dataDir, settleMs: 0, logger: { log() {}, warn() {} },
+    sessionManager, dataDir, settleMs: 0, logger: { log() {}, warn() {} }, now,
     getConfig: () => ({ deepseekApiKey }),
     restartSession: async (id, overrides, options) => {
       restarts.push([id, overrides, options]);
       // 与 buildAcpOptions 一致：按当前套餐状态和外壳决定重启后的线路。
-      const route = fallback.resolveRoute({ config: { deepseekApiKey }, dataDir, kind }).route;
+      const route = fallback.resolveRoute({ config: { deepseekApiKey }, dataDir, kind, now: now() }).route;
       Object.assign(session, { acpProfileId: (route === 'deepseek' ? 'deepseek-api:' : 'aliyun-token-plan:') + kind });
       return { id };
     },
@@ -266,6 +288,32 @@ test('writing member falls back from an exhausted Token Plan to the DeepSeek API
   assert.equal(readDeepseekConfig(dataDir, dataDir, env).via, 'deepseek-api');
   fallback.clearExhausted(dataDir);
   assert.equal(readDeepseekConfig(dataDir, dataDir, env).via, 'token-plan');
+});
+
+test('writing draft defaults to V4.1 Flash: deepseek-v4.1-flash on Token Plan, deepseek-flash on the DeepSeek API', async t => {
+  const { runModel, providerStatus, DEFAULT_DEEPSEEK_WRITING_MODEL } = require('../core/writing/draft-runner');
+  assert.equal(DEFAULT_DEEPSEEK_WRITING_MODEL, 'deepseek-v4.1-flash');
+  const dataDir = tmp(t, 'hub-tp-writing-default-');
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ acp: { apiKey: 'plan-secret' }, providers: { deepseek: { api_key: 'ds-secret' } } }));
+  const env = { CLAUDE_HUB_HOME_DIR: dataDir };
+  assert.equal(providerStatus({ hubDataDir: dataDir, env }).find(p => p.id === 'deepseek').model, 'deepseek-v4.1-flash');
+  const calls = [];
+  let quota = false;
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push([url.split('/')[2], body.model]);
+    if (quota && url.startsWith('https://token-plan')) return { ok: false, status: 429, json: async () => ({ error: { message: RAW, code: 'insufficient_quota' } }) };
+    return { ok: true, status: 200, json: async () => ({ model: body.model, choices: [{ message: { content: '正文' } }] }) };
+  };
+  await runModel('deepseek', { system: 's', user: 'u', hubDataDir: dataDir, env, fetchImpl });
+  quota = true;
+  await runModel('deepseek', { system: 's', user: 'u', hubDataDir: dataDir, env, fetchImpl });
+  assert.deepEqual(calls, [
+    ['token-plan.cn-beijing.maas.aliyuncs.com', 'deepseek-v4.1-flash'],
+    ['token-plan.cn-beijing.maas.aliyuncs.com', 'deepseek-v4.1-flash'],
+    ['api.deepseek.com', 'deepseek-flash'],
+  ]);
+  fallback.clearExhausted(dataDir);
 });
 
 test('long answers about quota stay answers; a reroute done meanwhile is not repeated; busy turns are not interrupted', async t => {

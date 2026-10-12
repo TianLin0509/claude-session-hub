@@ -317,22 +317,21 @@
 #writing-panel .writing-input-hint { color:var(--fg-muted); font-size:11px; }
 #writing-panel .wb-basket .writing-input { min-height:40px; }
 #writing-panel .writing-input-status:empty { display:none; }
-#writing-panel .writing-members { display:flex; flex-direction:column; gap:6px; margin:12px 0; }
-#writing-panel .writing-members-head, #writing-panel .writing-member-row, #writing-panel .writing-recipient-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-#writing-panel .writing-members-head { justify-content:space-between; color:var(--fg-muted); font-size:12px; }
-#writing-panel .writing-member-row { padding:6px 8px; border-radius:8px; background:var(--surface-sunken); }
-#writing-panel .writing-member-kind { width:110px; }
-#writing-panel .writing-member-model { flex:1; min-width:130px; max-width:440px; }
-#writing-panel .writing-member-effort { width:105px; }
-#writing-panel .writing-member-speed { width:115px; }
-#writing-panel .writing-member-row .wr-select { font-size:12px; height:28px; padding:2px 6px; }
-#writing-panel .writing-member-remove { margin-left:auto; }
+/* 成员区直接用「新建 AI 群聊」的成员卡（meeting-create-modal.css 的 .mcm-*），这里只管在写作页里怎么摆。 */
+#writing-panel .writing-members { display:flex; flex-direction:column; margin:6px 0 4px; }
+#writing-panel .writing-members .mcm-member-caption { margin:0 0 9px; }
+#writing-panel .writing-members .mcm-slots { grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); margin-bottom:10px; }
+#writing-panel .writing-members .mcm-slot-field-name { flex-basis:80px; white-space:nowrap; }
+#writing-panel .writing-members .mcm-add-member { display:inline-flex; align-self:flex-start; margin:0; font-size:12.5px; }
+#writing-panel .writing-members .mcm-add-member:disabled, #writing-panel .writing-members .mcm-remove-member:disabled { opacity:.5; cursor:default; }
+#writing-panel .wb-compose-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+#writing-panel .wb-compose-head .wr-muted { margin-top:4px; }
+#writing-panel .writing-recipient-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 #writing-panel .writing-recipient-row { margin:0; }
 #writing-panel .writing-recipient.selected { color:var(--brand); border-color:var(--brand); background:var(--surface-sunken); }
 #writing-panel .writing-composer.composer-is-collapsed > :not(.composer-expand) { display:none!important; }
-#writing-panel .wb-compose { display:flex; flex-direction:column; gap:8px; }
+#writing-panel .wb-compose { display:flex; flex-direction:column; gap:12px; padding:18px 20px; }
 @media(max-width:900px) {
  #writing-panel .writing-input-hint { display:none; }
- #writing-panel .writing-member-model { min-width:120px; }
- #writing-panel .writing-member-row { gap:4px; }
+ #writing-panel .writing-members .mcm-slots { grid-template-columns:1fr; }
 }

@@ -131,6 +131,12 @@ test('provider catalog covers ordinary Hub CLIs and validates exact models', () 
   assert.deepEqual(providerCatalog().map((row) => row.provider), ['codex-cli', 'claude-cli', 'gemini-cli', 'kimi-cli', 'deepseek-cli']);
   assert.equal(validateProvider('codex-cli', 'gpt-5.6-sol').ok, true);
   assert.equal(validateProvider('codex-cli', 'made-up').ok, false);
+  // 2026-10-13：DeepSeek Agent 默认 V4.1 Flash（官方名 deepseek-flash）；已建 Agent 存的旧名继续可跑，Pro 照常。
+  assert.equal(providerCatalog().find((row) => row.provider === 'deepseek-cli').defaultModel, 'deepseek-flash');
+  assert.equal(validateProvider('deepseek-cli', '').model, 'deepseek-flash');
+  assert.equal(validateProvider('deepseek-cli', 'deepseek-v4-flash').model, 'deepseek-flash');
+  assert.equal(validateProvider('deepseek-cli', 'deepseek-v4-pro').model, 'deepseek-v4-pro');
+  assert.equal(validateProvider('deepseek-cli', 'deepseek-v4.1-flash').ok, false, 'Token Plan name is not an official API model');
   assert.match(slugifyAgentId('Wave Rider'), /^wave-rider$/);
 });
 

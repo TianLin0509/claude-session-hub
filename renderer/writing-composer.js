@@ -1,5 +1,4 @@
 'use strict';
-const { modelOptionsFor } = require('../core/model-options');
 const { KIND_LABELS, GROUP_MEMBER_KINDS } = require('../core/ai-kinds');
 const paste = require('./composer-paste-chips');
 
@@ -68,52 +67,118 @@ function mountWritingComposer({ host, h, ipcRenderer, value = '', placeholder, l
   return { input, rail, body, send, read, write, setDisabled, dispose() { voice.dispose(); polish.dispose(); } };
 }
 
-function mountWritingMembers({ host, h, members, onChange, disabled = false }) {
-  // draft-runner 的纯文字写作入口还没适配 Antigravity（见其 available:false），这里不提供。
-  const kinds = GROUP_MEMBER_KINDS.filter(kind => kind !== 'gemini');
-  const modelOptions = (kind, selected) => {
-    const options = modelOptionsFor(kind);
-    if (selected && !options.some(o => o.id === selected)) options.unshift({ id: selected, label: selected });
-    return [h('option', { value: '', text: '默认模型' }), ...options.map(o => h('option', { value: o.id, text: o.label }))];
-  };
+// 成员卡与「新建 AI 群聊」同一套：样式用 meeting-create-modal.css 的 .mcm-*，模型、思考强度、速度
+// 都按 WorkspaceController.resolveSessionTuning 算（2026-10-13 田哥：写作 Tab 的成员区和默认配置参考群聊，保持一致）。
+// 新建入口里 DeepSeek 一律跑 Claude Code（deepseek-claude，默认 V4.1 Flash）；旧 Codex / 原生 Harness 接入
+// 只留给历史会话恢复，本机存过的旧 DeepSeek 成员在这里换过来。Antigravity 还没接写作入口，不提供。
+const deepseekProfile = require('../core/deepseek-claude-profile');
+const LEGACY_DEEPSEEK_KINDS = new Set(['deepseek', 'deepseek-acp']);
+const WRITING_MEMBER_KINDS = GROUP_MEMBER_KINDS.filter(kind => !['gemini', 'deepseek-acp', 'chatgpt'].includes(kind));
+const MEMBER_FIELDS = ['model', 'effort', 'codexSpeedTier', 'fastMode', 'deepseekRoute'];
+
+function normalizeWritingMember(member = {}) {
+  const requested = LEGACY_DEEPSEEK_KINDS.has(member.kind) ? 'deepseek-claude' : member.kind;
+  const kind = WRITING_MEMBER_KINDS.includes(requested) ? requested : 'claude';
+  const next = { kind };
+  // 换了运行时（旧 DeepSeek → Claude Code），旧的模型名与调参不能带过去。
+  if (kind === member.kind) for (const key of MEMBER_FIELDS) if (member[key] !== undefined && member[key] !== '') next[key] = member[key];
+  return next;
+}
+
+function deepseekRouteOf(member, wc = window.WorkspaceController) {
+  return deepseekProfile.normalizeRoute(member.deepseekRoute) || wc?.deepseekRouteState?.().route || deepseekProfile.DEFAULT_ROUTE;
+}
+
+function aiLogo(kind) {
+  return `assets/ai-logos/${String(kind).startsWith('deepseek') ? 'deepseek' : kind}.svg`;
+}
+
+// 建写作群时送给 create-meeting 的成员：与建群弹窗同一套调参；选中的 DeepSeek 接入缺 Key 时直接拦下，不静默换线。
+function writingMemberSlots(members, wc = window.WorkspaceController) {
+  return members.map((raw, i) => {
+    const member = normalizeWritingMember(raw);
+    const route = member.kind === 'deepseek-claude' ? deepseekRouteOf(member, wc) : null;
+    if (route) {
+      const st = wc.deepseekRouteStatus?.(route) || { available: true };
+      if (!st.available) throw new Error(`成员 ${i + 1}：${deepseekProfile.ROUTES[route].label}不可用：${st.reason}；请改选另一种接入方式`);
+    }
+    return { index: i, kind: member.kind, ...wc.buildSessionTuningOpts(member.kind, member.model, member), ...(route ? { deepseekRoute: route } : {}) };
+  });
+}
+
+function mountWritingMembers({ host, h, members: input, onChange, disabled = false }) {
+  const wc = window.WorkspaceController;
+  const members = input.map(normalizeWritingMember);
   const save = () => onChange(members.map(m => ({ ...m })));
-  const draw = () => {
-    host.replaceChildren(h('div', { class: 'writing-members-head' }, h('span', { text: '一起写' }),
-      h('button', { type: 'button', class: 'composer-chip', text: '＋ 成员', disabled, onclick: () => {
-        members.push({ kind: 'codex' }); save(); draw();
-      } })));
-    members.forEach((member, i) => {
-      const kind = h('select', { class: 'wr-select writing-member-kind', 'aria-label': `成员 ${i + 1} AI`, disabled },
-        ...[...new Set([...kinds, member.kind])].map(k => h('option', { value: k, text: KIND_LABELS[k] || k })));
-      kind.value = member.kind;
-      const model = h('select', { class: 'wr-select writing-member-model', 'aria-label': `成员 ${i + 1} 模型`, disabled }, ...modelOptions(member.kind, member.model));
-      model.value = member.model || '';
-      const effort = h('select', { class: 'wr-select writing-member-effort', 'aria-label': `成员 ${i + 1} 推理`, disabled },
-        h('option', { value: '', text: '默认推理' }));
-      const resolved = window.WorkspaceController?.resolveSessionTuning(member.kind, member.model || undefined, member);
-      const tuning = window.WorkspaceController?.codexModelTuning(resolved?.model || member.model);
-      const levels = member.kind === 'codex' ? tuning?.efforts || ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] : [];
-      for (const level of levels) { const id = typeof level === 'string' ? level : level.effort; if (id) effort.append(h('option', { value: id, text: id })); }
-      effort.value = member.effort || ''; effort.hidden = !levels.length;
-      const claudeFast = member.kind === 'claude' && require('../core/session-speed').claudeSupportsFast(resolved?.model || member.model);
-      const speed = h('select', { class: 'wr-select writing-member-speed', 'aria-label': `成员 ${i + 1} 速度`, disabled },
-        h('option', { value: '', text: '默认速度' }), h('option', { value: 'standard', text: '标准' }),
-        h('option', { value: 'fast', text: '快速 · 更多用量', disabled: !claudeFast && !tuning?.supportsFast }));
-      speed.hidden = member.kind !== 'codex' && !claudeFast;
-      speed.value = member.kind === 'codex' ? member.codexSpeedTier || '' : typeof member.fastMode === 'boolean' ? member.fastMode ? 'fast' : 'standard' : '';
-      kind.onchange = () => { Object.keys(member).forEach(k => delete member[k]); member.kind = kind.value; save(); draw(); };
-      model.onchange = () => { member.model = model.value; delete member.effort; delete member.codexSpeedTier; delete member.fastMode; save(); draw(); };
+  const field = (name, control, cls) => h('label', { class: cls }, h('span', { class: 'mcm-slot-field-name', text: name }), control);
+  const select = (cls, label, entries, value) => {
+    const el = h('select', { class: cls, 'aria-label': label, disabled },
+      ...entries.map(([id, text, off]) => h('option', { value: id, text, disabled: off })));
+    el.value = value;
+    return el;
+  };
+  const nextKind = () => {
+    const present = new Set(members.map(m => m.kind));
+    return WRITING_MEMBER_KINDS.find(kind => !present.has(kind)) || WRITING_MEMBER_KINDS[members.length % WRITING_MEMBER_KINDS.length];
+  };
+  const card = (member, i) => {
+    const tuning = wc.resolveSessionTuning(member.kind, member.model, member);
+    const name = KIND_LABELS[member.kind] || member.kind;
+    const kind = select('writing-member-kind', `成员 ${i + 1} AI`,
+      [...new Set([...WRITING_MEMBER_KINDS, member.kind])].map(k => [k, KIND_LABELS[k] || k]), member.kind);
+    kind.onchange = () => { members[i] = normalizeWritingMember({ kind: kind.value }); save(); draw(); };
+    const model = select('writing-member-model', `成员 ${i + 1} 模型`, tuning.modelOptions.map(o => [o.id, o.label || o.id]), tuning.model);
+    // Codex 的思考强度与 Fast 跟模型目录走，换模型后重算这一张卡。
+    model.onchange = () => { member.model = model.value; delete member.effort; delete member.codexSpeedTier; save(); draw(); };
+    const fields = [field('AI', kind)];
+    if (member.kind === 'deepseek-claude') {
+      const current = deepseekRouteOf(member, wc);
+      const status = id => wc.deepseekRouteStatus?.(id) || { available: true, reason: '' };
+      const route = select('writing-member-route', `成员 ${i + 1} DeepSeek 接入`, deepseekProfile.ROUTE_IDS.map(id => {
+        const st = status(id);
+        return [id, deepseekProfile.ROUTES[id].label + (st.available ? (id === deepseekProfile.DEFAULT_ROUTE ? ' · 默认' : '') : ' · 不可用'), !st.available];
+      }), current);
+      route.onchange = () => { member.deepseekRoute = route.value; void wc.saveDeepseekRoute?.(route.value); save(); draw(); };
+      fields.push(field('DeepSeek 接入', route));
+      const st = status(current);
+      if (!st.available) fields.push(h('small', { class: 'mcm-deepseek-route-note', role: 'status', text: `${deepseekProfile.ROUTES[current].label}不可用：${st.reason}` }));
+    }
+    fields.push(field('模型', model));
+    if (tuning.showEffort && tuning.effortOptions.length) {
+      const effort = select('writing-member-effort', `成员 ${i + 1} 思考强度`, tuning.effortOptions, tuning.effort);
       effort.onchange = () => { member.effort = effort.value; save(); };
-      speed.onchange = () => {
-        if (member.kind === 'codex') { if (speed.value) member.codexSpeedTier = speed.value; else delete member.codexSpeedTier; }
-        else if (speed.value) member.fastMode = speed.value === 'fast'; else delete member.fastMode;
-        save();
-      };
-      host.append(h('div', { class: 'writing-member-row' }, kind, model, effort, speed,
-        h('button', { type: 'button', class: 'composer-chip writing-member-remove', text: '×', 'aria-label': `移除成员 ${i + 1}`, disabled,
-          onclick: () => { members.splice(i, 1); save(); draw(); } })));
-    });
+      fields.push(field('思考强度', effort, 'mcm-tuning-field'));
+    }
+    if (tuning.showFast) {
+      const fast = h('input', { type: 'checkbox', class: 'mcm-fast-checkbox writing-member-fast', 'aria-label': `成员 ${i + 1} Claude Fast`, disabled });
+      fast.checked = !!tuning.fastMode;
+      fast.onchange = () => { member.fastMode = fast.checked; save(); };
+      fields.push(field('快速模式', h('span', { class: 'mcm-check' }, fast, ' 启用 Claude Fast'), 'mcm-tuning-field mcm-fast-field'));
+    }
+    if (tuning.showCodexTier) {
+      const tier = select('writing-member-speed', `成员 ${i + 1} 速度通道`, tuning.codexTierOptions, tuning.codexSpeedTier);
+      tier.onchange = () => { member.codexSpeedTier = tier.value; save(); };
+      fields.push(field('速度通道', tier, 'mcm-tuning-field'));
+    }
+    return h('div', { class: 'mcm-slot mcm-group-member writing-member-row', 'data-kind': member.kind },
+      members.length > 1 ? h('button', { type: 'button', class: 'mcm-remove-member writing-member-remove', text: '×', title: '移除此成员',
+        'aria-label': `移除成员 ${i + 1}`, disabled, onclick: () => { members.splice(i, 1); save(); draw(); } }) : null,
+      h('div', { class: 'mcm-slot-head' }, h('img', { class: 'mcm-avatar', src: aiLogo(member.kind), alt: name }),
+        h('div', null, h('div', { class: 'mcm-slot-label', text: `成员 ${i + 1}` }), h('strong', { text: name }))),
+      h('div', { class: 'mcm-slot-fields' }, ...fields));
+  };
+  const draw = () => {
+    const add = nextKind();
+    host.replaceChildren(
+      h('div', { class: 'mcm-member-caption' }, h('strong', { text: '一起写' }),
+        h('span', { text: '每位先独立起草，下一轮互相读稿再改。可继续加人，同一种 AI 也能多开。' })),
+      h('div', { class: 'mcm-slots writing-member-cards' }, ...members.map(card)),
+      h('button', { type: 'button', class: 'mcm-add-member writing-member-add', text: `+ 添加 ${KIND_LABELS[add] || add}`, disabled,
+        onclick: () => { members.push(normalizeWritingMember({ kind: add })); save(); draw(); } }));
   };
   draw();
+  // 本机存过的旧 DeepSeek 成员换到新接入后立即存回，建群时送出去的就是屏幕上看到的。
+  if (JSON.stringify(members) !== JSON.stringify(input)) save();
+  return { redraw: () => { if (host.isConnected) draw(); } };
 }
-module.exports = { mountWritingComposer, mountWritingMembers };
+module.exports = { mountWritingComposer, mountWritingMembers, normalizeWritingMember, writingMemberSlots };

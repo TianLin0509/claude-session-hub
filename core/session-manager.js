@@ -1552,7 +1552,7 @@ class SessionManager extends EventEmitter {
       }
     } else if (isDeepSeek) {
       const cv = getConfigValues();
-      // V4 Pro / Flash 的 Responses API 国内直连。Key 只走 env_key，不落进
+      // V4.1 Flash / V4 Pro 的 Responses API 国内直连。Key 只走 env_key，不落进
       // config.toml / auth.json；CODEX_HOME 在拿到真实 cwd 后再生成。
       clearProxyEnv(sessionEnv);
       sessionEnv.DEEPSEEK_API_KEY = cv.DEEPSEEK_API_KEY;

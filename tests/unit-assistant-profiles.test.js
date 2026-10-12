@@ -27,6 +27,13 @@ test('task tiers: fast/standard follow the agreed table, deep is the Hub default
   assert.throws(()=>r({kind:'claude',model:'claude-sonnet-5-5',effort:'ultra'}),/不支持思考深度/);
   assert.throws(()=>profiles.taskKind({tier:'turbo'}),/档位/);
 });
+test('DeepSeek tasks default to V4.1 Flash (deepseek-flash); the old Flash name is accepted as an alias',()=>{
+  const r=req=>profiles.resolveTask(req,{});
+  assert.equal(r({kind:'deepseek'}).model,'deepseek-flash');
+  assert.equal(r({kind:'deepseek',model:'deepseek-v4-flash'}).model,'deepseek-flash');
+  assert.equal(r({kind:'deepseek',model:'deepseek-v4-pro'}).model,'deepseek-v4-pro');
+  assert.throws(()=>r({kind:'deepseek',model:'deepseek-v4.1-flash'}),/没有模型/);
+});
 test('existing assistant users migrate once to the fast default and later choices are kept',async t=>{
   const x=setup(t,{legacy:true});
   const first=await x.service.ensureSession();
