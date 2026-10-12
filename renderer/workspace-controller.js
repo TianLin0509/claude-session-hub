@@ -1193,7 +1193,9 @@
 
   function openNewSessionModal(options = {}) {
     if (!menuEl) return;
-    selectedKind = KIND_LABELS[options.kind] ? options.kind : require('./codeagent-preference').preferredKind(Object.keys(KIND_LABELS));
+    const { kindAllowed } = require('../core/distribution');
+    selectedKind = KIND_LABELS[options.kind] && kindAllowed(options.kind) ? options.kind
+      : require('./codeagent-preference').preferredKind(Object.keys(KIND_LABELS).filter(kindAllowed));
     const requestedWorkspace = options.workspace && typeof options.workspace.path === 'string'
       ? { ...options.workspace }
       : null;
