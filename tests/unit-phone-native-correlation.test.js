@@ -1,6 +1,24 @@
 ﻿const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {LiveHistory,readFinals}=require('../core/hub-assistant/live-history');
 const envelope=id=>'[AI_HUB_ASSISTANT_CONTEXT_V1]'+JSON.stringify({role:'assistant',userText:'task',sessions:{sessions:[]},history:{clientSubmissionId:id}})+'[/AI_HUB_ASSISTANT_CONTEXT_V1]';
+test('Claude mid-turn queued_command binds all delivered photos, not merely enqueued ones',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'phone-mid-turn-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'native.jsonl'),meta={id:'photo',kind:'claude',ccSessionId:'native',transcriptPath:file};
+ const a='photo-original-111',b='photo-steered-222',c='photo-only-queued-333';
+ const append=rows=>fs.appendFileSync(file,rows.map(JSON.stringify).join('\n')+'\n');
+ append([{type:'user',sessionId:'native',message:{content:envelope(a)}},
+  {type:'queue-operation',sessionId:'native',operation:'enqueue',content:envelope(b)},
+  {type:'queue-operation',sessionId:'native',operation:'enqueue',content:envelope(c)},
+  {type:'user',sessionId:'native',message:{content:[{type:'tool_result',content:'x'.repeat(1200000)}]}},
+  {type:'attachment',sessionId:'native',attachment:{type:'queued_command',prompt:envelope(b),humanTurn:true}},
+  {type:'attachment',sessionId:'wrong-session',attachment:{type:'queued_command',prompt:envelope(c)}},
+  {type:'attachment',sessionId:'native',isSidechain:true,attachment:{type:'queued_command',prompt:envelope(c)}}]);
+ const live=new LiveHistory();live.read(meta);
+ append([{type:'assistant',sessionId:'native',uuid:'batch',message:{stop_reason:'end_turn',content:[{type:'text',text:'answers A and B'}]}}]);
+ for(const result of [readFinals(meta,{startOffset:0}),live.read(meta),new LiveHistory().read(meta)])assert.deepEqual(result.records.at(-1).clientSubmissionIds,[a,b]);
+ append([{type:'user',sessionId:'native',message:{content:envelope(c)}},{type:'assistant',sessionId:'native',uuid:'next',message:{stop_reason:'end_turn',content:[{type:'text',text:'answer C'}]}}]);
+ assert.deepEqual(live.read(meta).records.at(-1).clientSubmissionIds,[c]);
+});
 test('Claude image companion preserves photo identity in full, incremental and cold reads',t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'phone-photo-meta-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  const file=path.join(dir,'native.jsonl'),meta={id:'photo',kind:'claude',ccSessionId:'native',transcriptPath:file};

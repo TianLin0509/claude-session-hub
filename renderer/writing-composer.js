@@ -69,7 +69,8 @@ function mountWritingComposer({ host, h, ipcRenderer, value = '', placeholder, l
 }
 
 function mountWritingMembers({ host, h, members, onChange, disabled = false }) {
-  const kinds = GROUP_MEMBER_KINDS;
+  // draft-runner 的纯文字写作入口还没适配 Antigravity（见其 available:false），这里不提供。
+  const kinds = GROUP_MEMBER_KINDS.filter(kind => kind !== 'gemini');
   const modelOptions = (kind, selected) => {
     const options = modelOptionsFor(kind);
     if (selected && !options.some(o => o.id === selected)) options.unshift({ id: selected, label: selected });

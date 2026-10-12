@@ -510,8 +510,12 @@ sessionManager.on('codex-locate-request', ({ sessionId }) => {
     sendToRenderer('codex-focus-session', { sessionId });
   }
 });
+// Token Plan 额度用完的改道控制器（main/token-plan-fallback-controller.js），会话操作就绪后才创建。
+let tokenPlanFallback = null;
 sessionManager.on('codex-lifecycle', event => {
-  transcriptTap.emit(event.type, event);
+  // 千问把额度墙包成普通回答：先改成本轮失败，再交给群聊、通知与卡片。
+  const ev = tokenPlanFallback ? tokenPlanFallback.filterLifecycle(event) : event;
+  transcriptTap.emit(ev.type, ev);
 });
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
@@ -1326,7 +1330,7 @@ function syncSessionRuntimeModel(sessionId, model) {
     const profile = require('./core/deepseek-claude-profile');
     if (!profile.isKnownModel(model.id)) return false;
     const id = profile.normalizeModel(model.id);
-    model = { id, displayName: profile.displayName(id, session.deepseekRoute) };
+    model = { id, displayName: profile.displayName(id, session.deepseekActiveRoute || session.deepseekRoute) };
   }
   const currentId = session.currentModel && session.currentModel.id;
   if (currentId === model.id) return false;
@@ -2085,6 +2089,19 @@ try {
 } catch (error) { console.error('[orchestration] service unavailable:', error.message); }
 // 原生 Claude 额度看门狗。同样依赖 sendToPty 的 _deps，所以排在这之后。
 claudeQuotaResume.start();
+try {
+  tokenPlanFallback = require('./main/token-plan-fallback-controller').createTokenPlanFallbackController({
+    sessionManager, getConfig: getHubConfig, dataDir: getHubDataDir(),
+    restartSession: (id, overrides, options) => sessionOperations.restartSession(id, overrides, options),
+    readUsage: () => refreshTokenPlanUsage(true),
+    // DeepSeek on Claude Code 是 PTY 会话，改道 / 等待提示经这里推到界面。
+    notify: (sessionId, message) => sendToRenderer('session-notice', { sessionId, message, level: 'warning' }),
+  });
+  // 新建 / 恢复时就改道或等待（额度已知用完）的提示，由 session-manager 发出。
+  sessionManager.on('session-notice', event => sendToRenderer('session-notice', event));
+  // groupChatWatcher.sendToPty 发送前经它检查：套餐已用完就先把会话改道到 DeepSeek API。
+  sessionManager.tokenPlanFallback = tokenPlanFallback;
+} catch (error) { console.error('[token-plan-fallback] unavailable:', error.message); }
 registerClaudeQuotaIpc(ipcMain, claudeQuotaResume);
 require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain, {sessionManager});
 
@@ -2722,6 +2739,16 @@ const hookServer = http.createServer((req, res) => {
         // transcript tail's last-assistant entry would be the previous turn
         // and immediately trigger a stale update.
         const isSubagentContext = !!parsed.agentId;
+        // DeepSeek on Claude Code 选了 Token Plan：记下最近一条消息，撞上套餐额度墙时改走官方 API 并重发一次。
+        if (!isSubagentContext && tokenPlanFallback && String(hookTargetSession.kind || '').startsWith('deepseek-claude')) {
+          try {
+            tokenPlanFallback.onClaudeHook(parsed.sessionId, event, {
+              prompt: latestUserMessage, error: parsed.error, message: parsed.message,
+              lastAssistantMessage: parsed.lastAssistantMessage, errorDetails: parsed.errorDetails,
+              turnId: parsed.turnId, claudeSessionId: parsed.claudeSessionId,
+            });
+          } catch (error) { console.warn('[token-plan-fallback] claude hook failed:', error && error.message); }
+        }
         if (!isSubagentContext && (parsed.claudeSessionId || parsed.transcriptPath)) {
           updateSessionTranscriptBinding(parsed.sessionId, {
             ccSessionId: parsed.claudeSessionId,
@@ -3066,7 +3093,12 @@ const tokenPlanUsage = createTokenPlanUsageService({
 });
 
 async function refreshTokenPlanUsage(force = false) {
-  try { return await tokenPlanUsage.refresh(force); }
+  try {
+    const snapshot = await tokenPlanUsage.refresh(force);
+    // 读到 100% 就记下「已用完」，之后新开或发送的套餐会话直接走 DeepSeek API。
+    tokenPlanFallback?.observeUsage(snapshot);
+    return snapshot;
+  }
   finally { sendToRenderer('agent-usage', { tokenPlan: tokenPlanUsage.snapshot() }); }
 }
 
@@ -3175,6 +3207,14 @@ const hubMemoryService = new HubMemoryService({
   sendPrompt:(...args)=>require('./core/group-chat-watcher').sendToPty(...args),
 });
 require('./main/ipc/hub-memory-handlers').registerHubMemoryIpc(ipcMain,hubMemoryService);
+// 「规则」页（2026-10-12）：通用规则 + 我的规则，随会话第一条消息送达；手动检查更新。
+try {
+  const hubRules=require('./core/hub-rules').createHubRulesStore({dataDir:getHubDataDir(),channel:require('./core/distribution').rulesChannel});
+  hubMemoryService.hubRules=hubRules;
+  require('./main/ipc/hub-rules-handlers').registerHubRulesIpc(ipcMain,{store:hubRules,memoryService:hubMemoryService,shell});
+} catch (e) {
+  console.warn('[hub-rules] 规则页初始化失败：', e && e.message);
+}
 require('./main/ipc/capability-handlers').registerCapabilityIpc(ipcMain,
   capabilityService);
 

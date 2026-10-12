@@ -234,6 +234,20 @@ function applyVersionTokens(text, versions) {
   return out;
 }
 
+// 发行目标可以在社区版清单之上再多删文件（drop，例如纯净版不带其他 AI 的头像）、
+// 追加打包过滤（buildFilesAppend）和打包设置（build，按键浅合并，同 manifest.package.build）。
+function applyTargetPackaging(manifest, targetSpec) {
+  if (Array.isArray(targetSpec.drop)) manifest.drop = [...(manifest.drop || []), ...targetSpec.drop];
+  const pkg = manifest.package = { ...(manifest.package || {}) };
+  if (Array.isArray(targetSpec.buildFilesAppend)) pkg.buildFilesAppend = [...(pkg.buildFilesAppend || []), ...targetSpec.buildFilesAppend];
+  if (targetSpec.build && typeof targetSpec.build === 'object') {
+    const build = pkg.build = { ...(pkg.build || {}) };
+    for (const [key, value] of Object.entries(targetSpec.build)) {
+      build[key] = value && typeof value === 'object' && !Array.isArray(value) ? { ...(build[key] || {}), ...value } : value;
+    }
+  }
+}
+
 // 发行目标：默认是公开社区版；--target <名> 读 community/targets/<名>/target.json，
 // 在社区版覆盖文件之后再叠一层该目标的 overlay，并把仓库地址换成目标仓库（例如公司版）。
 const COMMUNITY_REPO = 'TianLin0509/ai-hub-community';
@@ -257,6 +271,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
       if (!fs.existsSync(specPath)) throw new Error(`被导出的提交里没有发行目标：${target}`);
       targetSpec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
       if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(String(targetSpec.repo || ''))) throw new Error('target.json 缺少有效的 repo');
+      applyTargetPackaging(manifest, targetSpec);
     }
     const versions = { edition: version || (targetSpec && targetSpec.version) || manifest.version, upstream: upstreamVersion };
     if (!versions.edition) throw new Error('缺少社区版版本号（manifest.version 或 --version）');
@@ -311,7 +326,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
     }
 
     fs.writeFileSync(path.join(outDir, 'community-edition.json'), JSON.stringify({
-      edition: 'community', ...(targetSpec ? { target, repo: targetSpec.repo, ...(targetSpec.features ? { features: targetSpec.features } : {}) } : {}), version: versions.edition, upstreamVersion: versions.upstream,
+      edition: 'community', ...(targetSpec ? { target, repo: targetSpec.repo, ...(targetSpec.features ? { features: targetSpec.features } : {}), ...(targetSpec.rulesChannel ? { rulesChannel: targetSpec.rulesChannel } : {}), ...(Array.isArray(targetSpec.kinds) ? { kinds: targetSpec.kinds } : {}) } : {}), version: versions.edition, upstreamVersion: versions.upstream,
       upstreamCommit: source.commit, upstreamDirty: source.dirty,
     }, null, 2) + '\n', 'utf8');
     updatePackage(outDir, manifest, versions);
@@ -372,4 +387,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { exportCommunity, globToRegExp, checkReferences };
+module.exports = { exportCommunity, globToRegExp, checkReferences, applyTargetPackaging };

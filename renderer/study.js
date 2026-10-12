@@ -362,6 +362,7 @@
       if (window.__chuxinHide) window.__chuxinHide();
       if (window.__ranHide) window.__ranHide();
       if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+      window.__rulesHide?.(); // 2026-10-12 规则面板互斥
       if (tp) tp.style.display = 'none';
       if (mrp) mrp.style.display = 'none';
       refresh();

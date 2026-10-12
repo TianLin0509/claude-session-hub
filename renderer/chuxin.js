@@ -410,6 +410,7 @@
       if (window.__studyHide) window.__studyHide();
       if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
       if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+      window.__rulesHide?.(); // 2026-10-12 规则面板互斥
       if (window.__hubSidebar) window.__hubSidebar.collapseForPanel();
       state.badgesAt = 0;
       refreshStatus();

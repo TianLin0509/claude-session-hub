@@ -35,6 +35,32 @@ test('a redraw without native editor suspension and restoration cannot acknowled
   const check = assert.rejects(loading, /未确认/);
   await run(f.dir, f.target); f.bridge.onOutput('\x1b[?2026hframe\x1b[?2026l');
   await check; assert.equal(f.bridge.failed, true);
+  await assert.rejects(f.bridge.load(payload, () => {}), /重开/, 'Codex took the request: its draft state is unknown');
+});
+
+test('a Ctrl+G dropped during Codex startup is pressed again until Codex takes the request', async t => {
+  const f = fixture(t), keys = [];
+  const loading = f.bridge.load(payload, key => keys.push(key), { repressMs: 30 });
+  await new Promise(r => setTimeout(r, 100));
+  assert.ok(keys.length >= 2, 'the first press reached a placeholder screen and was lost');
+  await run(f.dir, f.target);
+  const pressed = keys.length;
+  await new Promise(r => setTimeout(r, 80));
+  assert.equal(keys.length, pressed, 'no more presses once the helper claimed the request');
+  frame(f.bridge);
+  assert.equal(await loading, true);
+  assert.ok(keys.every(k => k === '\x07'), 'bridge must never send Enter');
+  assert.equal(fs.readFileSync(f.target, 'utf8'), payload);
+});
+
+test('an editor suspension stops further presses even before the helper claims the request', async t => {
+  const f = fixture(t), keys = [];
+  const loading = f.bridge.load(payload, key => keys.push(key), { repressMs: 30 });
+  f.bridge.onOutput('\x1b[?2004l');
+  await new Promise(r => setTimeout(r, 100));
+  assert.deepEqual(keys, ['\x07']);
+  await run(f.dir, f.target); f.bridge.onOutput('\x1b[?2004h\x1b[?2026hframe\x1b[?2026l');
+  assert.equal(await loading, true);
 });
 
 test('short messages, slash commands and explicit attachments retain the existing input route', async t => {
@@ -49,12 +75,18 @@ test('assistant punctuation route preserves short quoted text without altering i
   await run(f.dir,f.target);frame(f.bridge);assert.equal(await loading,true);assert.equal(fs.readFileSync(f.target,'utf8'),text);
 });
 
-test('expired handoffs reject late helpers, preserve the draft, and cannot load a later request', async t => {
-  const f = fixture(t);
-  await assert.rejects(f.bridge.load(payload, () => {}, { timeoutMs: 30 }), e => e.notSent === true);
+test('a handoff Codex never took rejects late helpers, preserves the draft, and leaves the channel usable', async t => {
+  const f = fixture(t), keys = [];
+  await assert.rejects(f.bridge.load(payload, key => keys.push(key), { startupMs: 90, repressMs: 30 }),
+    e => e.notSent === true && /没有响应/.test(e.message) && !/重开/.test(e.message));
+  assert.ok(keys.length >= 2);
   await assert.rejects(run(f.dir, f.target), /取消/);
   assert.equal(fs.readFileSync(f.target, 'utf8'), 'existing draft');
-  await assert.rejects(f.bridge.load(payload, () => {}), /重开/);
+  assert.equal(f.bridge.failed, false, 'nothing reached Codex, so a retry needs no session restart');
+  const later = f.bridge.load(payload, () => {});
+  await run(f.dir, f.target); frame(f.bridge);
+  assert.equal(await later, true);
+  assert.equal(fs.readFileSync(f.target, 'utf8'), payload);
 });
 
 test('stale receipts and concurrent handoffs cannot satisfy the active message', async t => {

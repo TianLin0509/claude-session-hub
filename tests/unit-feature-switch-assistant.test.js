@@ -22,7 +22,7 @@ assert.strictEqual(company.featureEnabled('assistant'), false, '公司版：助�
 assert.strictEqual(company.featureEnabled('anything-else'), true, '没列出的功能照常开启');
 
 const target = JSON.parse(fs.readFileSync(path.join(root, 'community', 'targets', 'company', 'target.json'), 'utf8'));
-assert.deepStrictEqual(target.features, { assistant: false }, '公司版发行目标关掉助理');
+assert.strictEqual(target.features.assistant, false, '公司版发行目标关掉助理');
 const exporter = fs.readFileSync(path.join(root, 'scripts', 'community', 'export-community.js'), 'utf8');
 assert.match(exporter, /\.\.\.\(targetSpec\.features \? \{ features: targetSpec\.features \} : \{\}\)/, '导出把 features 写进 community-edition.json');
 

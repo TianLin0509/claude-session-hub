@@ -19,12 +19,26 @@ const PROD_CONFIG = path.join(os.homedir(), '.claude-session-hub', 'config.json'
 const CLAUDE_NAME_RE = /claude|opus|sonnet|haiku|fable/i;
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 
+// 额度墙演练：打开后 Token Plan 线路的对话请求不再转发，直接回一条与 2026-10-12 实测同文的 429。
+const QUOTA_BODY = JSON.stringify({ type: 'error', error: { type: 'insufficient_quota',
+  message: 'Your token-plan 1-month quota has been exhausted. The quota will reset at 10-12 16:00:00 UTC.' } });
 function startProxy(logFile) {
   const requests = [];
+  const state = { fail429: false };
   const server = http.createServer((req, res) => {
     const m = req.url.match(/^\/(tokenplan|api)(\/.*)$/);
     if (!m) { res.writeHead(404); res.end('bad path'); return; }
     const route = m[1];
+    if (state.fail429 && route === 'tokenplan' && req.method === 'POST' && /\/v1\/messages/.test(m[2])) {
+      req.resume();
+      req.on('end', () => {
+        const rec = { at: new Date().toISOString(), route, host: 'injected-429', method: req.method, path: m[2], model: null, status: 429, injected: true };
+        requests.push(rec); fs.appendFileSync(logFile, JSON.stringify(rec) + '\n');
+        res.writeHead(429, { 'content-type': 'application/json', 'x-should-retry': 'false' });
+        res.end(QUOTA_BODY);
+      });
+      return;
+    }
     const upstream = new URL(profile.ROUTES[route].baseUrl);
     const upstreamPath = upstream.pathname.replace(/\/$/, '') + m[2];
     const chunks = [];
@@ -51,7 +65,7 @@ function startProxy(logFile) {
       up.end(raw);
     });
   });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}` })));
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, requests, state, url: `http://127.0.0.1:${server.address().port}` })));
 }
 
 async function main() {
@@ -148,6 +162,8 @@ async function main() {
   try {
     hub = await launchIsolatedHub({ dataDir, port: await freePort(), label: 'DeepSeek on Claude Code real E2E', extraEnv: {
       AI_HUB_WORKSPACE_ROOT: work, AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR: dsConfig, AI_HUB_E2E_DEEPSEEK_ROUTE_PROXY: proxy.url,
+      // 额度墙演练时 Claude Code 不要自己反复重试 429
+      CLAUDE_CODE_MAX_RETRIES: '0',
     } });
     c = await connectFirstPage(hub);
     await c.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
@@ -176,6 +192,9 @@ async function main() {
     await _waitMs(500);
     // 通用场景（开发场景至少两位成员）
     await click('.mcm-scene-choice[data-mcm-scene="general"]');
+    await _waitMs(300);
+    // 开发场景会把工作目录切到「选择已有路径」，换回默认工作目录
+    await click('[data-mcm-workspace-mode="default"]');
     await _waitMs(300);
     await choose('.mcm-slot[data-slot="0"] .mcm-ai-select', 'deepseek-claude');
     await _waitMs(300);
@@ -245,6 +264,39 @@ async function main() {
         if (r.type === 'assistant' && r.message && r.message.model) transcriptModels[path.basename(file)] = r.message.model; }
     }
     report.transcriptModels = transcriptModels;
+
+    // ⑤ Token Plan 额度墙：会话自动改走 DeepSeek 官方 API，并把挡住的那条重发一次。
+    // 如果 ② 已经撞上真实额度墙（真实 429），那一轮就是真实的改道验收，这里不再注入。
+    const fbState = path.join(dataDir, 'token-plan-fallback.json');
+    report.realQuotaWall = proxy.requests.some(r => r.route === 'tokenplan' && r.status === 429 && !r.injected);
+    if (report.realQuotaWall) {
+      const tpSid = report.sessions.tokenplan.sid;
+      const after = await c.eval(`(()=>{const s=sessions.get(${j(tpSid)});return {route:s.deepseekRoute,active:s.deepseekActiveRoute,model:s.currentModel}})()`);
+      const wallAt = proxy.requests.find(r => r.route === 'tokenplan' && r.status === 429).at;
+      const apiAfterWall = proxy.requests.filter(r => r.route === 'api' && r.status === 200 && r.at >= wallAt);
+      report.fallback = { real: true, session: after, apiAfterWall: apiAfterWall.length,
+        apiModels: [...new Set(apiAfterWall.map(r => r.model))], state: fs.existsSync(fbState) ? JSON.parse(fs.readFileSync(fbState, 'utf8')) : null };
+      assert.equal(after.route, 'tokenplan');
+      assert.equal(after.active, 'api');
+      assert.ok(apiAfterWall.length >= 1 && report.fallback.state);
+      check('② 撞上真实 Token Plan 额度墙（429）→ 会话自动改走官方 API（deepseek-flash）并重发，回复 OK');
+    } else {
+    proxy.state.fail429 = true;
+    const fb = await createAndAsk('tokenplan', 'fallback');
+    proxy.state.fail429 = false;
+    const fbSession = await c.eval(`(()=>{const s=sessions.get(${j(fb.sid)});return {route:s.deepseekRoute,active:s.deepseekActiveRoute,model:s.currentModel}})()`);
+    const injected = proxy.requests.filter(r => r.injected && Date.parse(r.at) >= fb.sentAt - 2000).length;
+    const fbApi = proxy.requests.filter(r => r.route === 'api' && r.method === 'POST' && /\/v1\/messages/.test(r.path) && Date.parse(r.at) >= fb.sentAt - 2000);
+    report.fallback = { session: fbSession, injected429: injected, apiAfter: fbApi.length, apiModels: [...new Set(fbApi.map(r => r.model))],
+      state: fs.existsSync(path.join(dataDir, 'token-plan-fallback.json')) ? JSON.parse(fs.readFileSync(path.join(dataDir, 'token-plan-fallback.json'), 'utf8')) : null };
+    assert.ok(injected >= 1, 'the quota wall was actually hit');
+    assert.equal(fbSession.route, 'tokenplan', 'the user choice stays Token Plan for the switch back');
+    assert.equal(fbSession.active, 'api');
+    assert.ok(fbApi.length >= 1);
+    assert.deepEqual(report.fallback.apiModels, ['deepseek-flash']);
+    assert.ok(report.fallback.state && report.fallback.state.exhaustedUntil > Date.now());
+    check(`Token Plan 额度墙：注入 429 ${injected} 次 → 会话自动改走官方 API（deepseek-flash），重发后回复 OK`);
+    }
     assert.equal(fs.existsSync(path.join(dsConfig, '.credentials.json')), false);
     assert.deepEqual(profile.claudeLoginEvidence(dsConfig), []);
     check('隔离 DeepSeek 配置目录里没有 Claude 登录信息');

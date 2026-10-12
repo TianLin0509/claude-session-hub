@@ -1327,6 +1327,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
   if (emptyStateEl) emptyStateEl.style.display = 'none';
@@ -1875,6 +1876,7 @@ const APP_TOOLBAR_VIEWS = [
   { id: 'study-panel', label: '学习' },
   { id: 'ran-panel', label: '开发' },
   { id: 'writing-panel', label: '写作' },
+  { id: 'rules-panel', label: '规则' },
   { id: 'meeting-room-panel', label: '群聊' },
 ];
 
@@ -4956,7 +4958,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       ? require('./hub-feedback-health').healthText(now) : '';
     // hook 部署失败时状态只能靠落盘记录和屏幕，必须让用户看见，而不是静默降级。
     const hookWarning = session.hookIntegrationWarning ? '状态信号降级（hook 未部署）：' + session.hookIntegrationWarning : '';
-    const detailText = [localHealth, status.detail, hookWarning].filter(Boolean).join(' · ');
+    // 写作成员没能用上写作专用配置时同样要让人看见（core/session-manager.js 的写作目录准备）
+    const writingWarning = session.writingContextWarning ? '写作上下文降级：' + session.writingContextWarning : '';
+    const detailText = [localHealth, status.detail, hookWarning, writingWarning].filter(Boolean).join(' · ');
     const detail = detailText ? `· ${detailText}` : '';
     if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
     statusDetail.hidden = !detail;
@@ -5693,6 +5697,7 @@ async function selectSession(id, opts = {}) {
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
   const mrp = document.getElementById('meeting-room-panel');
@@ -7352,7 +7357,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
         // 状态栏回报的是接入方式下的真实模型名（如 deepseek-flash），Hub 记显示用的 id。
         const profile = require('../core/deepseek-claude-profile');
         const id = profile.normalizeModel(payload.model.id);
-        payload = { ...payload, model: { id, displayName: profile.displayName(id, session.deepseekRoute) } };
+        payload = { ...payload, model: { id, displayName: profile.displayName(id, session.deepseekActiveRoute || session.deepseekRoute) } };
       }
       if (allowed) {
         const previousModelId = session.currentModel && session.currentModel.id;
@@ -7796,6 +7801,13 @@ function showToast(message, level) {
   require('./groupchat-fork-ui.js').showForkToast(document, String(message || ''), level === 'error' ? 'error' : 'info');
 }
 
+// 主进程推来的会话提示（例如 Token Plan 额度用完、DeepSeek 会话改走官方 API）。
+ipcRenderer.on('session-notice', (_event, payload = {}) => {
+  if (!payload || !payload.message) return;
+  const session = payload.sessionId ? sessions.get(payload.sessionId) : null;
+  showToast(`${session && session.title ? session.title + '：' : ''}${payload.message}`, payload.level);
+});
+
 // PermissionRequest 不带工具参数（hook 边界的既有约定）；同一次调用的 PreToolUse
 // 刚刚把有界参数带了过来，从那条运行中的活动里取「批的是什么」。
 function ptyPermissionEvidence(session, toolName, toolInput) {
@@ -8027,7 +8039,9 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
   //   见 terminal-activity-monitor.js），所以这条一早退，就再没有别的东西会标记它在跑。
   //   claude 走 hook 路径本来就没有这层早退，这也是为什么之前只有 codex/kimi 不亮灯。
   // 卡片/预览/未读仍然归 meeting-room.js 那条流水线管，这里只认领"会话自身在不在干活"。
-  const workingSource = signalSource === 'task_started'
+  // agy's PreInvocation hook fires when the model call really starts: same
+  // authority as Codex task_started, so the dot shows running, not starting.
+  const workingSource = signalSource === 'task_started' || signalSource === 'antigravity_hook'
     ? 'rollout_task_started'
     : 'rollout_user_message';
 
@@ -8517,6 +8531,7 @@ function escapeToHome() {
   if (window.__studyHide) window.__studyHide();
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (fileManagerPanel) fileManagerPanel.close();
   shellController.escapeToHome();
@@ -8821,6 +8836,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   if (window.__studyHide) window.__studyHide();
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
@@ -9133,6 +9149,8 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.acpProfileId) local.acpProfileId = session.acpProfileId;
   if (session.acpCapabilities) local.acpCapabilities = session.acpCapabilities;
   if (Object.hasOwn(session,'cliRuntime')) local.cliRuntime = session.cliRuntime;
+  // 终端型 ACP 会话（千问 / GLM CLI）的卡片提示也以主进程为准，重启后不留旧进程的退出提示。
+  if (Object.hasOwn(session,'nativeActionError')) local.nativeActionError = session.nativeActionError;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
   if (session.codexProfile) local.codexProfile = session.codexProfile;
@@ -10117,6 +10135,7 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
           if (window.__studyHide) window.__studyHide();   // 同上：别和学习面板并排
           if (window.__assistantHide) window.__assistantHide();
           if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+          window.__rulesHide?.(); // 2026-10-12 规则面板互斥
           if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
           terminalPanelEl.style.display = '';
           terminalPanelEl.classList.remove('home-active');

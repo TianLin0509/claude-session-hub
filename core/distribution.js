@@ -19,6 +19,13 @@ function readMarker(file = MARKER_FILE) {
 
 const marker = readMarker();
 const community = !!marker;
+// 发行目标可以只保留部分 AI（target.json 的 kinds，例如公司纯净版只留 CodeAgent）；没写就全部保留。
+// 恢复类 kind（codeagent-resume）跟随它的本体。
+function makeKindFilter(kinds) {
+  const list = Array.isArray(kinds) && kinds.length ? Object.freeze(kinds.map(String)) : null;
+  return { allowedKinds: list, kindAllowed: kind => !list || list.includes(String(kind || '').replace(/-resume$/, '')) };
+}
+const { allowedKinds, kindAllowed } = makeKindFilter(marker && marker.kinds);
 
 module.exports = Object.freeze({
   community,
@@ -28,6 +35,11 @@ module.exports = Object.freeze({
   editionVersion: community ? String(marker.version || '') : null,
   upstreamVersion: community ? String(marker.upstreamVersion || '') : null,
   // 发行目标可以关掉个别功能（target.json 的 features，例如公司版关掉助理）；未列出的功能一律开启。
+  // 「规则」页的通用规则从哪个频道拉：公司版 target.json 写 company，其余都是 public。
+  rulesChannel: (marker && marker.rulesChannel) || 'public',
   featureEnabled: name => !(marker && marker.features && marker.features[name] === false),
+  allowedKinds,
+  kindAllowed,
+  makeKindFilter,
   readMarker,
 });

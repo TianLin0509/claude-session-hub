@@ -96,14 +96,22 @@ function findCodexSubscription(home = os.homedir()) {
   return null;
 }
 
-function readDeepseekConfig(hubDataDir, home = os.homedir()) {
+// 先用 Token Plan 套餐；套餐额度用完（core/token-plan-fallback.js 记下的状态）或没配套餐时改用 DeepSeek 官方 API。
+// 返回 { apiKey, baseURL, via, fallback? }；fallback 是套餐撞墙后可换用的 DeepSeek 凭据。
+function readDeepseekConfig(hubDataDir, home = os.homedir(), env = process.env) {
   const files = [hubDataDir && path.join(hubDataDir, 'config.json'), path.join(home, '.claude-session-hub', 'config.json')].filter(Boolean);
   for (const f of files) {
     try {
-      const d = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, ''));
-      if (d.acp && d.acp.apiKey) {
-        return { apiKey: d.acp.apiKey, baseURL: d.acp.baseURL || 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' };
+      const d = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, ''));
+      const dsKey = String(env.DEEPSEEK_API_KEY || d.providers?.deepseek?.api_key || '').trim();
+      const tokenPlanFallback = require('../token-plan-fallback');
+      const deepseek = dsKey ? { apiKey: dsKey, baseURL: tokenPlanFallback.DEEPSEEK_API_BASE, via: 'deepseek-api' } : null;
+      const planExhausted = !!tokenPlanFallback.exhaustedUntil(path.dirname(f));
+      if (d.acp && d.acp.apiKey && !(planExhausted && deepseek)) {
+        return { apiKey: d.acp.apiKey, baseURL: d.acp.baseURL || 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+          via: 'token-plan', dataDir: path.dirname(f), fallback: deepseek };
       }
+      if (deepseek) return deepseek;
     } catch { /* 下一个 */ }
   }
   return null;
@@ -113,7 +121,7 @@ function providerStatus({ hubDataDir, env = process.env } = {}) {
   const sub = findCodexSubscription(env.CLAUDE_HUB_HOME_DIR || os.homedir());
   const codexJs = resolveCodexJs(env);
   const claude = resolveClaudeExe(env);
-  const ds = readDeepseekConfig(hubDataDir, env.CLAUDE_HUB_HOME_DIR || os.homedir());
+  const ds = readDeepseekConfig(hubDataDir, env.CLAUDE_HUB_HOME_DIR || os.homedir(), env);
   return [
     { id: 'claude', label: 'Claude', model: env.CLAUDE_HUB_WRITING_CLAUDE_MODEL || 'opus', available: !!claude, reason: claude ? '' : '找不到 claude.exe' },
     {
@@ -121,7 +129,7 @@ function providerStatus({ hubDataDir, env = process.env } = {}) {
       available: !!(sub && codexJs),
       reason: !codexJs ? '找不到 Codex CLI' : !sub ? '没有订阅登录（只用订阅，不用 API Key）' : '',
     },
-    { id: 'deepseek', label: 'DeepSeek', model: env.CLAUDE_HUB_WRITING_DEEPSEEK_MODEL || 'deepseek-v4-pro', available: !!ds, reason: ds ? '' : 'Hub 里没有配置 DeepSeek（百炼）密钥' },
+    { id: 'deepseek', label: 'DeepSeek', model: env.CLAUDE_HUB_WRITING_DEEPSEEK_MODEL || 'deepseek-v4-pro', available: !!ds, reason: ds ? '' : 'Hub 里没有配置 Token Plan 套餐 Key，也没有 DeepSeek API Key' },
     { id: 'gemini', label: 'Antigravity', available: false, reason: '纯文字写作入口尚未适配 Antigravity 的上下文隔离；可使用普通 Antigravity 会话' },
     { id: 'kimi', label: 'Kimi', available: false, reason: '当前 Kimi Code 订阅对 kimi-for-coding 返回 403' },
   ];
@@ -273,24 +281,37 @@ async function runCodex({ system, user, effort = 'high', signal, onProgress, env
   return { text, meta: { ...meta, inputTokens: meta.usage ? meta.usage.input_tokens : null } };
 }
 
-async function runDeepseek({ system, user, model = 'deepseek-v4-pro', signal, hubDataDir, env = process.env }) {
-  const cfg = readDeepseekConfig(hubDataDir, env.CLAUDE_HUB_HOME_DIR || os.homedir());
-  if (!cfg) throw new Error('Hub 里没有配置 DeepSeek（百炼）密钥');
+async function runDeepseek({ system, user, model = 'deepseek-v4-pro', signal, hubDataDir, env = process.env, fetchImpl = fetch }) {
+  let cfg = readDeepseekConfig(hubDataDir, env.CLAUDE_HUB_HOME_DIR || os.homedir(), env);
+  if (!cfg) throw new Error('Hub 里没有配置 Token Plan 套餐 Key，也没有 DeepSeek API Key');
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 20 * 60 * 1000);
   if (signal) signal.addEventListener('abort', () => ctrl.abort());
   try {
-    const resp = await fetch(cfg.baseURL.replace(/\/$/, '') + '/chat/completions', {
+    const request = (c) => fetchImpl(c.baseURL.replace(/\/$/, '') + '/chat/completions', {
       method: 'POST',
       signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({ model, stream: false, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.apiKey}` },
+      body: JSON.stringify({ model: c.via === 'deepseek-api' ? require('../token-plan-fallback').fallbackModel(model) : model,
+        stream: false, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
     });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(`DeepSeek 返回 ${resp.status}：${JSON.stringify(data).slice(0, 300)}`);
+    let resp = await request(cfg);
+    let data = await resp.json().catch(() => ({}));
+    // 套餐额度用完：记下状态（会话与写作共用），换 DeepSeek 官方 API 重来一次。
+    const quotaText = JSON.stringify(data);
+    if (!resp.ok && cfg.via === 'token-plan' && require('../token-plan-fallback').isTokenPlanQuotaText(quotaText)) {
+      const tokenPlanFallback = require('../token-plan-fallback');
+      tokenPlanFallback.markExhausted(cfg.dataDir, { resetsAt: tokenPlanFallback.parseResetAt(quotaText), source: 'writing' });
+      if (cfg.fallback) {
+        cfg = cfg.fallback;
+        resp = await request(cfg);
+        data = await resp.json().catch(() => ({}));
+      }
+    }
+    if (!resp.ok) throw new Error(`DeepSeek（${cfg.via === 'deepseek-api' ? 'DeepSeek API' : 'Token Plan'}）返回 ${resp.status}：${JSON.stringify(data).slice(0, 300)}`);
     const text = (((data.choices || [])[0] || {}).message || {}).content || '';
     if (!text.trim()) throw new Error('DeepSeek 没有返回正文');
-    return { text, meta: { usage: data.usage, inputTokens: data.usage ? data.usage.prompt_tokens : null, clean: { model: data.model || model } } };
+    return { text, meta: { usage: data.usage, inputTokens: data.usage ? data.usage.prompt_tokens : null, via: cfg.via, clean: { model: data.model || model } } };
   } finally {
     clearTimeout(timer);
   }
@@ -307,6 +328,8 @@ async function runModel(provider, opts) {
 }
 
 module.exports = {
+  readDeepseekConfig,
+  runDeepseek,
   cleanEnv,
   findCodexSubscription,
   resolveCodexJs,

@@ -24,7 +24,12 @@
 //   旧的 'deepseek'（Codex 运行时 / 迁移前 Claude 兼容）只为恢复历史会话保留。见 core/deepseek-claude-profile.js。
 const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi', 'qwen', 'deepseek-acp', 'glm', 'codeagent', 'deepseek-claude'];
 // Offered by the group-creation and writing-member pickers.
-const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek-claude', 'qwen', 'deepseek-acp', 'glm', 'codeagent'];
+// 2026-10-12: Antigravity (gemini kind) rejoins as a full member: bracketed-paste
+// submit, PreInvocation/Stop hooks, pre-trusted folders and native branches.
+// 发行目标只保留部分 AI 时（公司纯净版只留 CodeAgent），选成员时只列这些。
+// 2026-10-11：新建 DeepSeek 成员一律跑 Claude Code（deepseek-claude）。
+const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek-claude', 'qwen', 'deepseek-acp', 'glm', 'codeagent', 'gemini']
+  .filter(require('./distribution').kindAllowed);
 const WEB_STYLE_KINDS = [];
 // DeepSeek V4 Pro / Flash 原生支持 Responses API，并适配 Codex 0.144.0+。
 // 新 DeepSeek 会话因此也属于 Codex CLI runtime；老会话恢复时

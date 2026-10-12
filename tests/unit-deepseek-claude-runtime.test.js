@@ -293,5 +293,111 @@ test('new-session panel has no ChatGPT entry and DeepSeek offers only the two Cl
   assert.match(modal, /HIDDEN_CREATE_KINDS = new Set\(\['chatgpt', 'deepseek', 'deepseek-acp'\]\)/);
   assert.doesNotMatch(modal, /Codex CLI · DeepSeek API|Token Plan · 旧 Harness/);
   const room = read('renderer/meeting-room.js');
-  assert.match(room, /\['claude', 'codex', 'deepseek-claude', 'qwen', 'glm'\]/);
+  assert.match(room, /\['claude', 'codex', 'deepseek-claude', 'qwen', 'glm', 'gemini'/);
+  assert.doesNotMatch(room, /\['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp'/);
+});
+
+// ── Token Plan 额度用完：与 DeepSeek 旧 Harness 同一套改道（core/token-plan-fallback.js）──
+const fallback = require('../core/token-plan-fallback');
+const { createTokenPlanFallbackController, CONTINUATION_NOTE } = require('../main/token-plan-fallback-controller');
+const QUOTA_RAW = 'Your token-plan 1-month quota has been exhausted. The quota will reset at 10-12 16:00:00 UTC.';
+
+function ccHarness(t, { deepseekApiKey = 'ds-key', route = 'tokenplan' } = {}) {
+  const dataDir = tempDir(t, 'ds-claude-fb-');
+  const session = { id: 's1', kind: 'deepseek-claude', deepseekRoute: route, deepseekActiveRoute: route,
+    currentModel: { id: 'deepseek-v4.1-flash', displayName: 'DS V4.1 Flash · Token Plan' } };
+  const restarts = [], sends = [], notices = [];
+  const controller = createTokenPlanFallbackController({
+    sessionManager: { getSession: () => session, getNativeSession: () => null },
+    dataDir, settleMs: 0, logger: { log() {}, warn() {} },
+    getConfig: () => ({ deepseekApiKey }),
+    notify: (id, message) => notices.push([id, message]),
+    restartSession: async (id, overrides, options) => {
+      restarts.push([id, overrides, options]);
+      const planRoute = fallback.resolveRoute({ config: { deepseekApiKey }, dataDir, kind: session.kind }).route;
+      session.deepseekActiveRoute = session.deepseekRoute === 'tokenplan' && planRoute === 'deepseek' ? 'api' : session.deepseekRoute;
+      return { id };
+    },
+    sendToPty: async (id, text, kind, options) => { sends.push({ id, text, kind, options }); return { ok: true }; },
+  });
+  return { controller, session, restarts, sends, notices, dataDir };
+}
+
+test('Claude Code DeepSeek on Token Plan: quota wall reroutes to the official API and resends once', async t => {
+  const h = ccHarness(t);
+  assert.equal(fallback.canFallback('deepseek-claude'), true);
+  assert.equal(h.controller.routeOf(h.session), 'token-plan');
+  h.controller.onClaudeHook('s1', 'prompt', { prompt: '回复 OK' });
+  assert.equal(h.controller.onClaudeHook('s1', 'stop-failure', { error: 'rate_limit',
+    lastAssistantMessage: 'API Error: 429 {"error":{"type":"insufficient_quota","message":"' + QUOTA_RAW + '"}}', turnId: 't1' }), true);
+  // 同一轮的 Stop 也带同样原文：不重复改道
+  h.controller.onClaudeHook('s1', 'stop-failure', { error: 'rate_limit', lastAssistantMessage: 'API Error: 429 ' + QUOTA_RAW, turnId: 't1' });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual(h.restarts, [['s1', null, { relaunch: true }]]);
+  assert.equal(h.session.deepseekActiveRoute, 'api');
+  assert.equal(h.controller.routeOf(h.session), 'deepseek');
+  assert.equal(h.sends.length, 1);
+  assert(h.sends[0].text.startsWith(CONTINUATION_NOTE) && h.sends[0].text.endsWith('回复 OK'));
+  assert.equal(h.sends[0].options.requireReady, true, 'PTY Claude Code waits for its TUI after the restart');
+  assert.match(h.notices.at(-1)[1], /暂用 DeepSeek API/);
+  assert(fallback.exhaustedUntil(h.dataDir) > 0);
+});
+
+test('Claude Code DeepSeek chosen on the official API never takes part in the fallback', () => {
+  const h = ccHarness(t_stub(), { route: 'api' });
+  assert.equal(h.controller.routeOf(h.session), null);
+  assert.equal(h.controller.onClaudeHook('s1', 'stop-failure', { lastAssistantMessage: QUOTA_RAW }), false);
+});
+function t_stub() { return { after() {} }; }
+
+test('Claude Code DeepSeek without a DeepSeek key waits for the reset and refuses sends with the reason', async t => {
+  const h = ccHarness(t, { deepseekApiKey: '' });
+  fallback.markExhausted(h.dataDir, { resetsAt: Date.now() + 3600_000 });
+  await assert.rejects(h.controller.beforeSend('s1'), /Token Plan 本月额度已用完[\s\S]*没有配置 DeepSeek API Key[\s\S]*消息未发送/);
+  assert.deepEqual(h.restarts, []);
+});
+
+test('launch while the plan is exhausted starts on the official API and keeps the user choice', async t => {
+  const root = tempDir(t, 'ds-claude-fb-sm-');
+  const dataDir = path.join(root, 'data'), configDir = path.join(root, 'cfg');
+  fs.mkdirSync(dataDir, { recursive: true }); fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ acp: { apiKey: 'tp' }, providers: { deepseek: { api_key: 'ds' } } }));
+  fallback.markExhausted(dataDir, { resetsAt: Date.now() + 3600_000 });
+  const saved = { a: process.env.CLAUDE_HUB_DATA_DIR, b: process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR };
+  process.env.CLAUDE_HUB_DATA_DIR = dataDir; process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR = configDir;
+  require('../core/hub-config').clearConfigCache();
+  const pty = require('node-pty');
+  const spawned = [];
+  t.mock.method(pty, 'spawn', (file, args, options) => {
+    const fake = { options, pid: 1, onData() { return { dispose() {} }; }, onExit() { return { dispose() {} }; }, write() {}, resize() {}, kill() {} };
+    spawned.push(fake); return fake;
+  });
+  const { SessionManager } = require('../core/session-manager');
+  const manager = new SessionManager();
+  const notices = [];
+  manager.on('session-notice', event => notices.push(event));
+  let info;
+  t.after(() => {
+    try { if (info) manager.closeSession(info.id); } catch {}
+    try { manager.openOwners?.close(); } catch {}
+    if (saved.a === undefined) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = saved.a;
+    if (saved.b === undefined) delete process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR; else process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR = saved.b;
+    require('../core/hub-config').clearConfigCache();
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); } catch {}
+  });
+  info = manager.createSession('deepseek-claude', { cwd: root, deepseekRoute: 'tokenplan' });
+  assert.equal(info.deepseekRoute, 'tokenplan', 'the user choice is kept for the switch back');
+  assert.equal(info.deepseekActiveRoute, 'api');
+  assert.equal(spawned[0].options.env.ANTHROPIC_BASE_URL, 'https://api.deepseek.com/anthropic');
+  assert.equal(spawned[0].options.env.ANTHROPIC_MODEL, 'deepseek-flash');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(notices[0] && notices[0].message || '', /暂用 DeepSeek API/);
+});
+
+test('without a CLAUDE_HUB_DATA_DIR the e2e proxy override is ignored', t => {
+  const configDir = tempDir(t, 'ds-claude-cfg-');
+  const env = {};
+  profile.applyLaunchEnv(env, { route: 'tokenplan', config: { acp: { apiKey: 'k' } },
+    baseEnv: { AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR: configDir, AI_HUB_E2E_DEEPSEEK_ROUTE_PROXY: 'http://127.0.0.1:9' } });
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic');
 });

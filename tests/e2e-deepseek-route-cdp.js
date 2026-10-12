@@ -15,13 +15,13 @@ const {connectFirstPage}=require(path.resolve('tests/helpers/cdp-client'));
   await c.eval("openMeetingCreateModal('group')");
   await until('!!document.querySelector(".mcm-ai-select")');
   const select=async(selector,value)=>c.eval(`(()=>{const s=document.querySelector(${JSON.stringify(selector)});s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-  await select('.mcm-ai-select','deepseek');
-  result.default=await c.eval(`({route:document.querySelector('.mcm-deepseek-route').value,kind:document.querySelector('.mcm-slot').dataset.kind})`);
-  assert.deepEqual(result.default,{route:'deepseek',kind:'deepseek'});
-  await select('.mcm-deepseek-route','deepseek-acp');
-  assert.equal(await c.eval(`document.querySelector('.mcm-slot').dataset.kind`),'deepseek-acp');
-  await select('.mcm-deepseek-route','deepseek');
-  assert.equal(await c.eval(`document.querySelector('.mcm-slot').dataset.kind`),'deepseek');
+  // 2026-10-11：DeepSeek 成员一律跑 Claude Code，接入方式 Token Plan（默认）/ 官方 API。
+  await select('.mcm-ai-select','deepseek-claude');
+  result.default=await c.eval(`({route:document.querySelector('.mcm-deepseek-route').value,kind:document.querySelector('.mcm-slot').dataset.kind,model:document.querySelector('.mcm-model-select').value})`);
+  assert.deepEqual(result.default,{route:'tokenplan',kind:'deepseek-claude',model:'deepseek-v4.1-flash'});
+  await select('.mcm-deepseek-route','api');
+  assert.equal(await c.eval(`document.querySelector('.mcm-slot').dataset.kind`),'deepseek-claude');
+  assert.equal(await c.eval(`document.querySelector('.mcm-deepseek-route').value`),'api');
   result.passed=true;
  }catch(error){result.error=error.stack;process.exitCode=1;}
  finally{
