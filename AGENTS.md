@@ -31,4 +31,5 @@ Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导入本文件；Codex / Kimi 等直接
 - 会话/群聊/成员进入默认卡片，主动点击后台才显示 CLI，PowerShell 直接终端。PTY→main→renderer→xterm 单写入；重复显示先查 TUI 重绘/resize/reopen。修改 resize、splitter、zoom 等先看手册「UI 与终端风险区」。
 - 记忆加载证据区分磁盘存在、预计加载、已发送、正文已读；Claude InstructionsLoaded 仅路径，Codex 从绑定 rollout 提取。临时目录不默认复制规则/git init，祖先规则随真实消息送达留回执，全局规则差异只提示。
 - 造梦用实体 session，原生 MEMORY/规则只读，产物仅写 Hub 数据目录，校验后发布再推进游标；梦境索引仅随用户亲手发消息送达，压缩后补发，自动派发不带。昨日之我只索引自然语言，工具只留短元信息；造梦/搜索/库迁移/旧兼容任务读取手册「记忆与昨日之我」和 `docs/design/memory-mvp.md`。
+- 查看阿里云 / 百炼控制台（Token Plan、用量、账单）用账号页登录过的专用浏览器，读 `docs/aliyun-console.md`；工具只导航和读取，下单、付款、改配置由用户本人操作。
 - 浏览器代理/网络任务读 `docs/browser-network-rules.md`；节点延时、下载、真实网页分别取证。任务栏图标任务读手册「任务栏图标」：只改品牌副本，永不改 electron.exe 本体。

@@ -9,6 +9,7 @@ const SERVICES = {
   hostBrowser: { name: '客户端内置浏览器', kind: 'host', help: 'browser-use 由原生客户端提供浏览器；目前没有 Hub Chrome 接入接口。' },
   hostImage: { name: '客户端内置生图', kind: 'host', help: 'image_gen 使用客户端自己的授权；和 ChatGPT 网页生图是不同入口。' },
   bailian: { name: '阿里云百炼', kind: 'credential', help: '百炼技能与抖音转写使用 API 授权；千问网页登录不能替代百炼密钥。', files: [['.bailian', 'config.json']], env: ['DASHSCOPE_API_KEY'], fields: ['api_key', 'access_token', 'access_key_id'] },
+  aliyunConsole: { name: '阿里云控制台', kind: 'browser', ownBrowser: true, purpose: '阿里云 / 百炼控制台（AI 可查看）', help: '独立的专用浏览器，登录：阿里云 App 或支付宝扫码，或账号密码。登录后 AI 会话用 scripts/aliyun-console.js 只读查看（打开页面、读文字、截图）；下单、付款、改配置、开通或关闭服务、删资源都由你本人操作。' },
   github: { name: 'GitHub', kind: 'credential', help: '复用 GitHub CLI / Git 的原生授权；浏览器登录不等于仓库访问授权。', files: [['AppData', 'Roaming', 'GitHub CLI', 'hosts.yml'], ['.config', 'gh', 'hosts.yml']], env: ['GH_TOKEN', 'GITHUB_TOKEN'] },
   xueqiu: { name: '雪球', kind: 'browser', help: '初心投研「账号数据」从这里取登录态：消息雷达的雪球热帖、研究工具箱的雪球讨论。' },
   jiuyan: { name: '韭研公社', kind: 'browser', help: '初心投研「账号数据」从这里取登录态：登录后可用每天的异动解析。' },
