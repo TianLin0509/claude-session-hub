@@ -12,6 +12,15 @@ const {
 } = require('../core/turn-presentation.js');
 const { renderImageAttachments, createCardDetailControls } = require('./card-detail-controls.js');
 const { chatAvatarSrc, USER_AVATAR_SRC } = require('./chat-avatar');
+const { isCodeAgentKind } = require('../core/ai-kinds');
+
+// 回合没带 kind 时用会话的 kind。CodeAgent 落盘是 Claude 格式，解析出的回合带 kind:'claude'，
+// 头像和名字仍以会话本身（CodeAgent）为准。
+function turnWithSessionKind(turn, sessionKind) {
+  if (!sessionKind) return turn;
+  const borrowed = isCodeAgentKind(sessionKind) && (turn.kind === 'claude' || turn.kind === 'claude-resume');
+  return (!turn.kind || borrowed) ? { ...turn, kind: sessionKind } : turn;
+}
 
 function createTurnCardRenderer(options = {}) {
   const doc = options.document || document;
@@ -1042,7 +1051,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 这样展开态、选区、滚动意图与绑定在根节点上的 UI 状态都能保留。
   const existing = container.querySelector(`.turn-card[data-turn-id="${cssEscape(turn.id)}"]`);
   if (existing) {
-    const turnForRender2 = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
+    const turnForRender2 = turnWithSessionKind(turn, opts.kind);
     const prevTurn = state._sessionTurns.get(turn.id);
     const prevSig = _turnRenderSigs.get(turn.id) || turnRenderSignature(prevTurn);
     const nextSig = turnRenderSignature(turnForRender2);
@@ -1065,14 +1074,14 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     if (!newCard) return null;
     const patchedCard = patchTurnCardInPlace(existing, newCard, sessionId);
     if (!patchedCard) return null;
-    state._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
+    state._sessionTurns.set(turn.id, turnForRender2);
     _turnRenderSigs.set(turn.id, nextSig);
     publishTurnPresentation(sessionId, turnForRender2);
     return patchedCard;
   }
 
   // 3. merge kind through to renderTurnCard without mutating caller's turn
-  const turnForRender = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
+  const turnForRender = turnWithSessionKind(turn, opts.kind);
 
   // 4. build wrapper element from HTML string
   let cardEl = null;
@@ -1235,4 +1244,4 @@ listen('click', (e) => {
   };
 }
 
-module.exports = { createTurnCardRenderer };
+module.exports = { createTurnCardRenderer, turnWithSessionKind };
