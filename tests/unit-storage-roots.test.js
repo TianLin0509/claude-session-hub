@@ -164,7 +164,11 @@ test('跨盘移动：目标已存在不覆盖；目录内含链接时拒绝且�
     await fsp.writeFile(path.join(src, 'inner', 'x.txt'), 'X');
     const linkTarget = path.join(root, 'elsewhere');
     await fsp.mkdir(linkTarget);
-    await fsp.symlink(linkTarget, path.join(src, 'inner', 'jl'), 'junction');
+    // Windows 高并发下刚建的目录偶尔被占用（EBUSY/EPERM），建链接短暂重试；这是测试准备步骤，不是被测行为。
+    for (let attempt = 1; ; attempt++) {
+      try { await fsp.symlink(linkTarget, path.join(src, 'inner', 'jl'), 'junction'); break; }
+      catch (error) { if (attempt >= 5 || !['EBUSY', 'EPERM'].includes(error.code)) throw error; await new Promise(r => setTimeout(r, 100 * attempt)); }
+    }
     await assert.rejects(moveEntry(src, path.join(root, 'moved')), /链接/);
     assert.equal(fs.existsSync(path.join(root, 'moved')), false);
     assert.equal(await fsp.readFile(path.join(src, 'inner', 'x.txt'), 'utf8'), 'X');
