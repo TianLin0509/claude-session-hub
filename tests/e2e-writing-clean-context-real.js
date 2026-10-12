@@ -121,7 +121,10 @@ async function main() {
     await cdp.eval('document.getElementById("btn-writing").click()');
     await until('document.querySelector("#wr-view-studio.active .wb-compose-text")', 'composer', 30000);
     await cdp.eval('document.querySelector(".wb-compose-text").focus()');
-    await cdp.send('Input.insertText', { text: '中心思想：同一个模型换进不同的命令行外壳，表现会差很多，原因常常不在模型本身，而在外壳替它定下的输出上限和思考强度。读者是天天用 AI 写代码的工程师。这次是测试，写 200 字左右的短文就好。' });
+    // 开题要和真实写作一样长（带材料）：整条消息超过 2048 字时 Codex 走长文本交接（Ctrl+G 外部编辑器），
+    // 2026-10-12 那次首条开题送不进 Codex 的问题只在这条路上出现，短开题测不到。
+    const material = '材料：' + '同一道题，DeepSeek 在 Codex 里 494 秒交卷，在 Claude Code 里 6 秒就被截断；GLM 换到 Claude Code 后分数从 0.95 掉到 0.58；Qwen 三个外壳都没交上卷。'.repeat(14);
+    await cdp.send('Input.insertText', { text: '中心思想：同一个模型换进不同的命令行外壳，表现会差很多，原因常常不在模型本身，而在外壳替它定下的输出上限和思考强度。读者是天天用 AI 写代码的工程师。这次是测试，写 200 字左右的短文就好。\n' + material });
     await sleep(300);
     await cdp.eval('[...document.querySelectorAll("#writing-panel button")].find(b=>b.textContent.trim()==="开始写"&&!b.disabled).click()');
     await until('document.querySelector(".wb .wb-title")', 'workbench mounted', 120000);
