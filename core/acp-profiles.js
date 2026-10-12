@@ -28,9 +28,13 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
   }
   const catalog = require('./acp-model-catalog');
   let model = opts.model || entry.model;
-  // 备用期间按原档位换成 DeepSeek（flash 对 flash，其余对 pro）；回到套餐时把备用模型换回该外壳的配置模型。
+  // 备用期间按原档位换成 DeepSeek（flash 对 flash，其余对 pro）；回到套餐时按原档位换回
+  // （Flash 回到套餐上的 V4.1 Flash），该外壳的套餐目录里没有对应模型时才用配置模型。
   if (deepseekRoute) model = fallback.fallbackModel(model);
-  else if (fallback.FALLBACK_MODELS.includes(model) && !catalog.acpModelOptions(kind).some(m => m.id === model)) model = entry.model;
+  else if (fallback.isApiModel(model) && !catalog.acpModelOptions(kind).some(m => m.id === model)) {
+    const back = fallback.tokenPlanModel(model);
+    model = catalog.acpModelOptions(kind).some(m => m.id === back) ? back : entry.model;
+  }
   const models = deepseekRoute ? fallback.FALLBACK_MODELS.map(id => ({ id, label: id, source: 'deepseek-api' }))
     : catalog.acpModelOptions(kind, model);
   if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(model))throw new Error('请填写套餐模型 ID，不可切到其他供应商命名空间');

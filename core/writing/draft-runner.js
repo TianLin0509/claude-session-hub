@@ -96,6 +96,10 @@ function findCodexSubscription(home = os.homedir()) {
   return null;
 }
 
+// 写作起草的 DeepSeek 默认模型（2026-10-13 起 V4.1 Flash）。这里是 Token Plan 上的名字；
+// 改走官方 API 时由 token-plan-fallback.fallbackModel 换成 deepseek-flash。
+const DEFAULT_DEEPSEEK_WRITING_MODEL = 'deepseek-v4.1-flash';
+
 // 先用 Token Plan 套餐；套餐额度用完（core/token-plan-fallback.js 记下的状态）或没配套餐时改用 DeepSeek 官方 API。
 // 返回 { apiKey, baseURL, via, fallback? }；fallback 是套餐撞墙后可换用的 DeepSeek 凭据。
 function readDeepseekConfig(hubDataDir, home = os.homedir(), env = process.env) {
@@ -129,7 +133,7 @@ function providerStatus({ hubDataDir, env = process.env } = {}) {
       available: !!(sub && codexJs),
       reason: !codexJs ? '找不到 Codex CLI' : !sub ? '没有订阅登录（只用订阅，不用 API Key）' : '',
     },
-    { id: 'deepseek', label: 'DeepSeek', model: env.CLAUDE_HUB_WRITING_DEEPSEEK_MODEL || 'deepseek-v4-pro', available: !!ds, reason: ds ? '' : 'Hub 里没有配置 Token Plan 套餐 Key，也没有 DeepSeek API Key' },
+    { id: 'deepseek', label: 'DeepSeek', model: env.CLAUDE_HUB_WRITING_DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_WRITING_MODEL, available: !!ds, reason: ds ? '' : 'Hub 里没有配置 Token Plan 套餐 Key，也没有 DeepSeek API Key' },
     { id: 'gemini', label: 'Antigravity', available: false, reason: '纯文字写作入口尚未适配 Antigravity 的上下文隔离；可使用普通 Antigravity 会话' },
     { id: 'kimi', label: 'Kimi', available: false, reason: '当前 Kimi Code 订阅对 kimi-for-coding 返回 403' },
   ];
@@ -281,7 +285,7 @@ async function runCodex({ system, user, effort = 'high', signal, onProgress, env
   return { text, meta: { ...meta, inputTokens: meta.usage ? meta.usage.input_tokens : null } };
 }
 
-async function runDeepseek({ system, user, model = 'deepseek-v4-pro', signal, hubDataDir, env = process.env, fetchImpl = fetch }) {
+async function runDeepseek({ system, user, model = DEFAULT_DEEPSEEK_WRITING_MODEL, signal, hubDataDir, env = process.env, fetchImpl = fetch }) {
   let cfg = readDeepseekConfig(hubDataDir, env.CLAUDE_HUB_HOME_DIR || os.homedir(), env);
   if (!cfg) throw new Error('Hub 里没有配置 Token Plan 套餐 Key，也没有 DeepSeek API Key');
   const ctrl = new AbortController();
@@ -328,6 +332,7 @@ async function runModel(provider, opts) {
 }
 
 module.exports = {
+  DEFAULT_DEEPSEEK_WRITING_MODEL,
   readDeepseekConfig,
   runDeepseek,
   cleanEnv,

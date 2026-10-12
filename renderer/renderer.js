@@ -7349,7 +7349,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
       const allowed = baseKind === 'codex'
         ? isCodexConversationModelId(payload.model.id)
         : baseKind === 'deepseek'
-          ? /^deepseek-v4-(?:pro|flash)$/i.test(String(payload.model.id))
+          ? /^deepseek-(?:v4-pro|flash)$/i.test(String(payload.model.id))
           : baseKind === 'deepseek-claude'
             ? require('../core/deepseek-claude-profile').isKnownModel(payload.model.id)
           : true;

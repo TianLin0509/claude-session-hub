@@ -17,6 +17,11 @@ test('DeepSeek Responses models use their Codex-owned picker and receipt',()=>{
   assert.equal(require('../core/model-options').modelSwitchStrategy('deepseek'),'codex-picker');
   assert.deepEqual(parseCodexModelPicker(screen).entries.map(e=>e.value),['deepseek-v4-flash','deepseek-v4-pro']);
   assert.equal(require('../core/cli-model-command').modelCommandAcknowledged('codex-picker',screen,''),true);
+  // 2026-10-13：目录换成官方新名 deepseek-flash（V4.1 Flash）后，Codex 面板这样列出。
+  const flash='Select Model and Effort\n› 1. deepseek-flash (current)  Latest frontier agentic coding model.\n  2. deepseek-v4-pro\n';
+  assert.deepEqual(parseCodexModelPicker(flash).entries.map(e=>e.value),['deepseek-flash','deepseek-v4-pro']);
+  assert.equal(require('../core/cli-model-command').modelCommandAcknowledged('codex-picker',flash,''),true);
+  assert.equal(require('../core/cli-model-command').modelCommandAcknowledged('codex-picker','Select Model and Effort\n› 1. deepseek-flashy\n',''),false);
 });
 
 test('Codex model picker parser finds provider-owned row numbers and current selection', () => {

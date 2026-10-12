@@ -37,9 +37,11 @@ test('isolated profile uses Responses API, an env key, and the Pro/Flash catalog
     const config = fs.readFileSync(profile.configPath, 'utf8');
     const catalog = JSON.parse(fs.readFileSync(profile.catalogPath, 'utf8'));
 
-    assert.strictEqual(profile.model, 'deepseek-v4-flash');
-    assert.strictEqual(DEEPSEEK_CODEX_MODEL, 'deepseek-v4-flash');
-    assert.deepStrictEqual(DEEPSEEK_CODEX_MODELS, ['deepseek-v4-pro', 'deepseek-v4-flash']);
+    // 2026-10-13：默认 V4.1 Flash，官方 API 名 deepseek-flash；Pro 保留。
+    assert.strictEqual(profile.model, 'deepseek-flash');
+    assert.strictEqual(DEEPSEEK_CODEX_MODEL, 'deepseek-flash');
+    assert.deepStrictEqual(DEEPSEEK_CODEX_MODELS, ['deepseek-flash', 'deepseek-v4-pro']);
+    assert.match(config, /^model = "deepseek-flash"$/m);
     assert.strictEqual(DEEPSEEK_CODEX_BASE_URL, 'https://api.deepseek.com/');
     assert.strictEqual(DEEPSEEK_CODEX_MIN_VERSION, '0.144.0');
     assert.match(config, /model_provider = "deepseek"/);
@@ -49,7 +51,7 @@ test('isolated profile uses Responses API, an env key, and the Pro/Flash catalog
     assert.match(config, /model_catalog_json = /);
     assert.doesNotMatch(config, /experimental_bearer_token|sk-[A-Za-z0-9]/,
       'the API key must never be written into the profile');
-    assert.deepStrictEqual(catalog.models.map(model => model.slug), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+    assert.deepStrictEqual(catalog.models.map(model => model.slug), ['deepseek-flash', 'deepseek-v4-pro']);
     for (const model of catalog.models) {
       assert.strictEqual(model.minimal_client_version, '0.144.0');
       assert.strictEqual(model.context_window, 1048576);
@@ -57,7 +59,9 @@ test('isolated profile uses Responses API, an env key, and the Pro/Flash catalog
       assert.strictEqual(model.tool_mode, 'direct');
       assert.strictEqual(model.supports_search_tool, false);
     }
-    assert.strictEqual(catalog.models[0].display_name, 'DeepSeek-V4-Pro');
+    assert.strictEqual(catalog.models[0].display_name, 'DeepSeek-Flash');
+    assert.strictEqual(catalog.models[0].priority, 1, 'V4.1 Flash is first in the Codex picker');
+    assert.strictEqual(catalog.models[1].display_name, 'DeepSeek-V4-Pro');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -127,7 +131,7 @@ test('repeated launches keep Codex-written [hooks.state.*] and [tui] while Hub k
       '',
     ].join('\r\n');
     const tampered = fs.readFileSync(profile.configPath, 'utf8')
-      .replace('model = "deepseek-v4-flash"', 'model = "something-else"')
+      .replace('model = "deepseek-flash"', 'model = "something-else"')
       .replace('hide_full_access_warning = true', 'hide_full_access_warning = false\nextra_notice = 1');
     fs.writeFileSync(profile.configPath, tampered + userTail);
 
@@ -135,7 +139,7 @@ test('repeated launches keep Codex-written [hooks.state.*] and [tui] while Hub k
     assert.strictEqual(again.configWarning, null);
     const text = fs.readFileSync(again.configPath, 'utf8');
     const doc = parseToml(text);
-    assert.strictEqual(doc.model, 'deepseek-v4-flash', 'Hub key refreshed');
+    assert.strictEqual(doc.model, 'deepseek-flash', 'Hub key refreshed');
     assert.deepStrictEqual(doc.notice, { hide_rate_limit_model_nudge: true, hide_full_access_warning: true }, 'Hub-owned table regenerated');
     assert.strictEqual(doc.projects[path.resolve(second)].trust_level, 'trusted', 'new cwd trusted');
     assert.strictEqual(doc.projects[path.resolve(first)].trust_level, 'trusted', 'old cwd kept');

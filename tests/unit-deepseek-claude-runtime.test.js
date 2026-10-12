@@ -81,8 +81,8 @@ test('model mapping: one display id per model, route-specific wire names, aliase
   assert.deepEqual(MODEL_OPTIONS_BY_KIND['deepseek-claude'].map(o => o.id), ['deepseek-v4.1-flash', 'deepseek-v4-pro']);
   assert.equal(DEFAULT_MODEL_BY_KIND['deepseek-claude'], 'deepseek-v4.1-flash');
   assert.equal(modelSwitchStrategy('deepseek-claude'), 'claude-inline');
-  // 旧 Codex 运行时 DeepSeek 的目录与切换方式不变
-  assert.deepEqual(MODEL_OPTIONS_BY_KIND.deepseek.map(o => o.id), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+  // Codex 运行时 DeepSeek：2026-10-13 起默认 V4.1 Flash（官方名 deepseek-flash），切换方式不变
+  assert.deepEqual(MODEL_OPTIONS_BY_KIND.deepseek.map(o => o.id), ['deepseek-flash', 'deepseek-v4-pro']);
   assert.equal(modelSwitchStrategy('deepseek'), 'codex-picker');
 });
 

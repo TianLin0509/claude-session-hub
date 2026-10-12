@@ -315,6 +315,44 @@ async function main() {
     }
   });
 
+  await test('造梦默认 DeepSeek V4.1 Flash（官方名 deepseek-flash），关思考；旧默认 deepseek-chat 迁到新名', async () => {
+    assert.strictEqual(dream.DREAM_DEEPSEEK_MODEL, 'deepseek-flash');
+    assert.strictEqual(dream.DEFAULT_CONSOLIDATION_CONFIG.model, 'deepseek-flash');
+    assert.strictEqual(dream.normalizeConsolidationConfig({}).model, 'deepseek-flash');
+    assert.strictEqual(dream.normalizeConsolidationConfig({ model: 'deepseek-chat' }).model, 'deepseek-flash');
+    assert.strictEqual(dream.normalizeConsolidationConfig({ model: 'deepseek-v4-pro' }).model, 'deepseek-v4-pro');
+    assert.strictEqual(dream.normalizeConsolidationConfig({ provider: 'claude-cli' }).model, 'deepseek-flash',
+      '非 deepseek-api 通道沿用原逻辑（model 字段对 CLI 通道无效）');
+    const https = require('https');
+    const original = https.request;
+    const bodies = [];
+    https.request = (options, onResponse) => {
+      const { EventEmitter } = require('events');
+      const req = new EventEmitter();
+      let raw = '';
+      req.write = chunk => { raw += chunk; };
+      req.end = () => {
+        bodies.push({ host: options.hostname, body: JSON.parse(raw) });
+        const res = new EventEmitter(); res.statusCode = 200;
+        onResponse(res);
+        res.emit('data', JSON.stringify({ choices: [{ message: { content: '{"entries":[]}' } }] }));
+        res.emit('end');
+      };
+      req.destroy = () => {};
+      return req;
+    };
+    try {
+      await dream.callLlm({ provider: 'deepseek-api', model: '', deepseekApiKey: 'k', system: 's', user: 'u' });
+      await dream.callLlm({ provider: 'deepseek-api', model: 'deepseek-v4-pro', deepseekApiKey: 'k', system: 's', user: 'u' });
+    } finally {
+      https.request = original;
+    }
+    assert.deepStrictEqual(bodies.map(b => [b.host, b.body.model, b.body.thinking]), [
+      ['api.deepseek.com', 'deepseek-flash', { type: 'disabled' }],
+      ['api.deepseek.com', 'deepseek-v4-pro', undefined],
+    ]);
+  });
+
   console.log(process.exitCode ? '\n有失败' : '\n全部通过');
 }
 
