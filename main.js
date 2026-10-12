@@ -1894,7 +1894,8 @@ registerPromptInspectIpc(ipcMain, {
   sessionManager,
 });
 
-registerTranscriptIpc(ipcMain, {
+// 具名保存：手机直接对话（session-chat）读卡片要用与电脑卡片完全相同的解析依赖。
+const transcriptIpcDeps = {
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutByCwd,
   findCodexRolloutBySid,
@@ -1910,7 +1911,8 @@ registerTranscriptIpc(ipcMain, {
   transcriptTap,
   transcriptParserService,
   updateSessionTranscriptBinding,
-});
+};
+registerTranscriptIpc(ipcMain, transcriptIpcDeps);
 
 // build-injection IPC 历史用于 blackboard 用户输入合成注入子会话(meeting-blackboard.js)。
 // Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
@@ -2011,6 +2013,34 @@ if (require('./core/distribution').featureEnabled('assistant')) try {
     })(),
     createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
     sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+    // 手机直接对话（App 2.1）：读卡片与电脑同一份原生落盘解析；停止与按键走电脑上同样的输入通道。
+    readSessionTurns: (id, opts) => {
+      const s = sessionManager.getSession(id) || require('./core/session-store').loadSessionFile(id, { strict: true });
+      if (!s) throw new Error('会话已不存在');
+      return require('./main/ipc/transcript-handlers').parseSessionTranscript({ hubSessionId: id, ccSessionId: s.ccSessionId || null, transcriptPath: s.transcriptPath || null, kind: s.kind || null, opts }, transcriptIpcDeps);
+    },
+    sessionKeys: (id, data) => {
+      const s = sessionManager.getSession(id);
+      if (!s) throw new Error('会话未打开');
+      if (sessionManager.getNativeSession?.(id) || sessionManager.getNativeClaude?.(id)) throw new Error('原生会话不支持终端按键');
+      sessionManager.writeToSession(id, data);
+    },
+    interruptSession: async id => {
+      const s = sessionManager.getSession(id);
+      if (!s) throw new Error('会话未打开');
+      const native = sessionManager.getNativeSession?.(id) || sessionManager.getNativeCodex?.(id);
+      if (native?.interrupt) { await native.interrupt(); return { via: 'native' }; }
+      if (sessionManager.getNativeClaude?.(id)) { sessionManager.writeToSession(id, '\u0003'); return { via: 'claude-native' }; }
+      // 与电脑上的停止键同一规则（renderer/pty-interrupt.js）：Esc；Qwen 草稿里 Esc 无效，用 Ctrl+C。
+      sessionManager.writeToSession(id, String(s.kind || '').replace(/-resume$/, '') === 'qwen' ? '\x03' : '\x1b');
+      return { via: 'pty' };
+    },
+    readTerminalScreen: id => {
+      const entry = sessionManager.sessions?.get?.(id);
+      const text = sessionManager.getSessionBuffer(id);
+      if (text == null) return null;
+      return { text, cols: Number(entry?.pty?.cols) || 120, rows: Number(entry?.pty?.rows) || 30 };
+    },
     // 助理 Tab 输入框的快速回答：与手机共用同一套凭据（Token Plan 优先、百炼按量兜底）。
     fastLane: process.env.HUB_ASSISTANT_FAST_LANE === '0' ? null : new (require('./core/hub-assistant/fast-lane').FastLane)({ credentials: () => require('./core/hub-assistant/fast-lane').fastLaneSources({ dataDir: getHubDataDir(), safeStorage: require('electron').safeStorage }) }),
     hasPendingPrompt:sessionId=>promptOperations.isAssistantSubmissionPending(sessionId),
