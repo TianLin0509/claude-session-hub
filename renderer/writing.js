@@ -28,7 +28,7 @@
   let root = null;
   let pollTimer = null;
   let composer = null;
-  const { mountWritingComposer, mountWritingMembers } = require('./writing-composer');
+  const { mountWritingComposer, mountWritingMembers, writingMemberSlots } = require('./writing-composer');
 
   /* ─────────────── 工具 ─────────────── */
 
@@ -176,15 +176,11 @@
     renderStudio();
     let dir = null;
     try {
+      // 与建群弹窗一样，先等模型目录与默认档就绪再算调参，免得把回落值带进 CLI；
+      // 成员不可用（如 DeepSeek 接入缺 Key）在建文章目录之前就拦下，不留空文章。
+      await window.WorkspaceController.loadSessionDefaults?.();
+      const slots = writingMemberSlots(members);
       ({ dir } = await call('writing:article-create'));
-      const wc = window.WorkspaceController;
-      const slots = members.map((m, i) => {
-        let tuning = m.model ? { model: m.model } : {};
-        try { if (wc && typeof wc.buildSessionTuningOpts === 'function') tuning = wc.buildSessionTuningOpts(m.kind, m.model || '', {}) || tuning; } catch { /* 用默认调参 */ }
-        if (m.model) tuning.model = m.model;
-        return { index: i, kind: m.kind, ...tuning, ...(m.effort ? { effort: m.effort } : {}),
-          ...(m.codexSpeedTier ? { codexSpeedTier: m.codexSpeedTier } : {}), ...(typeof m.fastMode === 'boolean' ? { fastMode: m.fastMode } : {}) };
-      });
       const meeting = await ipcRenderer.invoke('create-meeting', {
         mode: 'writing',
         scene: 'writing',
@@ -229,9 +225,14 @@
     if (!box.isConnected || box.dataset.mode !== mode) return;
     composer?.dispose();
     const members = h('div', { class: 'writing-members' });
+    // 取消放在标题行右侧：整宽按钮压在输入框下面，看着像第二个主操作（2026-10-13 田哥嫌丑）。
+    const cancel = S.studio.articles.length ? h('button', { type: 'button', class: 'wr-btn small wb-compose-cancel', text: '取消', disabled: S.studio.creating,
+      onclick: () => { S.studio.composing = false; S.studio.sig = null; renderStudio(); } }) : null;
     const card = h('div', { class: 'wr-card wb-compose' },
-      h('h2', { class: 'wb-title', text: '新文章' }),
-      h('div', { class: 'wr-muted', text: '说说想写什么，选几位 AI 一起写。初稿、点评和定稿都留在这里。' }), members);
+      h('div', { class: 'wb-compose-head' },
+        h('div', null, h('h2', { class: 'wb-title', text: '新文章' }),
+          h('div', { class: 'wr-muted', text: '说说想写什么，选几位 AI 一起写。初稿、点评和定稿都留在这里。' })), cancel),
+      members);
     box.replaceChildren(card);
     composer = mountWritingComposer({ host: card, h, ipcRenderer, value: S.studio.draft,
       placeholder: '这篇想写什么？中心思想、读者、观点，想到哪说到哪…',
@@ -243,15 +244,15 @@
       onSend: text => { if (S.studio.members.length) return startArticle(text.trim(), S.studio.members); },
     });
     composer.input.classList.add('wb-compose-text');
-    mountWritingMembers({ host: members, h, members: S.studio.members.map(m => ({ ...m })), disabled: S.studio.creating,
+    const memberCards = mountWritingMembers({ host: members, h, members: S.studio.members.map(m => ({ ...m })), disabled: S.studio.creating,
       onChange: selected => {
         S.studio.members = selected;
         try { localStorage.setItem('writing-members-v1', JSON.stringify(selected)); }
         catch { toast('成员已选择，但本机保存失败；下次打开需重新选择', true); }
         composer.send.disabled = S.studio.creating || !S.studio.draft.trim() || !selected.length;
       } });
-    if (S.studio.articles.length) card.append(h('button', { class: 'wr-btn', text: '取消', disabled: S.studio.creating,
-      onclick: () => { S.studio.composing = false; S.studio.sig = null; renderStudio(); } }));
+    // 模型目录与默认档异步返回后按真实目录重画（Codex 的思考强度、Fast 随模型变），已选值保留。
+    void window.WorkspaceController.loadSessionDefaults?.().then(() => memberCards.redraw(), () => {});
   }
 
   function renderStudio() {
