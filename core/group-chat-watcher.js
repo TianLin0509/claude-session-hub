@@ -419,6 +419,11 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
   }
   const { sessionManager } = _deps;
   if (sessionManager.restartPending) throw Object.assign(new Error('Hub 正在重启，未发送新任务'), {notSent:true});
+  // 「规则」页的通用规则先附上，再附工作区规则；两者各自留回执，换版或压缩后补发。
+  if (!options.hubRulesPrepared && sessionManager.memoryService?.withHubRules) {
+    return sessionManager.memoryService.withHubRules(sid,prompt,kind,options,
+      text=>sendToPtyImpl(sid,text,kind,{...options,hubRulesPrepared:true}));
+  }
   if (!options.workspaceRulesPrepared && sessionManager.memoryService?.withWorkspaceRules) {
     return sessionManager.memoryService.withWorkspaceRules(sid,prompt,kind,options,
       text=>sendToPtyImpl(sid,text,kind,{...options,workspaceRulesPrepared:true}));

@@ -13,6 +13,10 @@
 const fs = require('fs');
 const path = require('path');
 
+// 唯一的例外（2026-10-12 用户决定）：公开版、公司版的「规则」页从这个地址拉通用规则，
+// 地址必须随发行版公开。只放行这一个完整前缀，同一行的其他内容照常检查；别的地址不要加进来。
+const ALLOWED_PUBLIC_URLS = ['https://me.lt-stockpartner.tech/hub-rules/'];
+
 const RULES = [
   { id: 'identity-name', re: /立花道雪|道雪|田哥|林田/ },
   { id: 'identity-login', re: /lintian|TianLin0509\/claude-session-hub|lt17210720082|17210720082|fudan\.edu/i },
@@ -39,8 +43,9 @@ function scanText(text, file) {
   const hits = [];
   const lines = text.split(/\r?\n/);
   lines.forEach((line, index) => {
+    const checked = ALLOWED_PUBLIC_URLS.reduce((text, url) => text.split(url).join(' '), line);
     for (const rule of RULES) {
-      const match = rule.re.exec(line);
+      const match = rule.re.exec(checked);
       if (match) hits.push({ file, line: index + 1, rule: rule.id, severity: rule.severity || 'block', match: match[0], text: line.trim().slice(0, 160) });
     }
   });

@@ -1327,6 +1327,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
   if (emptyStateEl) emptyStateEl.style.display = 'none';
@@ -1875,6 +1876,7 @@ const APP_TOOLBAR_VIEWS = [
   { id: 'study-panel', label: '学习' },
   { id: 'ran-panel', label: '开发' },
   { id: 'writing-panel', label: '写作' },
+  { id: 'rules-panel', label: '规则' },
   { id: 'meeting-room-panel', label: '群聊' },
 ];
 
@@ -5695,6 +5697,7 @@ async function selectSession(id, opts = {}) {
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
   const mrp = document.getElementById('meeting-room-panel');
@@ -8513,6 +8516,7 @@ function escapeToHome() {
   if (window.__studyHide) window.__studyHide();
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (fileManagerPanel) fileManagerPanel.close();
   shellController.escapeToHome();
@@ -8817,6 +8821,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   if (window.__studyHide) window.__studyHide();
   if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+  window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
@@ -10114,6 +10119,7 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
           if (window.__studyHide) window.__studyHide();   // 同上：别和学习面板并排
           if (window.__assistantHide) window.__assistantHide();
           if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
+          window.__rulesHide?.(); // 2026-10-12 规则面板互斥
           if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
           terminalPanelEl.style.display = '';
           terminalPanelEl.classList.remove('home-active');
