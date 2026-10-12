@@ -53,6 +53,7 @@ async function main() {
     console.log('Writing clicked',await c.eval("({visible:document.querySelector('#writing-panel').style.display,classes:document.body.className})"));
     await wait("Boolean(document.querySelector('.wb-compose .writing-input'))",'writing composer');
     check('three configurable defaults',await c.eval("document.querySelectorAll('.writing-member-row').length===3"));
+    check('member cards match group create (DeepSeek on Claude Code, V4.1 Flash default)',await c.eval("(()=>{const ds=document.querySelector('.writing-member-row[data-kind=\"deepseek-claude\"]');return !!document.querySelector('.writing-members .mcm-slots .mcm-slot .mcm-avatar')&&!!ds&&ds.querySelector('.writing-member-model').value==='deepseek-v4.1-flash'&&!!ds.querySelector('.writing-member-route')&&![...document.querySelectorAll('.writing-member-kind option')].some(o=>o.value==='deepseek');})()"));
     check('shared voice, polish, reference, collapse controls',await c.eval("!!document.querySelector('.wb-compose .voice-mic')&&!!document.querySelector('.wb-compose .prompt-polish-button')&&!!document.querySelector('.wb-compose .composer-collapse')&&[...document.querySelectorAll('.wb-compose button')].some(b=>b.textContent==='引用会话')"));
     await click('.writing-member-row:last-child .writing-member-remove');
     await click('.writing-member-row:last-child .writing-member-remove');
@@ -60,7 +61,8 @@ async function main() {
     await choose('.writing-member-model','gpt-6-astra');
     await choose('.writing-member-effort','low');
     await choose('.writing-member-speed','standard');
-    await click('.writing-members-head button');
+    await click('.writing-member-add');
+    await choose('.writing-member-row:last-child .writing-member-kind','codex');
     await choose('.writing-member-row:last-child .writing-member-model','gpt-6.1-sol');
     await click('.wb-compose .writing-input');await c.send('Input.insertText',{text:'请写一篇简短的文章，讨论协作。'});
     await click('.wb-compose .voice-mic');
@@ -93,7 +95,9 @@ async function main() {
     await wait("[...sessions.values()].filter(s=>s.meetingId).every(s=>s.status!=='running')",'group idle');
     await click('.writing-recipient:first-of-type');
     await click('.wb-basket .writing-input');await c.send('Input.insertText',{text:'只请选中的成员调整开头。'});
-    await click('.wb-basket .floating-input-send');
+    // 测试夹具里的 Codex 不交稿，这一轮的派发记录停在进行中：工作台先提示「还在写，6 秒内再点一次」，按真实操作再点一次确认。
+    await click('.wb-basket .floating-input-send');await sleep(800);
+    if(await c.eval("__writingCalls.filter(x=>x.channel==='groupchat:turn').length<2"))await click('.wb-basket .floating-input-send');
     await wait("__writingCalls.filter(x=>x.channel==='groupchat:turn').length>=2",'selected recipient send');
     const last=await c.eval("__writingCalls.filter(x=>x.channel==='groupchat:turn').at(-1).payload");
     check('review sends only to selected member',last.recipientSids?.length===1&&last.userInput.includes('调整开头'));
