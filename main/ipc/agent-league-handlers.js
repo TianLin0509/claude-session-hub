@@ -43,6 +43,7 @@ const {
 const {
   MODEL_OPTIONS_BY_KIND,
   DEFAULT_MODEL_BY_KIND,
+  canonicalDeepSeekModelId,
 } = require('../../core/model-options.js');
 const scenes = require('../../core/group-chat-scenes.js');
 const { waitCliReady, sendToPty } = require('../../core/group-chat-watcher.js');
@@ -117,7 +118,9 @@ function providerCatalog() {
 function validateProvider(provider, model) {
   const row = PROVIDERS[String(provider || '')];
   if (!row) return { ok: false, error: 'unsupported-provider', message: `不支持的 Provider：${provider}` };
-  const selected = String(model || DEFAULT_MODEL_BY_KIND[row.kind] || '');
+  let selected = String(model || DEFAULT_MODEL_BY_KIND[row.kind] || '');
+  // 已建的 DeepSeek Agent 可能存着旧名 deepseek-v4-flash，按新名 deepseek-flash 继续跑。
+  if (row.kind === 'deepseek') selected = canonicalDeepSeekModelId(selected);
   if (!(MODEL_OPTIONS_BY_KIND[row.kind] || []).some((item) => item.id === selected)) {
     return { ok: false, error: 'unsupported-model', message: `模型 ${selected} 不在 Hub 的 ${row.label} 目录中。` };
   }

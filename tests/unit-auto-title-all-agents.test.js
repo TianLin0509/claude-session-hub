@@ -44,7 +44,9 @@ test('every Agent default/resume title reaches DeepSeek; old false completion fl
     assert.equal(requests.length, ALL_AI_KINDS.length * 2);
     for (const request of requests) {
       assert.equal(request.options.hostname, 'api.deepseek.com');
-      assert.equal(request.req.body.model, 'deepseek-chat');
+      // 2026-10-13：V4.1 Flash 官方名 deepseek-flash；它默认开思考，起标题显式关掉（与旧名 deepseek-chat 行为一致）。
+      assert.equal(request.req.body.model, 'deepseek-flash');
+      assert.deepEqual(request.req.body.thinking, { type: 'disabled' });
       assert.equal(request.req.body.messages[1].content, '核对网络迁移方案');
       request.finish('网络迁移方案核对');
     }

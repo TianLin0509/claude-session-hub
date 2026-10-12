@@ -39,7 +39,8 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
   assert.match(modelIds, /gemini-3.1-pro-high/); // Antigravity default; the rest comes from `agy models`
   assert.match(modelIds, /gpt-6-astra/);
   assert.match(modelIds, /gpt-5.6-sol/);
-  assert.match(modelIds, /deepseek-v4-flash/);
+  assert.match(modelIds, /deepseek-flash/);
+  assert.match(modelIds, /deepseek-v4\.1-flash/);
   assert.match(modelIds, /deepseek-v4-pro/);
   assert.match(modelIds, /kimi-code\/k3/);
 });
@@ -51,7 +52,7 @@ test('group defaults to Claude + Codex and keeps DeepSeek as the optional third 
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.codex, 'gpt-6-astra');
   assert.ok(MODEL_OPTIONS_BY_KIND.codex.some(option => option.id === DEFAULT_MODEL_BY_KIND.codex),
     'Codex 默认模型必须出现在静态候选表里');
-  assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-flash');
+  assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-flash');
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*\}/);
   // 2026-10-11：第三位可选成员是跑在 Claude Code 上的 DeepSeek。
@@ -77,10 +78,10 @@ test('group membership is a default, not a cap: same kind may repeat and the ros
 });
 
 test('new DeepSeek sessions accept Codex Pro and Flash while old Claude sessions keep 1M aliases', () => {
-  assert.strictEqual(normalizeDeepSeekModel(), 'deepseek-v4-flash');
+  assert.strictEqual(normalizeDeepSeekModel(), 'deepseek-flash');
   assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro'), 'deepseek-v4-pro');
-  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-flash[1m]'), 'deepseek-v4-flash');
-  assert.strictEqual(normalizeDeepSeekModel('unknown-deepseek-model'), 'deepseek-v4-flash');
+  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-flash[1m]'), 'deepseek-flash');
+  assert.strictEqual(normalizeDeepSeekModel('unknown-deepseek-model'), 'deepseek-flash');
   assert.strictEqual(normalizeLegacyDeepSeekClaudeModel(), 'deepseek-v4-pro[1m]');
   assert.strictEqual(normalizeLegacyDeepSeekClaudeModel('deepseek-v4-pro'), 'deepseek-v4-pro[1m]');
 });

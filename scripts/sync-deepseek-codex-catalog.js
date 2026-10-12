@@ -1,15 +1,20 @@
 'use strict';
 
 // Refresh the Codex model catalog from DeepSeek's official Windows setup script.
-// The Hub vendors only the currently supported Codex model (V4 Flash), so normal
-// session startup never depends on downloading configuration from the internet.
+// The Hub vendors only the default Codex model (deepseek-flash = V4.1 Flash) and
+// derives V4 Pro from it, so normal session startup never depends on downloading
+// configuration from the internet.
+//
+// 2026-10-13 note: the official 1.4.0 entry for deepseek-flash also declares image
+// input and a search tool. The vendored entry keeps the text-only, no-search shape
+// the Hub has verified; review those fields before committing a refreshed file.
 
 const fs = require('node:fs');
 const https = require('node:https');
 const path = require('node:path');
 
 const SOURCE_URL = 'https://cdn.deepseek.com/api-docs/codex-deepseek-setup-en.ps1';
-const MODEL_SLUG = 'deepseek-v4-flash';
+const MODEL_SLUG = 'deepseek-flash';
 const TARGET = path.resolve(__dirname, '..', 'core', 'deepseek-codex-model-catalog.json');
 
 function fetchText(url) {

@@ -11,6 +11,13 @@ async function main(){
   assert.equal(acpModelOptions('qwen','qwen-future').at(-1).id,'qwen-future');
   assert.deepEqual(Object.keys(deepseekReasoningEfforts('deepseek-v4-pro')),['high','max']);
   assert.deepEqual(Object.keys(deepseekReasoningEfforts('deepseek-v4-pro-0813')),['low','high','max']);
+  // 2026-10-13：DSH 旧 Harness 默认套餐上的 V4.1 Flash，三档推理都经真实调用确认。
+  assert.equal(acpModelOptions('deepseek-acp')[0].id,'deepseek-v4.1-flash');
+  assert.deepEqual(Object.keys(deepseekReasoningEfforts('deepseek-v4.1-flash')),['low','high','max']);
+  const {validateImages}=require('../core/acp-attachments');
+  const imageCaps={promptCapabilities:{image:true}};
+  for(const model of ['deepseek-v4.1-flash','deepseek-flash','deepseek-v4-pro'])
+    assert.throws(()=>validateImages([{}],model,imageCaps),/不支持图片/,model);
   const s={kind:'glm',runtimeBackend:'acp',acpConfigOptions:[{id:'thought',category:'thought_level',type:'select',currentValue:'nothink',options:[{value:'nothink',name:'关闭'},{value:'max',name:'最高'}]}]};
   assert.deepEqual(composerThinkingChip(s),{visible:true,label:'关闭',interactive:true,options:['nothink','max']});
   assert.equal(composerThinkingChip({...s,acpConfigOptions:[]}).visible,false,'missing native capability must not invent tiers');
