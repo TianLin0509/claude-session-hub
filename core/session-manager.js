@@ -331,6 +331,7 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     overrides: { ...require('./agent-user-context').claudeSharedConfig(env,hubDataDir),fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
+      ...(opts.claudeOutputStyle ? { outputStyle: String(opts.claudeOutputStyle) } : {}),
       ...(['hub-assistant','hub-photo-assistant'].includes(opts.purpose) && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
   });
   const launchArgs = buildClaudeNativeArgs({ model: legacy ? normalizeLegacyDeepSeekClaudeModel(opts.model) : opts.model,
@@ -341,7 +342,8 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
     // @community-else
     // permissionMode: opts.permissionMode || 'bypassPermissions',
     // @community-end
-    appendSystemPromptFile: opts.appendSystemPromptFile, settingsFile,
+    appendSystemPromptFile: opts.appendSystemPromptFile, systemPromptFile: opts.systemPromptFile,
+    disableSlashCommands: opts.disableSlashCommands === true, noChrome: opts.claudeNoChrome === true, tools: opts.claudeTools, settingsFile,
     addDirs: claudeNativeAddDirs(opts.addDirs), settingSources: opts.settingSources,
     mcpConfigPaths: mcp.configPaths || [], strictMcpConfig: mcp.profile !== 'full' });
   const journal = new NativeAgentJournal({ directory: path.join(hubDataDir, 'native-agent-submissions'), sessionId: id });
@@ -397,6 +399,7 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     // @community-strip 社区版：自动执行档位只在 Hub 启动的会话里生效，免确认也只写进这一份会话配置
     overrides: { fastMode: fast, ...(cliTheme ? { theme: cliTheme } : {}),
+      ...(opts.claudeOutputStyle ? { outputStyle: String(opts.claudeOutputStyle) } : {}),
       ...(['hub-assistant','hub-photo-assistant'].includes(opts.purpose) && opts.autonomous === true ? {skipDangerousModePermissionPrompt:true} : {}) },
     // @community-else
     // overrides: { fastMode: fast, skipDangerousModePermissionPrompt: true, ...(cliTheme ? { theme: cliTheme } : {}) },
@@ -410,7 +413,8 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
     // @community-else
     // permissionMode: opts.permissionMode || 'bypassPermissions',
     // @community-end
-    appendSystemPromptFile: opts.appendSystemPromptFile, settingsFile,
+    appendSystemPromptFile: opts.appendSystemPromptFile, systemPromptFile: opts.systemPromptFile,
+    disableSlashCommands: opts.disableSlashCommands === true, noChrome: opts.claudeNoChrome === true, tools: opts.claudeTools, settingsFile,
     addDirs: claudeNativeAddDirs(opts.addDirs), settingSources: opts.settingSources,
     mcpConfigPaths: mcp.configPaths || [], strictMcpConfig: mcp.profile !== 'full' });
   const { findNativeClaudeHistory } = require('./claude-native-history');
@@ -1675,17 +1679,62 @@ class SessionManager extends EventEmitter {
       }
     }
 
+    // 写作成员换到只为写作准备的 Codex 配置目录：没有全局个人规则、记忆、技能清单与插件
+    // （2026-10-11 田哥要求写作成员的上下文完全为写作而生，见 core/writing/codex-writing-home.js）。
+    //   - 升级前建的写作会话，记录还在原账号目录里：恢复它时留在原目录，免得按 id 找不到
+    //   - 换账号后恢复写作会话：原历史在另一个账号的写作目录里，沿用 Hub 的跨账号恢复（-c sqlite_home）
+    //   - 原生回退后端会按全局账号把 CODEX_HOME 换回账号目录，写作目录在那里接不住，原生模式不换
+    // 准备失败时会话照常启动，但在状态栏写明「写作上下文降级」，不静默。
+    let writingCodexHome = null;
+    let writingContextWarning = null;
+    // @community-strip 写作场景成员
+    if (isCodexRuntime && opts.purpose === 'writing' && !webRoute) {
+      try {
+        const writingHomes = require('./writing/codex-writing-home');
+        const family = isDeepSeek ? 'deepseek' : 'codex';
+        const sourceHome = sessionEnv.CODEX_HOME || path.join(os.homedir(), '.codex');
+        const target = writingHomes.writingHomePath(family, getHubDataDir(), sourceHome);
+        const resumeSid = opts.codexForkSid || (opts.useResume ? opts.codexSid : null);
+        const historyHome = opts.codexSessionsRoot ? path.dirname(opts.codexSessionsRoot) : null;
+        const historyInWritingHome = writingHomes.isWritingHome(historyHome, getHubDataDir());
+        if (isNativeCodex) {
+          writingContextWarning = '原生后端不支持写作专用配置目录，本次带着账号目录的个人规则启动';
+        } else if (!resumeSid || historyInWritingHome || writingHomes.hasRollout(target, resumeSid)) {
+          const prepared = writingHomes.prepareWritingCodexHome({ sourceHome, hubDataDir: getHubDataDir(), family });
+          writingCodexHome = prepared.home;
+          sessionEnv.CODEX_HOME = prepared.home;
+          codexPtySqliteHome = null;
+          if (resumeSid && historyInWritingHome && followsGlobalAccount
+              && path.resolve(historyHome).toLowerCase() !== path.resolve(prepared.home).toLowerCase()) {
+            codexPtySqliteHome = require('./codex-global-account')
+              .historySqliteHomeSync(historyHome, opts.nativeRuntime && opts.nativeRuntime.sqliteHome, sessionEnv);
+            if (/['"`$\r\n]/.test(codexPtySqliteHome)) throw new Error('旧写作会话的历史目录含引号或 $，无法安全传给 CLI');
+          }
+          ensureCodexCwdTrusted(spawnCwd, prepared.home);
+        }
+      } catch (error) {
+        writingCodexHome = null;
+        writingContextWarning = '写作专用配置目录没准备好，本次带着账号目录的个人规则启动：' + error.message;
+      }
+      if (writingContextWarning) console.warn('[writing] ' + writingContextWarning);
+    }
+    // @community-end
+
     const isNativeClaude = (isClaude && nativeAgentRuntime) || isDeepSeekLegacy;
     // 个人规则同步与运行时无关：PTY 与原生的 Claude 都读同一个 CLAUDE_CONFIG_DIR。
     const contextKind = isCodexRuntime ? 'codex' : (isClaude || isDeepSeekLegacy) ? 'claude' : isKimi ? 'kimi' : isGemini ? 'gemini' : null;
     if(opts.assistantMcpEntry) require('./hub-assistant/project-tools').configureProjectTools(kind,{...opts,id},spawnCwd);
-    if (contextKind) {
+    // 写作成员不加载个人规则（Claude 关了 CLAUDE.md，Codex 用写作专用目录），不必往原配置目录同步规则；
+    // Codex 写作目录仍要同步个人守卫 hooks（instructions:false 只同步守卫）。
+    if (contextKind && !(opts.purpose === 'writing' && contextKind !== 'codex')) {
       const contextHome = contextKind === 'codex' ? sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex')
         : contextKind === 'claude' ? sessionEnv.CLAUDE_CONFIG_DIR || path.join(os.homedir(),'.claude')
         : contextKind === 'kimi' ? sessionEnv.KIMI_CODE_HOME || path.join(os.homedir(),'.kimi-code') : path.join(sessionEnv.GEMINI_CLI_HOME || os.homedir(),'.gemini');
-      require('./agent-user-context').syncNativeUserContext({kind:contextKind,nativeHome:contextHome,env:sessionEnv,dataDir:getHubDataDir()});
+      require('./agent-user-context').syncNativeUserContext({kind:contextKind,nativeHome:contextHome,env:sessionEnv,dataDir:getHubDataDir(),
+        instructions: !writingCodexHome});
     }
     if (followsGlobalAccount) codexSessionsRoot = opts.codexSessionsRoot;
+    if (writingCodexHome) codexSessionsRoot = path.join(writingCodexHome, 'sessions');
     if (isCodexRuntime) {
 
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
@@ -1892,6 +1941,7 @@ class SessionManager extends EventEmitter {
       // switch into a newly-created session.
       completionNotificationEnabled: opts.completionNotificationEnabled === true,
       ...(opts.purpose ? { purpose: String(opts.purpose) } : {}),
+      ...(writingContextWarning ? { writingContextWarning } : {}),
       ...(opts.researchSessionId ? { researchSessionId: String(opts.researchSessionId) } : {}),
       ...(opts.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       currentModel,
@@ -3375,6 +3425,7 @@ class SessionManager extends EventEmitter {
       ...(info.provider ? { provider: info.provider } : {}),
       ...(info.nativeSession ? { nativeSession: info.nativeSession } : {}),
       ...(info.purpose ? { purpose: info.purpose } : {}),
+      writingContextWarning: info.writingContextWarning || null,
       ...(info.researchSessionId ? { researchSessionId: info.researchSessionId } : {}),
       ...(info.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       completionNotificationEnabled: info.completionNotificationEnabled === true,
