@@ -7345,7 +7345,15 @@ ipcRenderer.on('status-event', (_e, payload) => {
         ? isCodexConversationModelId(payload.model.id)
         : baseKind === 'deepseek'
           ? /^deepseek-v4-(?:pro|flash)$/i.test(String(payload.model.id))
+          : baseKind === 'deepseek-claude'
+            ? require('../core/deepseek-claude-profile').isKnownModel(payload.model.id)
           : true;
+      if (allowed && baseKind === 'deepseek-claude') {
+        // 状态栏回报的是接入方式下的真实模型名（如 deepseek-flash），Hub 记显示用的 id。
+        const profile = require('../core/deepseek-claude-profile');
+        const id = profile.normalizeModel(payload.model.id);
+        payload = { ...payload, model: { id, displayName: profile.displayName(id, session.deepseekRoute) } };
+      }
       if (allowed) {
         const previousModelId = session.currentModel && session.currentModel.id;
         session.currentModel = payload.model;
@@ -9284,6 +9292,7 @@ function persistWorkscene(flush = false) {
         codexAllowMtimeFallback: !!s.codexAllowMtimeFallback,
         codexProfile: s.codexProfile || null,
         codexProfileLabel: s.codexProfileLabel || null,
+        deepseekRoute: s.deepseekRoute || null,
         mcpProfile: s.mcpProfile || null,
         fastMode: typeof s.fastMode === 'boolean' ? s.fastMode : null,
         codexSpeedTier: s.codexSpeedTier || null,

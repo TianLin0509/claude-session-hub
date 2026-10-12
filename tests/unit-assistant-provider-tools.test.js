@@ -1,7 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const {AssistantService}=require('../core/hub-assistant/service');
-const {ALL_AI_KINDS}=require('../core/ai-kinds');
+const {ALL_AI_KINDS:ALL_KINDS}=require('../core/ai-kinds');
+// 助理后端清单不含 DeepSeek on Claude Code（2026-10-11）：助理的 DeepSeek 仍是 Codex 运行时。
+const ALL_AI_KINDS=require('../core/hub-assistant/backends').BACKENDS;
 const {configureProjectTools}=require('../core/hub-assistant/project-tools');
 const {AssistantFinalReaders,projectFinals}=require('../core/hub-assistant/final-readers');
 function temp(t,cleanup=true){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-providers-unit-'));if(cleanup)t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return dir;}
@@ -15,6 +17,7 @@ test('every Hub AI backend has its own retained manager identity and scoped tool
     assert.equal((await service.switchBackend({kind})).sessionId,r.sessionId);
   }
   assert.equal(ids.size,ALL_AI_KINDS.length);assert.deepEqual(service.sessions(),[]);
+  assert.deepEqual(ALL_KINDS.filter(kind=>!ALL_AI_KINDS.includes(kind)),['deepseek-claude']);
   assert.throws(()=>service.getLaunchOptions('powershell','bad'),/Hub 支持/);
 });
 test('project tool registration preserves other settings and rejects a different assistant identity',t=>{

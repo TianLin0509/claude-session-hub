@@ -1321,6 +1321,13 @@ function syncSessionRuntimeModel(sessionId, model) {
   if (!sessionId || !model || typeof model.id !== 'string' || !model.id.trim()) return false;
   const session = sessionManager.getSession(sessionId);
   if (!session) return false;
+  // DeepSeek on Claude Code：状态栏报的是接入方式下的真实模型名，Hub 记显示用的 id。
+  if (String(session.kind || '').replace(/-resume$/, '') === 'deepseek-claude') {
+    const profile = require('./core/deepseek-claude-profile');
+    if (!profile.isKnownModel(model.id)) return false;
+    const id = profile.normalizeModel(model.id);
+    model = { id, displayName: profile.displayName(id, session.deepseekRoute) };
+  }
   const currentId = session.currentModel && session.currentModel.id;
   if (currentId === model.id) return false;
   sessionManager.updateSessionMeta(sessionId, {
@@ -2790,7 +2797,12 @@ const hookServer = http.createServer((req, res) => {
           taskSubject: parsed.taskSubject || null,
         });
       } else {
-        const filtered = claudeUsageFilter.filter(parsed.usage5h, parsed.usage7d);
+        // DeepSeek on Claude Code 走 API Key，状态栏里没有、也不能混进 Claude 订阅额度。
+        const statusSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
+        const deepseekStatus = String(statusSession?.kind || '').replace(/-resume$/, '') === 'deepseek-claude';
+        const filtered = deepseekStatus
+          ? { usage5h: null, usage7d: null, anyAccepted: false }
+          : claudeUsageFilter.filter(parsed.usage5h, parsed.usage7d);
         syncSessionRuntimeModel(parsed.sessionId, parsed.model);
         sendToRenderer('status-event', {
           sessionId: parsed.sessionId,
@@ -3573,9 +3585,12 @@ app.whenReady().then(async () => {
   // Claude integration tests provide their own config explicitly; ordinary
   // renderer/PTY tests need no hook deployment at all.
   // @community-strip 社区版不凭空创建 DeepSeek 专用配置目录
+  // DeepSeek on Claude Code 的配置目录（默认 ~/.claude-deepseek）。隔离 Hub 只在测试显式指定了
+  // AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR 时部署 hook，绝不碰真实 home。
+  const deepseekClaudeDir = require('./core/deepseek-claude-profile').configDir(process.env);
   const claudeDirs = isIsolatedHub()
-    ? []
-    : ['.claude', '.claude-deepseek'].map(dir => path.join(_home, dir));
+    ? (process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR ? [deepseekClaudeDir] : [])
+    : [path.join(_home, '.claude'), deepseekClaudeDir];
   // @community-else
   // // 端到端测试可以在完全伪造的 home 里部署 hook（CLAUDE_HUB_HOME_DIR 必须就是当前 home）。
   // const e2eFakeHome = process.env.CLAUDE_HUB_E2E_FAKE_HOME === '1' && !!process.env.CLAUDE_HUB_HOME_DIR

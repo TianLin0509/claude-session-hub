@@ -1,0 +1,297 @@
+'use strict';
+// DeepSeek 跑在 Claude Code 上（2026-10-11）：环境构造、模型名映射、缺 Key、配置目录防封号底线、
+// 旧三类 DeepSeek 会话的恢复路由，以及新建面板不再有 ChatGPT 入口。
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const profile = require('../core/deepseek-claude-profile');
+const ROOT = path.join(__dirname, '..');
+const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+const CLAUDE_MODEL_RE = /claude|opus|sonnet|haiku|fable/i;
+
+function tempDir(t, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  // SessionManager 的会话独占记录可能还开着句柄；清理失败不影响断言结果。
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch {} });
+  return dir;
+}
+
+function launchEnv(route, model, { configDir, config } = {}) {
+  const env = {
+    HTTP_PROXY: 'http://127.0.0.1:7890', https_proxy: 'http://127.0.0.1:7890', ALL_PROXY: 'socks5://x',
+    ANTHROPIC_API_KEY: 'sk-ant-should-be-removed', ANTHROPIC_MODEL: 'claude-opus-5',
+    CLAUDE_CODE_OAUTH_TOKEN: 'oauth-should-be-removed', ANTHROPIC_SMALL_FAST_MODEL: 'claude-haiku-4-5',
+    CLAUDE_CONFIG_DIR: path.join(os.homedir(), '.claude'),
+  };
+  const baseEnv = { AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR: configDir };
+  const result = profile.applyLaunchEnv(env, {
+    route, model, baseEnv,
+    config: config || { acp: { apiKey: 'tp-key-1234' }, deepseekApiKey: 'ds-key-5678' },
+  });
+  return { env, result };
+}
+
+test('Token Plan route: endpoint, key and every Claude model variable point at the DeepSeek model', t => {
+  const configDir = tempDir(t, 'ds-claude-cfg-');
+  const { env, result } = launchEnv('tokenplan', 'deepseek-v4.1-flash', { configDir });
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic');
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'tp-key-1234');
+  for (const key of profile.CLAUDE_MODEL_ENV_KEYS) assert.equal(env[key], 'deepseek-v4.1-flash', key);
+  assert.deepEqual(profile.CLAUDE_MODEL_ENV_KEYS, ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']);
+  assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, undefined);
+  for (const key of ['HTTP_PROXY', 'https_proxy', 'ALL_PROXY']) assert.equal(env[key], undefined, key);
+  assert.equal(env.CLAUDE_CONFIG_DIR, path.resolve(configDir));
+  assert.deepEqual({ route: result.route, wire: result.wireModel }, { route: 'tokenplan', wire: 'deepseek-v4.1-flash' });
+  for (const [key, value] of Object.entries(env)) {
+    if (/MODEL/.test(key)) assert.doesNotMatch(String(value), CLAUDE_MODEL_RE, `${key} must not carry a Claude model name`);
+  }
+});
+
+test('DeepSeek official API route uses its own endpoint, key and model names', t => {
+  const configDir = tempDir(t, 'ds-claude-cfg-');
+  const flash = launchEnv('api', 'deepseek-v4.1-flash', { configDir });
+  assert.equal(flash.env.ANTHROPIC_BASE_URL, 'https://api.deepseek.com/anthropic');
+  assert.equal(flash.env.ANTHROPIC_AUTH_TOKEN, 'ds-key-5678');
+  for (const key of profile.CLAUDE_MODEL_ENV_KEYS) assert.equal(flash.env[key], 'deepseek-flash', key);
+  const pro = launchEnv('api', 'deepseek-v4-pro', { configDir });
+  for (const key of profile.CLAUDE_MODEL_ENV_KEYS) assert.equal(pro.env[key], 'deepseek-v4-pro', key);
+});
+
+test('model mapping: one display id per model, route-specific wire names, aliases fold back', () => {
+  assert.equal(profile.DEFAULT_MODEL, 'deepseek-v4.1-flash');
+  assert.equal(profile.DEFAULT_ROUTE, 'tokenplan');
+  assert.equal(profile.wireModel('deepseek-v4.1-flash', 'tokenplan'), 'deepseek-v4.1-flash');
+  assert.equal(profile.wireModel('deepseek-v4.1-flash', 'api'), 'deepseek-flash');
+  assert.equal(profile.wireModel('deepseek-v4-pro', 'tokenplan'), 'deepseek-v4-pro');
+  assert.equal(profile.wireModel('deepseek-v4-pro', 'api'), 'deepseek-v4-pro');
+  assert.equal(profile.wireModel(undefined, undefined), 'deepseek-v4.1-flash');
+  for (const id of ['deepseek-flash', 'deepseek-v4-flash', 'DeepSeek-V4.1-Flash']) {
+    assert.equal(profile.normalizeModel(id), 'deepseek-v4.1-flash', id);
+  }
+  assert.equal(profile.normalizeModel('claude-opus-5'), 'deepseek-v4.1-flash');
+  assert.equal(profile.isKnownModel('claude-opus-5'), false);
+  const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND, modelSwitchStrategy } = require('../core/model-options');
+  assert.deepEqual(MODEL_OPTIONS_BY_KIND['deepseek-claude'].map(o => o.id), ['deepseek-v4.1-flash', 'deepseek-v4-pro']);
+  assert.equal(DEFAULT_MODEL_BY_KIND['deepseek-claude'], 'deepseek-v4.1-flash');
+  assert.equal(modelSwitchStrategy('deepseek-claude'), 'claude-inline');
+  // 旧 Codex 运行时 DeepSeek 的目录与切换方式不变
+  assert.deepEqual(MODEL_OPTIONS_BY_KIND.deepseek.map(o => o.id), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+  assert.equal(modelSwitchStrategy('deepseek'), 'codex-picker');
+});
+
+test('missing key fails loudly and never switches to the other route', t => {
+  const configDir = tempDir(t, 'ds-claude-cfg-');
+  assert.throws(() => launchEnv('tokenplan', null, { configDir, config: { acp: {}, deepseekApiKey: 'ds-key' } }),
+    /Token Plan 套餐不可用[\s\S]*未切换到其他接入方式/);
+  assert.throws(() => launchEnv('api', null, { configDir, config: { acp: { apiKey: 'tp' }, deepseekApiKey: '' } }),
+    /DeepSeek 官方 API不可用[\s\S]*未切换到其他接入方式/);
+  assert.throws(() => launchEnv('bogus', null, { configDir }), /接入方式无效/);
+  const availability = profile.routeAvailability({ acp: {}, deepseekApiKey: 'ds-key' }, {});
+  assert.equal(availability.tokenplan.available, false);
+  assert.match(availability.tokenplan.reason, /Token Plan/);
+  assert.equal(availability.api.available, true);
+  // 未指定时默认 Token Plan
+  assert.equal(profile.resolveLaunchRoute(undefined, { acp: { apiKey: 'tp' } }, {}).route, 'tokenplan');
+});
+
+test('CLAUDE_CONFIG_DIR is the isolated DeepSeek directory and refuses any Claude login', t => {
+  assert.equal(profile.configDir({ USERPROFILE: 'C:\\Users\\x' }), path.join('C:\\Users\\x', '.claude-deepseek'));
+  assert.notEqual(path.basename(profile.configDir({ USERPROFILE: 'C:\\Users\\x' })), '.claude');
+  const clean = tempDir(t, 'ds-claude-clean-');
+  fs.writeFileSync(path.join(clean, '.claude.json'), JSON.stringify({ userID: 'u', projects: {} }));
+  assert.deepEqual(profile.claudeLoginEvidence(clean), []);
+  assert.doesNotThrow(() => launchEnv('tokenplan', null, { configDir: clean }));
+
+  const withCredentials = tempDir(t, 'ds-claude-creds-');
+  fs.writeFileSync(path.join(withCredentials, '.credentials.json'), '{"claudeAiOauth":{}}');
+  assert.throws(() => launchEnv('tokenplan', null, { configDir: withCredentials }), /Claude 登录信息[\s\S]*\.credentials\.json/);
+
+  const withOauth = tempDir(t, 'ds-claude-oauth-');
+  fs.writeFileSync(path.join(withOauth, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'a@b' } }));
+  assert.throws(() => launchEnv('api', null, { configDir: withOauth }), /oauthAccount/);
+});
+
+test('the real ~/.claude-deepseek holds no Claude login (anti-ban floor on this machine)', t => {
+  const real = profile.configDir(process.env);
+  if (!fs.existsSync(real)) { t.skip('no ~/.claude-deepseek on this machine'); return; }
+  assert.deepEqual(profile.claudeLoginEvidence(real), []);
+});
+
+test('remembered route lives in Hub config and defaults to Token Plan', () => {
+  assert.equal(profile.preferredRoute({}), 'tokenplan');
+  assert.equal(profile.preferredRoute({ providers: { deepseek: { route: 'api' } } }), 'api');
+  assert.equal(profile.preferredRoute({ providers: { deepseek: { route: 'junk' } } }), 'tokenplan');
+  const merged = profile.withPreferredRoute({ providers: { deepseek: { api_key: 'k' }, codex: { a: 1 } } }, 'api');
+  assert.deepEqual(merged.providers, { deepseek: { api_key: 'k', route: 'api' }, codex: { a: 1 } });
+  assert.throws(() => profile.withPreferredRoute({}, 'x'), /无效/);
+});
+
+test('SessionManager launches deepseek-claude as a real PTY Claude Code with DeepSeek env', async t => {
+  const root = tempDir(t, 'ds-claude-sm-');
+  const dataDir = path.join(root, 'data');
+  const configDir = path.join(root, 'claude-deepseek');
+  const cwd = path.join(root, 'work');
+  for (const dir of [dataDir, configDir, cwd]) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+    acp: { apiKey: 'tp-unit-key' }, providers: { deepseek: { api_key: 'ds-unit-key' } } }));
+  const saved = {};
+  for (const key of ['CLAUDE_HUB_DATA_DIR', 'CLAUDE_HUB_HOME_DIR', 'AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR', 'DEEPSEEK_API_KEY',
+    'ANTHROPIC_API_KEY', 'AI_HUB_TOKEN_PLAN_KEY']) saved[key] = process.env[key];
+  t.after(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
+  Object.assign(process.env, { CLAUDE_HUB_DATA_DIR: dataDir, CLAUDE_HUB_HOME_DIR: path.join(root, 'home'),
+    AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_API_KEY: 'sk-ant-leak' });
+  delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.AI_HUB_TOKEN_PLAN_KEY;
+  require('../core/hub-config').clearConfigCache();
+
+  const pty = require('node-pty');
+  const spawned = [];
+  t.mock.method(pty, 'spawn', (file, args, options) => {
+    const dataHandlers = [];
+    const fake = { file, args, options, pid: 424242, writes: [],
+      onData(fn) { dataHandlers.push(fn); return { dispose() { const i = dataHandlers.indexOf(fn); if (i >= 0) dataHandlers.splice(i, 1); } }; },
+      onExit() { return { dispose() {} }; },
+      write(data) { fake.writes.push(String(data)); },
+      resize() {}, kill() {}, emitData(data) { for (const fn of [...dataHandlers]) fn(data); } };
+    spawned.push(fake);
+    return fake;
+  });
+  const { SessionManager } = require('../core/session-manager');
+  const manager = new SessionManager();
+  const launches = [];
+  t.after(() => {
+    for (const { info } of launches) { try { manager.closeSession(info.id); } catch {} }
+    try { manager.openOwners?.close(); } catch {}
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); } catch {}
+  });
+  for (const [route, model, wire, url, key] of [
+    ['tokenplan', undefined, 'deepseek-v4.1-flash', 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic', 'tp-unit-key'],
+    ['api', 'deepseek-v4.1-flash', 'deepseek-flash', 'https://api.deepseek.com/anthropic', 'ds-unit-key'],
+    ['api', 'deepseek-v4-pro', 'deepseek-v4-pro', 'https://api.deepseek.com/anthropic', 'ds-unit-key'],
+  ]) {
+    const info = manager.createSession('deepseek-claude', { cwd, deepseekRoute: route, ...(model ? { model } : {}) });
+    const fake = spawned[spawned.length - 1];
+    launches.push({ info, fake });
+    assert.equal(fake.file, 'powershell.exe', 'runs a real PTY shell, not the native stream-json driver');
+    assert.equal(info.agentRuntime, 'pty');
+    assert.equal(info.runtimeBackend, null);
+    assert.equal(info.kind, 'deepseek-claude');
+    assert.equal(info.deepseekRoute, route);
+    assert.equal(info.currentModel.id, model || 'deepseek-v4.1-flash');
+    assert.equal(info.effort, 'high', 'Claude Code --effort default high');
+    assert.equal(info.mcpProfile, 'none');
+    assert.match(info.ccSessionId, /^[0-9a-f-]{36}$/, 'identity is pre-assigned like Claude PTY');
+    const env = fake.options.env;
+    assert.equal(env.ANTHROPIC_BASE_URL, url);
+    assert.equal(env.ANTHROPIC_AUTH_TOKEN, key);
+    for (const name of profile.CLAUDE_MODEL_ENV_KEYS) assert.equal(env[name], wire, name);
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+    assert.equal(path.resolve(env.CLAUDE_CONFIG_DIR), path.resolve(configDir));
+    assert.equal(env.CLAUDE_HUB_SESSION_ID, info.id, 'hook attribution like Claude sessions');
+    // 启动命令：首屏安静后写入一次
+    fake.emitData('PS> ');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const cmd = fake.writes.join('');
+    assert.match(cmd, /^ claude /);
+    assert.match(cmd, new RegExp(`--model ${wire.replace(/\./g, '\\.')}(?:\\s|$)`));
+    assert.match(cmd, /--effort high/);
+    assert.match(cmd, new RegExp(`--session-id ${info.ccSessionId}`));
+    const models = [...cmd.matchAll(/--model (\S+)/g)].map(m => m[1]);
+    assert.deepEqual(models, [wire], 'exactly one --model and it is the DeepSeek wire name');
+    for (const value of models) assert.doesNotMatch(value, CLAUDE_MODEL_RE, 'launch command carries no Claude model name');
+  }
+  assert.equal(fs.existsSync(path.join(configDir, '.credentials.json')), false);
+});
+
+test('missing key at creation throws instead of silently using the other route', async t => {
+  const root = tempDir(t, 'ds-claude-sm-nokey-');
+  const dataDir = path.join(root, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ providers: { deepseek: { api_key: 'ds-only' } } }));
+  const saved = { a: process.env.CLAUDE_HUB_DATA_DIR, b: process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR, c: process.env.AI_HUB_TOKEN_PLAN_KEY };
+  t.after(() => {
+    if (saved.a === undefined) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = saved.a;
+    if (saved.b === undefined) delete process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR; else process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR = saved.b;
+    if (saved.c === undefined) delete process.env.AI_HUB_TOKEN_PLAN_KEY; else process.env.AI_HUB_TOKEN_PLAN_KEY = saved.c;
+    require('../core/hub-config').clearConfigCache();
+  });
+  process.env.CLAUDE_HUB_DATA_DIR = dataDir;
+  process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR = path.join(root, 'cfg');
+  delete process.env.AI_HUB_TOKEN_PLAN_KEY;
+  require('../core/hub-config').clearConfigCache();
+  const pty = require('node-pty');
+  let spawns = 0;
+  t.mock.method(pty, 'spawn', () => { spawns++; throw new Error('must not spawn'); });
+  const { SessionManager } = require('../core/session-manager');
+  const manager = new SessionManager();
+  t.after(() => {
+    try { manager.openOwners?.close(); } catch {}
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); } catch {}
+  });
+  assert.throws(() => manager.createSession('deepseek-claude', { cwd: root, deepseekRoute: 'tokenplan' }),
+    /Token Plan 套餐不可用/);
+  assert.equal(spawns, 0);
+});
+
+test('old DeepSeek sessions keep their original runtimes on resume', () => {
+  const resume = read('main/ipc/resume-session-handlers.js');
+  // Codex 运行时 deepseek：codexSid / rollout 走 Codex；迁移前 Claude 兼容走 deepseekLegacyClaude。
+  assert.match(resume, /const isLegacyDeepSeek = isDeepSeek && !!meta\.ccSessionId && !meta\.codexSid;/);
+  assert.match(resume, /const isCodexRuntime = isCodexBaseKind\(meta\.kind\) && !isLegacyDeepSeek;/);
+  assert.match(resume, /\.\.\.\(isLegacyDeepSeek \? \{ deepseekLegacyClaude: true \} : \{\}\)/);
+  assert.match(resume, /\.\.\.\(meta\.deepseekRoute \? \{ deepseekRoute: meta\.deepseekRoute \} : \{\}\)/);
+  const kinds = require('../core/ai-kinds');
+  assert.equal(kinds.isCodexCliKind('deepseek'), true, 'Codex-runtime DeepSeek stays on Codex');
+  assert.equal(kinds.isClaudeFamily('deepseek'), false);
+  assert.equal(kinds.isClaudeFamily('deepseek-claude'), true);
+  assert.equal(kinds.isCodexCliKind('deepseek-claude'), false);
+  assert.equal(require('../core/acp-profiles').isAcpKind('deepseek-acp'), true, 'DSH sessions keep the ACP runtime');
+  const { runtimeKindForSession, sessionProviderFamily, sessionModelId } = require('../core/session-capabilities');
+  assert.equal(sessionProviderFamily({ kind: 'deepseek', codexSid: 'x', ccSessionId: null }), 'codex');
+  assert.equal(runtimeKindForSession({ kind: 'deepseek', ccSessionId: 'c' }), 'deepseek-legacy');
+  assert.equal(sessionProviderFamily({ kind: 'deepseek', ccSessionId: 'c' }), 'claude');
+  assert.equal(sessionProviderFamily({ kind: 'deepseek-claude', ccSessionId: 'c' }), 'claude');
+  assert.equal(sessionModelId({ kind: 'deepseek-claude', currentModel: { id: 'deepseek-flash' } }), 'deepseek-v4.1-flash');
+  // session-manager：三类旧会话各自的分支
+  const sm = read('core/session-manager.js');
+  assert.match(sm, /const isDeepSeekLegacy = isDeepSeek && !!opts\.deepseekLegacyClaude;/);
+  assert.match(sm, /: isNativeClaude \? createNativeClaudeDriver\(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy\)/);
+  assert.match(sm, /const isNativeClaude = \(isClaude && nativeAgentRuntime\) \|\| isDeepSeekLegacy;/,
+    'only the legacy compatibility path uses the native driver; deepseek-claude is PTY');
+  // 分支沿用 DeepSeek on Claude Code 与接入方式
+  const { planSessionFork } = require('../core/session-fork-plan');
+  const plan = planSessionFork({ source: { id: 's1', kind: 'deepseek-claude', ccSessionId: '11111111-1111-4111-8111-111111111111',
+    cwd: 'C:\\w', deepseekRoute: 'api', currentModel: { id: 'deepseek-v4-pro' } }, siblingPool: [], runtimeKind: 'deepseek-claude' });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.kind, 'deepseek-claude');
+  assert.equal(plan.opts.deepseekRoute, 'api');
+  assert.equal(plan.opts.forkCCSessionId, '11111111-1111-4111-8111-111111111111');
+});
+
+test('new-session panel has no ChatGPT entry and DeepSeek offers only the two Claude Code routes', () => {
+  const html = read('renderer/index.html');
+  assert.doesNotMatch(html, /data-kind="chatgpt"/);
+  assert.doesNotMatch(html, /chatgpt-web-panel/);
+  const route = html.match(/<select id="new-session-deepseek-route"[^>]*>([\s\S]*?)<\/select>/);
+  assert.ok(route, 'DeepSeek route select exists');
+  assert.deepEqual([...route[1].matchAll(/value="([^"]+)"/g)].map(m => m[1]), ['tokenplan', 'api']);
+  assert.doesNotMatch(route[1], /Codex CLI|旧 Harness/);
+  assert.match(html, /data-kind="deepseek"[^>]*>.*DeepSeek<\/button>/);
+  const controller = read('renderer/workspace-controller.js');
+  assert.doesNotMatch(controller, /chatgpt: 'ChatGPT'/);
+  assert.match(controller, /'deepseek-claude': 'DeepSeek · Claude Code'/);
+  assert.match(controller, /if \(selectedKind === 'deepseek-claude'\) opts\.deepseekRoute = deepseekRoute;/);
+  const modal = read('renderer/meeting-create-modal.js');
+  assert.match(modal, /HIDDEN_CREATE_KINDS = new Set\(\['chatgpt', 'deepseek', 'deepseek-acp'\]\)/);
+  assert.doesNotMatch(modal, /Codex CLI · DeepSeek API|Token Plan · 旧 Harness/);
+  const room = read('renderer/meeting-room.js');
+  assert.match(room, /\['claude', 'codex', 'deepseek-claude', 'qwen', 'glm'\]/);
+});

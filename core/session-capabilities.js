@@ -90,6 +90,7 @@ function sessionModelId(session) {
   if (kind === 'deepseek' && sessionProviderFamily(session) === 'codex') {
     return normalizeDeepSeekModel(candidate);
   }
+  if (kind === 'deepseek-claude') return require('./deepseek-claude-profile').normalizeModel(candidate);
   return candidate;
 }
 
@@ -132,6 +133,7 @@ function buildSessionResumeMeta(session, overrides = {}) {
     codexAllowMtimeFallback: !!session.codexAllowMtimeFallback,
     codexProfile: session.codexProfile || null,
     codexProfileLabel: session.codexProfileLabel || null,
+    deepseekRoute: session.deepseekRoute || null,
     mcpProfile: session.mcpProfile || null,
     codexSpeedTier: session.codexSpeedTier || null,
     fastMode: session.fastMode === false ? false : null,

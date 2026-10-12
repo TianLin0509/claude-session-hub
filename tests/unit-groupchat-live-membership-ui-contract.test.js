@@ -20,8 +20,9 @@ assert.match(renderer, /data-gc-member-remove-sid=/, 'member rows need a remove 
 assert.match(renderer, /data-gc-add-member=/, 'member sidebar needs an add action');
 assert.match(renderer, /if \(!meeting \|\| \(!meeting\.groupChat && meeting\.subSessions\.length >= 3\)\) return;/,
   'the three-slot cap stays scoped to non-group meetings; group rooms take as many members as the user wants');
-assert.match(renderer, /meeting\.groupChat\s*\?\s*\['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm'\]/,
-  'group add menu offers existing providers and the three native ACP harnesses');
+// 2026-10-11：新增 DeepSeek 成员一律跑 Claude Code；旧 Codex / 旧 Harness DeepSeek 不再从入口新增。
+assert.match(renderer, /meeting\.groupChat\s*\?\s*\['claude', 'codex', 'deepseek-claude', 'qwen', 'glm'\]/,
+  'group add menu offers existing providers, DeepSeek on Claude Code and the Qwen / GLM harnesses');
 assert.doesNotMatch(renderer, /\['claude', 'codex', 'deepseek'\]\s*\.filter\(/,
   'group add menu must not drop a provider just because one of that kind is already in the room');
 assert.match(renderer, /response\.meeting/, 'participant writes must consume the explicit meeting response');

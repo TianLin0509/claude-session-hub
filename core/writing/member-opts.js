@@ -16,9 +16,9 @@
 
 const { writeVoicePack } = require('./voice-pack.js');
 
-// deepseek-legacy 走的也是 Claude CLI（core/ai-kinds.js 的 CLAUDE_FAMILY），同样要关掉 CLAUDE.md
+// deepseek-legacy / deepseek-claude 走的也是 Claude CLI（core/ai-kinds.js 的 CLAUDE_FAMILY），同样要关掉 CLAUDE.md
 function isClaudeKind(kind) {
-  return /^(claude|deepseek-legacy)(?:$|-)/.test(String(kind || ''));
+  return /^(claude|deepseek-legacy|deepseek-claude)(?:$|-)/.test(String(kind || ''));
 }
 
 /**

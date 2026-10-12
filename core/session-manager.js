@@ -26,6 +26,7 @@ const {
   ensureDeepSeekCodexProfile,
 } = require('./deepseek-codex-profile.js');
 const { ensureMemoryLink } = require('./claude-memory-link.js');
+const deepseekClaude = require('./deepseek-claude-profile.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
 const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
@@ -85,6 +86,8 @@ function attachTerminalRing(entry) {
 // 这个 1MB 原始尾部只保留为 snapshot 初始化失败时的降级兜底，不再承担长会话恢复。
 // Claude CLI `--effort` 的合法枚举；弹窗传入的值必须在此集合内才会被拼进命令行。
 const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+// DeepSeek on Claude Code：沿用 Claude Code 的 --effort 机制，默认 high，不额外加参数。
+const DEEPSEEK_CLAUDE_DEFAULT_EFFORT = 'high';
 const CODEX_MCP_PROFILES = new Set(['none', 'lean', 'browser', 'wireless', 'full']);
 const DEFAULT_IDLE_SUSPEND_MS = 5 * 60 * 60 * 1000;
 // 「释放内存」面板休眠会话的闸门：正在回答、10 分钟内有活动、当前聚焦、群聊成员都不动。
@@ -1367,13 +1370,16 @@ class SessionManager extends EventEmitter {
     // Claude ccSessionId and opt into this compatibility runtime so their history
     // remains resumable instead of being silently discarded.
     const isDeepSeekLegacy = isDeepSeek && !!opts.deepseekLegacyClaude;
+    // 2026-10-11 起新建的 DeepSeek 会话：PTY 里的 Claude Code，接入方式 Token Plan / 官方 API。
+    const isDeepSeekClaude = deepseekClaude.isDeepSeekClaudeKind(kind);
+    let deepseekClaudeLaunch = null;
     const isCodex = kind === 'codex' || kind === 'codex-resume';
     // 公司 Code Agent：Claude 形态的 CLI，只有 PTY 运行方式（没有原生后端）。
     const isCodeAgent = isCodeAgentKind(kind);
     // Claude / Codex 默认跑 PTY 里的真实 CLI；原生后端只在回退开关打开时使用。
     const nativeAgentRuntime = require('./agent-runtime-mode').usesNativeAgentRuntime(kind);
     const isNativeCodex = isCodex && nativeAgentRuntime;
-    const isPtyAgent = isProviderCli || isCodeAgent || ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
+    const isPtyAgent = isProviderCli || isCodeAgent || isDeepSeekClaude || ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
     const webRoute = isCodex && require('./chatgpt-web-models').chatgptWebRoute(opts.model);
     const followsGlobalAccount = isCodex && !webRoute && !isCodexApiBackend(getConfigValues());
     let globalAccount = null;
@@ -1399,7 +1405,7 @@ class SessionManager extends EventEmitter {
       if(!webRoute && nativeConfig.CODEX_BACKEND==='api' && !nativeConfig.CODEX_API_KEY) throw new Error('Codex API 账号未配置密钥，未切换到订阅账号');
       if(!webRoute && opts.codexProfile && resolveCodexSubscriptionProfile(nativeConfig,opts.codexProfile).id!==opts.codexProfile) throw new Error('Codex 账号配置不存在，未切换到默认账号');
     }
-    if ((isCodex || isClaude || isCodeAgent || isDeepSeekLegacy) && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
+    if ((isCodex || isClaude || isCodeAgent || isDeepSeekLegacy || isDeepSeekClaude) && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
     if (isCodex && opts.codexSid && opts.useResume) {
       for (const live of this.sessions.values()) {
         if (live.info?.codexSid === opts.codexSid && live.info.status !== 'dormant') {
@@ -1409,7 +1415,7 @@ class SessionManager extends EventEmitter {
     }
     const isCodexRuntime = isCodex || (isDeepSeek && !isDeepSeekLegacy);
     const isKimi = isKimiCliKind(kind);
-    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi || isAcp || isCodeAgent;
+    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isDeepSeekClaude || isKimi || isAcp || isCodeAgent;
     let title;
     if (opts.title) title = opts.title;
     else if (isAcp) title = ACP_LABELS[kind.replace(/-resume$/, '')];
@@ -1418,18 +1424,18 @@ class SessionManager extends EventEmitter {
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Antigravity ${this.geminiCounter}`; }
     else if (webRoute) { this.codexCounter = (this.codexCounter || 0) + 1; title = `${webRoute.label} ${this.codexCounter}`; }
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
-    else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
+    else if (kind === 'deepseek' || kind === 'deepseek-claude') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else if (kind === 'kimi') { this.kimiCounter = (this.kimiCounter || 0) + 1; title = `Kimi ${this.kimiCounter}`; }
     else if (kind === 'codeagent') { this.codeagentCounter = (this.codeagentCounter || 0) + 1; title = `CodeAgent ${this.codeagentCounter}`; }
     else if (kind === 'gemini-resume') title = `Antigravity Resume ${++this.resumeCounter}`;
     else if (kind === 'codex-resume') title = `Codex Resume ${++this.resumeCounter}`;
-    else if (kind === 'deepseek-resume') title = `DeepSeek Resume ${++this.resumeCounter}`;
+    else if (kind === 'deepseek-resume' || kind === 'deepseek-claude-resume') title = `DeepSeek Resume ${++this.resumeCounter}`;
     else if (kind === 'kimi-resume') title = `Kimi Resume ${++this.resumeCounter}`;
     else if (kind === 'codeagent-resume') title = `CodeAgent Resume ${++this.resumeCounter}`;
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
-    applyInteractiveTerminalEnv(sessionEnv, { truecolor: isPtyAgent && (isClaude || isCodexRuntime || isCodeAgent) });
+    applyInteractiveTerminalEnv(sessionEnv, { truecolor: isPtyAgent && (isClaude || isDeepSeekClaude || isCodexRuntime || isCodeAgent) });
     let codexProfile = null;
     const codeagentConfig = isCodeAgent ? require('./codeagent-config').resolveCodeAgentConfig(process.env) : null;
 
@@ -1461,6 +1467,15 @@ class SessionManager extends EventEmitter {
       // 「当前终端非推荐终端」黄条（2026-10-09 公司真机）。Hub 的终端是完整的 ConPTY + 真彩色，补一个占位值；
       // 只给 Code Agent，其他 CLI 可能据此假设 Windows Terminal 的专有能力。
       if (process.platform === 'win32' && !sessionEnv.WT_SESSION) sessionEnv.WT_SESSION = 'ai-hub';
+    } else if (isDeepSeekClaude) {
+      // 接入方式缺 Key 时这里直接报错，不静默换另一条；配置目录里有 Claude 登录信息也拒绝启动。
+      deepseekClaudeLaunch = deepseekClaude.applyLaunchEnv(sessionEnv, {
+        route: opts.deepseekRoute, model: opts.model, config: getConfig(), baseEnv: process.env,
+      });
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      if (process.env.CLAUDE_HUB_DATA_DIR) sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
     } else if (isDeepSeekLegacy) {
       const cv = getConfigValues();
       clearProxyEnv(sessionEnv);
@@ -1569,7 +1584,7 @@ class SessionManager extends EventEmitter {
     // 隔离 Hub / E2E 不碰用户主目录的记忆库。
     let memoryLinkWarning = null;
     if (!process.env.CLAUDE_HUB_DATA_DIR) {
-      if (isClaude || isDeepSeekLegacy) {
+      if (isClaude || isDeepSeekLegacy || isDeepSeekClaude) {
         // ensureMemoryLink **从不 throw** —— 四种保护（错链 / 非普通文件 / memory 是文件 /
         // 锁竞争）全部收进 result.errors 返回。原先这里只写了个 catch 就把返回值丢了，
         // 于是那些保护一条都到不了用户：会话照常起，记忆却接在错误的库上或压根没接，
@@ -1577,7 +1592,7 @@ class SessionManager extends EventEmitter {
         // 走同一条通道：session 上留痕 → 持久化白名单 → resume → 侧栏/弹窗。
         try {
           const memResult = ensureMemoryLink(spawnCwd, {
-            projectRootDirs: [isDeepSeekLegacy ? '.claude-deepseek' : '.claude'],
+            projectRootDirs: [isDeepSeekLegacy || isDeepSeekClaude ? '.claude-deepseek' : '.claude'],
           });
           if (memResult && memResult.errors.length) {
             memoryLinkWarning = memResult.errors.join('；');
@@ -1677,7 +1692,7 @@ class SessionManager extends EventEmitter {
 
     const isNativeClaude = (isClaude && nativeAgentRuntime) || isDeepSeekLegacy;
     // 个人规则同步与运行时无关：PTY 与原生的 Claude 都读同一个 CLAUDE_CONFIG_DIR。
-    const contextKind = isCodexRuntime ? 'codex' : (isClaude || isDeepSeekLegacy) ? 'claude' : isKimi ? 'kimi' : isGemini ? 'gemini' : null;
+    const contextKind = isCodexRuntime ? 'codex' : (isClaude || isDeepSeekLegacy || isDeepSeekClaude) ? 'claude' : isKimi ? 'kimi' : isGemini ? 'gemini' : null;
     if(opts.assistantMcpEntry) require('./hub-assistant/project-tools').configureProjectTools(kind,{...opts,id},spawnCwd);
     if (contextKind) {
       const contextHome = contextKind === 'codex' ? sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex')
@@ -1706,6 +1721,23 @@ class SessionManager extends EventEmitter {
         { configDir: sessionEnv.CLAUDE_CONFIG_DIR || null });
       claudePtyLaunch = buildClaudePtyLaunch(id, kind, opts, spawnCwd, sessionEnv, getConfigValues());
       // 身份在启动前就定下来：独占声明和卡片都立即可用，不等第一个 hook。
+      if (claudePtyLaunch.sessionId && !opts.forkCCSessionId) opts = { ...opts, resumeCCSessionId: claudePtyLaunch.sessionId };
+    }
+    if (isDeepSeekClaude) {
+      // 与 PTY Claude 同一条启动：同一套身份预分配、hook、--settings 覆盖与 MCP 档位。
+      // 只换模型名（按接入方式映射）、思考档默认 high、不叠 Claude 的 fast。
+      require('./claude-project-trust.js').ensureClaudeProjectTrusted(spawnCwd,
+        { configDir: deepseekClaudeLaunch.configDir });
+      // 新建默认不加载 MCP（与新建面板一致）；落盘的 mcpProfile 与启动参数用同一个值。
+      if (!opts.mcpProfile) opts = { ...opts, mcpProfile: 'none' };
+      // Claude 的 fast 档是 Claude 订阅专属，DeepSeek 不叠；落盘为 false，状态栏也不显示 fast。
+      opts = { ...opts, fastMode: false };
+      claudePtyLaunch = buildClaudePtyLaunch(id, kind, {
+        ...opts,
+        model: deepseekClaudeLaunch.wireModel,
+        effort: CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : DEEPSEEK_CLAUDE_DEFAULT_EFFORT,
+        fastMode: false,
+      }, spawnCwd, sessionEnv, getConfigValues());
       if (claudePtyLaunch.sessionId && !opts.forkCCSessionId) opts = { ...opts, resumeCCSessionId: claudePtyLaunch.sessionId };
     }
     let codeagentLaunch = null;
@@ -1798,6 +1830,9 @@ class SessionManager extends EventEmitter {
       // 强制覆盖用户选择，AI 群聊选 5.4/5.3 实际跑出来都是 5.5。
       const cmid = normalizeCodexSessionModel(opts.model || resolveDefaultCodexModel(cv));
       currentModel = { id: cmid, displayName: webRoute ? webRoute.label : cmid.toUpperCase() };
+    } else if (isDeepSeekClaude) {
+      const mid = deepseekClaude.normalizeModel(opts.model);
+      currentModel = { id: mid, displayName: deepseekClaude.displayName(mid, deepseekClaudeLaunch.route) };
     } else if (isDeepSeek) {
       const mid = isDeepSeekLegacy
         ? normalizeLegacyDeepSeekClaudeModel(opts.model)
@@ -1883,6 +1918,8 @@ class SessionManager extends EventEmitter {
       // registerSessionForTap uses this internal routing hint while the public
       // kind remains "deepseek" for branding and family identity.
       ...(isDeepSeekLegacy ? { transcriptKind: kind === 'deepseek-resume' ? 'deepseek-legacy-resume' : 'deepseek-legacy' } : {}),
+      // 接入方式落盘：恢复、分支、重启都沿用同一条，不因默认值变化而换线。
+      ...(isDeepSeekClaude ? { deepseekRoute: deepseekClaudeLaunch.route } : {}),
       ...(isCodexRuntime && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
       ...(isCodexRuntime ? { mcpProfile: effectiveCodexMcpProfile } : {}),
       // 速度通道必须连同 inherit 一起落盘，否则显式选择"跟随全局"的会话在
@@ -1906,6 +1943,7 @@ class SessionManager extends EventEmitter {
       // 沿用同一档位。不要直接存 opts.effort：否则非法 IPC 值虽然首次启动会
       // 回落，却会污染元数据并在后续恢复时再次扩散。
       ...(isClaude && CLAUDE_EFFORT_LEVELS.has(opts.effort) ? { effort: opts.effort } : {}),
+      ...(isDeepSeekClaude ? { effort: CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : DEEPSEEK_CLAUDE_DEFAULT_EFFORT } : {}),
       ...(isCodeAgent && require('./codeagent-config').EFFORTS.includes(opts.effort) ? { effort: opts.effort } : {}),
       // 身份待绑定：main.js 的 hook 路由据此接受第一个 hook 上报的原生 id（见 codeagentIdentityPending）。
       ...(isCodeAgent ? { codeagentConfigDir: codeagentConfig.configDir, codeagentIdentityPending: !codeagentLaunch.sessionId } : {}),
@@ -1960,7 +1998,7 @@ class SessionManager extends EventEmitter {
       pty: ptyProcess,
       codexEditorInput,
       nativeRuleCoverage: require('./native-rule-coverage').captureNativeRuleCoverage({
-        kind:isNativeClaude?'claude':isCodexRuntime?'codex':kind.replace(/-resume$/,''),cwd:spawnCwd,
+        kind:isNativeClaude||isDeepSeekClaude?'claude':isCodexRuntime?'codex':kind.replace(/-resume$/,''),cwd:spawnCwd,
         env:isAcp?ptyProcess.options.launch.env:sessionEnv,
         claudeSettingsFile:isNativeClaude?ptyProcess.options.settingsFile:null,settingSources:opts.settingSources}),
       codexMcpEntries: effectiveCodexMcpProfile !== 'none' && Array.isArray(opts.codexMcpEntries)
@@ -3245,6 +3283,29 @@ class SessionManager extends EventEmitter {
       const relaunchPermissionFlag = claudePermissionModeArg({ autonomous });
       const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
       cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${addDirFlag}${isolation}\r\n`;
+    } else if (deepseekClaude.isDeepSeekClaudeKind(kind)) {
+      // PTY 的环境变量（接入端点、Key、模型名、配置目录）在会话创建时已经写好，原地重拉只需同一套参数。
+      const route = s.info && s.info.deepseekRoute;
+      const wire = deepseekClaude.wireModel(modelId, route);
+      const effort = CLAUDE_EFFORT_LEVELS.has(s.info && s.info.effort) ? s.info.effort : DEEPSEEK_CLAUDE_DEFAULT_EFFORT;
+      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ` --effort ${effort}`;
+      const mcpPlan = (meetingId || (autonomous && s.claudeMcpConfigFile))
+        ? buildClaudeMeetingMcpArgs({
+          mcpConfigFile: s.claudeMcpConfigFile,
+          mcpProfile: (s.info && s.info.mcpProfile) || 'none',
+          cwd: s.info && s.info.cwd,
+          hubDataDir: getHubDataDir(),
+        })
+        : buildClaudeMcpProfileArgs({
+          mcpProfile: (s.info && s.info.mcpProfile) || 'none',
+          cwd: s.info && s.info.cwd,
+          hubDataDir: getHubDataDir(),
+        });
+      const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
+      const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
+      cmd = ` claude --model ${wire}${effortFlag}${claudePermissionModeArg({ autonomous })}${mcpFlag}${addDirFlag}${isolation}
+
+`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
         mcpConfigFile: s.claudeMcpConfigFile,
@@ -3312,6 +3373,7 @@ class SessionManager extends EventEmitter {
       ...(info.codexAllowMtimeFallback ? { codexAllowMtimeFallback: true } : {}),
       ...(info.codexProfile !== undefined ? { codexProfile: info.codexProfile } : {}),
       ...(info.codexProfileLabel !== undefined ? { codexProfileLabel: info.codexProfileLabel } : {}),
+      ...(info.deepseekRoute ? { deepseekRoute: info.deepseekRoute } : {}),
       ...(info.mcpProfile !== undefined ? { mcpProfile: info.mcpProfile } : {}),
       ...(info.fastMode !== undefined ? { fastMode: info.fastMode } : {}),
       ...(info.autonomous !== undefined ? { autonomous: info.autonomous } : {}),
