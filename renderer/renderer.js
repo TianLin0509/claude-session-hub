@@ -9992,6 +9992,8 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
       policy: TERMINAL_CACHE_POLICY,
       opened: [...terminalCache.values()].filter(item => item.opened).length,
       rendererSurfaces: [...terminalCache.values()].filter(item => !!item._rendererAddon).length,
+      surfaceIds: [...terminalCache].filter(([, item]) => !!item._rendererAddon).map(([id]) => id),
+      activeSessionId,
       rendererModes: [...terminalCache.values()].reduce((acc, item) => {
         const mode = item._rendererMode || 'suspended';
         acc[mode] = (acc[mode] || 0) + 1;

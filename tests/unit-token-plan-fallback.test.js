@@ -116,7 +116,10 @@ test('only the DeepSeek harness moves to the DeepSeek API; Qwen and GLM stay on 
   assert.equal(buildAcpOptions('qwen', { id: 'q4', cwd: root, model: 'deepseek-v4-pro' }, config, root, env).model, 'qwen3.8-max');
 });
 
+const clockFixed = new WeakSet();
 function harness(t, { kind = 'deepseek-acp', meetingId = null, deepseekApiKey = 'ds-key' } = {}) {
+  // 控制器内部用真实时钟：固定在报文里的重置时间之前，过了北京时间 10-13 00:00 测试也不会变。
+  if (!clockFixed.has(t)) { clockFixed.add(t); t.mock.timers.enable({ apis: ['Date'], now: NOW }); }
   const dataDir = tmp(t, 'hub-tp-ctl-');
   const session = { id: 's1', kind, acpProfileId: 'aliyun-token-plan:' + kind, meetingId, currentModel: { id: 'deepseek-v4-pro' } };
   const notices = [], restarts = [], sends = [];

@@ -194,6 +194,7 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
       await new Promise(resolve => setTimeout(resolve, 100));
       return {
         initial,
+        keepsTerminalBehindCards: require('../core/backstage-path.js').keepsTerminalBehindCards(),
         replayProbe,
         afterMeetingSessionEvents,
         afterShells,
@@ -243,13 +244,21 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     assert.strictEqual(result.initial.max, null, 'live xterms must not have an arbitrary count limit');
     assert.strictEqual(result.afterShells.size, 8, 'every explicitly opened live session must retain its xterm');
     assert.deepStrictEqual(result.afterShells.ids, Array.from({ length: 8 }, (_, i) => `perf-shell-${i}`));
-    assert.strictEqual(result.afterShells.rendererSurfaces, 0, 'card views must not retain an invisible Canvas/WebGL surface');
+    // 9 月后台路径（默认，core/backstage-path.js）：当前会话的终端常驻卡片下，只保留它这一个绘制层；
+    // 10 月路径（AI_HUB_BACKSTAGE_PATH=october）：卡片视图一个都不留。
+    const assertSurfaces = (stats, message) => assert.deepStrictEqual(stats.surfaceIds,
+      result.keepsTerminalBehindCards && stats.activeSessionId && stats.ids.includes(stats.activeSessionId) ? stats.surfaceIds.filter(id => id === stats.activeSessionId) : [],
+      `${message}: ${JSON.stringify({ surfaces: stats.surfaceIds, active: stats.activeSessionId })}`);
+    assertSurfaces(result.afterShells, 'card views must not retain a Canvas/WebGL surface beyond the active terminal');
+    assert.ok(result.afterShells.rendererSurfaces <= (result.keepsTerminalBehindCards ? 1 : 0));
     assert.strictEqual(result.hiddenBufferHasMarker, true, 'hidden xterm must keep parsing live PTY output');
     assert.strictEqual(result.restoredBufferHasMarker, true, 'reloading the renderer surface must preserve xterm history');
     assert.strictEqual(result.afterRestore.size, 8, 'restoring a surface must not recreate or evict the xterm');
-    assert.strictEqual(result.afterRestore.rendererSurfaces, 0, 'restored card view must not recreate an invisible terminal renderer');
+    assertSurfaces(result.afterRestore, 'restored card view must not recreate an extra terminal renderer');
+    assert.ok(result.afterRestore.rendererSurfaces <= (result.keepsTerminalBehindCards ? 1 : 0));
     assert.strictEqual(result.afterMeeting.size, 8, 'opening a serial room must not create or evict hidden xterms');
-    assert.strictEqual(result.afterMeeting.rendererSurfaces, 0, 'meeting/home views should release every hidden terminal surface');
+    assertSurfaces(result.afterMeeting, 'meeting/home views should release every surface except the active terminal');
+    assert.ok(result.afterMeeting.rendererSurfaces <= (result.keepsTerminalBehindCards ? 1 : 0));
     assert.deepStrictEqual(result.memberStatuses, ['dormant', 'dormant', 'dormant']);
     assert.strictEqual(result.panelVisible, true, 'serial meeting UI should remain usable');
     assert.strictEqual(result.renderStatsAfterBurst.requests - result.renderStatsBeforeBurst.requests, 200, 'all status events should request a coalesced render');
