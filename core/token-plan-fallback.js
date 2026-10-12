@@ -1,5 +1,6 @@
 'use strict';
-// 阿里云 Token Plan 套餐额度用完后，千问 / GLM / DeepSeek 旧 Harness 会话临时改走 DeepSeek 官方 API。
+// 阿里云 Token Plan 套餐额度用完后，DeepSeek 旧 Harness 会话临时改走 DeepSeek 官方 API；
+// 千问 / GLM 不改道，等额度重置（2026-10-12 田哥拍板：只有 DeepSeek 要切 API）。
 //
 // 2026-10-12 实测（套餐月额度 100%）：
 //   - 接口统一返回 429 insufficient_quota，正文「Your token-plan 1-month quota has been exhausted.
@@ -101,11 +102,17 @@ function fallbackModel(model) {
 }
 
 // 套餐用完且配了 DeepSeek Key 才改道；任一条件不满足都留在套餐上（报错照常可见）。
-function resolveRoute({ config, dataDir, now = Date.now() } = {}) {
+// 只有这些外壳在套餐用完时改走 DeepSeek API；其余等重置。
+const FALLBACK_KINDS = Object.freeze(['deepseek-acp']);
+function canFallback(kind) { return FALLBACK_KINDS.includes(String(kind || '').replace(/-resume$/, '')); }
+
+// 套餐用完、外壳允许改道、且配了 DeepSeek Key 才改道；否则留在套餐上等重置（waitForReset）。
+function resolveRoute({ config, dataDir, kind, now = Date.now() } = {}) {
   const key = String(config?.deepseekApiKey || '').trim();
   const until = dataDir ? exhaustedUntil(dataDir, now) : 0;
-  if (until && key) return { route: 'deepseek', apiKey: key, baseURL: DEEPSEEK_API_BASE, exhaustedUntil: until };
-  return { route: 'token-plan', exhaustedUntil: until, missingKey: !!until && !key };
+  const allowed = kind === undefined || canFallback(kind);
+  if (until && key && allowed) return { route: 'deepseek', apiKey: key, baseURL: DEEPSEEK_API_BASE, exhaustedUntil: until };
+  return { route: 'token-plan', exhaustedUntil: until, waitForReset: !!until, missingKey: !!until && allowed && !key };
 }
 
 // 「aliyun-token-plan:qwen」与「deepseek-api:qwen」是同一会话的两条计费线路。
@@ -124,6 +131,13 @@ function formatReset(at) {
   return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
 }
 
+// 卡片提示：套餐用完、本会话不改道，等重置。
+function waitNotice(dataDir, { missingKey = false, now = Date.now() } = {}) {
+  const at = exhaustedUntil(dataDir, now);
+  return 'Token Plan 本月额度已用完（' + (at ? '北京时间 ' + formatReset(at) + ' 重置' : '重置时间未知') + '）。'
+    + (missingKey ? 'Hub 没有配置 DeepSeek API Key，不能改走 API；填好后重发，或等重置。' : '本会话不改走 API，重置后再发即可。');
+}
+
 // 卡片提示：会话正挂在 DeepSeek 备用线路上。
 function deepseekRouteNotice(model, dataDir, now = Date.now()) {
   const at = exhaustedUntil(dataDir, now);
@@ -134,5 +148,5 @@ function deepseekRouteNotice(model, dataDir, now = Date.now()) {
 module.exports = {
   DEEPSEEK_API_BASE, DEEPSEEK_ROUTE_PREFIX, TOKEN_PLAN_ROUTE_PREFIX, FALLBACK_MODELS, STATE_FILE,
   isTokenPlanQuotaText, isTokenPlanQuotaAnswer, parseResetAt, readState, exhaustedUntil, markExhausted, clearExhausted,
-  observeUsage, fallbackModel, resolveRoute, deepseekRouteNotice, isDeepSeekRouteProfile, isTokenPlanRouteProfile, sameProfileDomain, formatReset,
+  observeUsage, fallbackModel, resolveRoute, deepseekRouteNotice, waitNotice, canFallback, FALLBACK_KINDS, isDeepSeekRouteProfile, isTokenPlanRouteProfile, sameProfileDomain, formatReset,
 };
