@@ -66,60 +66,59 @@ test('exhaustion state expires at reset, follows usage readings and needs a Deep
     ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-pro']);
 });
 
-test('ACP launch options switch all three harnesses to the DeepSeek API only while exhausted', t => {
+test('only the DeepSeek harness moves to the DeepSeek API; Qwen and GLM stay on the plan and wait', t => {
   const root = tmp(t, 'hub-tp-acp-');
   const entry = path.join(root, 'cli.js'); fs.writeFileSync(entry, '');
   const bridge = path.join(root, 'bridge'); fs.mkdirSync(bridge); fs.writeFileSync(path.join(bridge, 'package.json'), '{}');
   const config = { deepseekApiKey: 'ds-secret', acp: { nodePath: process.execPath, apiKey: 'plan-secret', providers: {
     qwen: { entryPath: entry, model: 'qwen3.8-max' },
-    'deepseek-acp': { entryPath: entry, bridgePath: bridge, model: 'deepseek-v4-pro' },
+    'deepseek-acp': { entryPath: entry, bridgePath: bridge, model: 'deepseek-v4-flash-0731' },
     glm: { entryPath: entry, backendPath: entry, model: 'glm-5.2' } } } };
   const env = { PATH: process.env.PATH };
-  const plan = buildAcpOptions('qwen', { id: 'q0', cwd: root }, config, root, env);
-  assert.equal(plan.profileId, 'aliyun-token-plan:qwen');
-  assert.equal(plan.tokenPlanRoute, 'token-plan');
-  assert.equal(plan.launch.env.OPENAI_API_KEY, 'plan-secret');
+  const dropLink = built => {
+    const link = path.join(built.launch.env.DSH_HOME, 'profiles/acp/node_modules/@openma/deepseek-harness-acp');
+    if (process.platform === 'win32') fs.rmdirSync(link); else fs.unlinkSync(link);
+  };
+  const before = buildAcpOptions('deepseek-acp', { id: 'd0', cwd: root, effort: 'low' }, config, root, env);
+  assert.deepEqual([before.profileId, before.tokenPlanRoute, before.tokenPlanWait, before.effort], ['aliyun-token-plan:deepseek-acp', 'token-plan', null, 'low']);
+  dropLink(before);
 
   fallback.markExhausted(root, { resetsAt: Date.now() + 3600_000 });
-  const qwen = buildAcpOptions('qwen', { id: 'q1', cwd: root }, config, root, env);
-  assert.equal(qwen.profileId, 'deepseek-api:qwen');
-  assert.equal(qwen.model, 'deepseek-v4-pro');
-  assert.equal(qwen.launch.env.OPENAI_BASE_URL, 'https://api.deepseek.com/v1');
-  assert.equal(qwen.launch.env.OPENAI_API_KEY, 'ds-secret');
-  assert.deepEqual(qwen.launch.secrets, ['ds-secret']);
-  const qwenSettings = JSON.parse(fs.readFileSync(path.join(qwen.home, '.qwen/settings.json'), 'utf8'));
-  assert.deepEqual(qwenSettings.modelProviders.openai.map(m => [m.id, m.baseUrl]),
-    [['deepseek-v4-pro', 'https://api.deepseek.com/v1'], ['deepseek-v4-flash', 'https://api.deepseek.com/v1']]);
-  assert.equal(buildAcpOptions('qwen', { id: 'q2', cwd: root, model: 'qwen3.8-flash' }, config, root, env).model, 'deepseek-v4-flash');
-
-  const dsh = buildAcpOptions('deepseek-acp', { id: 'd1', cwd: root }, config, root, env);
+  const dsh = buildAcpOptions('deepseek-acp', { id: 'd1', cwd: root, effort: 'low' }, config, root, env);
   assert.equal(dsh.profileId, 'deepseek-api:deepseek-acp');
+  assert.equal(dsh.model, 'deepseek-v4-flash');
+  assert.equal(dsh.effort, undefined, 'low is not offered on the DeepSeek route');
   assert.equal(dsh.launch.env.BAILIAN_API_KEY, 'ds-secret');
   assert.equal(dsh.authMeta['api-key'].apiKey, 'ds-secret');
+  assert.deepEqual(dsh.launch.secrets, ['ds-secret']);
+  assert(!JSON.stringify(dsh.launch).includes('plan-secret'), 'plan key never reaches the DeepSeek host');
   const patches = JSON.parse(fs.readFileSync(dsh.launch.args[dsh.launch.args.indexOf('--patch') + 1], 'utf8'));
   const provider = patches.find(p => p.id === 'llm-pi-ai').config.providers['bailian-tpp'];
   assert.equal(provider.baseURL, 'https://api.deepseek.com/v1');
   assert.deepEqual(provider.models.map(m => m.id), ['deepseek-v4-pro', 'deepseek-v4-flash']);
-  const link = path.join(dsh.launch.env.DSH_HOME, 'profiles/acp/node_modules/@openma/deepseek-harness-acp');
-  if (process.platform === 'win32') fs.rmdirSync(link); else fs.unlinkSync(link);
+  dropLink(dsh);
 
-  const glm = buildAcpOptions('glm', { id: 'g1', cwd: root }, config, root, env);
-  assert.equal(glm.model, 'deepseek-v4-pro');
-  const zcode = JSON.parse(fs.readFileSync(path.join(glm.home, '.zcode/v2/config.json'), 'utf8'))['provider']['hub-token-plan'];
-  assert.deepEqual([zcode.options.baseURL, zcode.options.apiKey, Object.keys(zcode.models)], ['https://api.deepseek.com/v1', 'ds-secret', ['deepseek-v4-pro']]);
-  for (const built of [qwen, dsh, glm]) assert(!JSON.stringify(built.launch).includes('plan-secret'), 'plan key never reaches the DeepSeek host');
-
-  // 没有 DeepSeek Key：留在套餐上，报错照常可见。
-  assert.equal(buildAcpOptions('qwen', { id: 'q3', cwd: root }, { ...config, deepseekApiKey: '' }, root, env).profileId, 'aliyun-token-plan:qwen');
-  // 重置以后：回到套餐，备用期间记下的 DeepSeek 模型换回该外壳自己的模型。
+  // 千问 / GLM：照旧挂在套餐上，带上「等重置」标记，绝不拿 DeepSeek Key。
+  for (const kind of ['qwen', 'glm']) {
+    const built = buildAcpOptions(kind, { id: kind + '1', cwd: root }, config, root, env);
+    assert.deepEqual([built.profileId, built.tokenPlanRoute, built.tokenPlanWait], ['aliyun-token-plan:' + kind, 'token-plan', { missingKey: false }]);
+    assert(!JSON.stringify(built.launch).includes('ds-secret'), kind + ' never receives the DeepSeek key');
+  }
+  // DeepSeek 旧 Harness 没有 DeepSeek Key：留在套餐上，提示里说清楚缺 Key。
+  const noKey = buildAcpOptions('deepseek-acp', { id: 'd2', cwd: root }, { ...config, deepseekApiKey: '' }, root, env);
+  assert.deepEqual([noKey.profileId, noKey.tokenPlanWait], ['aliyun-token-plan:deepseek-acp', { missingKey: true }]);
+  dropLink(noKey);
+  // 重置以后：回到套餐，备用期间记下的 DeepSeek 模型换回配置模型；旧版本切过去的千问也换回自己的模型。
   fallback.clearExhausted(root);
+  const back = buildAcpOptions('deepseek-acp', { id: 'd3', cwd: root, model: 'deepseek-v4-flash' }, config, root, env);
+  assert.deepEqual([back.profileId, back.model, back.tokenPlanWait], ['aliyun-token-plan:deepseek-acp', 'deepseek-v4-flash-0731', null]);
+  dropLink(back);
   assert.equal(buildAcpOptions('qwen', { id: 'q4', cwd: root, model: 'deepseek-v4-pro' }, config, root, env).model, 'qwen3.8-max');
-  assert.equal(buildAcpOptions('glm', { id: 'g2', cwd: root, model: 'deepseek-v4-pro' }, config, root, env).model, 'glm-5.2');
 });
 
-function harness(t, { meetingId = null, deepseekApiKey = 'ds-key' } = {}) {
+function harness(t, { kind = 'deepseek-acp', meetingId = null, deepseekApiKey = 'ds-key' } = {}) {
   const dataDir = tmp(t, 'hub-tp-ctl-');
-  const session = { id: 's1', kind: 'qwen', acpProfileId: 'aliyun-token-plan:qwen', meetingId, currentModel: { id: 'qwen3.8-max' } };
+  const session = { id: 's1', kind, acpProfileId: 'aliyun-token-plan:' + kind, meetingId, currentModel: { id: 'deepseek-v4-pro' } };
   const notices = [], restarts = [], sends = [];
   const native = { emit: (name, message) => notices.push([name, message]), start: async () => {} };
   const sessionManager = { getSession: id => (id === 's1' ? session : null), getNativeSession: () => native };
@@ -128,30 +127,26 @@ function harness(t, { meetingId = null, deepseekApiKey = 'ds-key' } = {}) {
     getConfig: () => ({ deepseekApiKey }),
     restartSession: async (id, overrides, options) => {
       restarts.push([id, overrides, options]);
-      // 与 buildAcpOptions 一致：按当前套餐状态决定重启后的线路。
-      const route = fallback.resolveRoute({ config: { deepseekApiKey }, dataDir }).route;
-      Object.assign(session, route === 'deepseek' ? { acpProfileId: 'deepseek-api:qwen', currentModel: { id: 'deepseek-v4-pro' } }
-        : { acpProfileId: 'aliyun-token-plan:qwen', currentModel: { id: 'qwen3.8-max' } });
+      // 与 buildAcpOptions 一致：按当前套餐状态和外壳决定重启后的线路。
+      const route = fallback.resolveRoute({ config: { deepseekApiKey }, dataDir, kind }).route;
+      Object.assign(session, { acpProfileId: (route === 'deepseek' ? 'deepseek-api:' : 'aliyun-token-plan:') + kind });
       return { id };
     },
-    sendToPty: async (id, text, kind, options) => { sends.push({ id, text, kind, options }); return { ok: true }; },
+    sendToPty: async (id, text, sendKind, options) => { sends.push({ id, text, kind: sendKind, options }); return { ok: true }; },
   });
   return { controller, session, notices, restarts, sends, dataDir };
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
-test('a quota "answer" from Qwen becomes a failed turn, the session reroutes and the prompt is resent once', async t => {
+test('DeepSeek harness: quota wall reroutes to the DeepSeek API and resends the blocked prompt once', async t => {
   const h = harness(t);
   h.controller.filterLifecycle({ type: 'prompt-submitted', hubSessionId: 's1', text: '帮我总结 README' });
-  const out = h.controller.filterLifecycle({ type: 'turn-complete', hubSessionId: 's1', turnId: 't1', text: QWEN_ANSWER, completedAt: 5 });
-  assert.equal(out.type, 'turn-error');
-  assert.equal(out.errorInfo, 'token_plan_quota');
-  assert.equal(classifyProviderFailure({ message: out.message, errorInfo: out.errorInfo }).code, 'token_plan_quota');
-  // 其他供应商的 insufficient_quota 不归到 Token Plan，也不自动重试。
-  const other = classifyProviderFailure({ message: 'insufficient_quota: billing hard limit', fromAssistantText: false });
-  assert.notEqual(other && other.code, 'token_plan_quota');
+  const out = h.controller.filterLifecycle({ type: 'turn-error', hubSessionId: 's1', turnId: 't1', message: DSH_ERROR });
+  assert.equal(out.errorInfo, 'token_plan_quota_rerouted');
+  const failure = classifyProviderFailure({ message: out.message, errorInfo: out.errorInfo });
+  assert.deepEqual([failure.code, failure.autoRetry], ['token_plan_quota_rerouted', true]);
   // 同一轮的重复事件不再触发第二次改道。
-  h.controller.filterLifecycle({ type: 'turn-complete', hubSessionId: 's1', turnId: 't1', text: QWEN_ANSWER });
+  h.controller.filterLifecycle({ type: 'turn-error', hubSessionId: 's1', turnId: 't1', message: DSH_ERROR });
   await settle();
   assert.deepEqual(h.restarts, [['s1', null, { relaunch: true }]]);
   assert.equal(h.sends.length, 1);
@@ -161,7 +156,42 @@ test('a quota "answer" from Qwen becomes a failed turn, the session reroutes and
   assert.match(h.notices.at(-1)[1], /北京时间 10-13 00:00 重置/);
   assert.equal(fallback.exhaustedUntil(h.dataDir, NOW), RESET);
   // 已在 DeepSeek 上的会话不再被拦截。
-  assert.equal(h.controller.filterLifecycle({ type: 'turn-complete', hubSessionId: 's1', text: QWEN_ANSWER }).type, 'turn-complete');
+  assert.equal(h.controller.filterLifecycle({ type: 'turn-error', hubSessionId: 's1', message: DSH_ERROR }).errorInfo, undefined);
+});
+
+test('Qwen and GLM wait for the reset: no restart, no resend, sends refused with the reset time', async t => {
+  const qwen = harness(t, { kind: 'qwen' });
+  qwen.controller.filterLifecycle({ type: 'prompt-submitted', hubSessionId: 's1', text: '帮我总结 README' });
+  // Qwen 把额度墙当普通回答交回：改判为失败（群聊不会当答卷），但不改道、不自动重试。
+  const out = qwen.controller.filterLifecycle({ type: 'turn-complete', hubSessionId: 's1', turnId: 'q1', text: QWEN_ANSWER, completedAt: 5, signalSource: 'qwen-cli' });
+  // 群聊对原生成员只采信 acp 来源：这条权威的额度失败要能让这一轮收尾。
+  assert.deepEqual([out.type, out.errorInfo, out.signalSource], ['turn-error', 'token_plan_quota', 'acp']);
+  const { GroupChatProviderAdapter } = require('../core/groupchat-provider-adapter');
+  const settled = new GroupChatProviderAdapter('qwen', { nativeOnly: true }).error({ sid: 's1', kind: 'qwen', startedAt: 1 }, out);
+  assert.deepEqual([settled.accepted, settled.reason], [true, 'token_plan_quota']);
+  const failure = classifyProviderFailure({ message: out.message, errorInfo: out.errorInfo });
+  assert.deepEqual([failure.code, failure.autoRetry], ['token_plan_quota', false]);
+  await settle();
+  assert.deepEqual([qwen.restarts.length, qwen.sends.length], [0, 0]);
+  assert.match(qwen.notices.at(-1)[1], /北京时间 10-13 00:00 重置）。本会话不改走 API，重置后再发即可/);
+  // 已知用完：再发直接拦下，消息不发。
+  await assert.rejects(qwen.controller.beforeSend('s1'), e => e.notSent === true && /重置后再发即可/.test(e.message));
+  assert.equal(qwen.restarts.length, 0);
+  // 到了重置时间就放行。
+  fallback.clearExhausted(qwen.dataDir);
+  assert.equal(await qwen.controller.beforeSend('s1'), false);
+
+  const glm = harness(t, { kind: 'glm' });
+  glm.controller.filterLifecycle({ type: 'turn-error', hubSessionId: 's1', turnId: 'g1', message: 'ZCode turn failed: Throttling.AllocationQuota ' + RAW });
+  await settle();
+  assert.equal(glm.restarts.length, 0);
+  await assert.rejects(glm.controller.beforeSend('s1'), e => e.notSent === true);
+
+  // 旧版本曾把千问切到 DeepSeek：下一条消息前切回套餐（套餐仍用完则切回后拦下）。
+  const legacy = harness(t, { kind: 'qwen' });
+  legacy.session.acpProfileId = 'deepseek-api:qwen';
+  assert.equal(await legacy.controller.beforeSend('s1'), true);
+  assert.equal(legacy.session.acpProfileId, 'aliyun-token-plan:qwen');
 });
 
 test('group members reroute without an automatic resend; missing DeepSeek key leaves a visible notice', async t => {
@@ -173,35 +203,34 @@ test('group members reroute without an automatic resend; missing DeepSeek key le
   assert.equal(member.sends.length, 0, 'the group round already closed this attempt; retry goes through the group');
 
   const noKey = harness(t, { deepseekApiKey: '' });
-  noKey.controller.filterLifecycle({ type: 'turn-error', hubSessionId: 's1', turnId: 't3', message: DSH_ERROR });
+  const out = noKey.controller.filterLifecycle({ type: 'turn-error', hubSessionId: 's1', turnId: 't3', message: DSH_ERROR });
+  assert.equal(out.errorInfo, 'token_plan_quota');
   await settle();
   assert.equal(noKey.restarts.length, 0);
   assert.match(noKey.notices.at(-1)[1], /没有配置 DeepSeek API Key/);
 });
 
-test('sending to a Token Plan session after exhaustion reroutes first; unrelated errors only consult usage', async t => {
+test('DeepSeek harness: sends reroute first after exhaustion and switch back after the reset', async t => {
   const h = harness(t);
   assert.equal(await h.controller.beforeSend('s1'), false, 'quota not known: no restart');
   fallback.markExhausted(h.dataDir, { resetsAt: Date.now() + 3600_000 });
   const [a] = await Promise.all([h.controller.beforeSend('s1'), h.controller.beforeSend('s1')]);
   assert.deepEqual([a, h.restarts.length], [true, 1], 'concurrent sends share one reroute');
   assert.equal(await h.controller.beforeSend('s1'), false);
-  // 到了重置时间：下一条消息前自动切回套餐。
   fallback.clearExhausted(h.dataDir);
   assert.equal(await h.controller.beforeSend('s1'), true);
-  assert.equal(h.session.acpProfileId, 'aliyun-token-plan:qwen');
+  assert.equal(h.session.acpProfileId, 'aliyun-token-plan:deepseek-acp');
   assert.match(h.notices.at(-1)[1], /额度已恢复，本会话已切回套餐/);
   assert.equal(h.restarts.length, 2);
 
-  const failing = harness(t);
-  failing.restarts.push = () => { throw new Error('should not restart'); };
-  const ctl = createTokenPlanFallbackController({
-    sessionManager: { getSession: () => ({ id: 's1', kind: 'glm', acpProfileId: 'aliyun-token-plan:glm' }), getNativeSession: () => null },
-    dataDir: failing.dataDir, settleMs: 0, logger: { log() {}, warn() {} }, getConfig: () => ({ deepseekApiKey: 'k' }),
+  const failingDir = tmp(t);
+  const failing = createTokenPlanFallbackController({
+    sessionManager: { getSession: () => ({ id: 's1', kind: 'deepseek-acp', acpProfileId: 'aliyun-token-plan:deepseek-acp' }), getNativeSession: () => null },
+    dataDir: failingDir, settleMs: 0, logger: { log() {}, warn() {} }, getConfig: () => ({ deepseekApiKey: 'k' }),
     restartSession: async () => ({ ok: false, message: '旧进程迟迟未退出' }),
   });
-  fallback.markExhausted(failing.dataDir, { resetsAt: Date.now() + 3600_000 });
-  await assert.rejects(ctl.beforeSend('s1'), e => e.notSent === true && /切到 DeepSeek API 失败：旧进程迟迟未退出/.test(e.message));
+  fallback.markExhausted(failingDir, { resetsAt: Date.now() + 3600_000 });
+  await assert.rejects(failing.beforeSend('s1'), e => e.notSent === true && /切到 DeepSeek API 失败：旧进程迟迟未退出/.test(e.message));
 
   let reads = 0;
   const usage = createTokenPlanFallbackController({
@@ -239,19 +268,23 @@ test('writing member falls back from an exhausted Token Plan to the DeepSeek API
   assert.equal(readDeepseekConfig(dataDir, dataDir, env).via, 'token-plan');
 });
 
-test('long answers about quota stay answers; a reroute done meanwhile is not repeated', async t => {
-  const h = harness(t);
+test('long answers about quota stay answers; a reroute done meanwhile is not repeated; busy turns are not interrupted', async t => {
+  const h = harness(t, { kind: 'qwen' });
   const talk = '关于 insufficient_quota：' + RAW + ' 这类报错的处理建议如下……'.repeat(5);
   const out = h.controller.filterLifecycle({ type: 'turn-complete', hubSessionId: 's1', turnId: 'k1', text: talk });
   assert.equal(out.type, 'turn-complete');
   await settle();
-  assert.equal(h.restarts.length, 0);
+  assert.equal(h.notices.length, 0);
+  assert.equal(fallback.exhaustedUntil(h.dataDir), 0);
+  // 其他供应商的 insufficient_quota 不归到 Token Plan。
+  const other = classifyProviderFailure({ message: 'insufficient_quota: billing hard limit', fromAssistantText: false });
+  assert(!/token_plan/.test(other && other.code || ''));
 
   const slow = harness(t);
   const ctl = createTokenPlanFallbackController({
     sessionManager: { getSession: id => (id === 's1' ? slow.session : null), getNativeSession: () => ({ emit() {}, start: async () => {} }) },
     dataDir: slow.dataDir, settleMs: 30, logger: { log() {}, warn() {} }, getConfig: () => ({ deepseekApiKey: 'k' }),
-    restartSession: async () => { slow.restarts.push(1); Object.assign(slow.session, { acpProfileId: 'deepseek-api:qwen' }); return {}; },
+    restartSession: async () => { slow.restarts.push(1); Object.assign(slow.session, { acpProfileId: 'deepseek-api:deepseek-acp' }); return {}; },
     sendToPty: async () => { slow.sends.push(1); return { ok: true }; },
   });
   ctl.filterLifecycle({ type: 'prompt-submitted', hubSessionId: 's1', text: '问题' });
@@ -261,7 +294,6 @@ test('long answers about quota stay answers; a reroute done meanwhile is not rep
   await new Promise(resolve => setTimeout(resolve, 80));
   assert.deepEqual([slow.restarts.length, slow.sends.length], [1, 0]);
 
-  // 会话还在答上一轮：发送前不打断它。
   const busy = harness(t);
   fallback.markExhausted(busy.dataDir, { resetsAt: Date.now() + 3600_000 });
   const busyCtl = createTokenPlanFallbackController({
@@ -269,5 +301,6 @@ test('long answers about quota stay answers; a reroute done meanwhile is not rep
     dataDir: busy.dataDir, settleMs: 0, logger: { log() {}, warn() {} }, getConfig: () => ({ deepseekApiKey: 'k' }),
     restartSession: async () => { throw new Error('must not restart a running turn'); },
   });
+  // 正在答上一轮的 DeepSeek 旧 Harness：不打断；这条留在原线路的队列，下一条再切。
   assert.equal(await busyCtl.beforeSend('s1'), false);
 });

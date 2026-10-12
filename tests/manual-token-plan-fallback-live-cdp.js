@@ -1,5 +1,5 @@
 'use strict';
-// Token Plan 额度用完 → DeepSeek API 改道的真机验收：隔离 Hub + 真实 Token Plan Key（需处于额度用完状态）
+// Token Plan 额度用完的真机验收（只有 DeepSeek 旧 Harness 改道到 DeepSeek API；千问 / GLM 等重置）：隔离 Hub + 真实 Token Plan Key（需处于额度用完状态）
 // + 真实 DeepSeek Key（flash 档，花费几分钱）。不进单测运行器，按需手动跑：
 //
 //   node tests/manual-token-plan-fallback-live-cdp.js [--steps 02,03]
@@ -115,7 +115,7 @@ async function main() {
     ctx.hub = true;
   });
 
-  await step('02', '千问会话（新建面板创建、挂在套餐上）撞额度墙：自动改道 DeepSeek 并重发，卡片拿到答案', async note => {
+  await step('02', '千问会话（新建面板创建）撞额度墙：不改道，本轮判失败，卡片写明等重置，再发被拦下', async note => {
     clearState(note);
     const dir = workdir('work-qwen', 4817);
     await c.eval(`window.WorkspaceController.openNewSessionModal({ kind: 'qwen', workspace: { path: ${j(dir)}, name: 'work-qwen' } })`);
@@ -125,27 +125,33 @@ async function main() {
     await c.eval(`document.querySelector('#new-session-submit').click()`);
     const sid = await until(`(() => { const ids = [...sessions.keys()].filter(id => !${j(before)}.includes(id) && /^qwen/.test(sessions.get(id).kind)); return ids[0] || null; })()`, '会话出现在侧栏', 60000);
     await until(`String(sessions.get(${j(sid)})?.acpProfileId || '').length > 0`, '会话绑定路线', 60000);
-    const first = await info(sid);
-    if (first.profile !== 'aliyun-token-plan:qwen') throw new Error('新会话应先挂在套餐上：' + j(first));
-    const after = await askAndExpect(sid, 4817, '千问', note);
-    if (!/^deepseek-v4-(pro|flash)$/.test(after.model || '')) throw new Error('应换成 DeepSeek 模型：' + after.model);
-    note('终端末尾：' + String(await c.eval(`ipcRenderer.invoke('debug:get-session-buffer', ${j(sid)})`) || '').replace(/[[0-9;?]*[ -/]*[@-~]/g, '').slice(-600).replace(/s+/g, ' '));
-    if (!/暂用 DeepSeek API ·/.test(after.notice || '')) throw new Error('卡片缺少改道提示：' + after.notice);
-    const overlay = await c.eval(`document.querySelector('#msg-overlay')?.innerText || ''`);
-    note('卡片末尾：' + overlay.slice(-400).replace(/\s+/g, ' '));
+    if ((await info(sid)).profile !== 'aliyun-token-plan:qwen') throw new Error('新会话应挂在套餐上');
+    await c.eval(`selectSession(${j(sid)})`); await sleep(300); await c.eval(`applyViewMode('card')`);
+    const result = await invokeLong('session:send-prompt', { sessionId: sid, text: PROMPT, clientSubmissionId: 'tp-' + Date.now() });
+    note('发送回执：' + j({ ok: result && result.ok, status: result && result.sendStatus }));
+    await until(`/重置后再发即可/.test(sessions.get(${j(sid)})?.nativeActionError || '')`, '卡片出现等重置提示', 120000);
+    await sleep(3000);
+    const after = await info(sid);
+    note('之后：' + j(after));
+    if (after.profile !== 'aliyun-token-plan:qwen') throw new Error('千问不应改道：' + after.profile);
+    const blocked = await invokeLong('session:send-prompt', { sessionId: sid, text: '再问一句', clientSubmissionId: 'tp-blocked-' + Date.now() });
+    note('再发回执：' + j({ ok: blocked && blocked.ok, message: blocked && blocked.message }));
+    if (!blocked || blocked.ok !== false || !/重置后再发即可/.test(blocked.message || '')) throw new Error('已知用完时千问应拦下发送');
     note('用完状态文件：' + fs.readFileSync(stateFile, 'utf8').replace(/\s+/g, ' '));
-    ctx.qwen = sid;
   }, ['hub']);
 
-  await step('03', '已知用完时新建 GLM 会话：直接挂在 DeepSeek 上，不再先撞套餐', async note => {
+  await step('03', '已知用完时新建 GLM 会话：留在套餐上，卡片写明等重置，发送当场拦下（不再等 ZCode 重试 5 分钟）', async note => {
     if (!fs.existsSync(stateFile)) throw new Error('缺少用完状态（步骤 02 应已写入）');
     const sid = await createViaIpc('glm', workdir('work-glm-direct', 3306));
     await until(`String(sessions.get(${j(sid)})?.acpProfileId || '').length > 0`, '会话绑定路线', 60000);
     const first = await info(sid);
     note('创建后：' + j(first));
-    if (first.profile !== 'deepseek-api:glm') throw new Error('应直接挂在 DeepSeek 上');
-    const after = await askAndExpect(sid, 3306, 'GLM（直达）', note);
-    if (!/暂用 DeepSeek API ·/.test(after.notice || '')) throw new Error('直达 DeepSeek 的会话卡片缺少说明：' + after.notice);
+    if (first.profile !== 'aliyun-token-plan:glm') throw new Error('GLM 不应改道');
+    if (!/重置后再发即可/.test(first.notice || '')) throw new Error('卡片缺少等重置提示：' + first.notice);
+    const t0 = Date.now();
+    const blocked = await invokeLong('session:send-prompt', { sessionId: sid, text: PROMPT, clientSubmissionId: 'tp-glm-' + Date.now() });
+    note(`发送回执（${Date.now() - t0} ms）：` + j({ ok: blocked && blocked.ok, message: blocked && blocked.message }));
+    if (!blocked || blocked.ok !== false || Date.now() - t0 > 10000) throw new Error('GLM 发送应当场被拦下');
   }, ['hub']);
 
   await step('04', 'DeepSeek 旧 Harness 会话（挂在套餐上）撞墙报错：自动改道并重发', async note => {
@@ -164,21 +170,13 @@ async function main() {
     if (!/暂用 DeepSeek API ·/.test(after.notice || '')) throw new Error('卡片缺少改道提示：' + after.notice);
   }, ['hub']);
 
-  await step('05', 'GLM 会话（挂在套餐上）撞墙报错：自动改道并重发', async note => {
-    clearState(note);
-    const sid = await createViaIpc('glm', workdir('work-glm', 6634));
-    await until(`String(sessions.get(${j(sid)})?.acpProfileId || '').length > 0`, '会话绑定路线', 60000);
-    if ((await info(sid)).profile !== 'aliyun-token-plan:glm') throw new Error('应先挂在套餐上');
-    const after = await askAndExpect(sid, 6634, 'GLM', note);
-    if (!/暂用 DeepSeek API ·/.test(after.notice || '')) throw new Error('卡片缺少改道提示：' + after.notice);
-  }, ['hub']);
-
-  await step('06', '群聊：第一轮成员撞墙按失败收尾并改道，第二轮两名成员都经 DeepSeek 回答', async note => {
+  await step('06', '群聊（千问 + DeepSeek 旧 Harness）：DSH 成员改道并在第二轮答对，千问成员留在套餐上等重置', async note => {
     clearState(note);
     const workGroup = workdir('work-group', 7788);
     const slots = [{ kind: 'qwen' }, { kind: 'deepseek-acp' }];
     const group = await c.eval(`ipcRenderer.invoke('create-meeting', ${j({ title: 'Token Plan 改道验收群聊', scene: 'general', workspace: workGroup, slots })})`);
     if (!group || !group.id) throw new Error('建群失败：' + j(group));
+    const [qwenSid, dshSid] = group.subSessions;
     await c.eval(`window.MeetingRoom.openMeeting(${j(group.id)}, ${j(group)})`);
     await until('document.getElementById("mr-input-box")', '群聊输入框', 30000);
     const stateExpr = `ipcRenderer.invoke('groupchat:get-state', { meetingId: ${j(group.id)} })`;
@@ -189,18 +187,20 @@ async function main() {
       await c.eval(`document.getElementById('mr-send-btn').click()`);
     };
     await sendGroup('第一轮：请用一句话回复 ROUND1-OK。');
-    // 至少一名成员撞墙后改道；DSH 偶发启动失败（自身 EBUSY）的成员留在套餐上，第二轮发送前由 beforeSend 改道。
-    await until(`(async () => { const ids = ${j(group.subSessions)}; return ids.some(id => String(sessions.get(id)?.acpProfileId || '').startsWith('deepseek-api:')); })()`, '成员撞墙后改道到 DeepSeek', 240000);
-    await until(`!/本轮\\s*进行中/.test(document.body.innerText)`, '第一轮收尾', 180000);
+    await sleep(5000);
+    await until(`!/本轮\\s*进行中/.test(document.body.innerText)`, '第一轮收尾', 240000);
+    await sleep(3000);
     for (const sid of group.subSessions) note('第一轮后成员 ' + sid.slice(0, 8) + '：' + j(await info(sid)));
-    const s1 = await c.eval(stateExpr);
-    note('第一轮成员结果：' + (s1.messages || []).filter(m => m.role !== 'user').map(m => `${m.role}:${String(m.content || m.text || '').slice(0, 60)}`).join(' | '));
     await sendGroup('第二轮：请读取当前目录下的 secret.txt，只回复 GROUP-OK 加上其中的数字。');
     const t0 = Date.now();
-    await until(`(async () => { const s = await ${stateExpr}; return (s?.messages || []).filter(m => m.role === 'assistant' && /GROUP-OK\\D{0,5}7788/.test(String(m.content || ''))).length >= 2; })()`, '第二轮两名成员都答对', 300000);
+    await until(`(async () => { const s = await ${stateExpr}; return (s?.messages || []).some(m => m.role === 'assistant' && /GROUP-OK\\D{0,5}7788/.test(String(m.content || ''))); })()`, 'DSH 成员第二轮答对', 300000);
+    await until(`!/本轮\\s*进行中/.test(document.body.innerText)`, '第二轮收尾', 180000);
     const s2 = await c.eval(stateExpr);
-    note(`第二轮用时 ${Math.round((Date.now() - t0) / 1000)} s；回答：` + (s2.messages || []).filter(m => m.role === 'assistant').slice(-2).map(m => String(m.content).slice(0, 80)).join(' | '));
-    for (const sid of group.subSessions) note('成员 ' + sid.slice(0, 8) + '：' + j(await info(sid)));
+    note(`第二轮用时 ${Math.round((Date.now() - t0) / 1000)} s；回答：` + (s2.messages || []).filter(m => m.role === 'assistant').slice(-3).map(m => String(m.content).slice(0, 80)).join(' | '));
+    const q = await info(qwenSid), d = await info(dshSid);
+    note('千问成员：' + j(q)); note('DSH 成员：' + j(d));
+    if (q.profile !== 'aliyun-token-plan:qwen') throw new Error('千问成员不应改道');
+    if (d.profile !== 'deepseek-api:deepseek-acp') throw new Error('DSH 成员应改道');
   }, ['hub']);
 }
 

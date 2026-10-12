@@ -16,9 +16,9 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
   if (!isAcpKind(kind)) throw new Error('未知 ACP Harness');
   const profile = config.acp || {};
   const entry = profile.providers?.[kind];
-  // 套餐额度用完且配了 DeepSeek Key 时，整条会话改走 DeepSeek 官方 API（core/token-plan-fallback.js）。
+  // 套餐额度用完且配了 DeepSeek Key 时，DeepSeek 旧 Harness 整条会话改走 DeepSeek 官方 API；千问 / GLM 等重置（core/token-plan-fallback.js）。
   const fallback = require('./token-plan-fallback');
-  const route = fallback.resolveRoute({ config, dataDir });
+  const route = fallback.resolveRoute({ config, dataDir, kind });
   const deepseekRoute = route.route === 'deepseek';
   const key = deepseekRoute ? route.apiKey : profile.apiKey || baseEnv.AI_HUB_TOKEN_PLAN_KEY;
   if (!key) throw new Error('请先配置套餐专属 Key');
@@ -145,7 +145,8 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
     env:baseEnv,dataDir});
   // DeepSeek 线路只提供 high / max；套餐 flash 档的 low 等档位换线路后不存在，交给外壳默认，免得启动时被拒。
   const effort = deepseekRoute && !['high', 'max'].includes(opts.effort) ? undefined : opts.effort;
-  return { id: opts.id, kind, cwd: opts.cwd, profileId, tokenPlanRoute: route.route, model, effort,mcpServers,
+  return { id: opts.id, kind, cwd: opts.cwd, profileId, tokenPlanRoute: route.route,
+    tokenPlanWait: route.waitForReset ? { missingKey: route.missingKey } : null, model, effort,mcpServers,
     permissionPolicy: 'bypass',
     defaultMode: {qwen:'yolo','deepseek-acp':'danger-full-access',glm:'yolo'}[kind],
     resumeId: opts.acpFork?.sessionId || opts.acpSid, forkCli:opts.acpFork?.forkCli===true, restoredRuntime: opts.nativeRuntime, forkHistory: opts.acpFork?.history,

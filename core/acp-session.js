@@ -349,7 +349,9 @@ class AcpSession extends EventEmitter {
       if(command==='quota')return {ok:true,mode:'acp-command',sendStatus:'ok',
         commandOutput:require('./token-plan-fallback').isDeepSeekRouteProfile(this.options.profileId)
           ? '阿里云百炼 Token Plan 额度已用完，本会话临时改用 DeepSeek API（按量计费）；额度重置后发下一条消息时自动切回套餐。'
-          : '当前使用阿里云百炼 Token Plan。套餐余量见侧栏用量；用完后本会话会自动改用 DeepSeek API（需在设置里配置 DeepSeek Key）。'};
+          : this.options.kind === 'deepseek-acp'
+            ? '当前使用阿里云百炼 Token Plan。套餐余量见侧栏用量；用完后本会话会自动改用 DeepSeek API（需在设置里配置 DeepSeek Key）。'
+            : '当前使用阿里云百炼 Token Plan。套餐余量见侧栏用量；用完后等重置，本会话不改走 API。'};
       if(command==='status' || command==='help') {
         const commandOutput=command==='status' ? `${this.options.kind} · ${this.currentModel}\n原生会话：${this.threadId}\n套餐：${this.options.profileId}`
           : '原生命令：'+(this.commands || []).map(c=>'/'+c.name+' '+(c.description || '')).join('\n');

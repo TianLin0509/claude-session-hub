@@ -1,12 +1,13 @@
 'use strict';
-// Token Plan 额度用完 → 千问 / GLM / DeepSeek 旧 Harness 会话改走 DeepSeek API 的副作用一半。
-// 判断与状态在 core/token-plan-fallback.js；启动参数的改道在 core/acp-profiles.js。
+// Token Plan 额度用完时的会话处理（副作用一半）。判断与状态在 core/token-plan-fallback.js；启动参数的改道在 core/acp-profiles.js。
+// 2026-10-12 田哥拍板：只有 DeepSeek 旧 Harness 改走 DeepSeek API；千问 / GLM 额度没了就等重置。
 //
-// 三条规矩：
+// 规矩：
 //   1. 改道只靠「休眠 → 按原会话重新启动」，原生历史接着用，群聊成员身份与卡片都保留。
 //   2. 重发只走 groupChatWatcher.sendToPty 这条闭环，且只重发「额度墙挡住、没执行」的那一条，一次。
 //      群聊成员不自动重发：群聊这一轮已经按失败收尾，由用户点重试（重试时已在 DeepSeek 上）。
-//   3. 每次改道都在会话卡片上留一条看得见的提示，写明重置时间与「按量计费」。
+//   3. 千问 / GLM 不重启、不重发；已知用完时发送直接拦下并说明重置时间，免得 GLM 白白重试 5 分钟。
+//   4. 每次改道或等待都在会话卡片上留一条看得见的提示。
 const fallback = require('../core/token-plan-fallback');
 const { isAcpKind } = require('../core/acp-profiles');
 
@@ -40,23 +41,21 @@ function createTokenPlanFallbackController(deps = {}) {
     try { sessionManager.getNativeSession?.(sessionId)?.emit('action-error', message); }
     catch (error) { logger.warn('[token-plan-fallback] notice failed:', error.message); }
   }
-  function resetText() {
-    const at = fallback.exhaustedUntil(dataDir, now());
-    return at ? `北京时间 ${fallback.formatReset(at)} 重置` : '重置时间未知';
-  }
+  function routeFor(session) { return fallback.resolveRoute({ config: getConfig(), dataDir, kind: session?.kind, now: now() }); }
 
-  function desiredRoute() { return fallback.resolveRoute({ config: getConfig(), dataDir, now: now() }).route; }
-  // 两个方向都切：套餐用完 → DeepSeek；到了重置时间（或用量回落）→ 回到套餐，不再多花 DeepSeek 的钱。
+  // 两个方向都切：DeepSeek 旧 Harness 套餐用完 → DeepSeek；到了重置时间（或用量回落）→ 回到套餐。
+  // 千问 / GLM 期望线路永远是套餐，所以只会出现「切回」（旧版本曾把它们切到 DeepSeek）。
   function needsSwitch(sessionId) {
-    const current = routeOf(sessionManager.getSession?.(sessionId));
-    return !!current && current !== desiredRoute();
+    const session = sessionManager.getSession?.(sessionId);
+    const current = routeOf(session);
+    return !!current && current !== routeFor(session).route;
   }
 
   // 同一会话并发的改道请求合并成一次。
   function switchSession(sessionId) {
     if (switching.has(sessionId)) return switching.get(sessionId);
     const task = (async () => {
-      const target = desiredRoute();
+      const target = routeFor(sessionManager.getSession?.(sessionId)).route;
       const result = await restartSession(sessionId, null, { relaunch: true });
       if (!result || result.ok === false) throw new Error(result?.message || '会话重启失败');
       const session = sessionManager.getSession?.(sessionId);
@@ -66,7 +65,8 @@ function createTokenPlanFallbackController(deps = {}) {
       const model = native?.options?.model || session.currentModel?.id || '';
       notice(sessionId, target === 'deepseek'
         ? fallback.deepseekRouteNotice(model, dataDir, now())
-        : `Token Plan 额度已恢复，本会话已切回套餐 · ${model}。`);
+        : fallback.exhaustedUntil(dataDir, now()) ? fallback.waitNotice(dataDir, { now: now() })
+          : `Token Plan 额度已恢复，本会话已切回套餐 · ${model}。`);
       logger.log(`[token-plan-fallback] ${String(sessionId).slice(0, 8)} switched to ${target} (${model})`);
       return session;
     })().finally(() => switching.delete(sessionId));
@@ -74,18 +74,29 @@ function createTokenPlanFallbackController(deps = {}) {
     return task;
   }
 
-  // 发送前调用：线路与套餐状态不符就先切再发。失败时如实抛出，消息不发。
+  // 发送前调用：线路与套餐状态不符就先切；千问 / GLM 已知用完就拦下。失败时如实抛出，消息不发。
   async function beforeSend(sessionId) {
-    if (!needsSwitch(sessionId)) return false;
-    // 会话还在答上一轮：不打断它，这条照常进原线路的队列，下一条再切。
-    const runtime = sessionManager.getNativeSession?.(sessionId)?.runtime;
-    if (runtime && ['starting', 'running', 'waiting'].includes(runtime.state) && runtime.connection === 'connected') return false;
-    try { await switchSession(sessionId); return true; }
-    catch (error) {
-      const toDeepSeek = desiredRoute() === 'deepseek';
-      throw Object.assign(new Error((toDeepSeek ? 'Token Plan 额度已用完，切到 DeepSeek API 失败：' : 'Token Plan 额度已恢复，切回套餐失败：')
-        + error.message + '；消息未发送'), { notSent: true });
+    const session = sessionManager.getSession?.(sessionId);
+    if (!routeOf(session)) return false;
+    let switched = false;
+    if (needsSwitch(sessionId)) {
+      // 会话还在答上一轮：不打断它，这条照常进原线路的队列，下一条再切。
+      const runtime = sessionManager.getNativeSession?.(sessionId)?.runtime;
+      const busy = runtime && ['starting', 'running', 'waiting'].includes(runtime.state) && runtime.connection === 'connected';
+      if (!busy) {
+        try { await switchSession(sessionId); switched = true; }
+        catch (error) {
+          const toDeepSeek = routeFor(session).route === 'deepseek';
+          throw Object.assign(new Error((toDeepSeek ? 'Token Plan 额度已用完，切到 DeepSeek API 失败：' : '切回 Token Plan 套餐失败：')
+            + error.message + '；消息未发送'), { notSent: true });
+        }
+      }
     }
+    const route = routeFor(sessionManager.getSession?.(sessionId) || session);
+    if (route.route === 'token-plan' && route.waitForReset) {
+      throw Object.assign(new Error(fallback.waitNotice(dataDir, { missingKey: route.missingKey, now: now() }) + '消息未发送。'), { notSent: true });
+    }
+    return switched;
   }
 
   // resend=false：只切线路不重发（证据只来自用量读数时，失败的这一轮可能与额度无关、已执行了一部分）。
@@ -94,12 +105,13 @@ function createTokenPlanFallbackController(deps = {}) {
     handled.add(turnKey);
     if (handled.size > 500) handled.delete(handled.values().next().value);
     fallback.markExhausted(dataDir, { resetsAt: fallback.parseResetAt(text, now()), source: 'session', now: now() });
-    const route = fallback.resolveRoute({ config: getConfig(), dataDir, now: now() });
+    const session = sessionManager.getSession?.(sessionId);
+    const route = routeFor(session);
     if (route.route !== 'deepseek') {
-      notice(sessionId, `Token Plan 本月额度已用完（${resetText()}）。Hub 没有配置 DeepSeek API Key，不能自动改道；在设置里填好 DeepSeek Key 后重发即可。`);
+      // 千问 / GLM（或没配 DeepSeek Key 的 DeepSeek 旧 Harness）：不改道，等重置。
+      notice(sessionId, fallback.waitNotice(dataDir, { missingKey: route.missingKey, now: now() }));
       return;
     }
-    const session = sessionManager.getSession?.(sessionId);
     // 取出即消费：同一条 prompt 最多自动重发一次。
     const prompt = lastPrompt.get(sessionId);
     lastPrompt.delete(sessionId);
@@ -142,8 +154,8 @@ function createTokenPlanFallbackController(deps = {}) {
     const session = sessionManager.getSession?.(event.hubSessionId);
     const route = routeOf(session);
     if (event.type === 'prompt-submitted' && typeof event.text === 'string') {
-      // 只为挂在套餐上的会话记下最近一条，供撞墙后重发。
-      if (route !== 'token-plan') return event;
+      // 只为会改道的套餐会话记下最近一条，供撞墙后重发。
+      if (route !== 'token-plan' || !fallback.canFallback(session.kind)) return event;
       const text = require('../core/memory-index-envelope').splitMemoryIndex(event.text).userText;
       if (text && !text.startsWith(CONTINUATION_NOTE)) lastPrompt.set(event.hubSessionId, text);
       return event;
@@ -157,10 +169,16 @@ function createTokenPlanFallbackController(deps = {}) {
     if (quota) {
       const evidence = [event.text, event.message].filter(v => typeof v === 'string').join(' ');
       void onQuota(event.hubSessionId, evidence, turnKey).catch(error => logger.warn('[token-plan-fallback] quota handling failed:', error.message));
+      // 会被改道的成员标成可自动重试；等重置的成员标成普通额度失败。
+      const rerouted = fallback.canFallback(session.kind) && !!String(getConfig()?.deepseekApiKey || '').trim();
+      const errorInfo = rerouted ? 'token_plan_quota_rerouted' : 'token_plan_quota';
+      // 千问 / GLM 走终端时事件来源是 qwen-cli / provider-cli；群聊对原生成员只采信 acp 来源，
+      // 这条额度失败来自 CLI 自己的回合结束钩子，是权威信号，标成 acp 才能让群聊这一轮收尾。
+      const signalSource = ['qwen-cli', 'provider-cli'].includes(event.signalSource) ? 'acp' : event.signalSource;
       if (event.type === 'turn-complete') {
-        return { ...event, type: 'turn-error', message: String(event.text || '').slice(0, 600), errorInfo: 'token_plan_quota', failedAt: event.completedAt };
+        return { ...event, type: 'turn-error', signalSource, message: String(event.text || '').slice(0, 600), errorInfo, failedAt: event.completedAt };
       }
-      return { ...event, errorInfo: event.errorInfo || 'token_plan_quota' };
+      return { ...event, signalSource, errorInfo };
     }
     if (event.type === 'turn-error') {
       void checkUsageAfterError(event.hubSessionId, turnKey).catch(error => logger.warn('[token-plan-fallback] usage check failed:', error.message));
