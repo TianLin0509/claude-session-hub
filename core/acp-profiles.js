@@ -7,6 +7,17 @@ const ACP_KINDS = ['qwen', 'deepseek-acp', 'glm'];
 const PLAN_BASE_URL = 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1';
 const { HARNESS_LABELS: LABELS } = require('./ai-kinds');
 function isAcpKind(kind) { return ACP_KINDS.includes(String(kind).replace(/-resume$/, '')); }
+// Windows 上新建目录链接偶尔遇到 EBUSY/EPERM（杀毒或索引正占着刚建的目录）；短暂等一下重试，最多 5 次。
+function linkWithRetry(target, link) {
+  for (let attempt = 1; ; attempt++) {
+    try { fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir'); return; }
+    catch (error) {
+      if (fs.existsSync(link)) return;
+      if (attempt >= 5 || !['EBUSY', 'EPERM'].includes(error.code)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 * attempt);
+    }
+  }
+}
 function writeJson(file, object) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(object, null, 2), { encoding: 'utf8', mode: 0o600 });
@@ -117,7 +128,7 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
       const scope = path.join(env.DSH_HOME, 'profiles/acp/node_modules/@openma');
       fs.mkdirSync(scope, { recursive: true });
       const link = path.join(scope, 'deepseek-harness-acp');
-      if (!fs.existsSync(link)) fs.symlinkSync(entry.bridgePath, link, process.platform === 'win32' ? 'junction' : 'dir');
+      if (!fs.existsSync(link)) linkWithRetry(entry.bridgePath, link);
       if (fs.realpathSync(link) !== fs.realpathSync(entry.bridgePath)) throw new Error('ACP 扩展包链接目标已变化');
       writeJson(path.join(env.DSH_HOME, 'profiles/acp/package.json'), { name: 'hub-dsh-acp-profile', private: true,
         dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@openma/deepseek-harness-acp'], patchReload: 'startup' } } });
@@ -157,4 +168,4 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
     storeDir: path.join(dataDir, 'acp-history'), home, authMethod, authMeta,
     launch: { command: profile.nodePath, args, cwd: opts.cwd, env, secrets: [key] } };
 }
-module.exports = { ACP_KINDS, LABELS, PLAN_BASE_URL, isAcpKind, buildAcpOptions };
+module.exports = { ACP_KINDS, LABELS, PLAN_BASE_URL, isAcpKind, buildAcpOptions, linkWithRetry };
