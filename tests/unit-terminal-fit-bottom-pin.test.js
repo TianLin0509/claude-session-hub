@@ -51,7 +51,7 @@ function resize(session, { atBottom = true, follow = true, view = 'pty', primary
   const codex = kind => /^codex(?:-resume)?$/.test(kind || '');
   vm.runInNewContext(fitBody() + '\nfitAndResizeTerminal("session", cached, {force:true});', {
     cached, terminalPanelEl, currentView:view, sessions:new Map([['session',session]]), currentFontSize:14, currentZoom:1,
-    // 主仓库默认的 10 月后台路径：卡片视图里主面板终端收起（公司版 9 月路径见 tests/unit-backstage-path.test.js）。
+    // 10 月后台路径（AI_HUB_BACKSTAGE_PATH=october）：卡片视图里主面板终端收起；默认的 9 月路径见 tests/unit-backstage-path.test.js。
     primaryTerminalDormant:()=>view !== 'pty',
     isNativeAgent:native, isCodexKind:codex,
     isTerminalViewportAtBottom:()=>atBottom,
