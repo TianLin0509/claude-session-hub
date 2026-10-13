@@ -28,10 +28,10 @@ test('从本机 CodeAgent 配置读模型：只看带 model 的段，不碰聊�
     }));
     const found = models.configuredModels(dir);
     assert.strictEqual(found.defaultModel, 'GLM-5.2-WX-Auto');
-    assert.deepStrictEqual(new Set(found.models), new Set(['GLM-5.2-WX', 'GLM-5.2', 'Qwen3.6-27B-CodeAgent-VL', 'MiniMax-M2.7-CodeAgentCLI', 'deepseek0731-wx-chat', 'GLM-5.2-WX-Auto']));
+    assert.deepStrictEqual(new Set(found.models), new Set(['GLM-5.2-WX', 'GLM-5.2', 'MiniMax-M2.7-CodeAgentCLI', 'deepseek0731-wx-chat', 'GLM-5.2-WX-Auto']));
     const ids = models.modelOptions(null, { configDir: dir }).map(o => o.id);
     assert.deepStrictEqual(ids.slice(0, 2), ['GLM-5.2-WX-Auto', 'MiniMax-M2.7'], '已知模型在前');
-    assert(ids.includes('deepseek0731-wx-chat') && ids.includes('Qwen3.6-27B-CodeAgent-VL'));
+    assert(ids.includes('deepseek0731-wx-chat') && !ids.includes('Qwen3.6-27B-CodeAgent-VL'));
     assert.strictEqual(ids.filter(id => id === 'GLM-5.2-WX-Auto').length, 1, '不重复');
     assert(!ids.some(id => /9\.9|v9|7\.7/.test(id)), '聊天记录和无关设置里的字不算');
     assert.deepStrictEqual(models.configuredModels(path.join(dir, 'missing')).models, [], '没有配置目录不报错');

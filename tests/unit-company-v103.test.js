@@ -18,7 +18,7 @@ const MODEL_SECTIONS = {
   tierModelParams: { 'MiniMax-M2.7-CodeAgentCLI': { temperature: 1 } },
   modelParam: { 'deepseek0731-wx-chat': { maxTokens: 8192 } },
 };
-const EXPECTED = ['GLM-5.2-WX', 'GLM-5.2', 'Qwen3.6-27B-CodeAgent-VL', 'MiniMax-M2.7-CodeAgentCLI', 'deepseek0731-wx-chat'];
+const EXPECTED = ['GLM-5.2-WX', 'GLM-5.2', 'MiniMax-M2.7-CodeAgentCLI', 'deepseek0731-wx-chat'];
 function bigHistory(targetBytes) {
   // 像真机一样：projects 里塞大量历史，里面混着转义的 JSON 片段和句子里的模型名，都不该被当成模型。
   const projects = {};
@@ -64,11 +64,11 @@ test('文件没变就用缓存，不重复读大文件；文件变了才重新�
   models.configuredModels('C:\\cac', fsModule);
   models.configuredModels('C:\\cac', fsModule);
   assert.strictEqual(reads, 2, '打开菜单多少次都不重读');
-  files.get('C:\\cac\\.cac.json').text = JSON.stringify({ modelParam: { 'Qwen9-Next': {} } });
+  files.get('C:\\cac\\.cac.json').text = JSON.stringify({ modelParam: { 'MiniMax-M9-Next': {} } });
   files.get('C:\\cac\\.cac.json').mtimeMs = 2;
   const second = models.configuredModels('C:\\cac', fsModule);
   assert.strictEqual(reads, 3, '只重读改过的那个');
-  assert(first.models.includes('GLM-5.2-WX') && second.models.includes('Qwen9-Next') && !second.models.includes('GLM-5.2-WX'));
+  assert(first.models.includes('GLM-5.2-WX') && second.models.includes('MiniMax-M9-Next') && !second.models.includes('GLM-5.2-WX'));
 });
 
 test('卡片里的用户头像完整显示：不裁圆、不套底色、图片按框缩放', () => {
