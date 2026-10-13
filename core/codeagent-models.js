@@ -94,7 +94,8 @@ function readConfigFile(full, fsModule) {
   if (data) collectModelNames(data, false, names);
   else scanModelNamesInText(text, names);
   const defaultModel = data && isSafeModelId(data.model) ? String(data.model).trim() : '';
-  const result = { names: [...names], defaultModel, parsed: !!data, enterprise: data ? enterpriseModels(data) : null };
+  const result = { names: [...names], defaultModel, parsed: !!data, enterprise: data ? enterpriseModels(data) : null,
+    windows: data ? enterpriseWindows(data) : {} };
   configFileCache.set(full, { mtimeMs: stat.mtimeMs, size: stat.size, result });
   return result;
 }
@@ -116,6 +117,20 @@ function enterpriseModels(data) {
     if (!ids.some(other => other.toLowerCase() === id.toLowerCase())) ids.push(id);
   }
   return ids.length ? ids : null;
+}
+
+// 账号清单里每个模型的上下文上限（contextWindow，公司真机：GLM-5.2-WX-Auto 202752、MiniMax-M2.7 192000）。
+function enterpriseWindows(data) {
+  let list = data && data.enterpriseModelOptionsCache;
+  if (typeof list === 'string') { try { list = JSON.parse(list); } catch { list = null; } }
+  const windows = {};
+  if (!Array.isArray(list)) return windows;
+  for (const item of list.slice(0, 100)) {
+    const id = clean(item && typeof item === 'object' ? (item.value || item.model || item.id) : '');
+    const size = Number(item && item.contextWindow);
+    if (isSafeModelId(id) && Number.isFinite(size) && size >= 1000) windows[id.toLowerCase()] = Math.round(size);
+  }
+  return windows;
 }
 
 function collectModelNames(node, inModelSection, out, depth = 0) {
@@ -231,6 +246,31 @@ function recordObserved(dataDir, value, now = Date.now()) {
   return true;
 }
 
+// ---------------------------------------------------------------- 上下文占比
+// 2026-10-13 公司版：输入框旁的上下文圆环一直不显示。Claude 的占比来自状态栏回调，CodeAgent 会话没有接状态栏
+// （Hub 不改同事 CodeAgent 配置里的状态栏）。改为每轮回答后从原生记录里这一轮的用量算：
+// 已用 = 输入 + 缓存写入 + 缓存读取 + 输出 token；上限取账号清单里该模型的 contextWindow，
+// 按「会话当前模型 → 回答实际模型」的顺序找；清单里都没有时按 200K 估（windowSource=estimated）。
+const DEFAULT_CONTEXT_WINDOW = 200000;
+
+function contextWindowFor(configDir, modelIds = [], fsModule = fs) {
+  let windows = {};
+  if (configDir) { try { windows = readConfigFile(path.join(configDir, '.cac.json'), fsModule).windows || {}; } catch { windows = {}; } }
+  for (const id of modelIds) {
+    const key = clean(id).toLowerCase();
+    if (key && windows[key]) return { window: windows[key], source: 'account' };
+  }
+  return { window: DEFAULT_CONTEXT_WINDOW, source: 'estimated' };
+}
+
+function contextFromUsage(usage, window) {
+  if (!usage || typeof usage !== 'object' || !(window > 0)) return null;
+  const n = key => (Number.isFinite(Number(usage[key])) && Number(usage[key]) > 0 ? Number(usage[key]) : 0);
+  const used = n('input_tokens') + n('cache_creation_input_tokens') + n('cache_read_input_tokens') + n('output_tokens');
+  if (!(used > 0)) return null;
+  return { contextUsed: used, contextEffectiveMax: window, contextPct: Math.round(used / window * 1000) / 10 };
+}
+
 // ---------------------------------------------------------------- 模型证据日志（本机）
 // 2026-10-13 公司真机：选了 MiniMax 仍显示 GLM，会话里却没留下「请求了谁、命令里带了谁、实际回答用了谁」，
 // 只能请同事手工跑排查脚本。这里把这三件事各记一行到 Hub 数据目录 logs/codeagent-model.log，
@@ -286,4 +326,7 @@ module.exports = {
   recordObserved,
   appendModelLog,
   modelOptions,
+  contextWindowFor,
+  contextFromUsage,
+  DEFAULT_CONTEXT_WINDOW,
 };

@@ -609,9 +609,25 @@ async function observeCodeAgentModel(hubSessionId, ev, transcriptPath, source = 
   try {
     const codeAgentModels = require('./core/codeagent-models');
     let modelId = ev.modelId || null;
+    let usage = ev.usage && typeof ev.usage === 'object' ? ev.usage : null;
     const file = ev.transcriptPath || transcriptPath || sessionManager.getSession(hubSessionId)?.transcriptPath;
-    if (!modelId && file) modelId = (await require('./core/read-last-assistant').readLastAssistantMessage(file))?.model || null;
-    const session = sessionManager.getSession(hubSessionId);
+    if ((!modelId || !usage) && file) {
+      const last = await require('./core/read-last-assistant').readLastAssistantMessage(file);
+      modelId = modelId || last?.model || null;
+      usage = usage || last?.usage || null;
+    }
+    let session = sessionManager.getSession(hubSessionId);
+    // 上下文占比（输入框旁的圆环）：CodeAgent 没有状态栏回调，按这一轮的用量算，见 core/codeagent-models.js。
+    if (session && usage) {
+      const configDir = session.codeagentConfigDir || require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
+      const { window } = codeAgentModels.contextWindowFor(configDir, [session.currentModel?.id, modelId]);
+      const context = codeAgentModels.contextFromUsage(usage, window);
+      if (context && (context.contextUsed !== session.contextUsed || context.contextEffectiveMax !== session.contextEffectiveMax)) {
+        const withContext = sessionManager.updateSessionMeta(hubSessionId, context);
+        if (withContext) { session = withContext; sessionStore.markDirty(hubSessionId, withContext); }
+        sendToRenderer('status-event', { sessionId: hubSessionId, ...context });
+      }
+    }
     const observed = session && modelId ? codeAgentModels.observeModel(session, modelId) : null;
     if (observed || !modelId) {
       codeAgentModels.appendModelLog(getHubDataDir(), {

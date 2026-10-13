@@ -79,6 +79,12 @@ async function main() {
     check(cardModel.includes(actual), `卡片上的模型名是回答里的真实模型（${actual}）`);
     await until(`${chipLabel} === ${j(actual)}`, 'composer actual', 10000);
     check(true, '输入框下方换成同一个真实模型，不再显示 GLM');
+    // 上下文圆环：CodeAgent 没有状态栏回调，按这一轮的用量 ÷ 上下文上限算（清单里没有上限时按 200K 估）。
+    await until(`(()=>{const e=[...document.querySelectorAll('.composer-context-budget')].find(x=>x.offsetParent);return !!e && /\\d+%/.test(e.innerText);})()`, 'context ring', 20000);
+    const ring = JSON.parse(await c.eval(`(()=>{const e=[...document.querySelectorAll('.composer-context-budget')].find(x=>x.offsetParent);const s=sessions.get(${q});return JSON.stringify({text:e.innerText.trim(),title:e.title||e.getAttribute('aria-label')||'',pct:s.contextPct,used:s.contextUsed,max:s.contextEffectiveMax});})()`));
+    result.contextRing = ring;
+    check(ring.used > 0 && ring.max === 200000 && Math.abs(ring.pct - ring.used / ring.max * 100) < 0.2,
+      `输入框旁的上下文圆环显示 ${ring.text}（${ring.used} / ${ring.max} tokens）`);
     check((await c.eval(`sessions.get(${q}).codeagentRequestedModel`)) === 'GLM-5.2-WX-Auto', '原来请求的 GLM 另记一笔');
     await until(`window.__toasts.some(t=>t.includes('实际用的是'))`, 'toast', 10000);
     result.toast = await c.eval(`window.__toasts.find(t=>t.includes('实际用的是'))`);
