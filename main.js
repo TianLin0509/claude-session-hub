@@ -2091,6 +2091,7 @@ if (require('./core/distribution').featureEnabled('assistant')) try {
       sessionManager.writeToSession(id, String(s.kind || '').replace(/-resume$/, '') === 'qwen' ? '\x03' : '\x1b');
       return { via: 'pty' };
     },
+    onPhonePrompt: event => sendToRenderer('session:phone-prompt', event),
     readTerminalScreen: id => {
       const entry = sessionManager.sessions?.get?.(id);
       const text = sessionManager.getSessionBuffer(id);

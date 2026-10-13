@@ -2882,6 +2882,17 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
     status.replaceChildren(document.createTextNode('历史同步暂未完成：' + message + ' '), retry);
   };
 
+  // 手机发过话的会话：先取回 Hub 记下的手机原文，用户卡片才能标「手机」（每个会话只取一次，之后靠推送）。
+  if (!window._phonePromptsLoaded) window._phonePromptsLoaded = new Set();
+  if (!window._phonePromptsLoaded.has(sessionId)) {
+    window._phonePromptsLoaded.add(sessionId);
+    try {
+      require('../core/phone-prompt-origin').remember(sessionId,
+        await ipcRenderer.invoke('assistant:phone-session-prompts', sessionId));
+    } catch (err) { console.warn('[phone-prompt-origin] load failed:', err && err.message); }
+    if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
+  }
+
   // 5. invoke IPC (let main.js apply default opts: limit:50, fromTail:true)
   const refreshTurnIds=view.changed && view.hydrated && session?.runtimeBackend==='codex-app-server'
     ? [...new Set([...window._sessionTurns.values()].map(turn=>turn.providerTurnId
@@ -3053,6 +3064,19 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
     : null;
   const staging = !incremental || opts.older ? document.createElement('div') : null;
   const mountTurns = turns;
+  // 增量刷新里新出现、但比已显示卡片更早的一张（典型：手机发的话——电脑没有占位卡，
+  // 实时刷新又只看最后几张），要插在它后面那张已显示卡片之前，不能落到末尾打乱顺序。
+  const insertBeforeById = new Map();
+  if (incremental && !opts.older) {
+    let laterCard = null;
+    for (let i = mountTurns.length - 1; i >= 0; i--) {
+      const id = mountTurns[i] && mountTurns[i].id;
+      if (!id) continue;
+      const shown = container.querySelector(`:scope > .turn-card[data-turn-id="${CSS.escape(id)}"]`);
+      if (shown) laterCard = shown;
+      else if (laterCard) insertBeforeById.set(id, laterCard);
+    }
+  }
   for (const turn of mountTurns) {
     // Loading older pages must not overwrite a newer streaming card which
     // arrived while the history request was in flight.
@@ -3060,7 +3084,8 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
     if (!incremental && window._sessionTurns.has(turn.id)
         && window._sessionTurns.get(turn.id) !== turnsBeforeMount.get(turn.id)) continue;
     const existing = staging && container.querySelector(`:scope > .turn-card[data-turn-id="${CSS.escape(turn.id)}"]`);
-    const cardEl = mountSessionTurnCard(sessionId, turn, { kind: mountKind, container: existing ? container : staging || container });
+    const cardEl = mountSessionTurnCard(sessionId, turn, { kind: mountKind, container: existing ? container : staging || container,
+      before: staging ? null : insertBeforeById.get(turn.id) || null });
     if (cardEl) {
       mounted++;
       lastCardEl = cardEl;
@@ -7146,6 +7171,7 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     window._cardReloadState.set(sessionId, state);
   }
   state.lastReason = options.reason || 'terminal-output';
+  if (options.catchUp) state.catchUp = true;
 
   if (state.inProgress) {
     state.queued = true;
@@ -7169,12 +7195,15 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     state.inProgress = true;
     state.lastReloadAt = Date.now();
     const refreshStarted = performance.now();
+    // 终端会话取最后 4 张而不是 1 张：两次刷新之间可能落了不止一张（手机发的话没有电脑占位卡，
+    // 只取最后一张就永远漏掉它）。catchUp（窗口重新可见、手机刚发话）按整页补齐。
     const refreshOptions = {
       incremental: true,
       parseOpts: isNativeSession(sessions.get(sessionId))
         ? { limit: Infinity, latestTurn: true, turnId: sessions.get(sessionId)?.nativeRuntime?.turnId }
-        : { limit: 1, fromTail: true },
+        : state.catchUp ? undefined : { limit: 4, fromTail: true },
     };
+    state.catchUp = false;
     if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') refreshOptions.parseOpts = { nativeLive: true };
     loadSessionHistoryToOverlay(sessionId, refreshOptions)
       .catch(error => console.warn('[card live-refresh:' + state.lastReason + '] failed:', error))
@@ -7224,6 +7253,13 @@ function scheduleCardSettleRefresh(sessionId) {
   return true;
 }
 
+// 手机 App 刚把一句话送进会话：记下原文（卡片标「手机」），正在看这个会话时立刻按整页补齐卡片。
+ipcRenderer.on('session:phone-prompt', (_e, payload) => {
+  if (!payload || !payload.sessionId) return;
+  require('../core/phone-prompt-origin').remember(payload.sessionId, [payload]);
+  requestCardIncrementalRefresh(payload.sessionId, { force: true, catchUp: true, reason: 'phone-prompt' });
+});
+
 function noteCardTerminalOutput(sessionId) {
   if(isNativeAgent(sessions.get(sessionId)))return false;
   if (!requestCardIncrementalRefresh(sessionId, { reason: 'terminal-output' })) return false;
@@ -7233,7 +7269,7 @@ function noteCardTerminalOutput(sessionId) {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && activeSessionId) requestCardIncrementalRefresh(activeSessionId, { force: true, reason: 'visible-again' });
+  if (!document.hidden && activeSessionId) requestCardIncrementalRefresh(activeSessionId, { force: true, catchUp: true, reason: 'visible-again' });
 });
 
 ipcRenderer.on('codex-content-updated', (_e, event) => {
