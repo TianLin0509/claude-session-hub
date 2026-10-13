@@ -117,7 +117,7 @@ test('active card refresh is provider-aware without requiring renderer transcrip
   );
   assert.match(
     block,
-    /parseOpts:\s*isNativeSession\(sessions\.get\(sessionId\)\)\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
+    /parseOpts:\s*isNativeSession\(sessions\.get\(sessionId\)\)\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: state\.catchUp \? undefined : \{ limit: 4, fromTail: true \}/,
     'native refresh must scope provider items to one turn; log refresh stays bounded to the tail',
   );
 });
