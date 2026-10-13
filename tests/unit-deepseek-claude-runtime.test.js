@@ -204,6 +204,8 @@ test('SessionManager launches deepseek-claude as a real PTY Claude Code with Dee
     assert.match(cmd, new RegExp(`--model ${wire.replace(/\./g, '\\.')}(?:\\s|$)`));
     assert.match(cmd, /--effort high/);
     assert.match(cmd, new RegExp(`--session-id ${info.ccSessionId}`));
+    // ~/.claude-deepseek 不继承主 Claude 的 defaultMode；不带参数会落进 auto 模式（2026-10-13 实测）。
+    assert.match(cmd, /--permission-mode bypassPermissions(?:\s|$)/, 'DeepSeek sessions launch in bypass, not the CLI default auto mode');
     const models = [...cmd.matchAll(/--model (\S+)/g)].map(m => m[1]);
     assert.deepEqual(models, [wire], 'exactly one --model and it is the DeepSeek wire name');
     for (const value of models) assert.doesNotMatch(value, CLAUDE_MODEL_RE, 'launch command carries no Claude model name');

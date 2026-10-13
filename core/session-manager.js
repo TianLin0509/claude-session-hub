@@ -1812,6 +1812,10 @@ class SessionManager extends EventEmitter {
         model: deepseekClaudeLaunch.wireModel,
         effort: CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : DEEPSEEK_CLAUDE_DEFAULT_EFFORT,
         fastMode: false,
+        // 独立配置目录 ~/.claude-deepseek 不继承主 Claude 的 permissions.defaultMode；不带参数时
+        // Claude Code 2.1.296 起默认进 auto 模式（每次工具调用多一次分类器请求，也走 Token Plan 计费），
+        // 还会弹一次性公告停在「Enter to continue」（2026-10-13 群聊实测）。与旧 DeepSeek 一样显式旁路。
+        permissionMode: opts.permissionMode || 'bypassPermissions',
       }, spawnCwd, sessionEnv, getConfigValues());
       if (claudePtyLaunch.sessionId && !opts.forkCCSessionId) opts = { ...opts, resumeCCSessionId: claudePtyLaunch.sessionId };
     }
@@ -3444,7 +3448,7 @@ class SessionManager extends EventEmitter {
         });
       const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
       const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
-      cmd = ` claude --model ${wire}${effortFlag}${claudePermissionModeArg({ autonomous })}${mcpFlag}${addDirFlag}${rulesFlag}${isolation}\r\n`;
+      cmd = ` claude --model ${wire}${effortFlag}${claudePermissionModeArg({ permissionMode: 'bypassPermissions' })}${mcpFlag}${addDirFlag}${rulesFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
         mcpConfigFile: s.claudeMcpConfigFile,
