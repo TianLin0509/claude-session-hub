@@ -10,6 +10,8 @@ const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../co
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { isPtyAgentSession } = require('../core/agent-runtime-mode.js');
 const { installHiddenRenderGuard } = require('./xterm-hidden-render-guard.js');
+const { setBehindCardsPaused } = require('./xterm-card-pause.js');
+const { installSharedWidthCache } = require('./xterm-shared-width-cache.js');
 // 公司版默认回到 9 月的「后台」路径：终端按实际尺寸常驻在卡片下面，点后台只藏卡片层（见 core/backstage-path.js）。
 const BACKSTAGE_KEEPS_TERMINAL = require('../core/backstage-path.js').keepsTerminalBehindCards();
 // 主面板的终端此刻是否「收起」：10 月路径下卡片视图里终端不显示、不调尺寸；9 月路径下它一直在卡片下面活着。
@@ -2288,6 +2290,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     cached.terminal.open(cached.container);
     cached.opened = true;
     installHiddenRenderGuard(cached.terminal);
+    installSharedWidthCache(cached.terminal);
     setupImageHover(cached.terminal, cached.container);
     void hydrateTerminalFromSnapshot(sessionId, cached);
   }
@@ -2302,6 +2305,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // buffer, and applyViewMode('pty') shows it and runs the visible recovery.
   // It is opened (and measured) above while still displayed.
   if (!embedded) setCardHiddenTerminal(cached, primaryTerminalDormant());
+  // 9 月做法下终端常驻卡片后面：卡片视图里暂停它的绘制，进后台时补画（renderer/xterm-card-pause.js）。
+  if (!embedded && BACKSTAGE_KEEPS_TERMINAL) setBehindCardsPaused(cached.terminal, currentView === 'card');
   if (isCodexKind(session.kind) && !isNativeAgent(session)) {
     cached._codexAnswerAccent ||= require('./codex-answer-accent').mountCodexAnswerAccent(cached.terminal, document);
     cached._codexAnswerAccent.refresh();
@@ -4084,9 +4089,13 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.fitAddon) {
       setCardHiddenTerminal(cached, false);
+      setBehindCardsPaused(cached.terminal, false, { refresh: false });
       loadGpuRenderer(cached);
       scheduleVisibleTerminalRecovery(activeSessionId, cached, { pinBottom: false });
     }
+  }
+  if (mode === 'card' && BACKSTAGE_KEEPS_TERMINAL && typeof terminalCache !== 'undefined') {
+    setBehindCardsPaused(terminalCache.get(activeSessionId)?.terminal, true);
   }
   if (mode === 'card' && !BACKSTAGE_KEEPS_TERMINAL && typeof terminalCache !== 'undefined') {
     unloadGpuRenderer(terminalCache.get(activeSessionId));
@@ -4436,6 +4445,60 @@ async function reconnectSession(sessionId) {
     if (result && result.ok === false) failed(result.message || '会话重启失败');
   } catch (error) {
     failed(error && error.message ? error.message : String(error));
+  }
+}
+
+// 换场景（输入框「场景」按钮，2026-10-13）：一律新开一个同设置的会话，场景记在 purpose 上（core/session-scenes.js）。
+//   还没开聊：草稿带过去，空会话收起；已经聊过：输入框放好对原会话的引用，原会话保留。
+// 新会话的 id 由这里先定好，草稿在会话建出来之前就放进去，输入框一挂上就能看到。
+async function switchSessionScene(sessionId, sceneId, inputBox, { fresh }) {
+  const alertError = message => require('./ui-feedback').showHubAlert(message, { document });
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  let draft = inputBox && inputBox.isConnected ? readContenteditablePlainText(inputBox).trim() : '';
+  if (!fresh) {
+    let result;
+    try { result = await ipcRenderer.invoke('session-reference:resolve', { sessionId }); }
+    catch (error) { result = { ok: false, message: error.message }; }
+    if (!result?.ok) { alertError('换场景失败：没拿到这段聊天的记录（' + (result?.message || result?.error || '未知原因') + '）'); return; }
+    const line = require('../core/session-reference.js').buildReferenceText({ title: s.title || result.title, kind: s.kind, path: result.path });
+    draft = line + '\n' + (draft ? draft + '\n' : '');
+  }
+  const newId = require('crypto').randomUUID();
+  if (draft) floatingInputDrafts.set(newId, draft);
+  const purpose = require('../core/session-scenes').scenePurpose(sceneId);
+  const opts = {
+    id: newId, cwd: s.cwd,
+    ...(s.workspaceLabel ? { workspaceLabel: s.workspaceLabel } : {}),
+    ...(s.currentModel?.id ? { model: s.currentModel.id } : {}),
+    ...(s.effort ? { effort: s.effort } : {}),
+    ...(s.codexProfile ? { codexProfile: s.codexProfile } : {}),
+    ...(typeof s.fastMode === 'boolean' ? { fastMode: s.fastMode } : {}),
+    ...(s.codexSpeedTier ? { codexSpeedTier: s.codexSpeedTier } : {}),
+    ...(s.deepseekRoute ? { deepseekRoute: s.deepseekRoute } : {}),
+    ...(typeof s.contextMax === 'number' ? { contextMax: s.contextMax } : {}),
+    ...(purpose ? { purpose } : {}),
+  };
+  try {
+    await ipcRenderer.invoke('create-session', { kind: String(s.kind || '').replace(/-resume$/, ''), opts });
+  } catch (error) {
+    floatingInputDrafts.delete(newId);
+    alertError('换场景失败：' + String(error && error.message || error).replace(/Error invoking remote method '[^']+': (?:Error: )?/, ''));
+    return;
+  }
+  if (fresh) {
+    clearFloatingInputDraft(sessionId);
+    // 空会话没有任何历史，直接删掉（「关闭」在 Hub 里是休眠，会留在左侧占一行）
+    try {
+      const result = await ipcRenderer.invoke('delete-session', sessionId);
+      if (!result?.ok) console.warn('[scene] 收起空会话失败：', result?.message || result?.error);
+      else {
+        // 与右键「永久删除」相同：主进程按进程结束发来的 session-closed 会把它标成「进程已退出」留在左侧，这里一并清掉
+        sessions.delete(sessionId);
+        scheduleSessionListRender();
+        schedulePersist();
+      }
+    } catch (error) { console.warn('[scene] 收起空会话失败：', error.message); }
   }
 }
 
@@ -4893,6 +4956,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   }
   composer.append(statusRow, quickReplyRow, composerRow, composerRail);
   const composerTools = require('./composer-tools-menu').mountComposerToolsMenu({composer, tuningControls, bridgeToolbar});
+  const composerScene = require('./composer-scene').mountComposerSceneChip({ composer, tuningControls, before: modelChip,
+    sessionId, getSession: () => sessions.get(sessionId), ipcRenderer,
+    onSwitch: (sceneId, { fresh }) => switchSessionScene(sessionId, sceneId, inputBox, { fresh }) });
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
@@ -4989,7 +5055,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     // hook 部署失败时状态只能靠落盘记录和屏幕，必须让用户看见，而不是静默降级。
     const hookWarning = session.hookIntegrationWarning ? '状态信号降级（hook 未部署）：' + session.hookIntegrationWarning : '';
     // 写作成员没能用上写作专用配置时同样要让人看见（core/session-manager.js 的写作目录准备）
-    const writingWarning = session.writingContextWarning ? '写作上下文降级：' + session.writingContextWarning : '';
+    const writingWarning = session.writingContextWarning ? (/^scene-/.test(session.purpose || '') ? '场景降级：' : '写作上下文降级：') + session.writingContextWarning : '';
     const detailText = [localHealth, status.detail, hookWarning, writingWarning].filter(Boolean).join(' · ');
     const detail = detailText ? `· ${detailText}` : '';
     if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
@@ -5417,6 +5483,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       if (inputBox.getClientRects().length) saveFloatingInputDraft(sessionId, inputBox);
       voiceInput.dispose();
       composerTools.dispose();
+      composerScene.dispose();
       promptPolish.dispose();
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
@@ -6042,28 +6109,15 @@ function focusOrdinarySearchHit(hit, preview) {
 }
 
 async function createSessionFromSearchHit(hit) {
-  if (!hit || !hit.nativeSessionId) return null;
-  const opts = {
-    title: hit.title || undefined,
-    cwd: hit.cwd || undefined,
-    resumeTranscriptPath: hit.transcriptPath || undefined,
-    autoTitleGenerated: !!hit.title,
-  };
-  let kind;
-  if (hit.nativeFamily === 'claude') {
-    kind = hit.provider === 'deepseek' ? 'deepseek-resume' : 'claude-resume';
-    opts.resumeCCSessionId = hit.nativeSessionId;
-    if (hit.provider === 'deepseek') opts.deepseekLegacyClaude = true;
-  } else if (hit.nativeFamily === 'codex') {
-    kind = hit.provider === 'deepseek' ? 'deepseek-resume' : 'codex-resume';
-    opts.useResume = true;
-    opts.codexSid = hit.nativeSessionId;
-    if (hit.codexSessionsRoot) opts.codexSessionsRoot = hit.codexSessionsRoot;
-    if (hit.codexProfile) opts.codexProfile = hit.codexProfile;
-  } else {
-    return null;
+  const { resumeRequestForSearchHit } = require('./search-hit-resume');
+  let codeagentModel;
+  if (hit && hit.provider === 'codeagent') {
+    // 与启动中心「恢复会话」→ CodeAgent 相同：用「设为默认」的 CodeAgent 模型，没设就由 Hub 用默认模型。
+    try { codeagentModel = ((await ipcRenderer.invoke('get-hub-config')) || {}).defaultModels?.codeagent || undefined; } catch { codeagentModel = undefined; }
   }
-  return ipcRenderer.invoke('create-session', { kind, opts });
+  const request = resumeRequestForSearchHit(hit, { codeagentModel });
+  if (!request) return null;
+  return ipcRenderer.invoke('create-session', request);
 }
 
 async function openGlobalSearchHit(hit, opts = {}) {
@@ -9520,7 +9574,7 @@ function createSecondarySessionView(sessionId, panel, options = {}) {
         const container = document.createElement('div'); container.className = 'terminal-container';
         host.prepend(container); container.append(cached.container); cached.container.style.display = 'block';
         if (!cached.opened) {
-          cached.terminal.open(cached.container); cached.opened = true; installHiddenRenderGuard(cached.terminal);
+          cached.terminal.open(cached.container); cached.opened = true; installHiddenRenderGuard(cached.terminal); installSharedWidthCache(cached.terminal);
           setupImageHover(cached.terminal, cached.container);
           void hydrateTerminalFromSnapshot(sessionId, cached);
         }

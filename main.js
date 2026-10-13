@@ -163,6 +163,7 @@ const { TranscriptParserService } = require('./core/transcript-parser-service.js
 const { CodexJsonlUsageService } = require('./main/usage/codex-jsonl-usage-service.js');
 const {
   claudeProjectRoots,
+  codeAgentProjectsRoot,
   findTranscriptByCCSessionId,
   healPersistedCwds,
   projectSlug,
@@ -192,6 +193,8 @@ function sessionSearchRoots(envName, defaults) {
 const sessionSearchService = new SessionSearchService({
   cachePath: path.join(getHubDataDir(), 'cache', 'session-search-v2.json'),
   claudeRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CLAUDE_ROOTS', claudeProjectRoots()),
+  // 公司 CodeAgent 的记录目录：该目录下的记录在「昨日之我」里标为 CodeAgent，恢复时用 CodeAgent。
+  codeagentRoots: [codeAgentProjectsRoot()].filter(Boolean),
   codexRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CODEX_ROOTS', [DEFAULT_CODEX_SESSIONS_ROOT]),
   // 2026-08-28：补上 Kimi 与 Gemini。此前只有 claude/codex/meeting 三个适配器，
   // Kimi 的 45 个会话、Gemini 的 21 个会话正文一条都进不了索引。
@@ -3303,6 +3306,8 @@ try {
 } catch (e) {
   console.warn('[hub-rules] 规则页初始化失败：', e && e.message);
 }
+// 会话场景（2026-10-13）：「规则 → 场景」页与输入框的「场景」按钮。
+require('./main/ipc/session-scenes-handlers').registerSessionScenesIpc(ipcMain,{dataDir:getHubDataDir(),shell});
 // 一键更新（2026-10-13，公司版）：只有发行目标写了下载源才开启；主仓库没有这个入口。
 {
   const distribution = require('./core/distribution');

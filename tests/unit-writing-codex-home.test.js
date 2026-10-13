@@ -138,13 +138,14 @@ test('恢复旧写作会话：记录不在写作目录时，Hub 留在原目录�
   assert.strictEqual(homes.hasRollout(root, 'ffff'), false);
   assert.strictEqual(homes.hasRollout(path.join(root, 'nope'), '01a12b49'), false);
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
-  assert.ok(src.includes("opts.purpose === 'writing'") && src.includes('hasRollout(target, resumeSid)'), '启动时按写作用途换目录，旧会话留在原目录');
+  assert.ok(src.includes("isCleanPurpose(opts.purpose) && !webRoute") && require('../core/session-scenes').isCleanPurpose('writing')
+    && src.includes('hasRollout(target, resumeSid)'), '启动时按写作用途（及场景会话）换目录，旧会话留在原目录');
   assert.ok(src.includes('historyInWritingHome') && src.includes('historySqliteHomeSync(historyHome'), '换账号后恢复写作会话走跨账号恢复');
   assert.ok(src.includes('if (isNativeCodex) {') && src.includes('writingContextWarning'), '原生后端不换目录，并写明降级');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   assert.ok(renderer.includes('写作上下文降级'), '降级在状态栏看得见');
   assert.ok(src.includes('instructions: !writingCodexHome'), '写作目录不同步个人规则正文');
-  assert.ok(src.includes("!(opts.purpose === 'writing' && contextKind !== 'codex')"), 'Claude 写作成员不同步个人规则');
+  assert.ok(src.includes("!(require('./session-scenes').isCleanPurpose(opts.purpose) && contextKind !== 'codex')"), 'Claude 写作成员（及场景会话）不同步个人规则');
 });
 
 test('个人规则同步：instructions:false 只同步守卫，不写规则正文', () => {

@@ -741,6 +741,19 @@
     return ipcRenderer.invoke('workspace:pick');
   }
 
+  // 新会话默认用「规则 → 场景」里设的默认场景（2026-10-13）；默认是编程开发时什么都不加。
+  async function defaultSceneOpts(kind, opts) {
+    if (opts.purpose) return {};
+    const scenes = require('../core/session-scenes');
+    if (!scenes.supportsScenes(kind, opts)) return {};
+    try {
+      const data = await require('./composer-scene').loadScenes(ipcRenderer);
+      const id = data && data.defaultScene;
+      const purpose = id && data.scenes.some(s => s.id === id) ? scenes.scenePurpose(id) : null;
+      return purpose ? { purpose } : {};
+    } catch (_) { return {}; }
+  }
+
   async function createSession(kind, options = {}) {
     let workspace = options.workspace || null;
     if (!workspace && options.cwd) {
@@ -752,6 +765,7 @@
     return ipcRenderer.invoke('create-session', {
       kind,
       opts: {
+        ...(await defaultSceneOpts(kind, options.opts || {})),
         ...(options.opts || {}),
         cwd: workspace.path,
         workspaceLabel: workspace.label,
