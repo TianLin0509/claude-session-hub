@@ -9,7 +9,9 @@ test('foreign AI uses Hub proxy; domestic endpoints, assets and auth bypass it',
   assert.equal(r.route('https://'+host,proxy),'direct',host);
  }
  assert.ok(p.bypass.includes('deepseek.com;*.deepseek.com'));assert.ok(!p.bypass.includes('*deepseek.com;'));
- assert.deepEqual(r.policy('').args,['--no-proxy-server']);
+ // 没配 Hub 代理：不加代理参数，跟随系统网络设置（公司电脑靠系统里的公司代理上网，2026-10-13）。
+ assert.deepEqual(r.policy('').args,[]);
+ assert.equal(r.route('https://chatgpt.com',''),'system');assert.equal(r.route('https://chat.deepseek.com',''),'system');
  for(const bad of ['bad','http://u:p@localhost:7890','http://localhost:7890/path','file:///x'])assert.throws(()=>r.policy(bad),/代理地址无效/);
 });
 test('each launch reads current Hub settings, and both ordinary and debugging launches use the same route',()=>{
