@@ -76,6 +76,13 @@ function normalizeCodeAgentModel(model) {
   return codeAgentModels.normalizeModel(model);
 }
 
+// 模型菜单：已知模型 + 本机 CodeAgent 配置目录里的模型 + 回答里见过的模型（core/codeagent-models.js）。
+function localModelOptions(dataDir, env = process.env) {
+  let configDir = null;
+  try { configDir = resolveCodeAgentConfig(env).configDir; } catch { configDir = null; }
+  return codeAgentModels.modelOptions(dataDir, { configDir });
+}
+
 module.exports = {
   DEFAULT_COMMAND,
   DEFAULT_CONFIG_ENV,
@@ -87,5 +94,6 @@ module.exports = {
   resolveCodeAgentConfig,
   commandHead,
   normalizeCodeAgentModel,
+  localModelOptions,
   isCodeAgentInstalled,
 };

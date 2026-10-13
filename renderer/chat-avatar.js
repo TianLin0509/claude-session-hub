@@ -10,7 +10,7 @@ const ARTWORK = Object.freeze({
 });
 // 公司 CodeAgent 背后的模型可能是 GLM / DeepSeek / MiniMax（2026-10-13）：按这条回答的模型挑画像，
 // 这几张随 CodeAgent 一起发行（公司版 target.json 不丢它们）。
-const CODEAGENT_MODEL_ARTWORK = Object.freeze({ glm: 'glm', deepseek: 'deepseek', minimax: 'minimax' });
+const CODEAGENT_MODEL_ARTWORK = Object.freeze({ glm: 'glm', deepseek: 'deepseek', minimax: 'minimax', qwen: 'qwen' });
 const USER_AVATAR_SRC = '../claude-wx.ico';
 const ASSISTANT_AVATAR_SRC = 'assets/assistant/penguin.png';
 

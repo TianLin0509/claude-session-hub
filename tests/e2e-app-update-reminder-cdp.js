@@ -3,12 +3,12 @@
 // 右下角「国内正常 / 异常」删除）。
 //   node tests/e2e-app-update-reminder-cdp.js [--out <截图目录>]
 // 把当前工作区按公司目标导出到临时目录、以源码方式启动（node_modules 链接到本仓库的依赖，只读），
-// 一个本机 http 服务冒充两个更新源，按需返回 v1.0.2 / v1.0.3。
-//   ① 启动后静默查到 v1.0.2 → 自动弹出更新窗一次；设置按钮挂红点；标题栏不再出「有新版本」；
+// 一个本机 http 服务冒充两个更新源，按需返回比当前高一版、两版的版本号。
+//   ① 启动后静默查到新版本（当前 +1）→ 自动弹出更新窗一次；设置按钮挂红点；标题栏不再出「有新版本」；
 //   ② 点「稍后」关窗 → 红点还在；
 //   ③ 重启（同一数据目录）→ 不再弹窗，红点还在；
-//   ④ 打开设置菜单：「⬆️ 有新版本 v1.0.2」带红点 → 点开看到更新窗 → 红点消失；重启后也不再出现；
-//   ⑤ 源上出现 v1.0.3 → 重启后再弹一次，红点重新出现；
+//   ④ 打开设置菜单：「⬆️ 有新版本 vX」带红点 → 点开看到更新窗 → 红点消失；重启后也不再出现；
+//   ⑤ 源上出现再新一版（当前 +2）→ 重启后再弹一次，红点重新出现；
 //   ⑥ 右下角没有「国内正常 / 异常」，VPN / 直连那一项还在。
 const fs = require('fs'), path = require('path'), os = require('os'), net = require('net'), http = require('http'), assert = require('assert/strict');
 const { execFileSync } = require('child_process');
@@ -29,7 +29,10 @@ async function main() {
   execFileSync('cmd.exe', ['/c', 'mklink', '/J', path.join(exportDir, 'node_modules'), path.join(repo, 'node_modules')], { stdio: 'ignore' });
   const current = JSON.parse(fs.readFileSync(path.join(exportDir, 'community-edition.json'), 'utf8')).version;
 
-  let served = '1.0.2';
+  // 源上的「新版本」按导出出来的当前版本往上加，发版改版本号后测试照样成立。
+  const bump = (v, n) => v.split('.').map((x, i) => (i === 2 ? String(Number(x) + n) : x)).join('.');
+  const V1 = bump(current, 1), V2 = bump(current, 2);
+  let served = V1;
   const asset = { file: 'AIHubHuawei-x-update.gz', bytes: 1024, sha256: '0'.repeat(64) };
   const server = http.createServer((req, res) => {
     if (/\/latest\.json$/.test(req.url)) {
@@ -73,10 +76,10 @@ async function main() {
   try {
     // ① 首次查到 → 弹一次 + 红点
     await launch();
-    await waitChecked('1.0.2');
+    await waitChecked(V1);
     await until(dialogOpen, 'auto popup', 10000);
     const intro = await c.eval(`document.querySelector('.app-update-dialog').innerText`);
-    check(intro.includes(`v${current}`) && /v1\.0\.2/.test(intro) && /v1\.0\.2 的更新说明/.test(intro), `启动后查到新版本，自动弹出更新窗（v${current} → v1.0.2，带更新说明）`);
+    check(intro.includes(`v${current}`) && intro.includes(`v${V1} 的更新说明`), `启动后查到新版本，自动弹出更新窗（v${current} → v${V1}，带更新说明）`);
     check(await c.eval(dot), '设置按钮同时挂上红点');
     check(!(await c.eval(`!!document.getElementById('hub-update-pill')`)), '标题栏不再出现「有新版本」小标签');
     await shot('01-popup');
@@ -93,7 +96,7 @@ async function main() {
 
     // ③ 重启：不再弹，红点还在
     await launch();
-    await waitChecked('1.0.2');
+    await waitChecked(V1);
     await _waitMs(1500);
     check(!(await c.eval(dialogOpen)), '重启后同一个版本不再弹窗');
     check(await c.eval(dot), '重启后红点还在');
@@ -101,7 +104,7 @@ async function main() {
     await click('#btn-options');
     await until(`getComputedStyle(document.getElementById('options-menu')).display !== 'none'`, 'menu', 10000);
     const item = await c.eval(`(()=>{const e=document.getElementById('options-check-update');return {text:e.textContent,unread:e.classList.contains('update-has-unread')};})()`);
-    check(item.text.includes('有新版本 v1.0.2') && item.unread, '设置菜单里是「⬆️ 有新版本 v1.0.2」，带红点');
+    check(item.text.includes(`有新版本 v${V1}`) && item.unread, `设置菜单里是「⬆️ 有新版本 v${V1}」，带红点`);
     await shot('03-menu');
     await click('#options-check-update');
     await until(dialogOpen, 'dialog from menu', 10000);
@@ -110,17 +113,17 @@ async function main() {
     await click('.app-update-dialog [data-au="close"]');
     await quit();
     await launch();
-    await waitChecked('1.0.2');
+    await waitChecked(V1);
     await _waitMs(1500);
     check(!(await c.eval(dialogOpen)) && !(await c.eval(dot)), '看过之后重启：不弹窗、也没有红点');
     await quit();
 
     // ⑤ 新的版本再提醒
-    served = '1.0.3';
+    served = V2;
     await launch();
-    await waitChecked('1.0.3');
-    await until(dialogOpen, 'popup for 1.0.3', 10000);
-    check(/v1\.0\.3/.test(await c.eval(`document.querySelector('.app-update-dialog').innerText`)) && await c.eval(dot), '源上出现 v1.0.3 后，重启再弹一次，红点重新出现');
+    await waitChecked(V2);
+    await until(dialogOpen, 'popup for next version', 10000);
+    check((await c.eval(`document.querySelector('.app-update-dialog').innerText`)).includes(`v${V2}`) && await c.eval(dot), `源上出现 v${V2} 后，重启再弹一次，红点重新出现`);
     await shot('05-next-version');
     result.passed = true;
   } catch (error) {
