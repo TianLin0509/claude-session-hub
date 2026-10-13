@@ -29,11 +29,10 @@
   },
   "$rulesChannel": "「规则」页的通用规则从服务器的 company 频道拉（2026-10-12）",
   "rulesChannel": "company",
-  "$drop": "只有 CodeAgent，其他 AI 的卡片头像不带（CodeAgent 用 glm 那张）",
+  "$drop": "只有 CodeAgent，其他 AI 的卡片头像不带。CodeAgent 按模型用 glm / deepseek / minimax 三张（2026-10-13），这三张保留",
   "drop": [
     "renderer/assets/ai-avatars/cel-v2/claude.png",
     "renderer/assets/ai-avatars/cel-v2/codex.png",
-    "renderer/assets/ai-avatars/cel-v2/deepseek.png",
     "renderer/assets/ai-avatars/cel-v2/gemini.png",
     "renderer/assets/ai-avatars/cel-v2/kimi.png",
     "renderer/assets/ai-avatars/cel-v2/qwen.png"

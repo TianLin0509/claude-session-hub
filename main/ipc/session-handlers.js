@@ -499,6 +499,13 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   // 公司电脑上装了 CodeAgent 时，新建会话 / 群聊默认用它（只查文件是否存在，不代表已登录）。
+  // CodeAgent 模型菜单：已知模型 + 本机回答里实际出现过的模型（core/codeagent-models.js）。
+  ipcMain.handle('codeagent:models', () => {
+    try {
+      const { getHubDataDir } = require('../../core/data-dir');
+      return { options: require('../../core/codeagent-models').modelOptions(getHubDataDir()) };
+    } catch (error) { return { options: [], error: error.message }; }
+  });
   ipcMain.handle('codeagent:available', () => {
     try { return { installed: require('../../core/codeagent-config').isCodeAgentInstalled() }; }
     catch (error) { return { installed: false, error: error.message }; }
