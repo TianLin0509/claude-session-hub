@@ -8497,6 +8497,7 @@ const sessionContextMenu = createSessionContextMenuController({
   sessions,
   meetings,
   ipcRenderer,
+  copyText: (text, options) => clipboardController.copyText(text, options),
   getActiveSessionId: () => activeSessionId,
   setActiveSessionId: (value) => { activeSessionId = value; },
   getActiveMeetingId: () => activeMeetingId,
