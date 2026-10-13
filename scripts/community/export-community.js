@@ -34,6 +34,8 @@ const VERSION_TOKENS = {
   '@@COMMUNITY_TAG@@': v => `v${v.edition}`,
   '@@COMMUNITY_VERSION@@': v => v.edition,
   '@@UPSTREAM_VERSION@@': v => v.upstream,
+  // 产品显示名（安装脚本建的桌面快捷方式、文档）；公司版在 target.json 里另起名字。
+  '@@COMMUNITY_PRODUCT@@': v => v.product || 'AI Hub Community',
 };
 const TEXT_EXT = new Set(['.js', '.cjs', '.mjs', '.json', '.html', '.css', '.md', '.ps1', '.bat', '.cmd', '.py', '.yml', '.yaml', '.txt', '.svg', '.toml']);
 
@@ -273,7 +275,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
       if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(String(targetSpec.repo || ''))) throw new Error('target.json 缺少有效的 repo');
       applyTargetPackaging(manifest, targetSpec);
     }
-    const versions = { edition: version || (targetSpec && targetSpec.version) || manifest.version, upstream: upstreamVersion };
+    const versions = { edition: version || (targetSpec && targetSpec.version) || manifest.version, upstream: upstreamVersion, product: targetSpec && targetSpec.productName };
     if (!versions.edition) throw new Error('缺少社区版版本号（manifest.version 或 --version）');
     let imageShrink = null;
 
@@ -326,7 +328,9 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
     }
 
     fs.writeFileSync(path.join(outDir, 'community-edition.json'), JSON.stringify({
-      edition: 'community', ...(targetSpec ? { target, repo: targetSpec.repo, ...(targetSpec.features ? { features: targetSpec.features } : {}), ...(targetSpec.rulesChannel ? { rulesChannel: targetSpec.rulesChannel } : {}), ...(Array.isArray(targetSpec.kinds) ? { kinds: targetSpec.kinds } : {}) } : {}), version: versions.edition, upstreamVersion: versions.upstream,
+      edition: 'community', ...(targetSpec ? { target, repo: targetSpec.repo, ...(targetSpec.features ? { features: targetSpec.features } : {}), ...(targetSpec.rulesChannel ? { rulesChannel: targetSpec.rulesChannel } : {}), ...(Array.isArray(targetSpec.kinds) ? { kinds: targetSpec.kinds } : {}),
+        ...(targetSpec.productName ? { productName: targetSpec.productName } : {}), ...(targetSpec.editionBadge ? { editionBadge: targetSpec.editionBadge } : {}),
+        ...(targetSpec.update ? { update: targetSpec.update } : {}), ...(Array.isArray(targetSpec.releaseNotes) ? { releaseNotes: targetSpec.releaseNotes } : {}) } : {}), version: versions.edition, upstreamVersion: versions.upstream,
       upstreamCommit: source.commit, upstreamDirty: source.dirty,
     }, null, 2) + '\n', 'utf8');
     updatePackage(outDir, manifest, versions);
@@ -337,12 +341,24 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
         if (text.includes(COMMUNITY_REPO)) fs.writeFileSync(full, text.split(COMMUNITY_REPO).join(targetSpec.repo), 'utf8');
       }
     }
+    // 发行目标的字面量替换（公司版：发布文件名 AIHubCommunity-… 换成公司版自己的前缀）。只做整串替换，
+    // 规则写在 target.json 里，安装目录、exe 名这类不带连字符的写法不受影响。
+    const renames = targetSpec && Array.isArray(targetSpec.renameTokens) ? targetSpec.renameTokens : [];
+    for (const rule of renames) if (!rule || typeof rule.from !== 'string' || rule.from.length < 6 || typeof rule.to !== 'string') throw new Error('target.json 的 renameTokens 每项需要 from（至少 6 个字符）和 to');
+    if (renames.length) {
+      for (const file of listFiles(outDir).filter(isText)) {
+        const full = path.join(outDir, file);
+        const text = fs.readFileSync(full, 'utf8');
+        const next = renames.reduce((t, r) => t.split(r.from).join(r.to), text);
+        if (next !== text) fs.writeFileSync(full, next, 'utf8');
+      }
+    }
 
     const files = listFiles(outDir);
     const leftover = files.filter(isText).filter(file => /@community-(?:strip|else|end)\b|@@COMMUNITY_[A-Z]+@@/.test(fs.readFileSync(path.join(outDir, file), 'utf8')));
     const references = checkReferences(outDir, files);
     const syntax = checkSyntax(outDir, files);
-    const hits = scanTree(outDir, files);
+    const hits = scanTree(outDir, files, { allowLiterals: targetSpec && targetSpec.leakAllow });
     const leaks = hits.filter(hit => hit.severity !== 'residue');
     const residue = hits.filter(hit => hit.severity === 'residue');
     // 公开库自带的通用审计（真实用户目录、账号文件、密钥形态）也必须在导出树上通过。
