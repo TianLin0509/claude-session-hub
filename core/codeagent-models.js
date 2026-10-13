@@ -32,7 +32,8 @@ function isSafeModelId(value) {
 }
 
 // 别的 CLI 的模型名（从 Claude / Codex 等会话带过来的设置）不是 CodeAgent 的，回到默认。
-const OTHER_CLI_MODEL = /^(?:claude-|fable|opus|sonnet|haiku|gpt-|o\d|gemini|kimi|qwen|chatgpt-web)/i;
+// 2026-10-13 公司真机：CodeAgent 自己就有 Qwen3.6-27B-CodeAgent-VL，qwen 开头的不能再当成别家的拦掉。
+const OTHER_CLI_MODEL = /^(?:claude-|fable|opus|sonnet|haiku|gpt-|o\d|gemini|kimi|chatgpt-web)/i;
 
 // 已知模型按名单的大小写；其余安全的名字原样保留（公司内部名大小写敏感与否未知，不改它）。
 function normalizeModel(value) {
@@ -96,10 +97,18 @@ function readConfigFile(full, fsModule) {
   return result;
 }
 
+// 2026-10-13 公司真机：可用模型清单在 .cac.json 的 enterpriseModelOptionsCache 里；缓存类的值有时是
+// 再编码过一次的 JSON 文本，按 JSON 再解一层再找。
 function collectModelNames(node, inModelSection, out, depth = 0) {
   if (depth > 8 || out.size > 60 || node == null) return;
   if (typeof node === 'string') {
-    if (inModelSection && CONFIG_MODEL_NAME.test(node.trim()) && isSafeModelId(node)) out.add(node.trim());
+    const text = node.trim();
+    if (inModelSection && CONFIG_MODEL_NAME.test(text) && isSafeModelId(text)) out.add(text);
+    else if (inModelSection && /^[[{]/.test(text) && text.length <= 256 * 1024) {
+      let inner = null;
+      try { inner = JSON.parse(text); } catch { inner = null; }
+      if (inner && typeof inner === 'object') collectModelNames(inner, true, out, depth + 1);
+    }
     return;
   }
   if (Array.isArray(node)) { for (const item of node.slice(0, 200)) collectModelNames(item, inModelSection, out, depth + 1); return; }
@@ -199,6 +208,27 @@ function recordObserved(dataDir, value, now = Date.now()) {
   return true;
 }
 
+// ---------------------------------------------------------------- 模型证据日志（本机）
+// 2026-10-13 公司真机：选了 MiniMax 仍显示 GLM，会话里却没留下「请求了谁、命令里带了谁、实际回答用了谁」，
+// 只能请同事手工跑排查脚本。这里把这三件事各记一行到 Hub 数据目录 logs/codeagent-model.log，
+// 只记会话号前 8 位与模型名，不记提示词和路径；超过 256 KB 时轮转一份。
+const MODEL_LOG_MAX = 256 * 1024;
+
+function appendModelLog(dataDir, fields, now = new Date()) {
+  if (!dataDir || !fields || typeof fields !== 'object') return false;
+  try {
+    const dir = path.join(dataDir, 'logs');
+    const file = path.join(dir, 'codeagent-model.log');
+    fs.mkdirSync(dir, { recursive: true });
+    try { if (fs.statSync(file).size > MODEL_LOG_MAX) fs.renameSync(file, file + '.1'); } catch { /* 还没有文件 */ }
+    const parts = Object.entries(fields)
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .map(([key, value]) => `${key}=${String(value).replace(/[\r\n\t]/g, ' ').slice(0, 120)}`);
+    fs.appendFileSync(file, `${now.toISOString()} ${parts.join(' ')}\n`, 'utf8');
+    return true;
+  } catch { return false; }
+}
+
 // 新建会话和模型菜单用的列表：已知的在前，本机 CodeAgent 配置里的其次，回答里见过的其他模型在后。
 function modelOptions(dataDir, { configDir = null, fsModule = fs } = {}) {
   const options = KNOWN.map(option => ({ ...option, source: 'hub' }));
@@ -228,5 +258,6 @@ module.exports = {
   scanModelNamesInText,
   readObserved,
   recordObserved,
+  appendModelLog,
   modelOptions,
 };

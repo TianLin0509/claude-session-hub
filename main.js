@@ -603,7 +603,9 @@ sessionManager.on('native-agent-lifecycle', event => {
 
 // CodeAgent：回答里的真实模型才算数（请求的模型可能因为没有权限而没生效），见 core/codeagent-models.js。
 // Stop hook 那一刻才开始盯的记录拿不到 model（尾巴从文件末尾读起），这时从记录末尾补读最后一条回答的 model。
-async function observeCodeAgentModel(hubSessionId, ev, transcriptPath) {
+// 2026-10-13 公司真机：会话答了几十轮，Hub 一次实际模型都没记下（回合结束事件没走到这里）。
+// 所以 CodeAgent 的 Stop hook 也直接来这里读一次（via=stop-hook）；两条路先后到达时，第二次发现没有变化就不做事。
+async function observeCodeAgentModel(hubSessionId, ev, transcriptPath, source = 'turn-complete') {
   try {
     const codeAgentModels = require('./core/codeagent-models');
     let modelId = ev.modelId || null;
@@ -611,6 +613,13 @@ async function observeCodeAgentModel(hubSessionId, ev, transcriptPath) {
     if (!modelId && file) modelId = (await require('./core/read-last-assistant').readLastAssistantMessage(file))?.model || null;
     const session = sessionManager.getSession(hubSessionId);
     const observed = session && modelId ? codeAgentModels.observeModel(session, modelId) : null;
+    if (observed || !modelId) {
+      codeAgentModels.appendModelLog(getHubDataDir(), {
+        event: 'observe', via: source, session: String(hubSessionId || '').slice(0, 8),
+        current: session?.currentModel?.id, actual: modelId || '(none)', transcript: file ? 'yes' : 'no',
+        switched: observed?.fields?.currentModel?.id,
+      });
+    }
     if (!observed) return;
     const updated = sessionManager.updateSessionMeta(hubSessionId, observed.fields);
     if (updated) {
@@ -2828,6 +2837,7 @@ const hookServer = http.createServer((req, res) => {
         }
         if (!isSubagentContext && event === 'stop' && parsed.transcriptPath) {
           void transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath, { turnId: parsed.turnId || null });
+          if (isCodeAgentKind(hookTargetSession.kind)) void observeCodeAgentModel(parsed.sessionId, {}, parsed.transcriptPath, 'stop-hook');
         }
         if (!isSubagentContext && event === 'stop-failure') {
           transcriptTap.notifyClaudeError(parsed.sessionId, {
