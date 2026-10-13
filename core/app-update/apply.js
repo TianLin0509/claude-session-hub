@@ -88,9 +88,11 @@ function stageIncremental({ dataDir, payloadFile, resourcesDir, version, from, e
 }
 
 // 隐藏启动替换脚本（与本进程脱离，本进程退出后它继续跑）。
+// 本机实测（2026-10-13）：直接 detached 启动 powershell.exe 一行都不执行；经 cmd 的 start /b 转一手
+// 才能脱离本进程、在本进程退出后继续跑完，且不弹窗。/s 让 cmd 原样保留引号里的路径（可带空格）。
 function launchHelper(paths, { env = process.env, spawnImpl = spawn } = {}) {
-  const child = spawnImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-    '-File', paths.helper, '-Plan', paths.plan], { detached: true, stdio: 'ignore', windowsHide: true, env });
+  const line = `/d /s /c "start "" /b powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${paths.helper}" -Plan "${paths.plan}""`;
+  const child = spawnImpl(process.env.ComSpec || 'cmd.exe', [line], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true, env });
   if (child && typeof child.unref === 'function') child.unref();
   return child;
 }

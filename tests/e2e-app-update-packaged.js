@@ -93,6 +93,10 @@ async function main() {
   // 替换脚本重新拉起的程序：等同一端口再次可连。
   const reconnect = async () => {
     try { c.close(); } catch (_) {}
+    // 先等旧进程真正退出，否则会连到正在关闭的旧窗口。
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
+    const quitBy = Date.now() + 60000;
+    while (hub && hub.pid && alive(hub.pid)) { if (Date.now() > quitBy) throw Error('old Hub did not exit after apply'); await _waitMs(250); }
     const end = Date.now() + 120000;
     for (;;) {
       try { c = await connectFirstPage({ cdpHttpBase: `http://127.0.0.1:${port}`, label: 'relaunched' }); await c.eval('1'); break; }
