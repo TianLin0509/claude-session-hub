@@ -47,6 +47,34 @@ test('enterpriseModelOptionsCache 是再编码过一次的 JSON 文本：同样�
   assert.deepStrictEqual(new Set(ids), new Set(ENTERPRISE));
 });
 
+test('真机结构（第二轮排查）：账号清单 2 项，分档配置里的 GLM-5.2-WX / Qwen / CodeAgentCLI 不单列，只列这 2 个', () => {
+  const dir = configDir({ enterpriseModelOptionsCache: [
+    { value: 'GLM-5.2-WX-Auto', label: 'GLM-5.2-WX-Auto', description: 'auto', providerKey: 'abcdef',
+      tieredModelConfig: { large: 'GLM-5.2-WX', small: 'GLM-5.2', vision: 'Qwen3.6-27B-CodeAgent-VL' }, contextWindow: 202752, isExternalModel: false },
+    { value: 'MiniMax-M2.7', label: 'MiniMax-M2.7', description: 'minimax', modelParam: { 'MiniMax-M2.7-CodeAgentCLI': { temperature: 1 } }, contextWindow: 192000 },
+  ], projects: { 'D:/w': { lastModelUsage: { 'GLM-5.2-WX': {} } } } });
+  const found = models.configuredModels(dir);
+  assert.strictEqual(found.authoritative, true);
+  assert.deepStrictEqual(models.modelOptions(null, { configDir: dir }).map(o => o.id), ['GLM-5.2-WX-Auto', 'MiniMax-M2.7']);
+});
+
+test('只有 DeepSeek 权限的同事：只列 DeepSeek，不再塞内置的 GLM / MiniMax；回答里见过的模型附在后面', () => {
+  const dir = configDir({ enterpriseModelOptionsCache: [{ value: 'deepseek0731-wx-chat', label: 'DeepSeek' }] });
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeagent-observed-'));
+  models.recordObserved(dataDir, 'deepseek0731-wx-reasoner');
+  const options = models.modelOptions(dataDir, { configDir: dir });
+  assert.deepStrictEqual(options.map(o => o.id), ['deepseek0731-wx-chat', 'deepseek0731-wx-reasoner']);
+  assert.deepStrictEqual(options.map(o => o.source), ['account', 'observed']);
+});
+
+test('没有账号清单（老版本 CodeAgent）：沿用内置两个 + 配置里找到的名字', () => {
+  const dir = configDir({ tieredModelConfig: { large: 'GLM-5.2-WX' } });
+  const ids = models.modelOptions(null, { configDir: dir }).map(o => o.id);
+  assert.deepStrictEqual(ids.slice(0, 2), ['GLM-5.2-WX-Auto', 'MiniMax-M2.7']);
+  assert(ids.includes('GLM-5.2-WX'));
+  assert.strictEqual(models.configuredModels(dir).authoritative, false);
+});
+
 test('不在模型段里的 JSON 文本不展开（聊天记录里的片段不算模型）', () => {
   const dir = configDir({ projects: { 'D:/w': { lastPrompt: JSON.stringify([{ value: 'GLM-7.7' }]) } }, tipsHistory: JSON.stringify(['deepseek-v9']) });
   const ids = models.configuredModels(dir).models;
