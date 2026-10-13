@@ -284,7 +284,7 @@ async function main() {
       dataDir: DATA_DIR,
       port,
       label: 'unified-launch-center',
-      windowMode: 'hidden',
+      windowMode: 'background',
       extraEnv: {
         AI_HUB_WORKSPACE_ROOT: WORKSPACE_ROOT,
         CLAUDE_HUB_E2E: '1',
@@ -508,6 +508,7 @@ async function main() {
     fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify({ ...result, resultPath: RESULT_PATH }, null, 2));
   } catch (error) {
+    console.error('[launch-center] assertion:', error && (error.stack || error.message));
     if (client) {
       try { await screenshot(client, path.join(ARTIFACT_DIR, `failure-${RUN_ID}.png`)); }
       catch (captureError) { console.error('Failure screenshot unavailable:', captureError.message); }
