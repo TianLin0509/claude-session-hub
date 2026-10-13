@@ -32,8 +32,9 @@ function isSafeModelId(value) {
 }
 
 // 别的 CLI 的模型名（从 Claude / Codex 等会话带过来的设置）不是 CodeAgent 的，回到默认。
-// 2026-10-13 公司真机：CodeAgent 自己就有 Qwen3.6-27B-CodeAgent-VL，qwen 开头的不能再当成别家的拦掉。
-const OTHER_CLI_MODEL = /^(?:claude-|fable|opus|sonnet|haiku|gpt-|o\d|gemini|kimi|chatgpt-web)/i;
+// 2026-10-13 田哥确认：Qwen（含 Qwen3.6-27B-CodeAgent-VL）是他用过的另一个 harness 的模型，不是 CodeAgent 的，
+// 即使出现在 .cac.json 里也不认。
+const OTHER_CLI_MODEL = /^(?:claude-|fable|opus|sonnet|haiku|gpt-|o\d|gemini|kimi|qwen|chatgpt-web)/i;
 
 // 已知模型按名单的大小写；其余安全的名字原样保留（公司内部名大小写敏感与否未知，不改它）。
 function normalizeModel(value) {
@@ -56,13 +57,14 @@ function modelFamily(value) {
 
 // ---------------------------------------------------------------- 本机 CodeAgent 配置里的模型
 // 2026-10-13 公司探测：~/.cac/settings.json 的 model 是默认模型，.cac.json 的 tieredModelConfig / tierModelParams /
-// modelParam 里列着这台电脑能用的模型（例如 GLM-5.2-WX、MiniMax-M2.7-CodeAgentCLI、Qwen3.6-27B-CodeAgent-VL），
+// modelParam 里列着这台电脑能用的模型（例如 GLM-5.2-WX、MiniMax-M2.7-CodeAgentCLI），
 // 每个人的权限不同，列表也不同。只看键名带 model 的那几段（不碰 projects / history 里的聊天记录），
 // 收集长得像模型名的字符串（厂商名 + 至少一个数字）。
 // 2026-10-13 公司真机：.cac.json 里还存着各项目的历史（几千个会话），超过原来的 8 MB 上限被整个跳过，
 // 启动中心只剩内置的两个模型 + 见过的模型。上限放到 64 MB，按 (路径, 修改时间, 大小) 缓存解析结果；
 // 超上限或 JSON 读不懂时，退回在原始文本里找：键名含 model 的键后面约 4000 字符内、单独成串的模型名。
-const CONFIG_MODEL_NAME = /^(?:glm|deepseek|minimax|qwen|kimi)[A-Za-z0-9_.\-]*\d[A-Za-z0-9_.\-]*$/i;
+// 只认 CodeAgent 自家的三家（GLM / DeepSeek / MiniMax）；Qwen、Kimi 是别的 CLI 的模型（见 OTHER_CLI_MODEL）。
+const CONFIG_MODEL_NAME = /^(?:glm|deepseek|minimax)[A-Za-z0-9_.\-]*\d[A-Za-z0-9_.\-]*$/i;
 const CONFIG_MAX_BYTES = 64 * 1024 * 1024;
 const CONFIG_SCAN_WINDOW = 4000;
 const configFileCache = new Map();
@@ -71,7 +73,7 @@ const configFileCache = new Map();
 // 只收前后都是引号、单独成串的模型名（聊天里「试试 GLM-9.9」这种夹在句子里的不算）。
 function scanModelNamesInText(text, out) {
   const keyRe = /"((?:[^"\\]|\\.)*)"\s*:/g;
-  const nameRe = /(?<!\\)"((?:glm|deepseek|minimax|qwen|kimi)[A-Za-z0-9_.\-]*\d[A-Za-z0-9_.\-]*)"/gi;
+  const nameRe = /(?<!\\)"((?:glm|deepseek|minimax)[A-Za-z0-9_.\-]*\d[A-Za-z0-9_.\-]*)"/gi;
   let m;
   while ((m = keyRe.exec(text)) && out.size <= 60) {
     if (m.index > 0 && text[m.index - 1] === '\\') continue;
