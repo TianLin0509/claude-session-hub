@@ -10,6 +10,7 @@ const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../co
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { isPtyAgentSession } = require('../core/agent-runtime-mode.js');
 const { installHiddenRenderGuard } = require('./xterm-hidden-render-guard.js');
+const { installSharedWidthCache } = require('./xterm-shared-width-cache.js');
 // 公司版默认回到 9 月的「后台」路径：终端按实际尺寸常驻在卡片下面，点后台只藏卡片层（见 core/backstage-path.js）。
 const BACKSTAGE_KEEPS_TERMINAL = require('../core/backstage-path.js').keepsTerminalBehindCards();
 // 主面板的终端此刻是否「收起」：10 月路径下卡片视图里终端不显示、不调尺寸；9 月路径下它一直在卡片下面活着。
@@ -2288,6 +2289,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     cached.terminal.open(cached.container);
     cached.opened = true;
     installHiddenRenderGuard(cached.terminal);
+    installSharedWidthCache(cached.terminal);
     setupImageHover(cached.terminal, cached.container);
     void hydrateTerminalFromSnapshot(sessionId, cached);
   }
@@ -9484,7 +9486,7 @@ function createSecondarySessionView(sessionId, panel, options = {}) {
         const container = document.createElement('div'); container.className = 'terminal-container';
         host.prepend(container); container.append(cached.container); cached.container.style.display = 'block';
         if (!cached.opened) {
-          cached.terminal.open(cached.container); cached.opened = true; installHiddenRenderGuard(cached.terminal);
+          cached.terminal.open(cached.container); cached.opened = true; installHiddenRenderGuard(cached.terminal); installSharedWidthCache(cached.terminal);
           setupImageHover(cached.terminal, cached.container);
           void hydrateTerminalFromSnapshot(sessionId, cached);
         }
