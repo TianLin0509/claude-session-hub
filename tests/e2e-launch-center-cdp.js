@@ -369,8 +369,8 @@ async function main() {
       panelVisible: !document.getElementById('launch-center-resume-panel').hidden,
     }))()`);
     assert.equal(result.resume.intent, 'resume');
-    assert.equal(result.resume.providerCount, 5);
-    assert.deepEqual(result.resume.kinds, ['claude-resume', 'codex-resume', 'gemini-resume', 'deepseek-resume', 'kimi-resume']);
+    assert.equal(result.resume.providerCount, 6);
+    assert.deepEqual(result.resume.kinds, ['claude-resume', 'codex-resume', 'gemini-resume', 'deepseek-resume', 'kimi-resume', 'codeagent-resume']);
     assert.equal(result.resume.panelVisible, true);
     await screenshot(client, RESUME_SCREENSHOT_PATH);
 
@@ -413,7 +413,7 @@ async function main() {
     })()`);
     assert.deepEqual(result.sceneReset, {
       scene: 'dev', devSceneSelected: true, workspaceMode: 'existing',
-      hintShown: true, hintText: '从「项目库」选择项目，或选择已有文件夹。单人点「独立开工」；两人点「开题」，由第一位实现、第二位验证与合并。',
+      hintShown: true, hintText: '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员。建好后直接输入任务，Hub 安排第一位开题与实现、第二位独立审查与合并。单人开发请使用普通会话的「一键开工」。',
     }, '重开后场景说明必须跟着场景一起复位');
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
     await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });

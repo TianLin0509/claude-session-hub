@@ -5868,7 +5868,10 @@ const launchCenter = createLaunchCenterController({
   closeGroupPanel: () => {
     if (typeof window.closeMeetingCreateModal === 'function') window.closeMeetingCreateModal();
   },
-  resumeSession: kind => ipcRenderer.invoke('create-session', kind),
+  // CodeAgent 自带的 /resume 只列当前目录；这里改为 Hub 列出所有目录的记录（past-session-modals.js）。
+  resumeSession: kind => kind === 'codeagent-resume'
+    ? openResumeModal({ provider: 'codeagent' })
+    : ipcRenderer.invoke('create-session', kind),
 });
 window.LaunchCenter = launchCenter;
 

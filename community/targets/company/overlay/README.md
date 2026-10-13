@@ -7,6 +7,7 @@
 - **装了 Code Agent 就默认用它**：新建会话默认选中 CodeAgent 并排第一位，新建群聊默认两名 CodeAgent 成员（GLM-5.2-WX-Auto 与 MiniMax-M2.7）。
 - **新文件夹默认信任、默认免确认执行**：启动时带 `--skip-safe-check` 并预先写入信任；权限模式默认 `bypassPermissions`；带 `--disable-update`，不会被升级提示挡住。
 - **模型跟着本机 CodeAgent 走**：模型列表读本机 CodeAgent 配置（GLM、MiniMax、DeepSeek 等，按各人权限）；会话里点输入框下方的模型即可切换，Hub 会用新模型接着原会话重开 CodeAgent，对话记录保留。界面按回答实际用的模型显示，头像和侧栏图标也随模型变化。
+- **恢复任意目录的历史会话**：启动中心 →「恢复会话」→ CodeAgent，列出所有目录的 CodeAgent 历史（CodeAgent 自带的 `/resume` 只列当前目录），点一条就在它原来的目录里接着聊。
 - **不需要任何外部 API Key**：会话和群聊的自动命名用 Code Agent 自己的单次问答模式完成。
 - 浅色主题下，CodeAgent 终端整体为深色，与 CLI 自身的黑底一致。
 - 账号页不会自动读取本机已登录的其他 CLI 账号，需要时自己点「检查 / 登录」。
