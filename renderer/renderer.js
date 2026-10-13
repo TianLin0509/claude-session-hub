@@ -4064,7 +4064,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.fitAddon) {
       setCardHiddenTerminal(cached, false);
-      setBehindCardsPaused(cached.terminal, false);
+      setBehindCardsPaused(cached.terminal, false, { refresh: false });
       loadGpuRenderer(cached);
       scheduleVisibleTerminalRecovery(activeSessionId, cached, { pinBottom: false });
     }

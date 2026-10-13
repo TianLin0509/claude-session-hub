@@ -71,6 +71,52 @@ function installSharedWidthCache(terminal, env = process.env) {
   return true;
 }
 
+// 批量预量（2026-10-13，配合 xterm-card-pause）：终端暂停绘制期间出现的新字，恢复时补画会逐个去量，
+// 每个字强制排版一次（公司条件实测点后台 0.4–1.6 秒）。补画前先把这一屏里没量过的字一次性摆进测量区，
+// 只排一次版就读出全部宽度，写进共享表；随后的补画全部命中。
+function widthCacheOf(terminal) {
+  const renderer = terminal && terminal._core && terminal._core._renderService && terminal._core._renderService._renderer;
+  const dom = renderer && (renderer.value || renderer._value);
+  return dom && dom._widthCache && dom._widthCache._measureElements ? dom._widthCache : null;
+}
+
+function prewarmViewportWidths(terminal) {
+  const cache = installed ? widthCacheOf(terminal) : null;
+  if (!cache || !cache._container || containerHidden(cache)) return 0;
+  const buffer = terminal.buffer && terminal.buffer.active;
+  if (!buffer || typeof buffer.getLine !== 'function') return 0;
+  const want = new Map();
+  let cell;
+  for (let y = 0; y < terminal.rows; y++) {
+    const line = buffer.getLine(buffer.viewportY + y);
+    if (!line) continue;
+    for (let x = 0; x < line.length; x++) {
+      cell = line.getCell(x, cell);
+      if (!cell || cell.getWidth() === 0) continue;
+      const text = cell.getChars() || ' ';
+      const variant = (cell.isBold() ? 1 : 0) | (cell.isItalic() ? 2 : 0);
+      const key = keyOf(cache, text, variant);
+      if (!SHARED.has(key) && !want.has(key)) want.set(key, { text, variant });
+    }
+  }
+  if (!want.size) return 0;
+  const spans = [];
+  for (const [key, item] of want) {
+    const span = cache._measureElements[item.variant].cloneNode(false);
+    span.textContent = item.text.repeat(32);
+    cache._container.appendChild(span);
+    spans.push([key, span]);
+  }
+  let stored = 0;
+  for (const [key, span] of spans) {
+    const width = span.offsetWidth / 32;
+    if (width > 0) { SHARED.set(key, width); stored++; }
+  }
+  for (const [, span] of spans) span.remove();
+  stats.prewarmed = (stats.prewarmed || 0) + stored;
+  return stored;
+}
+
 function sharedWidthCacheStats() { return { ...stats, size: SHARED.size, installed }; }
 
-module.exports = { installSharedWidthCache, sharedWidthCacheStats };
+module.exports = { installSharedWidthCache, prewarmViewportWidths, sharedWidthCacheStats };

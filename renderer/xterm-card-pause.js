@@ -17,7 +17,9 @@ function renderServiceOf(terminal) {
   return rs;
 }
 
-function setBehindCardsPaused(terminal, paused, env = process.env) {
+// refresh=false：调用方随后会走自己的整屏恢复（applyViewMode('pty') 的 scheduleVisibleTerminalRecovery 会强制重排并重画），
+// 这里再补画一遍就是重复。
+function setBehindCardsPaused(terminal, paused, { refresh = true, env = process.env } = {}) {
   if (env.HUB_DISABLE_CARD_PAUSE === '1') return false;
   const rs = renderServiceOf(terminal);
   if (!rs) return false;
@@ -41,10 +43,12 @@ function setBehindCardsPaused(terminal, paused, env = process.env) {
   state.on = false;
   state.resumed++;
   rs._isPaused = false;
+  // 补画前先把这一屏没量过的字一次性量完（renderer/xterm-shared-width-cache.js），补画时不再逐字强制排版。
+  try { require('./xterm-shared-width-cache.js').prewarmViewportWidths(terminal); } catch {}
   // 暂停期间的输出只更新了内容，这里整屏补画；隐藏期间记下的选区由 xterm-hidden-render-guard 一起补上。
   const pending = rs.__hubHiddenGuard && rs.__hubHiddenGuard.pending;
   if (pending) { rs.__hubHiddenGuard.pending = null; rs.__hubHiddenGuard.replayed++; rs.handleSelectionChanged(...pending); }
-  try { terminal.refresh(0, Math.max(0, terminal.rows - 1)); } catch {}
+  if (refresh) { try { terminal.refresh(0, Math.max(0, terminal.rows - 1)); } catch {} }
   return true;
 }
 
