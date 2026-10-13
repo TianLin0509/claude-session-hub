@@ -261,3 +261,25 @@ test('PTY Codex launch passes the personal policy hooks into the trust step', ()
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
   assert.match(src, /codexPolicyHooks\(sessionEnv, getHubDataDir\(\)\)[\s\S]{0,400}ensureCodexHookIntegration\(\{[\s\S]{0,120}trustedHooks/);
 });
+
+// 2026-10-14: the same TOML text is parsed by Python once, not on every launch.
+{
+  const childProcess = require('child_process');
+  const { parseTomlWithPython: parseCached } = require('../core/codex-hook-integration');
+  const original = childProcess.spawnSync;
+  let spawns = 0;
+  childProcess.spawnSync = (...args) => { spawns += 1; return original(...args); };
+  try {
+    const text = `model = "x"\n[tui]\ntheme = "y-${Date.now()}"\n`;
+    const first = parseCached(text);
+    const again = parseCached(text);
+    require('assert').deepStrictEqual(again, first);
+    again.tui.theme = 'mutated';
+    require('assert').equal(parseCached(text).tui.theme, first.tui.theme, 'callers cannot change the remembered result');
+    require('assert').equal(spawns, 1, 'one Python run for one text');
+    require('assert').throws(() => parseCached('broken = = ='));
+    require('assert').throws(() => parseCached('broken = = ='));
+    require('assert').equal(spawns, 3, 'a failed parse is retried, never remembered');
+  } finally { childProcess.spawnSync = original; }
+  console.log('  OK python TOML parse is remembered per text');
+}
