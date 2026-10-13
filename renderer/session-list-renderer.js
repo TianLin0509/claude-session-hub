@@ -8,6 +8,12 @@ const {
 } = require('../core/session-attention-state.js');
 const { sessionRuntimeIssue } = require('../core/session-runtime-issue.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
+// 右下角「国内正常 / 异常」只关 Kimi / DeepSeek 这类直连的国内 AI；发行版里一个都没有（公司纯净版只有 CodeAgent）就不显示
+// （2026-10-13 用户要求删掉）。
+const DOMESTIC_ROUTE_KINDS = ['kimi', 'deepseek', 'deepseek-acp', 'deepseek-claude'];
+function showDomesticRoute(kindAllowed = require('../core/distribution').kindAllowed) {
+  return DOMESTIC_ROUTE_KINDS.some(kind => kindAllowed(kind));
+}
 const {compareSidebarPlacement,sortBySidebarPlacement,sidebarItemClassification,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView}=require('../core/session-sidebar-state');
 const {sidebarRelativeTime}=require('./sidebar-relative-time');
 const {createSessionViewPublisher}=require('../core/hub-assistant/session-state');
@@ -362,7 +368,7 @@ function _sessionWarningText(session) {
     const markup =
       '<div class="strip-resources" title="点击 CPU / 内存查看进程，点击硬盘释放空间">' + metric('CPU', cpuPct) + gpuMetric + metric('内存', memoryPct) + diskMetric + '</div>' +
       `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${proxyShort ? 'VPN' : '直连'}</span><span class="strip-location">${escapeHtml(location)}</span>${clashDelay ? `<span class="strip-delay">节点 ${clashDelay.delayMs} ms</span>` : ''}</button>` +
-      transfer + `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
+      transfer + (showDomesticRoute() ? `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span>` : '') + '</div>';
     if (stripEl._resourceMarkup === markup) return;
     stripEl._resourceMarkup = markup;
     // Keep focused/hovered resource anchors alive during the telemetry heartbeat.
@@ -1071,6 +1077,7 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 module.exports = {
   createSessionListRenderer,
+  showDomesticRoute,
   compareLatestActivityDesc,
   compareSidebarPlacement,
   isPinnedToBottom,
