@@ -442,12 +442,12 @@ test('restored terminals force a full renderer-surface repaint', () => {
     'card -> PTY must repaint a compositor-discarded Canvas surface');
 });
 
-test('streaming card refresh requests only the newest turn', () => {
+test('streaming card refresh requests only the newest few turns', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   const start = src.indexOf('function requestCardIncrementalRefresh');
   const end = src.indexOf('function noteCardTerminalOutput', start);
   const block = src.slice(start, end);
-  assert.match(block, /parseOpts:\s*isNativeSession\(sessions\.get\(sessionId\)\)\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
+  assert.match(block, /parseOpts:\s*isNativeSession\(sessions\.get\(sessionId\)\)\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: state\.catchUp \? undefined : \{ limit: 4, fromTail: true \}/,
     'native refresh must request one provider turn; log refresh must avoid full 50-turn parses');
   assert.match(src, /CARD_STREAM_SETTLE_RETRY_MS\s*=\s*\[1000,\s*2500,\s*6000\]/,
     'late writeback recovery must stay finite rather than polling forever');
