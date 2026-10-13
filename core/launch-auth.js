@@ -32,7 +32,7 @@ class LaunchAuth {
   async ensure(kind, opts = {}) {
     const id = this.connection(kind, opts);
     if (!id) return;
-    const passed = this.passedAt.get(id);
+    const passed = this.passedAt.get(this.identity(id));
     if (passed && this.now() - passed.at < passed.ttl) return;
     if (this.flights.has(id)) return this.flights.get(id);
     const flight = this.checkAndOpen(id).finally(() => this.flights.delete(id));
@@ -42,7 +42,7 @@ class LaunchAuth {
   async recover(kind, opts, failure) {
     if (!isLoginFailure(failure)) return;
     const id=this.connection(kind,{...opts,launchProfile:opts?.codexProfile});
-    if (id) this.passedAt.delete(id);
+    if (id) this.passedAt.delete(this.identity(id));
     if (!id || Date.now()-(this.recoveryAt.get(id)||0)<60000) return;
     this.recoveryAt.set(id,Date.now());
     try {
@@ -50,14 +50,17 @@ class LaunchAuth {
       this.notify({id,pending:result.pending!==false,message:'登录已失效，已打开对应账号的官方登录界面；完成后请恢复或重启会话，已发送的问题不会自动重发。'});
     } catch(error) {this.notify({id,success:false,message:'需要登录，登录入口未能打开：'+error.message});}
   }
-  pass(id, ttl) { this.passedAt.set(id, {at: this.now(), ttl}); }
+  // A reused answer belongs to one account: a changed home directory or credential
+  // behind the same connection id is checked again.
+  identity(id) { try { return this.accounts.scopeOf?.(id) || id; } catch { return id; } }
+  pass(id, ttl, at = this.now()) { this.passedAt.set(this.identity(id), {at, ttl}); }
   async checkAndOpen(id) {
     // The account page keeps the last observation on disk; a fresh one answers
     // the question without starting another process.
     let recent = null;
     try { recent = await this.accounts.recentObservation?.(id); } catch {}
     if (recent?.state === 'signed_in' && this.now() - (Number(recent.observedAt) || 0) < SIGNED_IN_REUSE_MS) {
-      this.passedAt.set(id, {at: Number(recent.observedAt), ttl: SIGNED_IN_REUSE_MS});
+      this.pass(id, SIGNED_IN_REUSE_MS, Number(recent.observedAt));
       return;
     }
     let proof;
@@ -67,7 +70,7 @@ class LaunchAuth {
       this.pass(id, proof.state === 'signed_in' ? SIGNED_IN_REUSE_MS : INCONCLUSIVE_REUSE_MS);
       return;
     }
-    this.passedAt.delete(id);
+    this.passedAt.delete(this.identity(id));
     let result;
     try { result = await this.accounts.login(id); }
     catch (error) { throw Object.assign(new Error('需要登录，但登录入口未能打开：' + error.message), {code:'auth_required'}); }

@@ -87,3 +87,10 @@ test('confirmed runtime expiration recovers the running account, with a cooldown
   for(const message of ['403 Forbidden','request timeout','tool output: discuss not logged in errors'])assert.equal(isLoginFailure(message),false);
   assert.equal(isLoginFailure('Not logged in'),true);
 });
+test('a reused login belongs to one account identity: a new home or credential is checked again',async()=>{
+  const {service,calls}=setup();
+  let scope='codex-second:C:/home/a:';service.accounts.scopeOf=()=>scope;
+  await service.ensure('codex');await service.ensure('codex');assert.equal(calls.length,1);
+  scope='codex-second:C:/home/b:';await service.ensure('codex');assert.equal(calls.length,2);
+  scope='codex-second:C:/home/b:cred-hash';await service.ensure('codex');assert.equal(calls.length,3);
+});

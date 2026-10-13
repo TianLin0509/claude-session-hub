@@ -150,6 +150,9 @@ class AccountCenter {
   async row(id){const row=this.baseConnections().find(r=>r.id===id)||(await this.connections()).find(r=>r.id===id);if(!row)throw new Error('连接不存在，请刷新账号列表');return row;}
   // Last stored observation of a fixed connection, without probing anything.
   recentObservation(id){const row=this.baseConnections().find(r=>r.id===id);return row?this.read(this.scope(row)):null;}
+  // Identity of a fixed connection: id, home directory and credential. A launch may reuse a
+  // login answer only while this stays the same.
+  scopeOf(id){const row=this.baseConnections().find(r=>r.id===id);return row?this.scope(row):null;}
   // An explicit check still resumes the tasks that were waiting for this login. Only the
   // background poll passes resume:false, so it can never restart web tasks on its own.
   async check(id,{quiet=false,resume=true}={}){

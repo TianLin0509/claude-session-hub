@@ -243,3 +243,8 @@ test('the stored observation of a fixed connection is readable without probing',
  const seen=service.recentObservation('claude');assert.equal(seen.state,'signed_in');assert.ok(Date.now()-seen.observedAt<5000);
  assert.equal(probes,1);assert.equal(service.recentObservation('../../secret'),null);
 });
+test('a connection identity changes with its home directory',async t=>{
+ const {service,config,root}=setup(t);const before=service.scopeOf('codex-default');
+ config.codexSubscriptionProfiles[0].home=path.join(root,'other');assert.notEqual(service.scopeOf('codex-default'),before);
+ assert.equal(service.scopeOf('image-primary'),null);
+});
