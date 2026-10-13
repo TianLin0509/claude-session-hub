@@ -95,3 +95,35 @@ test('live refresh failure is explicit and falls back to the latest CLI cache', 
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('an expired catalog answers at once and refreshes behind the caller', async () => {
+  let calls = 0;
+  let clock = 1_000_000;
+  let release;
+  const service = createCodexModelCatalogService({
+    ttlMs: 60_000,
+    now: () => clock,
+    readLive: async () => {
+      calls += 1;
+      if (calls === 2) await new Promise(resolve => { release = resolve; });
+      return [{ id: calls === 1 ? 'gpt-old' : 'gpt-new', displayName: 'X', hidden: false, isDefault: true,
+        defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }];
+    },
+  });
+  await service.getCatalog();
+  clock += 60_001;
+  const stale = await service.getCatalog();
+  assert.equal(stale.stale, true, 'expired list is returned without waiting for the CLI');
+  assert.deepEqual(stale.models.map(model => model.id), ['gpt-old']);
+  assert.equal(calls, 2, 'one background refresh started');
+  await service.getCatalog();
+  assert.equal(calls, 2, 'a second caller does not start another refresh');
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  const fresh = await service.getCatalog();
+  assert.deepEqual(fresh.models.map(model => model.id), ['gpt-new']);
+  assert.equal(fresh.stale, undefined);
+  const forced = service.getCatalog({ force: true });
+  assert.equal(calls, 3, 'force still waits for a live answer');
+  await forced;
+});

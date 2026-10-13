@@ -230,3 +230,33 @@ test('a live check cannot erase the account label the owning tool already knows'
  // And a connection nobody labelled stays blank rather than inheriting a neighbour's.
  assert.equal((await service.snapshot()).connections.find(r=>r.id==='web-qwen').accountLabel,'');
 });
+test('checking a native CLI does not list the image pool; image rows still resolve',async t=>{
+ let listings=0;const {service}=setup(t,{imageAccounts:async()=>{listings++;return [{id:'primary',state:'signed_in',observedAt:1,enabled:true}];}});
+ await service.check('claude');await service.check('codex-default');await service.row('web-deepseek');
+ assert.equal(listings,0);
+ assert.equal((await service.row('image-primary')).provider,'images');assert.equal(listings,1);
+});
+test('the stored observation of a fixed connection is readable without probing',async t=>{
+ let probes=0;const {service}=setup(t,{check:async()=>{probes++;return {state:'signed_in',message:'ok'};}});
+ assert.equal(service.recentObservation('claude'),null);
+ await service.check('claude');assert.equal(probes,1);
+ const seen=service.recentObservation('claude');assert.equal(seen.state,'signed_in');assert.ok(Date.now()-seen.observedAt<5000);
+ assert.equal(probes,1);assert.equal(service.recentObservation('../../secret'),null);
+});
+test('a connection identity changes with its home directory',async t=>{
+ const {service,config,root}=setup(t);const before=service.scopeOf('codex-default');
+ config.codexSubscriptionProfiles[0].home=path.join(root,'other');assert.notEqual(service.scopeOf('codex-default'),before);
+ assert.equal(service.scopeOf('image-primary'),null);
+});
+test('launches reuse a real stored login, share one check, and resume reuse after a fresh login',async t=>{
+ const {LaunchAuth}=require('../core/launch-auth');
+ let state='signed_in',probes=0;const s=setup(t,{check:async()=>{probes++;await new Promise(r=>setTimeout(r,5));return {state};},login:async()=>({pending:true})});
+ const home=s.config.codexSubscriptionProfiles[0].home;fs.mkdirSync(home,{recursive:true});fs.writeFileSync(path.join(home,'auth.json'),'{"tokens":"fixture-1"}');
+ const auth=new LaunchAuth({accounts:s.service,getConfig:()=>({codexBackend:'subscription',codexSubscriptionProfile:'default',claudeBackend:'subscription'})});
+ await Promise.all([auth.ensure('codex'),auth.ensure('codex'),auth.ensure('claude')]);assert.equal(probes,2,'one check per account, shared by concurrent launches');
+ await auth.ensure('codex');await auth.ensure('claude');assert.equal(probes,2,'a just-confirmed login is reused');
+ await auth.recover('codex',{codexProfile:'default'},'Not logged in');
+ state='login_required';await assert.rejects(auth.ensure('codex'),{code:'auth_required'});assert.equal(probes,3);
+ state='signed_in';await auth.ensure('codex');await auth.ensure('codex');assert.equal(probes,4,'a successful check lifts the runtime report');
+ const shown=(await s.service.snapshot()).connections.find(r=>r.id==='codex-default');assert.equal('credential' in shown,false,'the file signature stays out of the account page');
+});

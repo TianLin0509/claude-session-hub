@@ -278,9 +278,11 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     safe.groupChat = true;
     const devSlots = Array.isArray(safe.slots) ? safe.slots : safe.slotSpecs;
     if (ensureLaunchAuth) {
-      for (const slot of (Array.isArray(devSlots)?devSlots:[])) {
-        if (slot?.kind) await ensureLaunchAuth(slot.kind,{model:slot.model});
-      }
+      // Members with different accounts are checked together; the same account is
+      // checked once (LaunchAuth shares the flight and reuses a fresh answer).
+      await Promise.all((Array.isArray(devSlots)?devSlots:[])
+        .filter(slot => slot?.kind)
+        .map(slot => ensureLaunchAuth(slot.kind,{model:slot.model})));
     }
     // @community-strip 社区版：建群前先确认每位成员的 CLI 都在，缺一个就一个都不启动
     // @community-else
