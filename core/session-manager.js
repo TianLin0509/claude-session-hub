@@ -1367,6 +1367,9 @@ class SessionManager extends EventEmitter {
     if (this._isShuttingDown || this.restartPending) {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
+    // 会话场景（core/session-scenes.js）：非编程场景换上场景自己的系统提示，关掉编程助手的上下文。
+    // 新建、恢复、重启都会走到这里，场景记在 purpose（scene-<id>）上，所以每次都按它重新拼。
+    opts = require('./session-scenes').applySceneLaunch(kind, opts, { dataDir: getHubDataDir() });
     // 「规则」页的通用规则：Claude 在启动时写进系统提示。随消息粘贴进去会被 CLI 包成
     // <pasted_content> 并标注「未必是用户本人写的」，约束力打折扣（2026-10-12 真实 Haiku 实测）。
     // 已带其他系统提示文件的会话（DeepSeek 记忆等）不改，仍随第一条消息送。
@@ -1727,9 +1730,9 @@ class SessionManager extends EventEmitter {
     //   - 原生回退后端会按全局账号把 CODEX_HOME 换回账号目录，写作目录在那里接不住，原生模式不换
     // 准备失败时会话照常启动，但在状态栏写明「写作上下文降级」，不静默。
     let writingCodexHome = null;
-    let writingContextWarning = null;
+    let writingContextWarning = opts.sceneWarning || null;
     // @community-strip 写作场景成员
-    if (isCodexRuntime && opts.purpose === 'writing' && !webRoute) {
+    if (isCodexRuntime && require('./session-scenes').isCleanPurpose(opts.purpose) && !webRoute) {
       try {
         const writingHomes = require('./writing/codex-writing-home');
         const family = isDeepSeek ? 'deepseek' : 'codex';
@@ -1767,7 +1770,7 @@ class SessionManager extends EventEmitter {
     if(opts.assistantMcpEntry) require('./hub-assistant/project-tools').configureProjectTools(kind,{...opts,id},spawnCwd);
     // 写作成员不加载个人规则（Claude 关了 CLAUDE.md，Codex 用写作专用目录），不必往原配置目录同步规则；
     // Codex 写作目录仍要同步个人守卫 hooks（instructions:false 只同步守卫）。
-    if (contextKind && !(opts.purpose === 'writing' && contextKind !== 'codex')) {
+    if (contextKind && !(require('./session-scenes').isCleanPurpose(opts.purpose) && contextKind !== 'codex')) {
       const contextHome = contextKind === 'codex' ? sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex')
         : contextKind === 'claude' ? sessionEnv.CLAUDE_CONFIG_DIR || path.join(os.homedir(),'.claude')
         : contextKind === 'kimi' ? sessionEnv.KIMI_CODE_HOME || path.join(os.homedir(),'.kimi-code') : path.join(sessionEnv.GEMINI_CLI_HOME || os.homedir(),'.gemini');
@@ -3301,8 +3304,7 @@ class SessionManager extends EventEmitter {
   hubRulesSystemPrompt(opts = {}, purpose = opts.purpose) {
     const store = this.memoryService?.hubRules;
     if (!store) return null;
-    const { SKIP_PURPOSES } = require('./hub-rules');
-    if (SKIP_PURPOSES.has(purpose)) return null;
+    if (require('./hub-rules').skipsHubRules(purpose)) return null;
     if (opts.appendSystemPromptFile && !store.isSystemPromptFile(opts.appendSystemPromptFile)) return null;
     try {
       const rules = store.injection();
@@ -3311,6 +3313,19 @@ class SessionManager extends EventEmitter {
       console.warn('[hub-rules] 规则写入系统提示失败，改为随第一条消息送达：', error && error.message);
       return null;
     }
+  }
+
+  // CLI 自己退出后原地重拉：场景会话照样换上场景的系统提示（环境变量在 PTY 建立时已写进 shell，沿用）。
+  _sceneRelaunchFlags(s, family) {
+    const scenes = require('./session-scenes');
+    if (!scenes.isScenePurpose(s.info && s.info.purpose)) return '';
+    const launch = scenes.applySceneLaunch(family === 'codex' ? 'codex' : 'claude', { purpose: s.info.purpose }, { dataDir: getHubDataDir() });
+    if (family === 'codex') {
+      return launch.codexInstructionFile ? ` -c "model_instructions_file=${launch.codexInstructionFile.replace(/\\/g, '\\\\')}"` : '';
+    }
+    if (!launch.systemPromptFile) return '';
+    return ` --system-prompt-file "${launch.systemPromptFile}" --disable-slash-commands --no-chrome --tools ${launch.claudeTools.join(',')}`
+      + launch.addDirs.map(dir => ` --add-dir "${dir}"`).join('');
   }
 
   relaunchCli(sessionId, options = {}) {
@@ -3363,7 +3378,7 @@ class SessionManager extends EventEmitter {
         + buildCodexSpeedTierArg(resolveCodexSpeedTier(runtimeKind, s.info && s.info.codexSpeedTier))
         + buildCodexContextWindowArg(resolveCodexContextWindow(codexRelaunchModel, s.info && s.info.contextMax, { configDir: codexConfigDir }));
       ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
-      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}`;
+      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}${this._sceneRelaunchFlags(s, 'codex')}`;
       const relaunchMcpProfile = resolveCodexMcpProfile(runtimeKind, s.info && s.info.mcpProfile);
       const relaunchMcpEntries = relaunchMcpProfile === 'none' ? [] : s.codexMcpEntries;
       cmd += buildCodexEphemeralMcpArgs(relaunchMcpEntries);
@@ -3424,7 +3439,7 @@ class SessionManager extends EventEmitter {
       if (s.info) s.info.hubRulesSystem = relaunchRules ? { version: relaunchRules.version, label: relaunchRules.label } : undefined;
       const rulesFlag = relaunchRules ? ` --append-system-prompt-file "${relaunchRules.file}"` : '';
       const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
-      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${addDirFlag}${rulesFlag}${isolation}\r\n`;
+      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${addDirFlag}${rulesFlag}${this._sceneRelaunchFlags(s, 'claude')}${isolation}\r\n`;
     } else if (deepseekClaude.isDeepSeekClaudeKind(kind)) {
       // PTY 的环境变量（接入端点、Key、模型名、配置目录）在会话创建时已经写好，原地重拉只需同一套参数。
       const route = s.info && (s.info.deepseekActiveRoute || s.info.deepseekRoute);
@@ -3448,7 +3463,7 @@ class SessionManager extends EventEmitter {
         });
       const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
       const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
-      cmd = ` claude --model ${wire}${effortFlag}${claudePermissionModeArg({ permissionMode: 'bypassPermissions' })}${mcpFlag}${addDirFlag}${rulesFlag}${isolation}\r\n`;
+      cmd = ` claude --model ${wire}${effortFlag}${claudePermissionModeArg({ permissionMode: 'bypassPermissions' })}${mcpFlag}${addDirFlag}${rulesFlag}${this._sceneRelaunchFlags(s, 'claude')}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
         mcpConfigFile: s.claudeMcpConfigFile,

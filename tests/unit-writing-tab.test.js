@@ -211,7 +211,7 @@ test('成员参数：写作群成员标 purpose=writing；不带编程上下文�
   assert.ok(!('codexMcpEntries' in withWritingMemberOpts('codex', { codexMcpEntries: [{ name: 'ai-team' }] })), '唤醒时补上的群聊 MCP 也去掉');
   assert.strictEqual(withWritingMemberOpts('claude-resume', {}).extraEnv.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'hub-memory-service.js'), 'utf8');
-  assert.ok(src.includes("s.purpose==='writing'"), '写作成员不追加共享工作区规则');
+  assert.ok(src.includes("isCleanPurpose(s.purpose)") && require('../core/session-scenes').isCleanPurpose('writing'), '写作成员（及场景会话）不追加共享工作区规则');
   assert.ok(!('appendSystemPromptFile' in c) && !('systemPromptFile' in c), '不给文章目录就不接文风包');
 });
 

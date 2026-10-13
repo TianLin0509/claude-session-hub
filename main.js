@@ -3302,6 +3302,8 @@ try {
 } catch (e) {
   console.warn('[hub-rules] 规则页初始化失败：', e && e.message);
 }
+// 会话场景（2026-10-13）：「规则 → 场景」页与输入框的「场景」按钮。
+require('./main/ipc/session-scenes-handlers').registerSessionScenesIpc(ipcMain,{dataDir:getHubDataDir(),shell});
 // 一键更新（2026-10-13，公司版）：只有发行目标写了下载源才开启；主仓库没有这个入口。
 {
   const distribution = require('./core/distribution');
