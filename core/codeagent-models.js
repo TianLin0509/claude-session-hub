@@ -58,8 +58,43 @@ function modelFamily(value) {
 // modelParam 里列着这台电脑能用的模型（例如 GLM-5.2-WX、MiniMax-M2.7-CodeAgentCLI、Qwen3.6-27B-CodeAgent-VL），
 // 每个人的权限不同，列表也不同。只看键名带 model 的那几段（不碰 projects / history 里的聊天记录），
 // 收集长得像模型名的字符串（厂商名 + 至少一个数字）。
+// 2026-10-13 公司真机：.cac.json 里还存着各项目的历史（几千个会话），超过原来的 8 MB 上限被整个跳过，
+// 启动中心只剩内置的两个模型 + 见过的模型。上限放到 64 MB，按 (路径, 修改时间, 大小) 缓存解析结果；
+// 超上限或 JSON 读不懂时，退回在原始文本里找：键名含 model 的键后面约 4000 字符内、单独成串的模型名。
 const CONFIG_MODEL_NAME = /^(?:glm|deepseek|minimax|qwen|kimi)[A-Za-z0-9_.\-]*\d[A-Za-z0-9_.\-]*$/i;
-const CONFIG_MAX_BYTES = 8 * 1024 * 1024;
+const CONFIG_MAX_BYTES = 64 * 1024 * 1024;
+const CONFIG_SCAN_WINDOW = 4000;
+const configFileCache = new Map();
+
+// 原始文本扫描：只认没被反斜杠转义的键（聊天记录里的 JSON 字符串是转义过的 \"model\"，不算），
+// 只收前后都是引号、单独成串的模型名（聊天里「试试 GLM-9.9」这种夹在句子里的不算）。
+function scanModelNamesInText(text, out) {
+  const keyRe = /"((?:[^"\\]|\\.)*)"\s*:/g;
+  const nameRe = /(?<!\\)"((?:glm|deepseek|minimax|qwen|kimi)[A-Za-z0-9_.\-]*\d[A-Za-z0-9_.\-]*)"/gi;
+  let m;
+  while ((m = keyRe.exec(text)) && out.size <= 60) {
+    if (m.index > 0 && text[m.index - 1] === '\\') continue;
+    if (!/model/i.test(m[1]) || m[1].includes('\\')) continue;
+    const windowText = text.slice(keyRe.lastIndex, keyRe.lastIndex + CONFIG_SCAN_WINDOW);
+    for (const n of windowText.matchAll(nameRe)) if (isSafeModelId(n[1])) out.add(n[1]);
+  }
+}
+
+function readConfigFile(full, fsModule) {
+  const stat = fsModule.statSync(full);
+  const cached = configFileCache.get(full);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.result;
+  const text = String(fsModule.readFileSync(full, 'utf8')).replace(/^﻿/, '');
+  const names = new Set();
+  let data = null;
+  if (stat.size <= CONFIG_MAX_BYTES) { try { data = JSON.parse(text); } catch { data = null; } }
+  if (data) collectModelNames(data, false, names);
+  else scanModelNamesInText(text, names);
+  const defaultModel = data && isSafeModelId(data.model) ? String(data.model).trim() : '';
+  const result = { names: [...names], defaultModel, parsed: !!data };
+  configFileCache.set(full, { mtimeMs: stat.mtimeMs, size: stat.size, result });
+  return result;
+}
 
 function collectModelNames(node, inModelSection, out, depth = 0) {
   if (depth > 8 || out.size > 60 || node == null) return;
@@ -83,12 +118,10 @@ function configuredModels(configDir, fsModule = fs) {
   let defaultModel = '';
   for (const file of ['settings.json', '.cac.json']) {
     try {
-      const full = path.join(configDir, file);
-      if (fsModule.statSync(full).size > CONFIG_MAX_BYTES) continue;
-      const data = JSON.parse(fsModule.readFileSync(full, 'utf8').replace(/^﻿/, ''));
-      if (file === 'settings.json' && isSafeModelId(data && data.model)) defaultModel = String(data.model).trim();
-      collectModelNames(data, false, names);
-    } catch { /* 没有或读不懂就跳过 */ }
+      const result = readConfigFile(path.join(configDir, file), fsModule);
+      if (file === 'settings.json' && result.defaultModel) defaultModel = result.defaultModel;
+      for (const name of result.names) names.add(name);
+    } catch { /* 没有或读不了就跳过 */ }
   }
   if (defaultModel) names.add(defaultModel);
   return { models: [...names], defaultModel };
@@ -192,6 +225,7 @@ module.exports = {
   observeModel,
   mismatchNotice,
   configuredModels,
+  scanModelNamesInText,
   readObserved,
   recordObserved,
   modelOptions,
