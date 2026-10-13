@@ -209,6 +209,12 @@ test('SessionManager launches deepseek-claude as a real PTY Claude Code with Dee
     const models = [...cmd.matchAll(/--model (\S+)/g)].map(m => m[1]);
     assert.deepEqual(models, [wire], 'exactly one --model and it is the DeepSeek wire name');
     for (const value of models) assert.doesNotMatch(value, CLAUDE_MODEL_RE, 'launch command carries no Claude model name');
+    // 原地重拉（新的 Claude 进程）同样带旁路
+    const before = fake.writes.length;
+    assert.equal(manager.relaunchCli(info.id), true);
+    const relaunch = fake.writes.slice(before).join('');
+    assert.match(relaunch, / claude --model /);
+    assert.match(relaunch, /--permission-mode bypassPermissions(?:\s|$)/, 'in-place relaunch keeps bypass');
   }
   assert.equal(fs.existsSync(path.join(configDir, '.credentials.json')), false);
 });
