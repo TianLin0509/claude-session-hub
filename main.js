@@ -601,6 +601,33 @@ sessionManager.on('native-agent-lifecycle', event => {
 // Deep-summary service singleton: instantiated from config-driven fallback chain.
 // Providers tried in order; first one with a parseable response wins.
 
+// CodeAgent：回答里的真实模型才算数（请求的模型可能因为没有权限而没生效），见 core/codeagent-models.js。
+// Stop hook 那一刻才开始盯的记录拿不到 model（尾巴从文件末尾读起），这时从记录末尾补读最后一条回答的 model。
+async function observeCodeAgentModel(hubSessionId, ev, transcriptPath) {
+  try {
+    const codeAgentModels = require('./core/codeagent-models');
+    let modelId = ev.modelId || null;
+    const file = ev.transcriptPath || transcriptPath || sessionManager.getSession(hubSessionId)?.transcriptPath;
+    if (!modelId && file) modelId = (await require('./core/read-last-assistant').readLastAssistantMessage(file))?.model || null;
+    const session = sessionManager.getSession(hubSessionId);
+    const observed = session && modelId ? codeAgentModels.observeModel(session, modelId) : null;
+    if (!observed) return;
+    const updated = sessionManager.updateSessionMeta(hubSessionId, observed.fields);
+    if (updated) {
+      sessionStore.markDirty(hubSessionId, updated);
+      sendToRenderer('session-updated', { session: updated });
+    }
+    if (observed.mismatch) {
+      sendToRenderer('session-notice', { sessionId: hubSessionId, message: codeAgentModels.mismatchNotice(observed.mismatch), level: 'warning' });
+    }
+    if (codeAgentModels.recordObserved(getHubDataDir(), modelId)) {
+      sendToRenderer('codeagent-models-changed', { options: codeAgentModels.modelOptions(getHubDataDir()) });
+    }
+  } catch (error) {
+    console.warn('[codeagent-model] observe failed:', error && error.message);
+  }
+}
+
 // Wire TranscriptTap → MeetingRoomManager timeline.
 // When a sub-session's CLI finishes a turn, append the AI text to its
 // meeting's timeline (if the sub-session belongs to a meeting).
@@ -619,6 +646,9 @@ transcriptTap.on('turn-complete', (ev) => {
       session = updated;
       sessionStore.markDirty(hubSessionId, updated);
     }
+  }
+  if (session && /^codeagent(?:-resume)?$/.test(String(session.kind || ''))) {
+    void observeCodeAgentModel(hubSessionId, ev || {}, session.transcriptPath);
   }
   Promise.resolve(completionNotifier.handleTurnComplete(ev || {}, session)).catch((error) => {
     console.warn('[completion-notifier] session completion handling failed:', error && error.message);

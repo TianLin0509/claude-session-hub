@@ -234,9 +234,14 @@ function toggleMeetingExpand(meetingId) {
   renderSessionList();
 }
 
-function _logoKind(kind) {
+function _logoKind(kind, modelId = '') {
   const k = String(kind || '').replace(/-resume$/, '');
   if (k.startsWith('deepseek')) return 'deepseek'; // deepseek-legacy 复用 DS 图标
+  // 公司 CodeAgent 背后可能是 DeepSeek / MiniMax / GLM：按模型挑图标，GLM 和认不出的沿用 CodeAgent 图标。
+  if (k === 'codeagent') {
+    const family = require('../core/codeagent-models').modelFamily(modelId);
+    return family === 'deepseek' || family === 'minimax' ? family : 'codeagent';
+  }
   if (k === 'powershell' || isAiKind(k)) return k;
   return '';
 }
@@ -247,10 +252,11 @@ function _logoKind(kind) {
 //   扫列表时真正要一眼分辨的只是"哪家 CLI"，具体型号是二级信息 → 退到 tooltip
 //   （会话行的无障碍标签也包含完整 displayName）。
 //   拿不到图标的 kind 回落成原来的文字列，避免这一列直接消失。
-function _sessionKindHtml(kind, modelTxt, state = 'idle', stateTip = '') {
-  const k = _logoKind(kind);
+function _sessionKindHtml(kind, modelTxt, state = 'idle', stateTip = '', modelId = '') {
+  const k = _logoKind(kind, modelId);
   if (!k) return `<span class="sl-model">${escapeHtml(modelTxt || '')}</span>`;
-  const label = String(modelTxt || '').startsWith('ChatGPT') ? 'ChatGPT' : (KIND_LABELS[k] || k);
+  const labelKind = String(kind || '').replace(/-resume$/, '') === 'codeagent' ? 'codeagent' : k;
+  const label = String(modelTxt || '').startsWith('ChatGPT') ? 'ChatGPT' : (KIND_LABELS[labelKind] || labelKind);
   const tip = label === 'ChatGPT' ? modelTxt : modelTxt ? `${label} · ${modelTxt}` : label;
   const status = stateTip || STATUS_LABELS[state] || STATUS_LABELS.idle;
   return `<span class="sl-kind ai-logo logo-${k}" data-state="${state}" role="img" aria-label="${escapeHtml(label + ' · ' + status)}" title="${escapeHtml(tip + ' · ' + status)}"></span>`;
@@ -782,7 +788,7 @@ sessionListEl.addEventListener('keydown', event => {
           : (SLOT_LABELS_M[idx] || `Slot ${idx + 1}`);
         const avatarSrc = sub && sub.kind
           // *-resume 没有专属 svg，归一到基础 kind 头像（assets 只有 5+1 个基础 logo）
-          ? `assets/ai-logos/${String(sub.kind).replace(/-resume$/, '')}.svg`
+          ? `assets/ai-logos/${_logoKind(sub.kind, sub.currentModel?.id) || String(sub.kind).replace(/-resume$/, '')}.svg`
           : '';
         const modelLabel = sub && sub.currentModel ? (typeof modelShort === 'function' ? modelShort(sub.currentModel) : sub.currentModel.id) : '';
         const subRuntime = sub ? getSessionRuntimeTruth(sub) : null;
@@ -822,7 +828,7 @@ sessionListEl.addEventListener('keydown', event => {
         if (!member) return '';
         let state = partitionSidebarSessions([member], { sessionMap, groupMemberIds: new Set([id]) }).states.get(id) || 'idle';
         if (getSessionRuntimeTruth(member).state === RUNTIME_DORMANT && !member._resumePending && state !== 'error') state = 'dorm';
-        return _sessionKindHtml(member.kind, member.currentModel ? modelShort(member.currentModel) : '', state);
+        return _sessionKindHtml(member.kind, member.currentModel ? modelShort(member.currentModel) : '', state, '', member.currentModel?.id || '');
       }).join('');
       const answered = s._meeting.answeredThisTurn?.size || 0;
       const progress = memberTotal ? Math.min(100, answered / memberTotal * 100) : 0;
@@ -929,7 +935,7 @@ sessionListEl.addEventListener('keydown', event => {
     ].filter(Boolean).join(' · ');
     div.setAttribute('aria-label', accessibleSummary);
     div.innerHTML = '<span class="sl-title">' + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
-      + _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth))
+      + _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), s.currentModel?.id || '')
       + timeHtml(s, showUnread ? Math.max(1, unreadCount) : 0);
     if (child) div.className += ' child';
     if (detailsEnabled) {
