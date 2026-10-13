@@ -163,6 +163,7 @@ const { TranscriptParserService } = require('./core/transcript-parser-service.js
 const { CodexJsonlUsageService } = require('./main/usage/codex-jsonl-usage-service.js');
 const {
   claudeProjectRoots,
+  codeAgentProjectsRoot,
   findTranscriptByCCSessionId,
   healPersistedCwds,
   projectSlug,
@@ -192,6 +193,8 @@ function sessionSearchRoots(envName, defaults) {
 const sessionSearchService = new SessionSearchService({
   cachePath: path.join(getHubDataDir(), 'cache', 'session-search-v2.json'),
   claudeRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CLAUDE_ROOTS', claudeProjectRoots()),
+  // 公司 CodeAgent 的记录目录：该目录下的记录在「昨日之我」里标为 CodeAgent，恢复时用 CodeAgent。
+  codeagentRoots: [codeAgentProjectsRoot()].filter(Boolean),
   codexRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CODEX_ROOTS', [DEFAULT_CODEX_SESSIONS_ROOT]),
   // 2026-08-28：补上 Kimi 与 Gemini。此前只有 claude/codex/meeting 三个适配器，
   // Kimi 的 45 个会话、Gemini 的 21 个会话正文一条都进不了索引。

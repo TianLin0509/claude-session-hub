@@ -77,7 +77,7 @@ test('session-manager builds both current Codex and legacy Claude DeepSeek forks
 test('Kimi is rejected with the real reason, not a generic refusal', () => {
   assert.match(IPC_SRC, /Kimi CLI 无 fork 能力/,
     'the error must state why Kimi cannot branch so the user does not think it is a Hub bug');
-  assert.match(IPC_SRC, /仅支持 Claude Code、DeepSeek、Codex 和 Antigravity 会话创建分支/);
+  assert.match(IPC_SRC, /仅支持 Claude Code、DeepSeek、Codex、CodeAgent 和 Antigravity 会话创建分支/);
   // 防回归：别哪天把 kimi 塞进 fork 分支——它的 CLI 根本不接受 fork 参数
   assert.doesNotMatch(IPC_SRC, /isKimiCliKind\(source\.kind\)[\s\S]{0,120}forkCCSessionId/);
 });
