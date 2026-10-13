@@ -3619,6 +3619,11 @@ document.addEventListener('click', async (e) => {
   }
   // @community-end
 
+  if (action === 'prompt-composition') {
+    require('./prompt-composition-view').openPromptComposition({ turn, sessionId: getCardSessionId(card), ipc: ipcRenderer, escapeHtml });
+    return;
+  }
+
   if (action === 'prompt-inspect') {
     const sid = getCardSessionId(card);
     if (typeof window.togglePromptInspector === 'function') {

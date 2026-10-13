@@ -194,8 +194,9 @@ test('随第一条消息送达：一次送达留回执；换版补送；内部�
   const sent = [];
   const send = sid => async text => { sent.push(text); service.confirmSend({ sessionId: sid, text }); return { ok: true }; };
   await service.withHubRules('s1', '你好', 'claude', { clientSubmissionId: 'one' }, send('s1'));
-  assert.match(sent[0], /^你好\n\n<ai-hub-rules ref="hubrules-one">\n以下是 AI Hub 默认带上的规则（通用规则 v1/);
-  assert.match(sent[0], /先给结论\n<\/ai-hub-rules>$/);
+  // 2026-10-13 用户要求规则放在正文前面。
+  assert.match(sent[0], /^<ai-hub-rules ref="hubrules-one">\n以下是 AI Hub 默认带上的规则（通用规则 v1/);
+  assert.match(sent[0], /先给结论\n<\/ai-hub-rules>\n\n你好$/);
   assert.equal(service.hubRulesDeliveries().find(r => r.sessionId === 's1').status, 'sent');
   await service.withHubRules('s1', '第二条', 'claude', { clientSubmissionId: 'two' }, send('s1'));
   assert.equal(sent[1], '第二条', '已送达过同一版本就不再带');
@@ -223,6 +224,25 @@ test('卡片视图把末尾连着的规则块和工作区规则块一起折叠�
   const { searchableUserText } = require('../core/synthetic-user-filter');
   const searchable = searchableUserText('真实问题\n\n<ai-hub-rules ref="hubrules-1">\n先给结论\n</ai-hub-rules>');
   assert.equal(searchable, '真实问题');
+});
+
+test('卡片只显示用户自己的话：前置、后置、包在 pasted_content 里的 Hub 附带块都拆出来交给发送内容面板', () => {
+  const { displayUserText, hubAttachedFields, splitHubEnvelopes } = require('../core/synthetic-user-filter');
+  const rules = '<ai-hub-rules ref="hubrules-1">\n以下是 AI Hub 默认带上的规则（通用规则 v1 + 我的规则，可在 Hub 左侧「规则」页查看或关闭）。\n先给结论\n</ai-hub-rules>';
+  const ws = '<ai-hub-workspace-rules ref="workspace-1">\n共享规则\n</ai-hub-workspace-rules>';
+  const lead = `${rules}\n\n${ws}\n\n真实问题\n第二行`;
+  assert.equal(displayUserText(lead), '真实问题\n第二行');
+  assert.deepEqual(hubAttachedFields(lead).hubAttached.map(a => [a.kind, a.label, a.ref]), [
+    ['rules', 'Hub 规则（通用规则 v1 + 我的规则）', 'hubrules-1'], ['workspace-rules', '共享工作区规则', 'workspace-1']]);
+  assert.equal(hubAttachedFields(lead).hubAttached[1].content, '共享规则');
+  assert.equal(displayUserText(`真实问题\n\n${rules}`), '真实问题', '更早的消息块在后面');
+  assert.equal(displayUserText(`<pasted_content id="7">\n${rules}\n\n真实问题\n</pasted_content id="7">`), '真实问题');
+  assert.equal(displayUserText(rules), null, '只有附带块、没有用户正文的消息不出卡片');
+  assert.deepEqual(hubAttachedFields('普通消息，提到 <ai-hub-rules> 这个标签'), {});
+  assert.equal(displayUserText('普通消息，提到 <ai-hub-rules> 这个标签'), '普通消息，提到 <ai-hub-rules> 这个标签');
+  assert.equal(splitHubEnvelopes('没有块').text, '没有块');
+  // 群聊脚手架外面套着规则块时，仍只取「## 用户」那段。
+  assert.equal(displayUserText(`${rules}\n\n## 规则\n你是成员\n## 用户\n大家好\n请发言。`), '大家好');
 });
 
 test('Claude 启动时把规则写进系统提示：按内容命名的文件、跳过内部会话、不抢别的系统提示文件', t => {

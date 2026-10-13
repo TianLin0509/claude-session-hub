@@ -200,7 +200,10 @@ function createAutoTitleManager(deps) {
   }
 
   function maybeAutoTitleSessionFromPrompt(ev) {
-    const { hubSessionId, text } = ev || {};
+    const { hubSessionId } = ev || {};
+    // 标题只取用户自己的话。Hub 附带块（规则、工作区规则、记忆索引）2026-10-13 起放在正文前面，
+    // 各 CLI 的 hook 上报的是整段原文，不剥掉标题会变成「Codex · ai-hub-rules ref=」。
+    const text = require('../core/synthetic-user-filter').splitHubEnvelopes(ev && ev.text).text;
     if (!hubSessionId || !text || autoTitleInFlight.has(hubSessionId)) return;
     const session = sessionManager.getSession(hubSessionId);
     if (!session || session.meetingId || session.userRenamed) return;
