@@ -26,11 +26,24 @@ function stripAnsi(buf) {
     .replace(/\r/g, '');
 }
 
+// The last `chars` characters of the cleaned buffer. Codex checks this on every
+// keystroke; cleaning the whole 1 MB ring for 500 characters cost 3–4 ms each
+// time (2026-10-14). Clean a raw tail first and fall back to the whole buffer
+// only when that tail is too dense with control sequences to be sure.
+const RAW_TAIL_CHARS = 32 * 1024;
+function cleanTail(rawBuffer, chars) {
+  const raw = String(rawBuffer || '');
+  if (raw.length > RAW_TAIL_CHARS) {
+    // A sequence cut at the window start leaves junk only at its start.
+    const clean = stripAnsi(raw.slice(-RAW_TAIL_CHARS));
+    if (clean.length >= chars + 64) return clean.slice(-chars);
+  }
+  return stripAnsi(raw).slice(-chars);
+}
+
 function detectHostShellTakeover(rawBuffer) {
   if (!rawBuffer) return false;
-  const clean = stripAnsi(rawBuffer);
-  const tail = clean.slice(-500);
-  return HOST_SHELL_PROMPT_RE.test(tail);
+  return HOST_SHELL_PROMPT_RE.test(cleanTail(rawBuffer, 500));
 }
 
 // Codex 0.153 的 /new 在同一个 TUI 里结束当前线程时，先打印
@@ -76,7 +89,7 @@ function createAuthBannerMonitor() {
     // rawBuffer: PTY ring buffer；activityStamp: sessionManager.getGroupChatLastActivity(sid)
     // 返回 'none' | 'suspect' | 'confirmed'
     tick(rawBuffer, activityStamp) {
-      const tail = stripAnsi(rawBuffer || '').slice(-AUTH_TAIL_CHARS);
+      const tail = cleanTail(rawBuffer, AUTH_TAIL_CHARS);
       if (!AUTH_FAILURE_RE.test(tail)) {
         hits = 0;
         lastActivity = null;
@@ -96,6 +109,7 @@ module.exports = {
   HOST_SHELL_PROMPT_RE,
   AUTH_FAILURE_RE,
   stripAnsi,
+  cleanTail,
   detectHostShellTakeover,
   detectCodexThreadEnded,
   createAuthBannerMonitor,
