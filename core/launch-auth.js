@@ -6,10 +6,12 @@
 // 2026-10-14: every probe is a child process (`claude auth status` ~0.5–0.8 s,
 // `codex login status` ~0.2–0.3 s) and starting one on Windows blocks the main
 // process for 20–190 ms. Creating a two-member group used to probe four times
-// in a row. A recent answer is now reused: a login seen within the account
-// page's own freshness window (5 min) is trusted, and an inconclusive probe is
-// not repeated for a minute. A login that expires in between is still caught —
-// the CLI reports it and recover() below opens the official login.
+// in a row. A launch now reuses the account center's stored observation of the
+// same account (id, home, credential) and the same local login files: a login
+// seen within the account page's own freshness window (5 min), an inconclusive
+// probe within a minute. The stored observation is the only record, so a newer
+// "login required" — from a check or from a running CLI via recover() — always
+// wins over an older "signed in", and the next successful check clears it.
 const SIGNED_IN_REUSE_MS = 5 * 60 * 1000;
 const INCONCLUSIVE_REUSE_MS = 60 * 1000;
 class LaunchAuth {
@@ -17,7 +19,6 @@ class LaunchAuth {
     Object.assign(this, {accounts, getConfig, notify, now});
     this.flights = new Map();
     this.recoveryAt = new Map();
-    this.passedAt = new Map();
   }
   connection(kind, opts = {}) {
     const base = String(kind || '').replace(/-resume$/, '');
@@ -29,48 +30,45 @@ class LaunchAuth {
     if (base === 'claude') return config.claudeBackend === 'api' ? null : 'claude';
     return ({gemini:'gemini-cli', kimi:'kimi'})[base] || null;
   }
+  // The account a connection id points at right now: id, home directory and credential.
+  identity(id) { try { return this.accounts.scopeOf?.(id) || id; } catch { return id; } }
+  reusable(id) {
+    let seen = null;
+    try { seen = this.accounts.recentObservation?.(id); } catch { return false; }
+    if (!seen || seen.sameCredential === false || seen.state === 'login_required') return false;
+    const age = this.now() - (Number(seen.observedAt) || 0);
+    if (age < 0) return false;
+    return age < (seen.state === 'signed_in' ? SIGNED_IN_REUSE_MS : INCONCLUSIVE_REUSE_MS);
+  }
   async ensure(kind, opts = {}) {
     const id = this.connection(kind, opts);
     if (!id) return;
-    const passed = this.passedAt.get(this.identity(id));
-    if (passed && this.now() - passed.at < passed.ttl) return;
-    if (this.flights.has(id)) return this.flights.get(id);
-    const flight = this.checkAndOpen(id).finally(() => this.flights.delete(id));
-    this.flights.set(id, flight);
+    if (this.reusable(id)) return;
+    // Only requests for the same account share a check: a profile re-pointed to another
+    // home while a check runs starts its own.
+    const key = this.identity(id);
+    if (this.flights.has(key)) return this.flights.get(key);
+    const flight = this.checkAndOpen(id).finally(() => this.flights.delete(key));
+    this.flights.set(key, flight);
     return flight;
   }
   async recover(kind, opts, failure) {
     if (!isLoginFailure(failure)) return;
     const id=this.connection(kind,{...opts,launchProfile:opts?.codexProfile});
-    if (id) this.passedAt.delete(this.identity(id));
-    if (!id || Date.now()-(this.recoveryAt.get(id)||0)<60000) return;
+    if (!id) return;
+    try { this.accounts.markLoginRequired?.(id); } catch {}
+    if (Date.now()-(this.recoveryAt.get(id)||0)<60000) return;
     this.recoveryAt.set(id,Date.now());
     try {
       const result=await this.accounts.login(id);
       this.notify({id,pending:result.pending!==false,message:'登录已失效，已打开对应账号的官方登录界面；完成后请恢复或重启会话，已发送的问题不会自动重发。'});
     } catch(error) {this.notify({id,success:false,message:'需要登录，登录入口未能打开：'+error.message});}
   }
-  // A reused answer belongs to one account: a changed home directory or credential
-  // behind the same connection id is checked again.
-  identity(id) { try { return this.accounts.scopeOf?.(id) || id; } catch { return id; } }
-  pass(id, ttl, at = this.now()) { this.passedAt.set(this.identity(id), {at, ttl}); }
   async checkAndOpen(id) {
-    // The account page keeps the last observation on disk; a fresh one answers
-    // the question without starting another process.
-    let recent = null;
-    try { recent = await this.accounts.recentObservation?.(id); } catch {}
-    if (recent?.state === 'signed_in' && this.now() - (Number(recent.observedAt) || 0) < SIGNED_IN_REUSE_MS) {
-      this.pass(id, SIGNED_IN_REUSE_MS, Number(recent.observedAt));
-      return;
-    }
     let proof;
     try { proof = await this.accounts.check(id, {quiet:true, resume:false}); }
-    catch { this.pass(id, INCONCLUSIVE_REUSE_MS); return; } // Preserve the normal launch error when status is unknown.
-    if (proof.state !== 'login_required') {
-      this.pass(id, proof.state === 'signed_in' ? SIGNED_IN_REUSE_MS : INCONCLUSIVE_REUSE_MS);
-      return;
-    }
-    this.passedAt.delete(this.identity(id));
+    catch { return; } // Preserve the normal launch error when status is unknown.
+    if (proof.state !== 'login_required') return;
     let result;
     try { result = await this.accounts.login(id); }
     catch (error) { throw Object.assign(new Error('需要登录，但登录入口未能打开：' + error.message), {code:'auth_required'}); }

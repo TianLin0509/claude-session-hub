@@ -28,15 +28,30 @@ function stripAnsi(buf) {
 
 // The last `chars` characters of the cleaned buffer. Codex checks this on every
 // keystroke; cleaning the whole 1 MB ring for 500 characters cost 3–4 ms each
-// time (2026-10-14). Clean a raw tail first and fall back to the whole buffer
-// only when that tail is too dense with control sequences to be sure.
+// time (2026-10-14). Clean a raw tail instead, but only when its first character
+// is provably outside every sequence stripAnsi removes; otherwise clean it all.
 const RAW_TAIL_CHARS = 32 * 1024;
+const SEQUENCE_PARAM = /[0-9;?[()]/;
+function safeTailStart(raw, cut) {
+  // OSC: stripAnsi removes from the first ESC ] after a BEL up to the next BEL,
+  // which may lie far before the cut (a long window title).
+  if (raw.lastIndexOf('\x1b]', cut - 1) > raw.lastIndexOf('\x07', cut - 1)) return -1;
+  // CSI and charset sequences are short: step back over their parameters to the ESC.
+  let start = cut;
+  while (start > 0 && cut - start < 64 && SEQUENCE_PARAM.test(raw[start - 1])) start -= 1;
+  if (start > 0 && raw[start - 1] === '\x1b') return start - 1;
+  // Ordinary digits or brackets before the cut: not inside a sequence. A run this long
+  // without its ESC in sight cannot be decided cheaply.
+  return cut - start >= 64 ? -1 : cut;
+}
 function cleanTail(rawBuffer, chars) {
   const raw = String(rawBuffer || '');
   if (raw.length > RAW_TAIL_CHARS) {
-    // A sequence cut at the window start leaves junk only at its start.
-    const clean = stripAnsi(raw.slice(-RAW_TAIL_CHARS));
-    if (clean.length >= chars + 64) return clean.slice(-chars);
+    const start = safeTailStart(raw, raw.length - RAW_TAIL_CHARS);
+    if (start >= 0) {
+      const clean = stripAnsi(raw.slice(start));
+      if (clean.length >= chars) return clean.slice(-chars);
+    }
   }
   return stripAnsi(raw).slice(-chars);
 }

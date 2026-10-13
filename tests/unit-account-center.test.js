@@ -248,3 +248,15 @@ test('a connection identity changes with its home directory',async t=>{
  config.codexSubscriptionProfiles[0].home=path.join(root,'other');assert.notEqual(service.scopeOf('codex-default'),before);
  assert.equal(service.scopeOf('image-primary'),null);
 });
+test('launches reuse a real stored login, share one check, and resume reuse after a fresh login',async t=>{
+ const {LaunchAuth}=require('../core/launch-auth');
+ let state='signed_in',probes=0;const s=setup(t,{check:async()=>{probes++;await new Promise(r=>setTimeout(r,5));return {state};},login:async()=>({pending:true})});
+ const home=s.config.codexSubscriptionProfiles[0].home;fs.mkdirSync(home,{recursive:true});fs.writeFileSync(path.join(home,'auth.json'),'{"tokens":"fixture-1"}');
+ const auth=new LaunchAuth({accounts:s.service,getConfig:()=>({codexBackend:'subscription',codexSubscriptionProfile:'default',claudeBackend:'subscription'})});
+ await Promise.all([auth.ensure('codex'),auth.ensure('codex'),auth.ensure('claude')]);assert.equal(probes,2,'one check per account, shared by concurrent launches');
+ await auth.ensure('codex');await auth.ensure('claude');assert.equal(probes,2,'a just-confirmed login is reused');
+ await auth.recover('codex',{codexProfile:'default'},'Not logged in');
+ state='login_required';await assert.rejects(auth.ensure('codex'),{code:'auth_required'});assert.equal(probes,3);
+ state='signed_in';await auth.ensure('codex');await auth.ensure('codex');assert.equal(probes,4,'a successful check lifts the runtime report');
+ const shown=(await s.service.snapshot()).connections.find(r=>r.id==='codex-default');assert.equal('credential' in shown,false,'the file signature stays out of the account page');
+});

@@ -1,15 +1,23 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {LaunchAuth,isLoginFailure,SIGNED_IN_REUSE_MS,INCONCLUSIVE_REUSE_MS}=require('../core/launch-auth');
+// A fake account center that keeps observations the way the real one does: a check stores
+// its answer (a failed check stores "unknown"), a runtime report stores "login required".
 function setup(state='signed_in',{recent=null}={}) {
-  const calls=[],notifications=[],clock={t:1_000_000};
+  const calls=[],notifications=[],clock={t:1_000_000},stored=new Map(),scope={of:id=>id},credential={value:'c1'};
   const config={codexBackend:'subscription',codexSubscriptionProfile:'second',claudeBackend:'subscription'};
-  const service=new LaunchAuth({getConfig:()=>config,notify:x=>notifications.push(x),now:()=>clock.t,accounts:{
-    check:async id=>{calls.push(['check',id]);return {state:typeof state==='function'?state():state};},
+  const keep=(id,value)=>stored.set(scope.of(id),{...value,observedAt:clock.t,credential:credential.value});
+  const accounts={
+    check:async id=>{calls.push(['check',id]);
+      try{const value={state:typeof state==='function'?state():state};keep(id,value);return value;}
+      catch(error){keep(id,{state:'unknown'});throw error;}},
     login:async id=>{calls.push(['login',id]);return {pending:true};},
-    ...(recent?{recentObservation:id=>recent(id,clock.t)}:{}),
-  }});
-  return {service,config,calls,notifications,clock};
+    scopeOf:id=>scope.of(id),
+    recentObservation:id=>{if(recent)return recent(id,clock.t);const seen=stored.get(scope.of(id));return seen?{...seen,sameCredential:seen.credential===credential.value}:null;},
+    markLoginRequired:id=>keep(id,{state:'login_required'}),
+  };
+  const service=new LaunchAuth({getConfig:()=>config,notify:x=>notifications.push(x),now:()=>clock.t,accounts});
+  return {service,config,calls,notifications,clock,scope,credential,accounts};
 }
 test('new, resume and restart check the selected quota account rather than the historical profile',async()=>{
   const {service,calls}=setup();
@@ -32,20 +40,22 @@ test('an inconclusive probe is not repeated for a minute and never opens a login
   assert.deepEqual(calls,[['check','codex-second']]);
   clock.t+=INCONCLUSIVE_REUSE_MS;await service.ensure('codex');
   assert.deepEqual(calls,[['check','codex-second'],['check','codex-second']]);
-  const failing=setup();failing.service.accounts.check=async()=>{failing.calls.push(['check']);throw Error('timeout');};
+  const failing=setup(()=>{throw Error('timeout');});
   await failing.service.ensure('claude');await failing.service.ensure('claude');
   assert.equal(failing.calls.length,1);
 });
-test('a fresh stored observation answers without probing; a stale or negative one does not',async()=>{
-  const fresh=setup('login_required',{recent:(id,now)=>({state:'signed_in',observedAt:now-60_000})});
+test('a fresh stored observation answers without probing; a stale, negative or other-credential one does not',async()=>{
+  const fresh=setup('login_required',{recent:(id,now)=>({state:'signed_in',observedAt:now-60_000,sameCredential:true})});
   await fresh.service.ensure('claude');assert.equal(fresh.calls.length,0);
-  const stale=setup('signed_in',{recent:(id,now)=>({state:'signed_in',observedAt:now-SIGNED_IN_REUSE_MS-1})});
+  const stale=setup('signed_in',{recent:(id,now)=>({state:'signed_in',observedAt:now-SIGNED_IN_REUSE_MS-1,sameCredential:true})});
   await stale.service.ensure('claude');assert.deepEqual(stale.calls,[['check','claude']]);
   const negative=setup('login_required',{recent:(id,now)=>({state:'login_required',observedAt:now})});
   await assert.rejects(negative.service.ensure('claude'),{code:'auth_required'});
   assert.deepEqual(negative.calls,[['check','claude'],['login','claude']]);
+  const replaced=setup('signed_in',{recent:(id,now)=>({state:'signed_in',observedAt:now,sameCredential:false})});
+  await replaced.service.ensure('claude');assert.deepEqual(replaced.calls,[['check','claude']]);
 });
-test('a runtime login failure drops the reused answer so the next launch checks again',async()=>{
+test('a newer login-required answer wins over the reused login, and a later login clears it',async()=>{
   let state='signed_in';
   const {service,calls}=setup(()=>state);
   await service.ensure('codex');assert.equal(calls.length,1);
@@ -53,8 +63,10 @@ test('a runtime login failure drops the reused answer so the next launch checks 
   state='login_required';
   await assert.rejects(service.ensure('codex'),{code:'auth_required'});
   assert.deepEqual(calls.map(c=>c[0]),['check','login','check','login']);
+  state='signed_in';await service.ensure('codex');await service.ensure('codex');
+  assert.deepEqual(calls.map(c=>c[0]),['check','login','check','login','check']);
 });
-test('a missing login is never cached: every launch asks again',async()=>{
+test('a missing login is never reused: every launch asks again',async()=>{
   const {service,calls}=setup('login_required');
   await assert.rejects(service.ensure('claude'),{code:'auth_required'});
   await assert.rejects(service.ensure('claude'),{code:'auth_required'});
@@ -87,10 +99,11 @@ test('confirmed runtime expiration recovers the running account, with a cooldown
   for(const message of ['403 Forbidden','request timeout','tool output: discuss not logged in errors'])assert.equal(isLoginFailure(message),false);
   assert.equal(isLoginFailure('Not logged in'),true);
 });
-test('a reused login belongs to one account identity: a new home or credential is checked again',async()=>{
-  const {service,calls}=setup();
-  let scope='codex-second:C:/home/a:';service.accounts.scopeOf=()=>scope;
+test('a reused login belongs to one account identity and its local login files',async()=>{
+  const {service,calls,scope,credential}=setup();
+  scope.of=id=>id+':C:/home/a';
   await service.ensure('codex');await service.ensure('codex');assert.equal(calls.length,1);
-  scope='codex-second:C:/home/b:';await service.ensure('codex');assert.equal(calls.length,2);
-  scope='codex-second:C:/home/b:cred-hash';await service.ensure('codex');assert.equal(calls.length,3);
+  scope.of=id=>id+':C:/home/b';await service.ensure('codex');assert.equal(calls.length,2);
+  credential.value='c2';await service.ensure('codex');assert.equal(calls.length,3);
+  await service.ensure('codex');assert.equal(calls.length,3);
 });
