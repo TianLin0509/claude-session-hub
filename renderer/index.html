@@ -244,6 +244,7 @@
                       <button type="button" class="launch-center-resume-option" data-resume-kind="gemini-resume"><span class="ai-logo logo-gemini"></span><span class="launch-center-resume-copy"><strong>Antigravity</strong><small>继续最近一次原生会话</small></span><span class="hint">最近一次</span></button>
                       <button type="button" class="launch-center-resume-option" data-resume-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span><span class="launch-center-resume-copy"><strong>DeepSeek</strong><small>恢复兼容 Claude CLI 的历史</small></span><span class="hint">PTY picker</span></button>
                       <button type="button" class="launch-center-resume-option" data-resume-kind="kimi-resume"><span class="ai-logo logo-kimi"></span><span class="launch-center-resume-copy"><strong>Kimi</strong><small>恢复 Kimi Code 历史会话</small></span><span class="hint">PTY picker</span></button>
+                      <button type="button" class="launch-center-resume-option" data-resume-kind="codeagent-resume"><span class="ai-logo logo-codeagent"></span><span class="launch-center-resume-copy"><strong>CodeAgent</strong><small>列出所有目录的 CodeAgent 历史，在原目录接着聊</small></span><span class="hint">全部目录</span></button>
                     </div>
                     <div class="launch-center-resume-note">Hub 内已休眠的会话仍可直接从左侧列表唤醒；这里负责提供方原生历史，不会创建重复入口。</div>
                     <div class="launch-center-error" id="launch-center-error" role="alert" hidden></div>
@@ -534,7 +535,7 @@
     <div class="modal-overlay" id="resume-modal" style="display:none">
       <div class="modal">
         <div class="modal-header">
-          <span class="modal-title">Resume past Claude session</span>
+          <span class="modal-title" id="resume-modal-title">Resume past Claude session</span>
           <input type="text" id="resume-filter" class="modal-filter" placeholder="Filter by cwd / preview…">
           <button class="modal-close" id="resume-modal-close" title="Close (Esc)">✕</button>
         </div>
