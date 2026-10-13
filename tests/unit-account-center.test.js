@@ -230,3 +230,16 @@ test('a live check cannot erase the account label the owning tool already knows'
  // And a connection nobody labelled stays blank rather than inheriting a neighbour's.
  assert.equal((await service.snapshot()).connections.find(r=>r.id==='web-qwen').accountLabel,'');
 });
+test('checking a native CLI does not list the image pool; image rows still resolve',async t=>{
+ let listings=0;const {service}=setup(t,{imageAccounts:async()=>{listings++;return [{id:'primary',state:'signed_in',observedAt:1,enabled:true}];}});
+ await service.check('claude');await service.check('codex-default');await service.row('web-deepseek');
+ assert.equal(listings,0);
+ assert.equal((await service.row('image-primary')).provider,'images');assert.equal(listings,1);
+});
+test('the stored observation of a fixed connection is readable without probing',async t=>{
+ let probes=0;const {service}=setup(t,{check:async()=>{probes++;return {state:'signed_in',message:'ok'};}});
+ assert.equal(service.recentObservation('claude'),null);
+ await service.check('claude');assert.equal(probes,1);
+ const seen=service.recentObservation('claude');assert.equal(seen.state,'signed_in');assert.ok(Date.now()-seen.observedAt<5000);
+ assert.equal(probes,1);assert.equal(service.recentObservation('../../secret'),null);
+});

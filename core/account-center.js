@@ -146,7 +146,10 @@ class AccountCenter {
   }
   leaseToken(key){try{return JSON.parse(fs.readFileSync(this.file(key,'login'),'utf8')).token;}catch(e){if(e.code==='ENOENT')return null;throw e;}}
   clearLease(key,token){if(!token||this.leaseToken(key)!==token)return;try{fs.unlinkSync(this.file(key,'login'));}catch(e){if(e.code!=='ENOENT')throw e;}}
-  async row(id){const row=(await this.connections()).find(r=>r.id===id);if(!row)throw new Error('连接不存在，请刷新账号列表');return row;}
+  // Fixed rows first: listing the image pool starts a Python process, and only image rows need it.
+  async row(id){const row=this.baseConnections().find(r=>r.id===id)||(await this.connections()).find(r=>r.id===id);if(!row)throw new Error('连接不存在，请刷新账号列表');return row;}
+  // Last stored observation of a fixed connection, without probing anything.
+  recentObservation(id){const row=this.baseConnections().find(r=>r.id===id);return row?this.read(this.scope(row)):null;}
   // An explicit check still resumes the tasks that were waiting for this login. Only the
   // background poll passes resume:false, so it can never restart web tasks on its own.
   async check(id,{quiet=false,resume=true}={}){
