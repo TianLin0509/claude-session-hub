@@ -204,9 +204,17 @@ test('SessionManager launches deepseek-claude as a real PTY Claude Code with Dee
     assert.match(cmd, new RegExp(`--model ${wire.replace(/\./g, '\\.')}(?:\\s|$)`));
     assert.match(cmd, /--effort high/);
     assert.match(cmd, new RegExp(`--session-id ${info.ccSessionId}`));
+    // ~/.claude-deepseek 不继承主 Claude 的 defaultMode；不带参数会落进 auto 模式（2026-10-13 实测）。
+    assert.match(cmd, /--permission-mode bypassPermissions(?:\s|$)/, 'DeepSeek sessions launch in bypass, not the CLI default auto mode');
     const models = [...cmd.matchAll(/--model (\S+)/g)].map(m => m[1]);
     assert.deepEqual(models, [wire], 'exactly one --model and it is the DeepSeek wire name');
     for (const value of models) assert.doesNotMatch(value, CLAUDE_MODEL_RE, 'launch command carries no Claude model name');
+    // 原地重拉（新的 Claude 进程）同样带旁路
+    const before = fake.writes.length;
+    assert.equal(manager.relaunchCli(info.id), true);
+    const relaunch = fake.writes.slice(before).join('');
+    assert.match(relaunch, / claude --model /);
+    assert.match(relaunch, /--permission-mode bypassPermissions(?:\s|$)/, 'in-place relaunch keeps bypass');
   }
   assert.equal(fs.existsSync(path.join(configDir, '.credentials.json')), false);
 });
