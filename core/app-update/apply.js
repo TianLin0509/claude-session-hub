@@ -5,7 +5,8 @@
 //   3. 用户点「立即重启」：主进程隐藏启动小脚本后退出；脚本等这个进程结束 → 备份要替换的文件 →
 //      逐个复制新文件 → 再核对 sha256 → 任何一步失败就把备份全部还原 → 重新打开程序；
 //   4. 结果写进 last-result.json，下次启动由界面读出来告诉用户（成功 / 失败已回滚 + 原因）。
-const fs = require('fs');
+// Electron 会把名为 *.asar 的文件当成压缩包拦截（写 app.asar 会报 Invalid package），用它提供的原始文件接口。
+const fs = (() => { try { return require('original-fs'); } catch (_) { return require('fs'); } })();
 const path = require('path');
 const { spawn } = require('child_process');
 const { unpackPayload } = require('./payload');

@@ -5,7 +5,8 @@
 //
 // 内容：app.asar 本身，加上 app.asar.unpacked 里不属于 node_modules 的文件（打包时被标记成
 // 「解包」的少量程序文件，它们跟着程序一起变）。依赖（node_modules）不进增量包：依赖一变就走完整安装包。
-const fs = require('fs');
+// Electron 会把名为 *.asar 的文件当成压缩包拦截（写 app.asar 会报 Invalid package），用它提供的原始文件接口。
+const fs = (() => { try { return require('original-fs'); } catch (_) { return require('fs'); } })();
 const path = require('path');
 const zlib = require('zlib');
 const { createHash } = require('crypto');

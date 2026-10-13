@@ -11,7 +11,7 @@
   let state = null, dialog = null;
 
   const css = `
-  .app-update-dialog { width: min(560px, calc(100vw - 48px)); padding: 0; border: 1px solid var(--border-subtle, #e3e1ea); border-radius: 14px;
+  .app-update-dialog { position: fixed; inset: 0; margin: auto; height: fit-content; max-height: calc(100vh - 48px); overflow: auto; width: min(560px, calc(100vw - 48px)); padding: 0; border: 1px solid var(--border-subtle, #e3e1ea); border-radius: 14px;
     background: var(--surface-raised, #fff); color: var(--fg-default, #1f2330); box-shadow: 0 24px 60px rgba(30, 24, 60, .22); font: inherit; }
   .app-update-dialog::backdrop { background: rgba(24, 20, 40, .38); }
   .au-head { display: flex; align-items: center; gap: 12px; padding: 18px 20px 12px; }
