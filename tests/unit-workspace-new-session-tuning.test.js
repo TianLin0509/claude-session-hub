@@ -131,7 +131,7 @@ test('modal markup carries the recent list, model picker and effort picker', () 
   for (const id of ['new-session-fast', 'new-session-fast-field', 'new-session-tuning-note']) {
     assert.ok(INDEX_SRC.includes(`id="${id}"`), `index.html must define #${id}`);
   }
-  assert.ok(INDEX_SRC.includes('id="new-session-fast" checked'), 'fast 默认必须是勾上的');
+  assert.ok(!INDEX_SRC.includes('id="new-session-fast" checked'), 'Fast 的初始状态应和关闭的默认值一致');
   // 思考强度/MCP 的选项改成动态填充了：Claude 是固定枚举，Codex 按**模型**来
   // （gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh，见 core/codex-model-catalog.js）。
   // 写死一份必然给某些模型多出或少掉档位，所以这里校验 JS 侧的来源而不是 HTML。
@@ -264,10 +264,10 @@ test('only flags the selected CLI understands are sent', () => {
   );
   // 下拉里的「默认」二字必须跟着真正的默认走。改了默认却留着旧标注，用户看到的
   // 是「选中 high，但 max 那行写着默认」——比不标注更糟。
-  assert.match(CONTROLLER_SRC, /\['high', 'high · 默认'\]/, 'Claude 强度下拉必须把默认标在 high');
+  assert.match(CONTROLLER_SRC, /\['high', 'high · 深入思考'\]/, '选项说明独立于用户保存的默认值');
   assert.doesNotMatch(CONTROLLER_SRC, /'max · 默认/, 'max 不再是默认，不能继续标默认');
-  assert.match(CONTROLLER_SRC, /\['standard', 'Standard · 默认，显式关闭 Fast'\]/,
-    'Codex 速度通道必须把默认标在 Standard');
+  assert.match(CONTROLLER_SRC, /\['standard', 'Standard · 标准速度'\]/,
+    '整组默认可修改，选项不能把 Standard 固定标为默认');
   assert.doesNotMatch(CONTROLLER_SRC, /'Fast · 默认/, 'Fast 不再是默认，不能继续标默认');
   assert.match(
     CONTROLLER_SRC,

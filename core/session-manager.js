@@ -1892,6 +1892,9 @@ class SessionManager extends EventEmitter {
           historyStorageHome:opts.codexHistoryStorageHome,
           resolveAccount:()=>{
             const accounts=require('./codex-global-account');
+            if (opts.codexAccountScope === 'session') return {
+              id:ptyProcess.options.accountId,label:info.codexProfileLabel,home:ptyProcess.options.env.CODEX_HOME,
+            };
             return accounts.resolveRunningAccount(accounts.currentConfig(),{
               id:ptyProcess.options.accountId,label:info.codexProfileLabel,
               home:ptyProcess.options.env.CODEX_HOME});

@@ -59,6 +59,9 @@ test('global selection preserves unrelated config, rejects unknown IDs and envir
  const next={...config,codexSubscriptionProfile:'second'};
  assert.equal(prepareLaunch({codexProfile:'default'},next,env).account.home,b);
  assert.equal(prepareLaunch({codexProfile:'default'},next,env).opts.codexHistoryHome,b);
+ const local=prepareLaunch({codexProfile:'default',codexAccountScope:'session'},next,env);
+ assert.equal(local.account.id,'default');
+ assert.equal(next.codexSubscriptionProfile,'second','a one-session choice must not change the global account');
  assert.throws(()=>prepareLaunch({codexProfile:'default',codexSid:'missing'},next,env),/原始历史/);
 });
 test('global account migration retires old writer, retains thread/history/policy and sends once on new home',async()=>{

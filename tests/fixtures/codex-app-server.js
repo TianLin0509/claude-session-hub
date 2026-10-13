@@ -377,7 +377,7 @@ rl.on('line',line=>{
       answer(msg.id,{});finish(thread,t,'interrupted','');break;
     }
     case 'collaborationMode/list':answer(msg.id,{data:[{name:'Plan',mode:'plan',model:'do-not-copy',reasoning_effort:'low'},{name:'Default',mode:'default'}]});break;
-    case 'model/list':answer(msg.id,{data:['fixture-model','fixture-model-2','gpt-6-astra'].map(model=>({id:model,model,displayName:model,additionalSpeedTiers:model==='fixture-model-2'?[]:['fast'],supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort}))}))});break;
+    case 'model/list':answer(msg.id,{data:['fixture-model','fixture-model-2','gpt-6-astra',...(process.env.CLAUDE_HUB_LAUNCH_DEFAULTS_FIXTURE === '1' ? ['gpt-6.1-sol'] : [])].map(model=>({id:model,model,displayName:model,additionalSpeedTiers:model==='fixture-model-2'?[]:['fast'],supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort}))}))});break;
     case 'thread/goal/get':answer(msg.id,{goal:thread.goal || null});break;
     case 'thread/goal/set':
       thread.goal={...thread.goal,...p};save();answer(msg.id,{goal:thread.goal});
