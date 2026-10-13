@@ -99,14 +99,17 @@ async function main() {
 
     // ④ 头像与图标（模拟 deepseek / MiniMax 模型名）
     for (const [model, logo, avatar] of [[DS, 'deepseek', 'deepseek'], ['MiniMax-M2.7', 'minimax', 'minimax'], ['GLM-5.2-WX-Auto', 'codeagent', 'glm']]) {
-      // 走界面收到主进程「会话已更新」的同一条路径（模拟主进程推来的模型）。
-      await c.eval(`ipcRenderer.emit('session-updated', {}, { session: { ...sessions.get(${q}), currentModel: { id: ${j(model)}, displayName: ${j(model)} } } })`);
-      await sleep(800);
-      const row = await c.eval(`(()=>{const e=document.querySelector('.session-item[data-session-id="${sid}"] .sl-kind');return e&&{cls:e.className,title:e.title,bg:getComputedStyle(e).backgroundImage};})()`);
+      // 走界面收到主进程「会话已更新」的同一条路径（模拟主进程推来的模型）。主进程自己记的还是替身的真实模型，
+      // 之后任何一次状态推送都会把它盖回去，所以注入后立刻读，被盖回就再注入一次。
+      const inject = `ipcRenderer.emit('session-updated', {}, { session: { ...sessions.get(${q}), currentModel: { id: ${j(model)}, displayName: ${j(model)} } } })`;
+      let row = null;
+      for (let attempt = 0; attempt < 8 && !(row && row.cls.includes(`logo-${logo}`) && (logo !== 'minimax' || row.chip.includes('minimax'))); attempt++) {
+        row = await c.eval(`(async()=>{${inject};await new Promise(r=>setTimeout(r,500));const e=document.querySelector('.session-item[data-session-id="${sid}"] .sl-kind');return e&&{cls:e.className,title:e.title,bg:getComputedStyle(e).backgroundImage,chip:${chipLogo}};})()`);
+      }
       check(row && row.cls.includes(`logo-${logo}`) && row.bg.includes(`${logo}.svg`) && row.title.startsWith('CodeAgent'), `侧栏图标：${model} → ${logo}.svg，提示仍写 CodeAgent`);
       const src = await c.eval(`require('./chat-avatar').chatAvatarSrc('codeagent',{model:${j(model)}})`);
       check(src === `assets/ai-avatars/cel-v2/${avatar}.png` && (await imageLoads(src)) > 0, `卡片头像：${model} → ${avatar}.png，图片加载成功`);
-      if (logo === 'minimax') check((await c.eval(chipLogo)).includes('minimax'), '输入框模型图标：MiniMax 用自己的图标');
+      if (logo === 'minimax') check(row.chip.includes('minimax'), '输入框模型图标：MiniMax 用自己的图标');
       await shot(`04-${logo}`);
     }
     check((await imageLoads('assets/ai-logos/minimax.svg')) > 0, 'MiniMax 图标文件加载成功');

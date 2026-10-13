@@ -8,8 +8,12 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
-assert.match(main, /const hubIconPath = HUB_IS_PACKAGED \? process\.execPath : path\.join\(__dirname, 'claude-wx\.ico'\);/,
-  '安装版快捷方式图标用 exe 内嵌图标');
+// 2026-10-09：安装版的快捷方式图标不能指向 app.asar 里面（资源管理器读不到，显示白纸）。
+// 2026-10-13：改用解包到 app.asar.unpacked 的图标文件（一键更新会换掉它），没有时退回 exe 内嵌图标。
+assert.match(main, /const unpackedHubIcon = HUB_IS_PACKAGED \? path\.join\(process\.resourcesPath, 'app\.asar\.unpacked', 'claude-wx\.ico'\) : null;/,
+  '安装版图标取解包目录里的文件，不取 app.asar 里面的');
+assert.match(main, /\(unpackedHubIcon && fs\.existsSync\(unpackedHubIcon\) \? unpackedHubIcon : process\.execPath\)/,
+  '解包图标不在时退回 exe 内嵌图标');
 assert.match(main, /const brandingState = HUB_IS_PACKAGED \? \{ healthy: true \} : describeBrandingHealth\(brandingOptions\);/,
   '安装版不做运行时品牌化');
 assert.match(main, /startShellIntegration\(HUB_IS_PACKAGED \? process\.execPath : resolveHubLaunchExePath\(brandingOptions\)\)/,

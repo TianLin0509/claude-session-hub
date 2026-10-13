@@ -246,7 +246,7 @@ function _logoKind(kind, modelId = '') {
   // 公司 CodeAgent 背后可能是 DeepSeek / MiniMax / GLM：按模型挑图标，GLM 和认不出的沿用 CodeAgent 图标。
   if (k === 'codeagent') {
     const family = require('../core/codeagent-models').modelFamily(modelId);
-    return family === 'deepseek' || family === 'minimax' ? family : 'codeagent';
+    return ['deepseek', 'minimax', 'qwen'].includes(family) ? family : 'codeagent';
   }
   if (k === 'powershell' || isAiKind(k)) return k;
   return '';

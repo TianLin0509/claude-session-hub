@@ -49,7 +49,49 @@ function modelFamily(value) {
   if (id.includes('deepseek')) return 'deepseek';
   if (id.includes('minimax')) return 'minimax';
   if (id.includes('glm') || id.includes('zhipu') || id.includes('chatglm')) return 'glm';
+  if (id.includes('qwen')) return 'qwen';
   return '';
+}
+
+// ---------------------------------------------------------------- 本机 CodeAgent 配置里的模型
+// 2026-10-13 公司探测：~/.cac/settings.json 的 model 是默认模型，.cac.json 的 tieredModelConfig / tierModelParams /
+// modelParam 里列着这台电脑能用的模型（例如 GLM-5.2-WX、MiniMax-M2.7-CodeAgentCLI、Qwen3.6-27B-CodeAgent-VL），
+// 每个人的权限不同，列表也不同。只看键名带 model 的那几段（不碰 projects / history 里的聊天记录），
+// 收集长得像模型名的字符串（厂商名 + 至少一个数字）。
+const CONFIG_MODEL_NAME = /^(?:glm|deepseek|minimax|qwen|kimi)[A-Za-z0-9_.\-]*\d[A-Za-z0-9_.\-]*$/i;
+const CONFIG_MAX_BYTES = 8 * 1024 * 1024;
+
+function collectModelNames(node, inModelSection, out, depth = 0) {
+  if (depth > 8 || out.size > 60 || node == null) return;
+  if (typeof node === 'string') {
+    if (inModelSection && CONFIG_MODEL_NAME.test(node.trim()) && isSafeModelId(node)) out.add(node.trim());
+    return;
+  }
+  if (Array.isArray(node)) { for (const item of node.slice(0, 200)) collectModelNames(item, inModelSection, out, depth + 1); return; }
+  if (typeof node !== 'object') return;
+  for (const [key, value] of Object.entries(node)) {
+    if (/^(projects|history|messages|tipsHistory)$/i.test(key)) continue;
+    const section = inModelSection || /model/i.test(key);
+    if (section && CONFIG_MODEL_NAME.test(key) && isSafeModelId(key)) out.add(key);
+    collectModelNames(value, section, out, depth + 1);
+  }
+}
+
+function configuredModels(configDir, fsModule = fs) {
+  if (!configDir) return { models: [], defaultModel: '' };
+  const names = new Set();
+  let defaultModel = '';
+  for (const file of ['settings.json', '.cac.json']) {
+    try {
+      const full = path.join(configDir, file);
+      if (fsModule.statSync(full).size > CONFIG_MAX_BYTES) continue;
+      const data = JSON.parse(fsModule.readFileSync(full, 'utf8').replace(/^﻿/, ''));
+      if (file === 'settings.json' && isSafeModelId(data && data.model)) defaultModel = String(data.model).trim();
+      collectModelNames(data, false, names);
+    } catch { /* 没有或读不懂就跳过 */ }
+  }
+  if (defaultModel) names.add(defaultModel);
+  return { models: [...names], defaultModel };
 }
 
 function modelLabel(value) {
@@ -124,9 +166,14 @@ function recordObserved(dataDir, value, now = Date.now()) {
   return true;
 }
 
-// 新建会话和模型菜单用的列表：已知的在前，本机见过的其他模型在后。
-function modelOptions(dataDir) {
+// 新建会话和模型菜单用的列表：已知的在前，本机 CodeAgent 配置里的其次，回答里见过的其他模型在后。
+function modelOptions(dataDir, { configDir = null, fsModule = fs } = {}) {
   const options = KNOWN.map(option => ({ ...option, source: 'hub' }));
+  const configured = configuredModels(configDir, fsModule);
+  for (const id of configured.models) {
+    if (options.some(option => option.id.toLowerCase() === id.toLowerCase())) continue;
+    options.push({ id, label: modelLabel(id), source: 'configured', description: `${id} · 本机 CodeAgent 配置里有这个模型` });
+  }
   for (const entry of dataDir ? readObserved(dataDir) : []) {
     if (options.some(option => option.id.toLowerCase() === entry.id.toLowerCase())) continue;
     options.push({ id: entry.id, label: modelLabel(entry.id), source: 'observed', description: `${entry.id} · 本机 CodeAgent 实际用过` });
@@ -144,6 +191,7 @@ module.exports = {
   modelLabel,
   observeModel,
   mismatchNotice,
+  configuredModels,
   readObserved,
   recordObserved,
   modelOptions,
