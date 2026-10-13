@@ -10,6 +10,7 @@ const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../co
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { isPtyAgentSession } = require('../core/agent-runtime-mode.js');
 const { installHiddenRenderGuard } = require('./xterm-hidden-render-guard.js');
+const { setBehindCardsPaused } = require('./xterm-card-pause.js');
 // 公司版默认回到 9 月的「后台」路径：终端按实际尺寸常驻在卡片下面，点后台只藏卡片层（见 core/backstage-path.js）。
 const BACKSTAGE_KEEPS_TERMINAL = require('../core/backstage-path.js').keepsTerminalBehindCards();
 // 主面板的终端此刻是否「收起」：10 月路径下卡片视图里终端不显示、不调尺寸；9 月路径下它一直在卡片下面活着。
@@ -2302,6 +2303,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // buffer, and applyViewMode('pty') shows it and runs the visible recovery.
   // It is opened (and measured) above while still displayed.
   if (!embedded) setCardHiddenTerminal(cached, primaryTerminalDormant());
+  // 9 月做法下终端常驻卡片后面：卡片视图里暂停它的绘制，进后台时补画（renderer/xterm-card-pause.js）。
+  if (!embedded && BACKSTAGE_KEEPS_TERMINAL) setBehindCardsPaused(cached.terminal, currentView === 'card');
   if (isCodexKind(session.kind) && !isNativeAgent(session)) {
     cached._codexAnswerAccent ||= require('./codex-answer-accent').mountCodexAnswerAccent(cached.terminal, document);
     cached._codexAnswerAccent.refresh();
@@ -4059,9 +4062,13 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.fitAddon) {
       setCardHiddenTerminal(cached, false);
+      setBehindCardsPaused(cached.terminal, false);
       loadGpuRenderer(cached);
       scheduleVisibleTerminalRecovery(activeSessionId, cached, { pinBottom: false });
     }
+  }
+  if (mode === 'card' && BACKSTAGE_KEEPS_TERMINAL && typeof terminalCache !== 'undefined') {
+    setBehindCardsPaused(terminalCache.get(activeSessionId)?.terminal, true);
   }
   if (mode === 'card' && !BACKSTAGE_KEEPS_TERMINAL && typeof terminalCache !== 'undefined') {
     unloadGpuRenderer(terminalCache.get(activeSessionId));
