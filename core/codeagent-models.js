@@ -94,13 +94,30 @@ function readConfigFile(full, fsModule) {
   if (data) collectModelNames(data, false, names);
   else scanModelNamesInText(text, names);
   const defaultModel = data && isSafeModelId(data.model) ? String(data.model).trim() : '';
-  const result = { names: [...names], defaultModel, parsed: !!data };
+  const result = { names: [...names], defaultModel, parsed: !!data, enterprise: data ? enterpriseModels(data) : null };
   configFileCache.set(full, { mtimeMs: stat.mtimeMs, size: stat.size, result });
   return result;
 }
 
 // 2026-10-13 公司真机：可用模型清单在 .cac.json 的 enterpriseModelOptionsCache 里；缓存类的值有时是
 // 再编码过一次的 JSON 文本，按 JSON 再解一层再找。
+// 2026-10-13 公司真机第二轮排查：.cac.json 的 enterpriseModelOptionsCache 就是 CodeAgent 自己给这个账号的模型清单，
+// 每项一个 value（田哥的账号只有 GLM-5.2-WX-Auto 与 MiniMax-M2.7）。GLM-5.2-WX、Qwen3.6-27B-CodeAgent-VL 只是
+// GLM Auto 那一项里的分档配置（tieredModelConfig），不能单独选；之前在模型段里见名就收，把它们也列了出来。
+// 有这份清单时只认清单里的 value；没有（老版本 CodeAgent）才退回在模型段里找名字。
+function enterpriseModels(data) {
+  let list = data && data.enterpriseModelOptionsCache;
+  if (typeof list === 'string') { try { list = JSON.parse(list); } catch { list = null; } }
+  if (!Array.isArray(list)) return null;
+  const ids = [];
+  for (const item of list.slice(0, 100)) {
+    const id = clean(typeof item === 'string' ? item : item && (item.value || item.model || item.id));
+    if (!isSafeModelId(id) || OTHER_CLI_MODEL.test(id)) continue;
+    if (!ids.some(other => other.toLowerCase() === id.toLowerCase())) ids.push(id);
+  }
+  return ids.length ? ids : null;
+}
+
 function collectModelNames(node, inModelSection, out, depth = 0) {
   if (depth > 8 || out.size > 60 || node == null) return;
   if (typeof node === 'string') {
@@ -123,19 +140,23 @@ function collectModelNames(node, inModelSection, out, depth = 0) {
   }
 }
 
+// authoritative=true：模型来自 CodeAgent 自己的账号清单（enterpriseModelOptionsCache），界面只列这些。
 function configuredModels(configDir, fsModule = fs) {
-  if (!configDir) return { models: [], defaultModel: '' };
+  if (!configDir) return { models: [], defaultModel: '', authoritative: false };
   const names = new Set();
   let defaultModel = '';
+  let enterprise = null;
   for (const file of ['settings.json', '.cac.json']) {
     try {
       const result = readConfigFile(path.join(configDir, file), fsModule);
       if (file === 'settings.json' && result.defaultModel) defaultModel = result.defaultModel;
+      if (result.enterprise) enterprise = result.enterprise;
       for (const name of result.names) names.add(name);
     } catch { /* 没有或读不了就跳过 */ }
   }
+  if (enterprise) return { models: enterprise, defaultModel, authoritative: true };
   if (defaultModel) names.add(defaultModel);
-  return { models: [...names], defaultModel };
+  return { models: [...names], defaultModel, authoritative: false };
 }
 
 function modelLabel(value) {
@@ -232,12 +253,15 @@ function appendModelLog(dataDir, fields, now = new Date()) {
 }
 
 // 新建会话和模型菜单用的列表：已知的在前，本机 CodeAgent 配置里的其次，回答里见过的其他模型在后。
+// 有账号清单时只列清单里的模型（不再塞内置的两个：没有 MiniMax 权限的同事不该看到它）；
+// 没有清单时沿用内置 + 配置里找到的名字。回答里实际见过的模型都附在最后。
 function modelOptions(dataDir, { configDir = null, fsModule = fs } = {}) {
-  const options = KNOWN.map(option => ({ ...option, source: 'hub' }));
   const configured = configuredModels(configDir, fsModule);
+  const options = configured.authoritative ? [] : KNOWN.map(option => ({ ...option, source: 'hub' }));
   for (const id of configured.models) {
     if (options.some(option => option.id.toLowerCase() === id.toLowerCase())) continue;
-    options.push({ id, label: modelLabel(id), source: 'configured', description: `${id} · 本机 CodeAgent 配置里有这个模型` });
+    options.push({ id, label: modelLabel(id), source: configured.authoritative ? 'account' : 'configured',
+      description: configured.authoritative ? `${id} · 本机 CodeAgent 账号可用的模型` : `${id} · 本机 CodeAgent 配置里有这个模型` });
   }
   for (const entry of dataDir ? readObserved(dataDir) : []) {
     if (options.some(option => option.id.toLowerCase() === entry.id.toLowerCase())) continue;
