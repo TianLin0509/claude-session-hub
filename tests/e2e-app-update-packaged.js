@@ -186,6 +186,13 @@ async function main() {
     result.avatar = avatar;
     check(avatar.src === 'assets/ai-avatars/cel-v2/glm.png' && avatar.width > 0, '更新后 CodeAgent 回答卡片是智谱头像，图片正常加载');
     await shot('round2-06-avatar');
+    // 设置菜单里的「检查更新」：已是最新
+    await click('#btn-options');
+    await until(`getComputedStyle(document.getElementById('options-menu')).display !== 'none' && !!document.getElementById('options-check-update')`, 'options menu', 10000);
+    await click('#options-check-update');
+    await until(`/已是最新版本 v1\\.0\\.1/.test(document.querySelector('.app-update-dialog')?.innerText || '')`, 'up to date', 30000);
+    check(true, '设置菜单「检查更新」：更新后显示「已是最新版本 v1.0.1」，两个源都可用');
+    await shot('round2-07-up-to-date');
     result.passed = true;
   } catch (error) {
     result.error = error && error.stack || String(error);

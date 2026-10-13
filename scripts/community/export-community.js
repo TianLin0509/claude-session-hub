@@ -34,6 +34,8 @@ const VERSION_TOKENS = {
   '@@COMMUNITY_TAG@@': v => `v${v.edition}`,
   '@@COMMUNITY_VERSION@@': v => v.edition,
   '@@UPSTREAM_VERSION@@': v => v.upstream,
+  // 产品显示名（安装脚本建的桌面快捷方式、文档）；公司版在 target.json 里另起名字。
+  '@@COMMUNITY_PRODUCT@@': v => v.product || 'AI Hub Community',
 };
 const TEXT_EXT = new Set(['.js', '.cjs', '.mjs', '.json', '.html', '.css', '.md', '.ps1', '.bat', '.cmd', '.py', '.yml', '.yaml', '.txt', '.svg', '.toml']);
 
@@ -273,7 +275,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
       if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(String(targetSpec.repo || ''))) throw new Error('target.json 缺少有效的 repo');
       applyTargetPackaging(manifest, targetSpec);
     }
-    const versions = { edition: version || (targetSpec && targetSpec.version) || manifest.version, upstream: upstreamVersion };
+    const versions = { edition: version || (targetSpec && targetSpec.version) || manifest.version, upstream: upstreamVersion, product: targetSpec && targetSpec.productName };
     if (!versions.edition) throw new Error('缺少社区版版本号（manifest.version 或 --version）');
     let imageShrink = null;
 
