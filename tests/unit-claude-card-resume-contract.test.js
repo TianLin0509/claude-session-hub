@@ -12,17 +12,20 @@ function read(rel) {
 test('resume picker passes transcriptPath into created Claude resume session', () => {
   const src = read('renderer/past-session-modals.js');
   const rendererSrc = read('renderer/renderer.js');
+  // 2026-10-13：「昨日之我」恢复参数抽到 renderer/search-hit-resume.js（CodeAgent 记录走 codeagent-resume）。
+  const searchResumeSrc = read('renderer/search-hit-resume.js');
+  assert.match(rendererSrc, /resumeRequestForSearchHit\(hit,/, 'global search resume goes through search-hit-resume.js');
   assert.match(
     src,
     /resumeCCSessionId:\s*it\.sessionId,\s*resumeTranscriptPath:\s*it\.path/,
   );
   assert.match(
-    rendererSrc,
+    searchResumeSrc,
     /resumeTranscriptPath:\s*hit\.transcriptPath\s*\|\|\s*undefined/,
     'global search resume must keep the exact indexed transcript path',
   );
   assert.match(
-    rendererSrc,
+    searchResumeSrc,
     /opts\.resumeCCSessionId\s*=\s*hit\.nativeSessionId/,
     'global search must resume the exact Claude native session id',
   );

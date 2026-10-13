@@ -6109,28 +6109,15 @@ function focusOrdinarySearchHit(hit, preview) {
 }
 
 async function createSessionFromSearchHit(hit) {
-  if (!hit || !hit.nativeSessionId) return null;
-  const opts = {
-    title: hit.title || undefined,
-    cwd: hit.cwd || undefined,
-    resumeTranscriptPath: hit.transcriptPath || undefined,
-    autoTitleGenerated: !!hit.title,
-  };
-  let kind;
-  if (hit.nativeFamily === 'claude') {
-    kind = hit.provider === 'deepseek' ? 'deepseek-resume' : 'claude-resume';
-    opts.resumeCCSessionId = hit.nativeSessionId;
-    if (hit.provider === 'deepseek') opts.deepseekLegacyClaude = true;
-  } else if (hit.nativeFamily === 'codex') {
-    kind = hit.provider === 'deepseek' ? 'deepseek-resume' : 'codex-resume';
-    opts.useResume = true;
-    opts.codexSid = hit.nativeSessionId;
-    if (hit.codexSessionsRoot) opts.codexSessionsRoot = hit.codexSessionsRoot;
-    if (hit.codexProfile) opts.codexProfile = hit.codexProfile;
-  } else {
-    return null;
+  const { resumeRequestForSearchHit } = require('./search-hit-resume');
+  let codeagentModel;
+  if (hit && hit.provider === 'codeagent') {
+    // 与启动中心「恢复会话」→ CodeAgent 相同：用「设为默认」的 CodeAgent 模型，没设就由 Hub 用默认模型。
+    try { codeagentModel = ((await ipcRenderer.invoke('get-hub-config')) || {}).defaultModels?.codeagent || undefined; } catch { codeagentModel = undefined; }
   }
-  return ipcRenderer.invoke('create-session', { kind, opts });
+  const request = resumeRequestForSearchHit(hit, { codeagentModel });
+  if (!request) return null;
+  return ipcRenderer.invoke('create-session', request);
 }
 
 async function openGlobalSearchHit(hit, opts = {}) {

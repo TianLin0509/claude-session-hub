@@ -31,6 +31,8 @@ const KIND_LABEL = {
   glm: 'GLM',
   gemini: 'Gemini',
   kimi: 'Kimi',
+  codeagent: 'CodeAgent',
+  'codeagent-resume': 'CodeAgent',
   meeting: '群聊',
 };
 
