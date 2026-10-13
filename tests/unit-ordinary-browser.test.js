@@ -11,6 +11,7 @@ function fixture(t,{human=false}={}){
   const context={pages:()=>pages,newPage:async()=>{const p=new Page();pages.push(p);return p;}};
   class Browser extends EventEmitter{constructor(){super();this.connected=true;}isConnected(){return this.connected;}contexts(){return [context];}async close(){this.connected=false;calls.push(['detach']);this.emit('disconnected');}}
   const browser=new Browser(),options={identity:'main',browserRoot:root,playwright:path.join(root,'playwright.js'),tokenFile:path.join(root,'pairing.json')};
+  Page.prototype.bringToFront=async function(){calls.push(['focus',this.location]);};
   const risk={CHALLENGE_PROBE:'probe',siteOf:url=>url.startsWith('https://chatgpt.com')?'chatgpt':url.startsWith('https://www.kimi.com')?'kimi':null,
     assertAutomationAllowed:(root,opts)=>{calls.push(['guard',opts]);if(lease)throw Error('Human handoff');},handoff:()=>lease,
     recordChallenge:()=>calls.push(['challenge']),releaseSite:()=>calls.push(['release']),endHandoff:()=>{lease=null;}};
@@ -46,6 +47,42 @@ test('finishing another site cannot end the person handoff',async t=>{
 });
 test('closing a provider page preserves other MCP pages and the ordinary Chrome',async t=>{
   const f=fixture(t);await f.session.execute('images-primary',['open']);await f.session.execute('roundtable-kimi',['open']);const image=await f.session.page('images-primary');await f.session.execute('roundtable-kimi',['close']);assert.equal(image.closed,false);assert.equal(f.browser.connected,true);assert.equal(f.pages[0].closed,false);
+});
+
+test('deadline closes only the owned lane and preserves its conversation for observation',async t=>{
+ const f=fixture(t);await f.session.execute('images-primary',['open']);await f.session.execute('roundtable-kimi',['open']);
+ const one=await f.session.page('images-primary'),two=await f.session.page('roundtable-kimi');
+ one.location='https://chatgpt.com/c/test-conversation';
+ await f.session.abortLane('images-primary');
+ assert.equal(one.closed,true);assert.equal(two.closed,false);assert.equal(f.browser.connected,true);
+ await f.session.execute('images-primary',['open']);
+ assert.equal((await f.session.page('images-primary')).url(),'https://chatgpt.com/c/test-conversation');
+});
+
+test('normal release closes all owned pages and manual handoff preserves drafts',async t=>{
+ const f=fixture(t);await f.session.execute('images-primary',['open']);const page=await f.session.page('images-primary');
+ await f.session.execute('images-primary',['transport-release']);
+ assert.equal(page.closed,true);assert.equal(f.pages[0].closed,true);assert.equal(f.browser.connected,false);
+});
+
+test('interactive steps serialize across lanes while read-only work can run',async t=>{
+ const f=fixture(t);await f.session.execute('images-primary',['open']);await f.session.execute('images-secondary',['open']);
+ const events=[];let release;
+ const one=f.session.interact('images-primary',async()=>{events.push('first');await new Promise(resolve=>{release=resolve;});events.push('first-done');});
+ const two=f.session.interact('images-secondary',async()=>events.push('second'));
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(events,['first']);
+ assert.equal(await f.session.execute('images-secondary',['network-errors']).then(x=>x.length),0);
+ release();await Promise.all([one,two]);assert.deepEqual(events,['first','first-done','second']);
+});
+
+test('idle cleanup reclaims only blank unowned-work pages, retaining drafts and busy lanes',async t=>{
+ const f=fixture(t);
+ for(const lane of ['idle','draft','busy'])await f.session.execute(lane,['open']);
+ const idle=await f.session.page('idle'),draft=await f.session.page('draft'),busy=await f.session.page('busy');
+ draft.location='https://chatgpt.com/';
+ assert.equal(await f.session.reapIdlePages({idleMs:0,busyLanes:['busy']}),1);
+ assert.equal(idle.closed,true);assert.equal(draft.closed,false);assert.equal(busy.closed,false);
 });
 test('bridge auth save preserves old standalone snapshot without exporting cookies',async t=>{
   const f=fixture(t),file=path.join(f.root,'auth.json'),original=JSON.stringify({cookies:[{value:'unit-secret'}]});fs.writeFileSync(file,original);const out=await f.session.execute('company-bridge',['state-save',file+'.new']);assert.equal(out.exported,false);assert.equal(fs.readFileSync(file+'.new','utf8'),original);assert.equal(f.calls.length,0);
