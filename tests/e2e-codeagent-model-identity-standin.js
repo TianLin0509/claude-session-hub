@@ -96,6 +96,12 @@ async function main() {
     await c.eval(`document.body.click()`);
     const savedObserved = JSON.parse(fs.readFileSync(path.join(dataDir, 'codeagent-models.json'), 'utf8'));
     check(savedObserved.models.some(m => m.id === actual), '本机记下了这个模型名，下次新建会话可以直接选');
+    const evidence = fs.readFileSync(path.join(dataDir, 'logs', 'codeagent-model.log'), 'utf8');
+    result.evidence = evidence.trim().split('\n');
+    console.log('  证据日志：\n    ' + result.evidence.join('\n    '));
+    check(/event=launch .*requested=\S+ model=GLM-5\.2-WX-Auto/.test(evidence)
+      && new RegExp(`event=observe via=(stop-hook|turn-complete) .*actual=${actual.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(evidence),
+      '证据日志：记下启动命令里的模型和回答实际用的模型');
 
     // ④ 头像与图标（模拟 deepseek / MiniMax 模型名）
     for (const [model, logo, avatar] of [[DS, 'deepseek', 'deepseek'], ['MiniMax-M2.7', 'minimax', 'minimax'], ['GLM-5.2-WX-Auto', 'codeagent', 'glm']]) {

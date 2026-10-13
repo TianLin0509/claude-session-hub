@@ -491,6 +491,10 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config) {
   // 其余情况（含「有 id 但没有落盘记录」）都是全新会话：不能用 --continue，它会接上这个目录里最近的别人的对话。
   const quote = value => /^[A-Za-z0-9_.:=\/\\-]+$/.test(String(value)) ? String(value) : quotePowerShellLiteral(value);
   const cmd = ' ' + commandHead(config.command) + ' ' + [...identity, ...args].map(quote).join(' ') + '\r\n';
+  require('./codeagent-models').appendModelLog(hubDataDir, {
+    event: 'launch', session: String(id || '').slice(0, 8), kind,
+    requested: opts.model || '(default)', model: args[3], resume: identity.length ? identity[0] : '',
+  });
   return { cmd, sessionId };
 }
 
