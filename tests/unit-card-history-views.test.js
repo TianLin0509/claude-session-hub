@@ -39,3 +39,46 @@ test('loading uses an accessible structural placeholder without a fabricated per
   assert.match(loadingMarkup(),/role="status"/);assert.match(loadingMarkup(),/aria-hidden="true"/);
   assert.doesNotMatch(loadingMarkup(),/%|正在加载历史卡片/);
 });
+
+test('first transcript binding preserves the sent card and hydrated view',()=>{
+  for (const kind of ['claude','codex','deepseek','gemini','kimi']) {
+    const h=harness(),fresh={id:kind,kind,runtimeBackend:'pty'};
+    h.views.activate(fresh);
+    const card=h.fill(fresh,'first prompt');
+    // Native IDs and paths arrive separately, after the local card is visible.
+    const binding=kind==='claude'?{ccSessionId:'native-id'}
+      :kind==='codex'||kind==='deepseek'?{codexSid:'native-id'}:{};
+    const bound={...fresh,...binding};
+    assert.equal(h.views.ready(bound),true,kind+' remains ready during first binding');
+    assert.deepEqual(h.views.activate(bound),{changed:false,hydrated:true});
+    const withPath={...bound,transcriptPath:'first.jsonl'};
+    assert.deepEqual(h.views.activate(withPath),{changed:false,hydrated:true});
+    assert.equal(h.el.children[0],card);
+    assert.deepEqual([...h.turns().keys()],['first prompt']);
+  }
+});
+
+test('late first binding also restores a detached view without losing its pending card',()=>{
+  const h=harness(),fresh={id:'a',kind:'codex'},other={id:'b',kind:'claude'};
+  h.views.activate(fresh);const card=h.fill(fresh,'pending');
+  h.views.activate(other);h.fill(other);
+  assert.equal(h.views.activate({...fresh,codexSid:'native',transcriptPath:'rollout.jsonl'}).hydrated,true);
+  assert.equal(h.el.children[0],card);
+});
+
+test('first binding does not mark an unfinished history load as hydrated',()=>{
+  const h=harness(),fresh={id:'a',kind:'codex'};
+  h.views.activate(fresh);
+  assert.deepEqual(h.views.activate({...fresh,codexSid:'native'}),{changed:false,hydrated:false});
+});
+
+test('replacing or clearing a known transcript, provider or backend still invalidates the view',()=>{
+  const base={id:'a',kind:'codex',runtimeBackend:'pty',codexSid:'native',transcriptPath:'first.jsonl'};
+  for(const change of [{codexSid:'different'},{codexSid:null},{transcriptPath:'different.jsonl'},
+    {transcriptPath:null},{kind:'claude'},{runtimeBackend:'codex-app-server'}]) {
+    const h=harness();h.views.activate(base);h.fill(base);
+    assert.equal(h.views.ready({...base,...change}),false);
+    assert.equal(h.views.activate({...base,...change}).hydrated,false);
+    assert.equal(h.el.children.length,0);
+  }
+});
