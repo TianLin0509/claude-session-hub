@@ -386,11 +386,11 @@ test('UNAVAILABLE_PARTS 只写「拿不到 + 为什么」，不含任何伪造�
 
 // ---------- IPC 层（真实 handler，不是 mock） ----------
 
-test('IPC 注册三个 channel', () => {
+test('IPC 注册四个 channel（2026-10-13 加了卡片「发送内容」面板用的 prompt-composition）', () => {
   const ipc = fakeIpcMain();
   registerPromptInspectIpc(ipc, { sessionManager: null });
   assert.deepStrictEqual(ipc.channels().sort(),
-    ['prompt-inspect', 'prompt-inspect-assemble', 'prompt-inspect-raw']);
+    ['prompt-composition', 'prompt-inspect', 'prompt-inspect-assemble', 'prompt-inspect-raw']);
 });
 
 test('IPC prompt-inspect-raw：合法路径返回与磁盘逐字一致的原文', () => {

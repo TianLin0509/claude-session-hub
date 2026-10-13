@@ -197,12 +197,14 @@ test('recovered confirmation and a new native epoch retain truthful receipt stat
   assert.equal(f.service.pointer(j2.project).jobId,j.id);
 });
 
-test('index is folded in the chat card and excluded from title text without losing the raw message',()=>{
+test('index stays out of the chat card and title text without losing the raw message',()=>{
   const {splitMemoryIndex}=require('../core/memory-index-envelope');
   const text='短任务\n\n<ai-hub-dream-index>\n# 项目索引\n<script>not executable</script>\n</ai-hub-dream-index>';
   const parts=splitMemoryIndex(text);assert.equal(parts.userText,'短任务');assert.equal(parts.userText+'\n\n'+parts.indexText,text);
   const html=require('../renderer/conversation-message-view').renderMessageBody(text,{isUser:true,escapeHtml:s=>s.replace(/</g,'&lt;').replace(/>/g,'&gt;'),renderMarkdown:s=>s});
-  assert.match(html,/<details class="conversation-memory-context">/);assert.match(html,/&lt;script&gt;/);assert.doesNotMatch(html,/<script>/);
+  assert.doesNotMatch(html,/conversation-memory-context|项目索引|script/);assert.match(html,/短任务/);
+  const lead=splitMemoryIndex('<ai-hub-dream-index ref="x">\n# 项目索引\n</ai-hub-dream-index>\n\n短任务');
+  assert.equal(lead.userText,'短任务','2026-10-13 起索引放在正文前面，同样拆得开');
 });
 
 test('idempotent submission retries keep the exact original index even after a newer dream',async t=>{

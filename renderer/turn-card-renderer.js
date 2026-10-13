@@ -592,6 +592,7 @@ function renderTurnCard(turn) {
         ${!isUser && !isSimple ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
         ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}${nativeChip}
         <span class="turn-meta">${escapeHtml(ts)}</span>
+        ${isUser ? `<button class="ta-btn turn-compose-btn" data-action="prompt-composition" title="查看这条消息发出去的组成：系统提示、规则、记忆和你输入的正文">发送内容${turn.hubAttached?.length ? `<span class="turn-compose-count"> +${turn.hubAttached.length}</span>` : ''}</button>` : ''}
         ${!isUser ? renderTurnSpeed(turn) : ''}
         ${isSimple && isUser ? _renderMetaPills(turn, true) : ''}
         ${processHtml}
