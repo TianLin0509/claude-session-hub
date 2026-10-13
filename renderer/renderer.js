@@ -4448,6 +4448,60 @@ async function reconnectSession(sessionId) {
   }
 }
 
+// 换场景（输入框「场景」按钮，2026-10-13）：一律新开一个同设置的会话，场景记在 purpose 上（core/session-scenes.js）。
+//   还没开聊：草稿带过去，空会话收起；已经聊过：输入框放好对原会话的引用，原会话保留。
+// 新会话的 id 由这里先定好，草稿在会话建出来之前就放进去，输入框一挂上就能看到。
+async function switchSessionScene(sessionId, sceneId, inputBox, { fresh }) {
+  const alertError = message => require('./ui-feedback').showHubAlert(message, { document });
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  let draft = inputBox && inputBox.isConnected ? readContenteditablePlainText(inputBox).trim() : '';
+  if (!fresh) {
+    let result;
+    try { result = await ipcRenderer.invoke('session-reference:resolve', { sessionId }); }
+    catch (error) { result = { ok: false, message: error.message }; }
+    if (!result?.ok) { alertError('换场景失败：没拿到这段聊天的记录（' + (result?.message || result?.error || '未知原因') + '）'); return; }
+    const line = require('../core/session-reference.js').buildReferenceText({ title: s.title || result.title, kind: s.kind, path: result.path });
+    draft = line + '\n' + (draft ? draft + '\n' : '');
+  }
+  const newId = require('crypto').randomUUID();
+  if (draft) floatingInputDrafts.set(newId, draft);
+  const purpose = require('../core/session-scenes').scenePurpose(sceneId);
+  const opts = {
+    id: newId, cwd: s.cwd,
+    ...(s.workspaceLabel ? { workspaceLabel: s.workspaceLabel } : {}),
+    ...(s.currentModel?.id ? { model: s.currentModel.id } : {}),
+    ...(s.effort ? { effort: s.effort } : {}),
+    ...(s.codexProfile ? { codexProfile: s.codexProfile } : {}),
+    ...(typeof s.fastMode === 'boolean' ? { fastMode: s.fastMode } : {}),
+    ...(s.codexSpeedTier ? { codexSpeedTier: s.codexSpeedTier } : {}),
+    ...(s.deepseekRoute ? { deepseekRoute: s.deepseekRoute } : {}),
+    ...(typeof s.contextMax === 'number' ? { contextMax: s.contextMax } : {}),
+    ...(purpose ? { purpose } : {}),
+  };
+  try {
+    await ipcRenderer.invoke('create-session', { kind: String(s.kind || '').replace(/-resume$/, ''), opts });
+  } catch (error) {
+    floatingInputDrafts.delete(newId);
+    alertError('换场景失败：' + String(error && error.message || error).replace(/Error invoking remote method '[^']+': (?:Error: )?/, ''));
+    return;
+  }
+  if (fresh) {
+    clearFloatingInputDraft(sessionId);
+    // 空会话没有任何历史，直接删掉（「关闭」在 Hub 里是休眠，会留在左侧占一行）
+    try {
+      const result = await ipcRenderer.invoke('delete-session', sessionId);
+      if (!result?.ok) console.warn('[scene] 收起空会话失败：', result?.message || result?.error);
+      else {
+        // 与右键「永久删除」相同：主进程按进程结束发来的 session-closed 会把它标成「进程已退出」留在左侧，这里一并清掉
+        sessions.delete(sessionId);
+        scheduleSessionListRender();
+        schedulePersist();
+      }
+    } catch (error) { console.warn('[scene] 收起空会话失败：', error.message); }
+  }
+}
+
 // 「引用会话」：选会话或群聊 → 主进程返回它的聊天记录 md（落后于原始记录才先刷新）→ 在输入框末尾追加一行引用。
 // 失败走 showHubAlert 挡住人，不能静默；成功只给轻提示，且绝不替用户按发送。
 async function referenceSessionIntoInput(sessionId, inputBox, button, options = {}) {
@@ -4902,6 +4956,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   }
   composer.append(statusRow, quickReplyRow, composerRow, composerRail);
   const composerTools = require('./composer-tools-menu').mountComposerToolsMenu({composer, tuningControls, bridgeToolbar});
+  const composerScene = require('./composer-scene').mountComposerSceneChip({ composer, tuningControls, before: modelChip,
+    sessionId, getSession: () => sessions.get(sessionId), ipcRenderer,
+    onSwitch: (sceneId, { fresh }) => switchSessionScene(sessionId, sceneId, inputBox, { fresh }) });
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
@@ -4998,7 +5055,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     // hook 部署失败时状态只能靠落盘记录和屏幕，必须让用户看见，而不是静默降级。
     const hookWarning = session.hookIntegrationWarning ? '状态信号降级（hook 未部署）：' + session.hookIntegrationWarning : '';
     // 写作成员没能用上写作专用配置时同样要让人看见（core/session-manager.js 的写作目录准备）
-    const writingWarning = session.writingContextWarning ? '写作上下文降级：' + session.writingContextWarning : '';
+    const writingWarning = session.writingContextWarning ? (/^scene-/.test(session.purpose || '') ? '场景降级：' : '写作上下文降级：') + session.writingContextWarning : '';
     const detailText = [localHealth, status.detail, hookWarning, writingWarning].filter(Boolean).join(' · ');
     const detail = detailText ? `· ${detailText}` : '';
     if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
@@ -5426,6 +5483,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       if (inputBox.getClientRects().length) saveFloatingInputDraft(sessionId, inputBox);
       voiceInput.dispose();
       composerTools.dispose();
+      composerScene.dispose();
       promptPolish.dispose();
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
