@@ -30,6 +30,16 @@ for (const kind of ['claude', 'codex', 'deepseek', 'gemini', 'kimi', 'qwen', 'gl
 assert.strictEqual(pure.featureEnabled('quotaBar'), false);
 assert.strictEqual(pure.featureEnabled('accounts'), false);
 assert.strictEqual(pure.makeKindFilter([]).allowedKinds, null, '空列表等于不限');
+// 2026-10-13 公司版改名、标注与一键更新：只有写了这些字段的发行目标才生效。
+const named = loadDistribution({ edition: 'community', target: 'company', version: '1.0.1', productName: 'AI HUB-Huawei', editionBadge: '内测先锋版', update: { sources: [{ id: 'github' }] } });
+assert.strictEqual(named.productName, 'AI HUB-Huawei');
+assert.strictEqual(named.editionBadge, '内测先锋版');
+assert.deepStrictEqual(named.updateConfig, { sources: [{ id: 'github' }] });
+assert.strictEqual(pub.productName, 'AI Hub Community', '公开版沿用原名');
+assert.strictEqual(pub.editionBadge, null);
+assert.strictEqual(pub.updateConfig, null, '公开版没有一键更新');
+assert.strictEqual(main.productName, null);
+assert.strictEqual(main.updateConfig, null, '主仓库没有一键更新');
 
 const target = JSON.parse(fs.readFileSync(path.join(root, 'community', 'targets', 'company', 'target.json'), 'utf8'));
 assert.deepStrictEqual(target.kinds, ['codeagent'], '公司版只留 CodeAgent');

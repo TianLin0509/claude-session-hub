@@ -20,5 +20,23 @@ const names=[`AIHubCommunity-${version}-win-x64.zip`,`AIHubCommunity-Setup-${ver
 const assets=names.map(name=>({name,bytes:fs.statSync(path.join(dist,name)).size,sha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,name))).digest('hex')}));
 fs.writeFileSync(path.join(dist,'release-manifest.json'),JSON.stringify({schemaVersion:1,version,sourceSha:sha,platform:'win32-x64',upstream:require('../community-edition.json'),assets,evidence:{ci:true,simulatedCliGui:true,powershellHookRelay:true,realCodexHandshake:true,realProviderLogin:false,realModelReply:false},agentGuide:'docs/AGENT-QUICKSTART.md',customizationGuide:'docs/CUSTOMIZE.md'},null,2));
 const manifestHash=crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,'release-manifest.json'))).digest('hex');
-fs.writeFileSync(path.join(dist,'SHA256SUMS.txt'),assets.map(a=>a.sha256+'  '+a.name).concat(manifestHash+'  release-manifest.json').join('\n')+'\n');
+// 一键更新（发行目标写了 update 才做）：增量包 = app.asar + 非依赖的解包文件；latest.json 描述
+// 这次真正打出来的包，GitHub Release 与阿里云放同一份。见 core/app-update。
+const edition=require('../community-edition.json');
+const extra=[];
+if(edition.update){
+  const {packPayload}=require('../core/app-update/payload');
+  const {currentRuntime}=require('../core/app-update/manifest');
+  const resources=path.join(dist,'win-unpacked','resources');
+  const updateName=`AIHubCommunity-${version}-update.gz`;
+  const packed=packPayload(resources,path.join(dist,updateName));
+  const setup=assets.find(a=>a.name===`AIHubCommunity-Setup-${version}.exe`);
+  const electronVersion=JSON.parse(fs.readFileSync(path.join(root,'node_modules','electron','package.json'),'utf8')).version;
+  const latest={schema:1,product:edition.productName||'AI Hub Community',version,publishedAt:new Date().toISOString(),notes:edition.releaseNotes||[],
+    runtime:currentRuntime({resourcesPath:resources,electron:electronVersion}),
+    incremental:{file:updateName,bytes:packed.bytes,sha256:packed.sha256},installer:{file:setup.name,bytes:setup.bytes,sha256:setup.sha256}};
+  fs.writeFileSync(path.join(dist,'latest.json'),JSON.stringify(latest,null,2)+'\n');
+  for(const name of [updateName,'latest.json'])extra.push({name,sha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,name))).digest('hex')});
+}
+fs.writeFileSync(path.join(dist,'SHA256SUMS.txt'),assets.map(a=>a.sha256+'  '+a.name).concat(manifestHash+'  release-manifest.json',...extra.map(a=>a.sha256+'  '+a.name)).join('\n')+'\n');
 console.log(JSON.stringify({version,sha,assets}));

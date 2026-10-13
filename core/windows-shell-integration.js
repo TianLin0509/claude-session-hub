@@ -4,7 +4,13 @@ const fs = require('fs');
 const path = require('path');
 
 const HUB_APP_USER_MODEL_ID = 'com.ai-group-chat-hub';
+// @community-strip 社区版快捷方式用发行版的产品显示名
 const HUB_SHORTCUT_NAME = 'AI 群聊 Hub.lnk';
+// @community-else
+// const HUB_SHORTCUT_NAME = `${require('./distribution').productName}.lnk`;
+// // 公司版改了显示名（2026-10-13）：旧版本在开始菜单留下的同名快捷方式只在指向本程序时才移除。
+// const RENAMED_SHORTCUT_NAMES = ['AI Hub Community.lnk'].filter(name => name !== HUB_SHORTCUT_NAME);
+// @community-end
 const LEGACY_ELECTRON_SHORTCUT_NAME = 'Electron.lnk';
 const LEGACY_DESKTOP_SHORTCUT_NAME = 'AI Group Chat Hub.lnk';
 
@@ -267,6 +273,22 @@ function ensureWindowsShellIntegration({
     result.errors.push(`正式快捷方式修复失败：${error.message}`);
   }
 
+  // @community-strip 社区版改名后移除开始菜单里旧名、指向本程序的快捷方式
+  // @community-else
+  // if (!result.errors.length) {
+  //   for (const name of RENAMED_SHORTCUT_NAMES) {
+  //     const oldPath = path.join(path.dirname(shortcutPath), name);
+  //     try {
+  //       if (fsModule.existsSync(oldPath) && shortcutLaunchMatches(shell.readShortcutLink(oldPath), expected)) {
+  //         fsModule.rmSync(oldPath, { force: true });
+  //         (result.renamedShortcutsRemoved = result.renamedShortcutsRemoved || []).push(oldPath);
+  //       }
+  //     } catch (error) {
+  //       result.errors.push(`旧名快捷方式清理失败：${error.message}`);
+  //     }
+  //   }
+  // }
+  // @community-end
   // A July 2026 regression left a Start Menu Electron.lnk with our production
   // AUMID, but no app-root argument. Windows therefore relaunched bare Electron
   // and used the atom icon. Retire only that exact, Hub-owned signature.

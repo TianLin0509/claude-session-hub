@@ -31,6 +31,20 @@ test('strip markers: removed in export, else-lines uncommented, malformed region
   assert.throws(() => applyStripMarkers('// @community-strip\n// @community-else\nnotComment();\n// @community-end', 'x'), /必须是注释/);
 });
 
+test('公司版产品名放行只对传了 leakAllow 的导出生效，社区版照拦；放行项必须是带 Huawei/华为 的完整名字', () => {
+  const line = '窗口标题：AI HUB-Huawei 内测先锋版；安装包 AIHubHuawei-Setup-1.0.1.exe';
+  assert.ok(scanText(line, 'f').some(h => h.rule === 'personal-preference'), '社区版不传放行，照拦');
+  assert.equal(scanText(line, 'f', { allowLiterals: ['AI HUB-Huawei', 'AIHubHuawei-'] }).length, 0);
+  assert.ok(scanText('AI HUB-Huawei 和华为内部系统', 'f', { allowLiterals: ['AI HUB-Huawei'] }).some(h => h.match === '华为'), '同一行别的内容照常检查');
+  assert.throws(() => scanText('x', 'f', { allowLiterals: ['Huawei'] }), /完整产品名/);
+  assert.throws(() => scanText('x', 'f', { allowLiterals: ['some other name'] }), /Huawei/);
+  assert.equal(scanText('https://me.lt-stockpartner.tech/hub-update/company/latest.json', 'f').length, 0, '更新目录随发行版公开');
+  assert.ok(scanText('https://me.lt-stockpartner.tech/private/', 'f').length, '同一服务器的其他地址照拦');
+  const target = require('../community/targets/company/target.json');
+  assert.deepEqual(target.leakAllow, ['AI HUB-Huawei', 'AIHubHuawei-']);
+  assert.equal(target.productName, 'AI HUB-Huawei');
+});
+
 test('leak rules catch identity, gateways and secrets but not ordinary text', () => {
   assert.ok(scanText('url: http://3.142.133.116:8080', 'f').length);
   assert.ok(scanText('key sk-proj-abcdefghijklmnopqrstuvwxyz0123', 'f').length);

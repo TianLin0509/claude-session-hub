@@ -1366,7 +1366,8 @@ class SessionManager extends EventEmitter {
     // 「规则」页的通用规则：Claude 在启动时写进系统提示。随消息粘贴进去会被 CLI 包成
     // <pasted_content> 并标注「未必是用户本人写的」，约束力打折扣（2026-10-12 真实 Haiku 实测）。
     // 已带其他系统提示文件的会话（DeepSeek 记忆等）不改，仍随第一条消息送。
-    const hubRulesSystem = (kind === 'claude' || kind === 'claude-resume' || deepseekClaude.isDeepSeekClaudeKind(kind)) ? this.hubRulesSystemPrompt(opts) : null;
+    // CodeAgent 同样支持（2026-10-13 公司真机 1.2615.02.01 实测：-p 下 --append-system-prompt-file 生效）。
+    const hubRulesSystem = (kind === 'claude' || kind === 'claude-resume' || isCodeAgentKind(kind) || deepseekClaude.isDeepSeekClaudeKind(kind)) ? this.hubRulesSystemPrompt(opts) : null;
     if (hubRulesSystem) opts = { ...opts, appendSystemPromptFile: hubRulesSystem.file };
     else if (this.memoryService?.hubRules?.isSystemPromptFile(opts.appendSystemPromptFile)) opts = { ...opts, appendSystemPromptFile: undefined };
     const id = opts.id || uuid();
@@ -3334,9 +3335,12 @@ class SessionManager extends EventEmitter {
       // 原地重拉开一个新的 CLI 进程（同 Claude）。它不认 --session-id，新身份要等 hook 上报：
       // 先清掉旧绑定并标记待绑定，否则新进程的 hook 会因 id 不同被当成外来会话丢弃。
       const config = require('./codeagent-config').resolveCodeAgentConfig(process.env);
+      // 原地重拉是一个全新的 CodeAgent 进程，按当前规则重新写进系统提示（同 Claude）。
+      const relaunchRules = this.hubRulesSystemPrompt({}, s.info && s.info.purpose);
+      if (s.info) s.info.hubRulesSystem = relaunchRules ? { version: relaunchRules.version, label: relaunchRules.label } : undefined;
       const launch = buildCodeAgentPtyLaunch(sessionId, 'codeagent', {
         model: modelId, effort: s.info && s.info.effort, mcpConfigFile: s.claudeMcpConfigFile,
-        mcpProfile: s.info && s.info.mcpProfile,
+        mcpProfile: s.info && s.info.mcpProfile, appendSystemPromptFile: relaunchRules ? relaunchRules.file : undefined,
       }, s.info && s.info.cwd, s.pty.options?.env || process.env, config);
       Object.assign(s.info, { ccSessionId: undefined, transcriptPath: undefined, codeagentIdentityPending: true });
       cmd = launch.cmd;

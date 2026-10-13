@@ -15,7 +15,20 @@ const path = require('path');
 
 // 唯一的例外（2026-10-12 用户决定）：公开版、公司版的「规则」页从这个地址拉通用规则，
 // 地址必须随发行版公开。只放行这一个完整前缀，同一行的其他内容照常检查；别的地址不要加进来。
-const ALLOWED_PUBLIC_URLS = ['https://me.lt-stockpartner.tech/hub-rules/'];
+// 2026-10-13 用户同意公司版一键更新从阿里云下载，更新目录同理随发行版公开。
+const ALLOWED_PUBLIC_URLS = ['https://me.lt-stockpartner.tech/hub-rules/', 'https://me.lt-stockpartner.tech/hub-update/'];
+
+// 发行目标可以放行自己的产品显示名（target.json 的 leakAllow；2026-10-13 用户选定公司版叫
+// 「AI HUB-Huawei」并公开发布）。只放行带 Huawei/华为 的完整产品名整串，同一行其余内容照常检查；
+// 社区版和主仓库不传这个参数，拦截不变。
+function checkedAllowLiterals(list) {
+  if (list == null) return [];
+  if (!Array.isArray(list)) throw new Error('leakAllow 必须是字符串数组');
+  for (const item of list) {
+    if (typeof item !== 'string' || item.length < 8 || !/huawei|华为/i.test(item)) throw new Error(`leakAllow 只能放行带 Huawei/华为 的完整产品名（至少 8 个字符）：${item}`);
+  }
+  return [...list].sort((a, b) => b.length - a.length);
+}
 
 const RULES = [
   { id: 'identity-name', re: /立花道雪|道雪|田哥|林田/ },
@@ -39,11 +52,12 @@ const NAME_RULE = /(?:^|\/)[^/]*(?:chuxin|study|agent-league|committee|lindang|r
 
 const TEXT_EXT = /\.(?:js|cjs|mjs|json|md|html|css|ps1|bat|cmd|py|yml|yaml|txt|svg|toml)$/i;
 
-function scanText(text, file) {
+function scanText(text, file, options = {}) {
   const hits = [];
+  const allow = checkedAllowLiterals(options.allowLiterals);
   const lines = text.split(/\r?\n/);
   lines.forEach((line, index) => {
-    const checked = ALLOWED_PUBLIC_URLS.reduce((text, url) => text.split(url).join(' '), line);
+    const checked = [...ALLOWED_PUBLIC_URLS, ...allow].reduce((text, literal) => text.split(literal).join(' '), line);
     for (const rule of RULES) {
       const match = rule.re.exec(checked);
       if (match) hits.push({ file, line: index + 1, rule: rule.id, severity: rule.severity || 'block', match: match[0], text: line.trim().slice(0, 160) });
@@ -52,14 +66,14 @@ function scanText(text, file) {
   return hits;
 }
 
-function scanTree(root, files) {
+function scanTree(root, files, options = {}) {
   const hits = [];
   for (const file of files) {
     if (NAME_RULE.test(file)) hits.push({ file, line: 0, rule: 'personal-module-file', severity: 'block', match: path.basename(file) });
     if (!TEXT_EXT.test(file)) continue;
     const text = fs.readFileSync(path.join(root, file), 'utf8');
     if (text.includes('\uFFFD')) hits.push({ file, line: 0, rule: 'invalid-utf8', severity: 'block', match: 'U+FFFD' });
-    hits.push(...scanText(text, file));
+    hits.push(...scanText(text, file, options));
   }
   return hits;
 }

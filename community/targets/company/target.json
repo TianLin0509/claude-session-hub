@@ -1,11 +1,32 @@
 {
   "$comment": "公司版发行目标：node scripts/community/export-community.js --target company --out <空目录>。在社区版基础上叠加 overlay/，并把仓库地址换成 repo。",
   "repo": "TianLin0509/ai-hub-codeagent",
-  "version": "1.0.0",
+  "$productName": "2026-10-13 用户选定：公司版叫「AI HUB-Huawei」，标注「内测先锋版」，公开库照用。只改界面显示名、快捷方式名和发布文件名；exe 名、安装目录、数据目录不变，旧版原地升级不丢数据",
+  "productName": "AI HUB-Huawei",
+  "editionBadge": "内测先锋版",
+  "$leakAllow": "泄露闸门只为公司版放行产品名和发布文件名前缀（scripts/community/leak-rules.js），社区版照常拦截",
+  "leakAllow": [
+    "AI HUB-Huawei",
+    "AIHubHuawei-"
+  ],
+  "$renameTokens": "发布文件名 AIHubCommunity-… 换成 AIHubHuawei-…（CI 产物、安装脚本、文档里的下载文件名）",
+  "renameTokens": [
+    {
+      "from": "AIHubCommunity-",
+      "to": "AIHubHuawei-"
+    }
+  ],
+  "version": "1.0.1",
   "$kinds": "v1.0 纯净版（2026-10-12 用户要求）：公司只能用 CodeAgent，启动中心、群聊成员、首页检测都只留它；没有可恢复的类型，「恢复会话」页不显示",
-  "kinds": ["codeagent"],
+  "kinds": [
+    "codeagent"
+  ],
   "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）；quotaBar=底部状态栏的各家 AI 余量；accounts=左侧「账号」页（各家 AI 网页与命令行账号）",
-  "features": { "assistant": false, "quotaBar": false, "accounts": false },
+  "features": {
+    "assistant": false,
+    "quotaBar": false,
+    "accounts": false
+  },
   "$rulesChannel": "「规则」页的通用规则从服务器的 company 频道拉（2026-10-12）",
   "rulesChannel": "company",
   "$drop": "只有 CodeAgent，其他 AI 的卡片头像不带（CodeAgent 用 glm 那张）",
@@ -22,6 +43,38 @@
     "!node_modules/node-pty/prebuilds/darwin-*/**",
     "!node_modules/node-pty/prebuilds/win32-arm64/**"
   ],
-  "$build": "安装包不附带差分更新数据（公司版靠下载新安装包升级，不用自动增量更新）",
-  "build": { "nsis": { "differentialPackage": false } }
+  "$build": "安装包不附带 electron-builder 的差分更新数据：公司版用自己的一键更新（只换 app.asar，见 core/app-update），不用 electron-updater",
+  "build": {
+    "nsis": {
+      "differentialPackage": false,
+      "shortcutName": "AI HUB-Huawei",
+      "uninstallDisplayName": "AI HUB-Huawei ${version}"
+    }
+  },
+  "$update": "一键更新（2026-10-13 用户同意往阿里云发更新包）：查版本两个源都试；下载按顺序，GitHub 在前（公司实测约 2 MB/s），阿里云在后（公司代理会把阿里云上的大文件换成拦截页）。{version} 换成新版本号",
+  "update": {
+    "sources": [
+      {
+        "id": "github",
+        "name": "GitHub",
+        "manifest": "https://github.com/TianLin0509/ai-hub-codeagent/releases/latest/download/latest.json",
+        "files": "https://github.com/TianLin0509/ai-hub-codeagent/releases/download/v{version}/"
+      },
+      {
+        "id": "aliyun",
+        "name": "阿里云",
+        "manifest": "https://me.lt-stockpartner.tech/hub-update/company/latest.json",
+        "files": "https://me.lt-stockpartner.tech/hub-update/company/v{version}/"
+      }
+    ],
+    "releasePage": "https://github.com/TianLin0509/ai-hub-codeagent/releases"
+  },
+  "$releaseNotes": "本版的发布说明，写进 latest.json，更新弹窗里显示",
+  "releaseNotes": [
+    "改名为 AI HUB-Huawei（内测先锋版）",
+    "CodeAgent 回答卡片显示智谱头像，不再是破图",
+    "Hub 规则在 CodeAgent 启动时写进系统提示，消息里不再附带规则",
+    "卡片头部新增「发送内容」，可分块查看这条消息实际发了什么",
+    "新增一键更新：多个下载源自动切换，失败写明原因"
+  ]
 }

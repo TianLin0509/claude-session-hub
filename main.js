@@ -1120,8 +1120,9 @@ function createWindow() {
   const _hubTitle = `AI 群聊 Hub：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
   // @community-else
   // // 社区版标题同时写出社区版本与所基于的上游版本，用户报问题时一眼可见。
-  // const _upstreamVersion = require('./core/distribution').upstreamVersion;
-  // const _hubTitle = `AI Hub Community v${_pkgVersion}${_upstreamVersion ? `（上游 ${_upstreamVersion}）` : ''}：PID ${process.pid}`;
+  // // 产品名和版本标注随发行目标（公司版的名字与标注见 target.json）。
+  // const { upstreamVersion: _upstreamVersion, productName: _productName, editionBadge: _editionBadge } = require('./core/distribution');
+  // const _hubTitle = `${_productName}${_editionBadge ? ' ' + _editionBadge : ''} v${_pkgVersion}${_upstreamVersion ? `（上游 ${_upstreamVersion}）` : ''}：PID ${process.pid}`;
   // @community-end
   // T6 冷杉 v2：隐藏原生标题栏，让渲染层那条 44px 工具栏直接顶到窗口顶边。
   // 三个系统窗口按钮仍由 Windows 自己画（titleBarOverlay），所以最大化 / 还原 /
@@ -3244,6 +3245,22 @@ try {
   require('./main/ipc/hub-rules-handlers').registerHubRulesIpc(ipcMain,{store:hubRules,memoryService:hubMemoryService,shell});
 } catch (e) {
   console.warn('[hub-rules] 规则页初始化失败：', e && e.message);
+}
+// 一键更新（2026-10-13，公司版）：只有发行目标写了下载源才开启；主仓库没有这个入口。
+{
+  const distribution = require('./core/distribution');
+  if (distribution.updateConfig) {
+    try {
+      const { createAppUpdateController, registerAppUpdateIpc } = require('./main/app-update-controller');
+      const appUpdate = createAppUpdateController({ app, config: distribution.updateConfig, dataDir: getHubDataDir(),
+        currentVersion: distribution.editionVersion || app.getVersion(), sendToRenderer });
+      registerAppUpdateIpc(ipcMain, appUpdate);
+      app.whenReady().then(() => appUpdate.startBackgroundChecks());
+      app.on('will-quit', () => appUpdate.dispose());
+    } catch (e) {
+      console.warn('[app-update] 一键更新初始化失败：', e && e.message);
+    }
+  }
 }
 require('./main/ipc/capability-handlers').registerCapabilityIpc(ipcMain,
   capabilityService);
