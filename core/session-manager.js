@@ -1806,6 +1806,8 @@ class SessionManager extends EventEmitter {
       // 只换模型名（按接入方式映射）、思考档默认 high、不叠 Claude 的 fast。
       require('./claude-project-trust.js').ensureClaudeProjectTrusted(spawnCwd,
         { configDir: deepseekClaudeLaunch.configDir });
+      // 独立配置目录钉住 bypass、关掉 auto，免得 Claude Code 升级后在新会话里弹「改默认为 auto」并被一次回车改掉。
+      deepseekClaude.ensurePermissionDefaults(deepseekClaudeLaunch.configDir);
       // 新建默认不加载 MCP（与新建面板一致）；落盘的 mcpProfile 与启动参数用同一个值。
       if (!opts.mcpProfile) opts = { ...opts, mcpProfile: 'none' };
       // Claude 的 fast 档是 Claude 订阅专属，DeepSeek 不叠；落盘为 false，状态栏也不显示 fast。
