@@ -53,9 +53,10 @@ test('external saves are indexed automatically, and reopening reuses unchanged s
   const started=Date.now();
   fs.appendFileSync(files[2],JSON.stringify({type:'assistant',uuid:'watch-added',timestamp:new Date().toISOString(),message:{content:[{type:'text',text:'AUTOMATIC_SAVE_MARKER'}]}})+'\n');
   let response;
-  do {await new Promise(resolve=>setTimeout(resolve,80));response=await service.search({query:'AUTOMATIC_SAVE_MARKER'},snapshot);} while(!response.totalSessions && Date.now()-started<5000);
+  do {await new Promise(resolve=>setTimeout(resolve,80));response=await service.search({query:'AUTOMATIC_SAVE_MARKER'},snapshot);} while(!response.totalSessions && Date.now()-started<15000);
   assert.equal(response.totalSessions,1,'保存后无需刷新按钮或重建调用即可搜索');
-  assert.ok(Date.now()-started<5000);
+  // 合并闸门并发跑全量时 5 秒偶尔不够（09-18、10-12、10-14 各一次）；要守的是「不用手动刷新」，给 15 秒。
+  assert.ok(Date.now()-started<15000);
   assert.ok(progress.some(s=>s.totalSources===1 && s.indexedSources===1));
   assert.ok(progress.every(s=>s.indexedSources<=s.totalSources),'进度分子不能把复用来源也加进去');
   await service.close();service=new SessionSearchService(options);
