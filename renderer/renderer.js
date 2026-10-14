@@ -1333,6 +1333,10 @@ async function selectMeeting(meetingId, opts = {}) {
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
   if (emptyStateEl) emptyStateEl.style.display = 'none';
+  // 会话分屏的左右窗格要跟着终端面板一起收起，不能等下一帧刷新工具栏：那一帧
+  // 晚到（窗口在后台、主线程忙）时群聊只占右半边，成员双屏按半宽恢复阅读位置，
+  // 铺满后就错位了（2026-10-14 e2e-group-member-split 复现）。
+  sessionSplit?.sync();
   clearPreviewUI();
 
   let meeting = meetings[meetingId];
@@ -1897,12 +1901,12 @@ function getReadingIdentity() {
     ? getFocusedSessionId() || 'home' : surface?.id;
 }
 
+// 面板是否在屏幕上：hidden / display:none 直接判否，其余按实际排版判断
+// （study / ran 的骨架是脚本自建的空 div）。面板和上层元素的属性都没变时沿用
+// 上次结论，切换会话时不再反复强制重算样式。函数声明保留提升，启动早期也能调用。
 function panelIsVisible(el) {
-  if (!el) return false;
-  if (el.hidden) return false;
-  if (el.style && el.style.display === 'none') return false;
-  // study / ran 的骨架是脚本自建的，没内容时就是个空 div —— 空的不算「在看它」。
-  return el.offsetParent !== null || el.getBoundingClientRect().height > 0;
+  panelIsVisible.check ||= require('./panel-visibility').createPanelVisibility({ win: window });
+  return panelIsVisible.check(el);
 }
 
 // 非会话视图：面包屑只写视图名，动作区整块收起来 —— 文件 / 记忆 / ⋯ / 关闭会话

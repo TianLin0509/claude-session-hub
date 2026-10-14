@@ -105,6 +105,8 @@ try {
   await fill('离开群聊保留草稿');await click(c,'#btn-home');
   await click(c,`[data-meeting-id="${meeting.id}"] .sl-title`);
   await until('reopen split',()=>c.eval('document.querySelectorAll(".gms-member-view:not([hidden])").length===2'));
+  // The session split collapses with the terminal panel in the same task; a late collapse left the room at half width while panes restored reading.
+  assert.equal(await c.eval('document.querySelector(".session-workspace").hidden'),true,'session split collapsed when the room opened');
   assert.equal(await c.eval('document.querySelector("#mr-input-box").innerText'),'离开群聊保留草稿');
   assert.deepEqual(await c.eval(`${mids}.map(id=>sessions.get(id).codexSid||sessions.get(id).ccSessionId)`),nativeIds);
   await until('reading position after navigation',()=>c.eval(`(()=>{const e=document.querySelector(${j(left+' .msg-overlay')}), s=e?._cardFollowController.capture();return s && !s.following && (s.anchorId===${j(navigationScroll.anchorId)} && Math.abs(s.anchorOffset-(${navigationScroll.anchorOffset}))<3);})()`));
