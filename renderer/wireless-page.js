@@ -4,6 +4,7 @@
 // 写法沿用助理页：盖在主区域上的一层，点左侧其他按钮自动关闭。
 function createWirelessPage({ document, window, ipcRenderer, openSession, closeOtherPanels = () => {}, showMessage }) {
   let page = null, data = null, timer = null;
+  const companyLink = require('./company-link-home').createCompanyLinkSection({ document, ipcRenderer, openSession: async id => { close(); await openSession(id); }, showMessage });
   const TZ = 'Asia/Shanghai';
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const clock = at => at ? new Date(at).toLocaleTimeString('zh-CN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
@@ -45,6 +46,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
         <section class="wp-section" data-sec="recent"><h2>最近结果</h2><div class="wp-list"></div></section>
       </div></div>`;
     document.body.append(page);
+    companyLink.mount(page.querySelector('.wp-body'));
     page.addEventListener('click', event => { const b = event.target.closest('[data-wp]'); if (b) void action(b.dataset.wp, b).catch(e => showMessage?.(e.message)); });
   }
   function place() {
@@ -106,7 +108,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
       sec.querySelector('.wp-list').innerHTML = list.length ? list.map(item).join('') : `<p class="wp-empty">${empty[key]}</p>`;
     }
   }
-  async function load() { data = await call('wireless:status'); render(); }
+  async function load() { data = await call('wireless:status'); render(); void companyLink.load(); }
 
   async function action(name, button) {
     if (name === 'check') { button.disabled = true; try { data = await call('wireless:check-now'); render(); if (data.last?.error) showMessage?.('检查协作台失败：' + data.last.error); } finally { button.disabled = false; } return; }
