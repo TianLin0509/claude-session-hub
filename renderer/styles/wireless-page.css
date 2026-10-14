@@ -57,7 +57,7 @@
 .wp-settings-row{display:flex;justify-content:flex-end;gap:8px;padding-top:8px}
 /* 公司联动（家里一端）：配对码、问答展开 */
 .cl-section[hidden]{display:none}
-.cl-code{display:block;width:100%;margin-top:6px;font:12px/1.5 Consolas,"Microsoft YaHei",monospace;border:1px solid #dfe6f1;border-radius:8px;padding:6px 8px;resize:none;color:#1b2942;background:#f7f9fc;box-sizing:border-box}
+.cl-code{display:block;width:100%;margin-top:6px;word-break:break-all;font:12px/1.5 Consolas,"Microsoft YaHei",monospace;border:1px solid #dfe6f1;border-radius:8px;padding:6px 8px;resize:none;color:#1b2942;background:#f7f9fc;box-sizing:border-box}
 .cl-col{display:flex;flex-direction:column;gap:6px;align-items:stretch}
 .cl-section select{padding:4px 6px;border:1px solid #dfe6f1;border-radius:6px;background:#fff;color:#1b2942;font:inherit;font-size:13px;max-width:100%}
 .cl-details{margin-top:6px}

@@ -197,9 +197,12 @@ async function main() {
     assert.match(result.reply2, /0\.8|80\s*%/, '第 2 轮读到了折扣 0.8');
     assert.match(result.reply2, /200/, '第 2 轮读到了上限 200 Mbps');
     check('家里 Agent 被唤醒后追问；追问进同一个公司会话，第 2 轮读到折扣 0.8 与上限 200 Mbps');
+    // 第 2 轮回执送进会话之后，Agent 的回答里才算总结（提示词本身也含 HOME-DONE 字样）。
+    await until('round 2 delivered', async () => (await status(hc)).threads.find(x => x.id === homeThread.id).rounds[1]?.delivered, 8 * 60000, 3000);
     const summary = await until('home summary', async () => {
       const text = await hc.eval(`(async()=>{const s=(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(hsid)});const f=s&&s.transcriptPath;return f?require("fs").readFileSync(f,"utf8"):""})()`);
-      const idx = text.lastIndexOf('HOME-DONE'); return idx >= 0 && text.slice(idx, idx + 1500);
+      const from = text.lastIndexOf('· 第 2 轮】'); const idx = from >= 0 ? text.indexOf('HOME-DONE', from) : -1;
+      return idx > from && text.slice(idx, idx + 1500);
     }, 8 * 60000, 5000);
     result.summary = summary.slice(0, 1200);
     check('家里 Agent 第二次被唤醒，写出 HOME-DONE 总结');

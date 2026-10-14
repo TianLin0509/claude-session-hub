@@ -52,7 +52,7 @@
     const n = data.net || {};
     if (n.gate) return `<div class="hl-banner bad"><span>公司网络要求重新「允许访问」（${clock(n.gate.since)} 起）。点右边打开放行页，点完允许后关掉那个窗口，这里会自动接上；期间收到的问题和要发的回执都不会丢。</span><button class="hl-btn primary" data-hl="gate">打开放行页</button></div>`;
     if (n.lastError) return `<div class="hl-banner bad"><span>上次连接通道失败（${clock(n.lastError.at)}）：${esc(n.lastError.message)}</span><button class="hl-btn" data-hl="check">重试</button></div>`;
-    return `<div class="hl-banner ok"><span>通道正常 · 上次连通 ${clock(n.lastOkAt)} · 家里 Hub ${ago(n.peerSeen)}在线${data.link.outbox ? ` · 待发 ${data.link.outbox} 条` : ''}</span><button class="hl-btn" data-hl="check">立即检查</button></div>`;
+    return `<div class="hl-banner ok"><span>通道正常 · 上次连通 ${clock(n.lastOkAt)} · ${n.peerSeen ? '家里 Hub ' + ago(n.peerSeen) + '在线' : '家里 Hub 还没来过（它每 3 分钟看一次）'}${data.link.outbox ? ` · 待发 ${data.link.outbox} 条` : ''}</span><button class="hl-btn" data-hl="check">立即检查</button></div>`;
   }
   function settingsView() {
     const s = data.settings;
@@ -65,7 +65,7 @@
       <label>模型</label><div class="hl-row"><select data-hl-f="model">${opt(models, s.model || '')}</select>
         思考<select data-hl-f="effort">${opt(['low', 'medium', 'high', 'max'].map(x => ({ id: x, label: { low: '低', medium: '中', high: '高', max: '最高' }[x] })), s.effort)}</select>
         同时<select data-hl-f="maxParallel">${opt([1, 2, 3, 4].map(x => ({ id: String(x), label: x + ' 个' })), String(s.maxParallel))}</select>
-        检查间隔<select data-hl-f="pollSeconds">${opt([15, 30, 60, 120].map(x => ({ id: String(x), label: x + ' 秒' })), String(s.pollSeconds))}</select></div>
+        检查间隔<select data-hl-f="pollSeconds">${opt([...new Set([15, 30, 60, 120, s.pollSeconds])].sort((a, b) => a - b).map(x => ({ id: String(x), label: x + ' 秒' })), String(s.pollSeconds))}</select></div>
       <label>给 CodeAgent<br>的说明</label><div><textarea rows="8" data-hl-f="instructions">${esc(s.instructions)}</textarea>
         <div class="hl-row hl-muted">每个新问题都以这段说明开头，后面自动接上代码位置和家里的问题。<button class="hl-link" data-hl="reset-instructions">恢复默认说明</button></div></div>
     </div><div class="hl-foot"><button class="hl-btn primary" data-hl="save">保存设置</button></div>`;

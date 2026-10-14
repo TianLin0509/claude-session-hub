@@ -11,7 +11,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   function head() {
     const st = data.link.state, net = data.net || {};
     if (st === 'none') return `<div class="wp-row"><span class="k">状态</span><span class="v">还没和公司 Hub 配对。配对后，SuperRAN 相关会话里的 Agent 可以向公司电脑上的 CodeAgent 提问（只读公司代码，回执不含源码）。</span><span class="r"><button type="button" class="wp-btn primary" data-cl="create">生成配对码</button></span></div>`;
-    if (st === 'pending') return `<div class="wp-row"><span class="k">配对码</span><span class="v">把下面整段发到公司电脑，在公司 Hub「设置菜单 → 🏠 家里联动」里粘贴。公司确认后这段就作废了。<textarea class="cl-code" readonly rows="2">${esc(data.link.pairingCode || '')}</textarea></span>
+    if (st === 'pending') return `<div class="wp-row"><span class="k">配对码</span><span class="v">把下面整段发到公司电脑，在公司 Hub「设置菜单 → 🏠 家里联动」里粘贴。公司确认后这段就作废了。<textarea class="cl-code" readonly rows="4">${esc(data.link.pairingCode || '')}</textarea></span>
       <span class="r cl-col"><button type="button" class="wp-btn primary" data-cl="send">发到公司收件箱</button><button type="button" class="wp-btn" data-cl="copy">复制</button><button type="button" class="wp-link" data-cl="unpair">取消</button></span></div>
       <div class="wp-row"><span class="k">等待</span><span class="v">${net.lastError ? `<span class="bad">通道连不上：${esc(net.lastError.message)}</span>` : '等公司 Hub 粘贴配对码……（每 30 秒看一次）'}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button></span></div>`;
     const peer = data.peer || {};
