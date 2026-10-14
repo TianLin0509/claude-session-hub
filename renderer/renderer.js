@@ -9848,7 +9848,8 @@ sessionImmersive = require('./session-immersive').createSessionImmersiveControll
   ipcRenderer.send('renderer-sidebar-ready');
   traceRendererStartup('renderer-sidebar-ready sent');
   // 界面进程崩溃后由主进程自动重新载入（core/renderer-crash-recovery.js），告诉用户刚才发生了什么。
-  if (new URLSearchParams(location.search).has('recovered')) showToast('界面刚才崩溃，已自动重新载入；在跑的会话不受影响', 'info');
+  const recoveredFrom = new URLSearchParams(location.search).get('recovered');
+  if (recoveredFrom) showToast(recoveredFrom === 'stall' ? '界面卡住太久没有响应，已自动重新载入；在跑的会话不受影响' : '界面刚才崩溃，已自动重新载入；在跑的会话不受影响', 'info');
 
   ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
     if (!cfg) return;

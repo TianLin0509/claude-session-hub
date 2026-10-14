@@ -6,7 +6,7 @@ const path = require('path');
 const url = require('url');
 const {
   installRendererCrashRecovery, installHangStackOptIn, shortenStack,
-  RECOVER_MAX, RECOVER_WINDOW_MS, STALL_MS, HEARTBEAT_CHANNEL, HANG_STACK_POLICY,
+  RECOVER_MAX, RECOVER_WINDOW_MS, STALL_MS, RESCUE_STALL_MS, HEARTBEAT_CHANNEL, HANG_STACK_POLICY,
 } = require('../core/renderer-crash-recovery.js');
 
 function fakeWindow() {
@@ -16,6 +16,8 @@ function fakeWindow() {
   contents.loadURL = u => contents.loaded.push(u);
   contents.getOSProcessId = () => 42;
   contents.isCrashed = () => false;
+  contents.killed = 0;
+  contents.forcefullyCrashRenderer = () => { contents.killed += 1; };
   contents.mainFrame = { collectJavaScriptCallStack: async () => '\n    at renderCard (file:///C:/Users/x/AppData/Local/Programs/AI%20Hub/resources/app.asar/renderer/renderer.js:12:3)' };
   win.webContents = contents;
   win.isDestroyed = () => false;
@@ -148,6 +150,52 @@ test(`heartbeat silent > ${STALL_MS / 1000}s while visible counts as a hang; hid
   assert.ok(h.logs.some(l => l.event === 'renderer-stall-end'));
   // 别的窗口的心跳不算
   h.ipcMain.emit(HEARTBEAT_CHANNEL, { sender: {} }, 'visible');
+});
+
+test(`stall rescue: heartbeat silent ${RESCUE_STALL_MS / 1000}s ends the stuck renderer and reloads it as "stall"`, async () => {
+  const h = harness();
+  const stall = h.intervals.find(i => i.ms === 2000);
+  const beat = state => h.ipcMain.emit(HEARTBEAT_CHANNEL, { sender: h.win.webContents }, state);
+  const tick = ms => { for (let left = ms; left > 0; left -= 2000) { h.advance(Math.min(2000, left)); stall.fn(); } };
+  beat('visible');
+  tick(STALL_MS + 2000);
+  assert.ok(h.logs.some(l => l.event === 'renderer-memory-at-hang'), 'hang noticed first');
+  assert.equal(h.win.webContents.killed, 0, 'not rescued at the hang threshold');
+  // 卡住以后用户最小化窗口，照样计时
+  h.win.isMinimized = () => true;
+  tick(RESCUE_STALL_MS - STALL_MS - 4000);
+  assert.equal(h.win.webContents.killed, 0, 'still waiting below the rescue threshold');
+  tick(4000);
+  assert.equal(h.win.webContents.killed, 1, 'stuck renderer ended');
+  assert.ok(h.logs.some(l => l.event === 'renderer-stall-rescue' && l.detail.silentMs >= RESCUE_STALL_MS));
+  tick(4000);
+  assert.equal(h.win.webContents.killed, 1, 'only once');
+  h.win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 1 });
+  h.runTimers();
+  assert.deepEqual(h.reloads.map(r => r.reason), ['stall']);
+  assert.ok(h.logs.some(l => l.event === 'renderer-memory-at-gone' && l.detail.reason === 'stall' && l.detail.gone === 'killed'));
+});
+
+test('stall rescue ignores time the main process itself was not running (sleep / main busy)', () => {
+  const h = harness();
+  const stall = h.intervals.find(i => i.ms === 2000);
+  h.ipcMain.emit(HEARTBEAT_CHANNEL, { sender: h.win.webContents }, 'visible');
+  stall.fn();
+  h.advance(10 * 60 * 1000); stall.fn();   // 电脑睡了 10 分钟，醒来第一次计时
+  h.advance(2000); stall.fn();
+  assert.ok(!h.logs.some(l => l.event === 'renderer-memory-at-hang'), 'no hang right after resume');
+  assert.equal(h.win.webContents.killed, 0);
+});
+
+test('stall rescue can be switched off; a normal crash still says "crashed"', () => {
+  const h = harness({ rescueStallMs: 0 });
+  const stall = h.intervals.find(i => i.ms === 2000);
+  h.ipcMain.emit(HEARTBEAT_CHANNEL, { sender: h.win.webContents }, 'visible');
+  for (let i = 0; i < 60; i++) { h.advance(2000); stall.fn(); }
+  assert.equal(h.win.webContents.killed, 0);
+  h.win.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -36861 });
+  h.runTimers();
+  assert.deepEqual(h.reloads.map(r => r.reason), ['crashed']);
 });
 
 test('hang stacks can be switched off', async () => {

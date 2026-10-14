@@ -4,6 +4,8 @@
 //      代码（调用栈里能看到那个函数名）和界面进程内存。
 //   2. 界面内存涨满崩溃（公司记录的 crashed / -36861 就是这种崩溃，打开崩溃转储后记成 oom）→ 约 1 秒后自动重新载入界面，
 //      在跑的 PowerShell 会话还在、还能接着输入，页面提示「界面刚才崩溃」，本机留下崩溃转储。
+//   3. 卡死自救：界面被一段永远不结束的代码卡死 → 心跳停够秒数后主进程结束界面进程、重新载入，提示「卡住太久」；
+//      14 秒、12 秒这种会自己缓过来的卡顿不触发自救。
 // 隔离实例、后台窗口；不碰生产 Hub。
 const assert = require('assert/strict');
 const fs = require('fs');
@@ -36,7 +38,7 @@ const freePort = () => new Promise((resolve, reject) => {
   const ok = (cond, label, detail) => { assert.ok(cond, label + (detail === undefined ? '' : ' ' + j(detail))); passed.push(label); console.log('  ✓ ' + label); };
   try {
     hub = await launchIsolatedHub({ dataDir, port: await freePort(), label: 'crash-recovery', windowMode: 'background',
-      extraEnv: { CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '' } });
+      extraEnv: { CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '', AI_HUB_STALL_RESCUE_SEC: '20' } });
     c = await connectFirstPage(hub);
     const until = async (expr, label, ms = 30000) => {
       const end = Date.now() + ms;
@@ -100,6 +102,28 @@ const freePort = () => new Promise((resolve, reject) => {
     await waitLog(/ renderer-hang-stack \{[^\n]*hubProbeStuckAfterRecover/, 'hang stack after recover', 30000);
     ok(true, '恢复后的界面卡住时同样能记下正在跑的代码');
     await waitLog(/ renderer-stall-end [\s\S]* renderer-stall-end /, 'second stall end', 30000);
+    ok(!/ renderer-stall-rescue /.test(readLog()), '14 秒、12 秒自己缓过来的卡顿没有触发自救');
+
+    // 3. 卡死：永远不结束的代码。心跳停 20 秒（测试里调短）后主进程结束界面进程并重新载入。
+    const stuckAt = Date.now();
+    c.send('Runtime.evaluate', { expression: 'setTimeout(function hubProbeStuckForever(){ for(;;){} }, 50); 1' }).catch(() => {});
+    const rescue = JSON.parse((await waitLog(/ renderer-stall-rescue (\{.*\})/, 'stall rescue', 60000))[1]);
+    ok(rescue.silentMs >= 20000 && Date.now() - stuckAt < 40000, '卡死约 20 秒后主进程出手自救', { rescue, waitedMs: Date.now() - stuckAt });
+    ok(/ renderer-hang-stack \{[^\n]*hubProbeStuckForever/.test(readLog()), '自救前先记下了卡死的代码');
+    await waitLog(/ renderer-recover \{"reason":"stall"/, 'recover as stall', 15000);
+    try { c.close(); } catch {}
+    c = null;
+    const end2 = Date.now() + 60000;
+    for (;;) {
+      try { c = await connectFirstPage(hub); if (await c.eval('typeof sessions !== "undefined" && document.readyState === "complete" && location.search.includes("recovered=stall")')) break; } catch {}
+      try { c && c.close(); } catch {}
+      c = null;
+      if (Date.now() > end2) throw new Error('page did not come back after stall rescue');
+      await _waitMs(500);
+    }
+    await until(`sessions.has(${j(sid)}) && sessions.get(${j(sid)}).status !== 'dormant'`, 'session after stall rescue', 30000);
+    await until(`(document.getElementById('gc-fork-toast')?.textContent || '').includes('卡住太久')`, 'stall toast', 15000);
+    ok(true, '卡死自救后界面回来了，会话还在，提示「界面卡住太久没有响应」');
 
     const memAtGone = JSON.parse(readLog().match(/ renderer-memory-at-gone (\{.*\})/)[1]);
     ok(Array.isArray(memAtGone.recent), '崩溃时记下最近的界面内存记录', memAtGone);

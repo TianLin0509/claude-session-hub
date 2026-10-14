@@ -1237,6 +1237,9 @@ function createWindow() {
       log: windowEventLog || ((event, detail) => console.warn('[window]', event, JSON.stringify(detail))),
       reload: ({ reason }) => { hangStackOptIn?.arm(); return win.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { recovered: String(reason || 'crashed') } }); },
       hangStacks: !!hangStackOptIn,
+      // 卡死自救的秒数：AI_HUB_STALL_RESCUE_SEC=0 关掉，其余数字按秒改。
+      ...(String(process.env.AI_HUB_STALL_RESCUE_SEC || '').trim() !== '' && Number.isFinite(Number(process.env.AI_HUB_STALL_RESCUE_SEC))
+        ? { rescueStallMs: Math.max(0, Number(process.env.AI_HUB_STALL_RESCUE_SEC)) * 1000 } : {}),
     });
   } catch (error) { console.warn('[window] crash recovery setup failed:', error && error.message); }
   require('./main/ipc/preview-immersive-handlers.js').bindPreviewImmersiveWindow(mainWindow);
