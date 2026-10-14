@@ -76,15 +76,24 @@ async function main() {
   for (const dir of [dataDir, dsConfig, work]) fs.mkdirSync(dir, { recursive: true });
   const configFile = path.join(dataDir, 'config.json');
   fs.writeFileSync(configFile, j({ acp: { apiKey: tpKey } }));
-  fs.writeFileSync(path.join(dsConfig, '.claude.json'), j({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true,
-    skipDangerousModePermissionPrompt: true, theme: 'dark', projects: {} }));
+  // 「改默认为 auto」只问老用户：全新的状态文件不会触发（2026-10-14 实测），所以从生产 ~/.claude-deepseek 只读复制一份，
+  // 去掉「已问过」标记和项目列表；登录字段本来就不该有，这里再保险删一次。
+  const realState = path.join(profile.configDir(process.env), '.claude.json');
+  let seedState = {};
+  try { seedState = JSON.parse(fs.readFileSync(realState, 'utf8')); } catch {}
+  for (const key of ['hasSeenAutoDefaultNudge', 'oauthAccount', 'primaryApiKey', 'projects']) delete seedState[key];
+  fs.writeFileSync(path.join(dsConfig, '.claude.json'), j({ ...seedState, hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true,
+    skipDangerousModePermissionPrompt: true, projects: {} }));
   ensureClaudeHookIntegration({ claudeDir: dsConfig, sourceScriptsDir: path.join(__dirname, '..', 'scripts'), logger: {} });
   // 复现出事时的生产配置：顶层 permissionMode（Claude Code 不认），没有 permissions.defaultMode。
   const settingsFile = path.join(dsConfig, 'settings.json');
   const settings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : {};
   settings.permissionMode = 'bypassPermissions';
   settings.skipDangerousModePermissionPrompt = true;
-  if (settings.permissions) delete settings.permissions.defaultMode;
+  // E2E_SEED=no-default：10-13 的状态（没有 defaultMode，2.1.296 落进 auto）；
+  // 默认：10-14 的状态（defaultMode 是 bypass、没关 auto、没答过询问 —— 2.1.299 正是对这种配置弹「改默认为 auto」）。
+  const seed = process.env.E2E_SEED === 'no-default' ? 'no-default' : 'bypass-default';
+  settings.permissions = seed === 'no-default' ? {} : { defaultMode: 'bypassPermissions' };
   fs.writeFileSync(settingsFile, j(settings, null, 2));
 
   const proxy = await startProxy();
@@ -117,8 +126,11 @@ async function main() {
     await until('typeof sessions !== "undefined" && document.querySelector("#btn-new-more")', 'renderer', 90000);
     await _waitMs(1500);
     const seeded = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    assert.equal(seeded.permissions && seeded.permissions.defaultMode, undefined, 'config dir mirrors the broken production state');
-    check('隔离 DeepSeek 配置目录与出事时的生产一致：没有 permissions.defaultMode');
+    assert.equal(seeded.permissions.defaultMode, seed === 'no-default' ? undefined : 'bypassPermissions', 'config dir mirrors the broken production state');
+    assert.equal(seeded.permissions.disableAutoMode, undefined);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dsConfig, '.claude.json'), 'utf8')).hasSeenAutoDefaultNudge, undefined);
+    report.seed = seed;
+    check(`隔离 DeepSeek 配置目录复现出事时的生产（${seed === 'no-default' ? '10-13：没有 defaultMode' : '10-14：defaultMode=bypass、没关 auto、没答过询问'}）`);
 
     // ① 单人会话：新建面板 → DeepSeek（默认 Token Plan + V4.1 Flash）
     await click('#btn-new-more');
@@ -141,6 +153,22 @@ async function main() {
     check('单人会话的 claude.exe 启动参数带 --permission-mode bypassPermissions');
     await _waitMs(8000);
     await snap('01-single-created');
+    // 2.1.299 起新会话会问「Make auto mode your default permission mode?」，光标默认在 Yes；
+    // 下一步发消息的回车会把它答成 auto。Hub 启动时已把独立目录钉住，这个询问不该出现。
+    // TUI 常用光标移动代替空格，按「可有可无的空白」匹配；等到询问框或输入框底栏二者之一出现。
+    const NUDGE_RE = /Make\s*auto\s*mode\s*your\s*default/i, READY_RE = /bypass\s*permissions\s*on/i;
+    let firstScreen = '';
+    for (let i = 0; i < 60; i++) { firstScreen = await screenOf(sid); if (NUDGE_RE.test(firstScreen) || READY_RE.test(firstScreen)) break; await _waitMs(500); }
+    fs.writeFileSync(path.join(OUT, 'first-screen.txt'), firstScreen.slice(-4000));
+    report.sessions.single.autoDefaultNudge = NUDGE_RE.test(firstScreen);
+    report.sessions.single.firstScreenReady = READY_RE.test(firstScreen);
+    assert.equal(report.sessions.single.autoDefaultNudge, false, 'no "make auto mode the default" question on a new DeepSeek session');
+    const pinned = { settings: JSON.parse(fs.readFileSync(settingsFile, 'utf8')).permissions,
+      nudgeSeen: JSON.parse(fs.readFileSync(path.join(dsConfig, '.claude.json'), 'utf8')).hasSeenAutoDefaultNudge };
+    report.pinned = pinned;
+    assert.deepEqual({ defaultMode: pinned.settings.defaultMode, disableAutoMode: pinned.settings.disableAutoMode, nudgeSeen: pinned.nudgeSeen },
+      { defaultMode: 'bypassPermissions', disableAutoMode: 'disable', nudgeSeen: true });
+    check('新会话没有弹「改默认为 auto」询问；Hub 已把独立目录钉成 bypass + 关闭 auto');
 
     const sentAt = Date.now();
     await click('.floating-input-box');
@@ -160,8 +188,8 @@ async function main() {
 
     const screenText = await screenOf(sid);
     report.sessions.single.screenChars = screenText.length;
-    report.sessions.single.screenHasAutoNotice = /auto mode/i.test(screenText);
-    report.sessions.single.screenHasBypass = /bypass permissions/i.test(screenText);
+    report.sessions.single.screenHasAutoNotice = /auto\s*mode/i.test(screenText);
+    report.sessions.single.screenHasBypass = /bypass\s*permissions/i.test(screenText);
     if (screenText) {
       assert.equal(report.sessions.single.screenHasAutoNotice, false, 'no auto mode notice on the CLI screen');
       check(`CLI 屏幕没有 auto mode 公告${report.sessions.single.screenHasBypass ? '，状态栏显示 bypass permissions' : ''}`);

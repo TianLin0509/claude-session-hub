@@ -124,6 +124,38 @@ test('the real ~/.claude-deepseek holds no Claude login (anti-ban floor on this 
   assert.deepEqual(profile.claudeLoginEvidence(real), []);
 });
 
+test('permission defaults: pin bypass, disable auto mode, mark the auto-default nudge as seen', t => {
+  const dir = tempDir(t, 'ds-claude-perm-');
+  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'x', permissionMode: 'bypassPermissions',
+    permissions: { allow: ['Bash(ls)'] }, hooks: { Stop: [] } }));
+  fs.writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true, projects: { 'D:/w': { hasTrustDialogAccepted: true } } }));
+  assert.deepEqual(profile.ensurePermissionDefaults(dir), { settings: 'written', state: 'written' });
+  const settings = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+  assert.deepEqual(settings.permissions, { allow: ['Bash(ls)'], defaultMode: 'bypassPermissions', disableAutoMode: 'disable' });
+  assert.deepEqual(settings.hooks, { Stop: [] }, 'other settings untouched');
+  const state = JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8'));
+  assert.equal(state.hasSeenAutoDefaultNudge, true);
+  assert.deepEqual(state.projects, { 'D:/w': { hasTrustDialogAccepted: true } });
+  // 已经对了就不再写
+  const mtimes = ['settings.json', '.claude.json'].map(f => fs.statSync(path.join(dir, f)).mtimeMs);
+  assert.deepEqual(profile.ensurePermissionDefaults(dir), { settings: 'unchanged', state: 'unchanged' });
+  assert.deepEqual(['settings.json', '.claude.json'].map(f => fs.statSync(path.join(dir, f)).mtimeMs), mtimes);
+  assert.deepEqual(fs.readdirSync(dir).filter(f => f.endsWith('.tmp')), []);
+});
+
+test('permission defaults never invent .claude.json and never overwrite an unparsable file', t => {
+  const fresh = tempDir(t, 'ds-claude-perm-fresh-');
+  assert.deepEqual(profile.ensurePermissionDefaults(fresh), { settings: 'written', state: 'missing' });
+  assert.equal(fs.existsSync(path.join(fresh, '.claude.json')), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(fresh, 'settings.json'), 'utf8')).permissions.disableAutoMode, 'disable');
+  const broken = tempDir(t, 'ds-claude-perm-broken-');
+  fs.writeFileSync(path.join(broken, 'settings.json'), '{"half":');
+  fs.writeFileSync(path.join(broken, '.claude.json'), '{"half":');
+  assert.deepEqual(profile.ensurePermissionDefaults(broken), { settings: 'unparsable', state: 'unparsable' });
+  assert.equal(fs.readFileSync(path.join(broken, 'settings.json'), 'utf8'), '{"half":');
+  assert.equal(fs.readFileSync(path.join(broken, '.claude.json'), 'utf8'), '{"half":');
+});
+
 test('remembered route lives in Hub config and defaults to Token Plan', () => {
   assert.equal(profile.preferredRoute({}), 'tokenplan');
   assert.equal(profile.preferredRoute({ providers: { deepseek: { route: 'api' } } }), 'api');
@@ -217,6 +249,9 @@ test('SessionManager launches deepseek-claude as a real PTY Claude Code with Dee
     assert.match(relaunch, /--permission-mode bypassPermissions(?:\s|$)/, 'in-place relaunch keeps bypass');
   }
   assert.equal(fs.existsSync(path.join(configDir, '.credentials.json')), false);
+  // 每次启动都把独立配置目录的权限默认值钉住（Claude Code 升级后的「改默认为 auto」询问不再出现）
+  const pinned = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
+  assert.deepEqual(pinned.permissions, { defaultMode: 'bypassPermissions', disableAutoMode: 'disable' });
 });
 
 test('missing key at creation throws instead of silently using the other route', async t => {
