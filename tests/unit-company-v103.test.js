@@ -78,9 +78,10 @@ test('卡片里的用户头像完整显示：不裁圆、不套底色、图片�
   assert.doesNotMatch(css, /\.turn-avatar\.av-user img \{ width: 30px; height: 30px; \}/, '不再用比框大的固定尺寸');
 });
 
-test('公司版 1.0.3：发布说明不点名雇主', () => {
+test('公司版 1.0.3 起：发布说明不点名雇主', () => {
   const target = JSON.parse(fs.readFileSync(path.join(root, 'community/targets/company/target.json'), 'utf8'));
-  assert.strictEqual(target.version, '1.0.3');
+  const [major, minor, patch] = target.version.split('.').map(Number);
+  assert.ok(major > 1 || minor > 0 || patch >= 3, target.version);
   assert(target.releaseNotes.length >= 3);
   // 泄露闸门中英文都拦（产品名 AI HUB-Huawei 本身由 leakAllow 放行，发布说明里别单写）。
   assert(!/华为|huawei/i.test(JSON.stringify(target.releaseNotes)));

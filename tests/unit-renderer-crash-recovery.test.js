@@ -208,7 +208,7 @@ test('hang stacks can be switched off', async () => {
 
 test('shortenStack keeps code-relative paths only', () => {
   assert.equal(shortenStack('at f (file:///D:/AIWork/x/renderer/meeting-room.js:5:1)'), 'at f (renderer/meeting-room.js:5:1)');
-  assert.equal(shortenStack('at g (file:///C:/Users/me/page.html:2:3)'), 'at g (page.html:2:3)');
+  assert.equal(shortenStack('at g (file:///E:/Apps/page.html:2:3)'), 'at g (page.html:2:3)');
   assert.equal(shortenStack(undefined), '(空)');
   assert.ok(shortenStack('x'.repeat(10000)).length <= 4000);
 });
