@@ -30,7 +30,8 @@ test('a PTY Claude/Codex turn started after the tracker exists is recorded as wo
 
 test('PTY Claude/Codex continuations are prepared and accepted on semantic hook/rollout confirmation only', () => {
   const handlers = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'hub-restart-handlers.js'), 'utf8');
-  assert.match(handlers, /const ptyAgent=session\?\.agentRuntime === 'pty' && \['claude','codex'\]\.includes\(base\);/);
+  // 2026-10-14：Claude 家族（含 CodeAgent、DeepSeek on Claude Code）同走 UserPromptSubmit 确认，一起放行。
+  assert.match(handlers, /const ptyAgent=session\?\.agentRuntime === 'pty' && \(base === 'codex' \|\| require\('\.\.\/\.\.\/core\/ai-kinds'\)\.isClaudeFamily\(base\)\);/);
   assert.match(handlers, /if \(!ptyAgent && !\['kimi','gemini','deepseek'\]\.includes\(base\)\) throw/);
   const restart = fs.readFileSync(path.join(__dirname, '..', 'core', 'hub-restart.js'), 'utf8');
   const block = restart.slice(restart.indexOf('const accepted ='), restart.indexOf("续作未得到原生提交确认"));
