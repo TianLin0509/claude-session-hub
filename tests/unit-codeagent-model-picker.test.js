@@ -132,3 +132,22 @@ test('替身的菜单名映射只认 JSON，真 CodeAgent 不配时就是模型�
   assert.equal(picker.pickerLabelFor('minimax-m2.7', { AI_HUB_CODEAGENT_PICKER_LABELS: '{"MiniMax-M2.7":"Haiku"}' }), 'Haiku');
   assert.equal(picker.pickerLabelFor('MiniMax-M2.7', { AI_HUB_CODEAGENT_PICKER_LABELS: 'not json' }), 'MiniMax-M2.7');
 });
+
+test('菜单里没有要选的模型：按 Esc 后等菜单关掉再返回，排队的第一条消息才不会被当成 Alt+键吞掉', async () => {
+  const { EventEmitter } = require('node:events');
+  const manager = new EventEmitter();
+  const writes = [];
+  let closedAt = 0;
+  manager.getSessionBufferSnapshot = async () => ({ text: CLAUDE_MENU.join('\r\n'), seq: 0, cols: 120, rows: 30 });
+  manager.writeToSession = (sid, data) => {
+    writes.push({ data, at: Date.now() });
+    if (data === '\x1b') setTimeout(() => { closedAt = Date.now(); manager.emit('output', { sessionId: sid, data: '\x1b[2J\x1b[H  Kept model as Sonnet\r\n❯ ', seq: 9 }); }, 250);
+  };
+  const result = await picker.pickModel({ manager, sid: 's1', kind: 'codeagent', modelId: 'GLM-5.2-WX-Auto',
+    sendToPty: async () => ({ ok: true }), screenTimeoutMs: 1000, env: {} });
+  const returnedAt = Date.now();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /菜单里没有 GLM-5\.2-WX-Auto/);
+  assert.deepEqual(writes.map(w => w.data), ['\x1b'], '只按一次 Esc 关自己打开的菜单');
+  assert.ok(closedAt > 0 && returnedAt - closedAt >= 300, `菜单关掉之后还要留一拍再返回（关后 ${returnedAt - closedAt}ms 返回）`);
+});

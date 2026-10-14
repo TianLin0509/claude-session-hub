@@ -4,7 +4,9 @@
 //   ① 隔离的 CodeAgent 配置目录里放用户级 AGENTS.md、项目目录放 AGENTS.md、记忆目录放 MEMORY.md；
 //   ② 新建 CodeAgent 会话，从卡片输入框发一句话，等真实回答；
 //   ③ 点用户卡片上的「发送内容」：「会话开头自动带上的规则与记忆」里有这三份，展开能看到原文；
-//      工作目录里的 AGENTS.md 不标推断，其余标「推断，尚未在公司电脑上实测」。
+//      2026-10-14 公司实测过的位置不标推断（含 .cac/rules），只有没测过的上层 AGENTS.local.md 标推断；
+//   ④ 工作区根目录的 AGENTS.md CodeAgent 自己会读，Hub 不再随消息重复附带「共享工作区规则」。
+// 会话指定的 GLM 不在替身菜单里，顺带覆盖「选模型失败后第一条消息照常发出、拿到回答」（2026-10-14 曾被 Esc 吞掉）。
 // E2E_ENTRY 指向公司版导出目录（目录里要有指向生产依赖的 node_modules 链接）。凭据复制进临时目录，finally 删除。
 const fs = require('fs'), path = require('path'), os = require('os'), net = require('net'), assert = require('assert/strict');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
@@ -43,6 +45,10 @@ async function main() {
     // ① 三份上下文文件
     fs.writeFileSync(path.join(cac, 'AGENTS.md'), '# 我的通用习惯\n回答用中文，先给结论。\n');
     fs.writeFileSync(path.join(proj, 'AGENTS.md'), '# 周报项目\n周报模板放在 templates/ 目录。\n');
+    fs.writeFileSync(path.join(work, 'AGENTS.md'), '# 工作区约定\n产物放 artifacts/ 目录。\n');
+    fs.writeFileSync(path.join(work, 'AGENTS.local.md'), '# 本机约定\n临时文件放 D 盘。\n');
+    fs.mkdirSync(path.join(proj, '.cac', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.cac', 'rules', 'style.md'), '# 写作风格\n句子短一点。\n');
     const memDir = path.join(cac, 'projects', projectSlug(fs.realpathSync.native(proj)), 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(path.join(memDir, 'MEMORY.md'), '- [周报节奏](cadence.md) — 周报每周五下午发\n');
@@ -61,6 +67,7 @@ async function main() {
 
     // ② 新建会话，从卡片输入框发消息
     const s = await c.eval(`require('electron').ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { title: '周报', cwd: proj, model: 'GLM-5.2-WX-Auto', effort: 'low' } })})`);
+    result.sid = s.id;
     await until(`activeSessionId===${j(s.id)}`, 'session active', 30000);
     await until(`getSessionRuntimeTruth(sessions.get(${j(s.id)})).state !== 'starting'`, 'codeagent ready', 120000);
     await sleep(1500);
@@ -84,7 +91,14 @@ async function main() {
     check(userRule && projRule && memory, `「会话开头自动带上的规则与记忆」列出用户级 AGENTS.md、项目 AGENTS.md、自动记忆 MEMORY.md（共 ${startup.length} 项）`);
     check(!startup.some(p => /CLAUDE\.md/.test(p.title + p.path)), '不再把 Claude 的 CLAUDE.md 当成 CodeAgent 会读的文件');
     check(/用户级/.test(userRule.title) && /工作目录/.test(projRule.title), `同名文件标题标出来源（${userRule.title} / ${projRule.title}）`);
-    check(!/推断/.test(projRule.note) && /推断/.test(userRule.note) && /推断/.test(memory.note), '工作目录里的 AGENTS.md 不标推断；用户级规则和自动记忆标「推断，尚未实测」');
+    const parentRule = startup.find(p => p.path === path.join(work, 'AGENTS.md'));
+    const parentLocal = startup.find(p => p.path === path.join(work, 'AGENTS.local.md'));
+    const rulesDir = startup.find(p => p.path === path.join(proj, '.cac', 'rules', 'style.md'));
+    check(parentRule && parentLocal && rulesDir, '上层目录的 AGENTS.md / AGENTS.local.md 和 .cac/rules 里的文件也列出来');
+    check([userRule, projRule, memory, parentRule, rulesDir].every(p => !/推断/.test(p.note)) && /推断/.test(parentLocal.note),
+      '公司实测过的位置不标推断，只有上层 AGENTS.local.md 标「推断，尚未实测」');
+    const attached = await c.eval(`[...document.querySelectorAll('.prompt-composition-dialog .pc-part')].map(p=>p.querySelector('.pc-title').innerText)`);
+    check(!attached.some(t => /共享工作区规则/.test(t)), 'CodeAgent 自己读到工作区根目录的 AGENTS.md，Hub 没有重复附带「共享工作区规则」');
     await click(`.prompt-composition-dialog .pc-part[data-part-id=${j(await c.eval(`[...document.querySelectorAll('.prompt-composition-dialog .pc-part')].find(p=>/MEMORY/.test(p.querySelector('.pc-title').innerText)).dataset.partId`))}] > summary`);
     const memText = await c.eval(`[...document.querySelectorAll('.prompt-composition-dialog .pc-part')].find(p=>/MEMORY/.test(p.querySelector('.pc-title').innerText)).querySelector('pre')?.innerText||''`);
     check(memText.includes('周报每周五下午发'), '展开自动记忆能看到 MEMORY.md 原文');
@@ -92,6 +106,15 @@ async function main() {
     result.passed = true;
   } finally {
     fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify(result, null, 2));
+    if (!result.passed) {
+      try { await shot('99-failure'); } catch (_) {}
+      try { fs.cpSync(path.join(dataDir, 'logs'), path.join(out, 'logs'), { recursive: true }); } catch (_) {}
+      try { fs.writeFileSync(path.join(out, 'hub-log.txt'), hub.log().join('\n')); } catch (_) {}
+      try {
+        const ring = await c.eval(`require('electron').ipcRenderer.invoke('get-ring-buffer', ${j(result.sid || '')})`);
+        fs.writeFileSync(path.join(out, 'terminal.txt'), require('../core/ansi-utils').stripAnsi(String(ring || '')).slice(-8000));
+      } catch (_) {}
+    }
     try { if (c) c.close(); } catch (_) {}
     if (hub) await gracefulQuit(hub).catch(() => {});
     try { fs.rmSync(path.join(cac, '.credentials.json'), { force: true }); } catch (_) {}

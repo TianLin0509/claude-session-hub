@@ -2122,7 +2122,8 @@ class SessionManager extends EventEmitter {
       nativeRuleCoverage: require('./native-rule-coverage').captureNativeRuleCoverage({
         kind:isNativeClaude||isDeepSeekClaude?'claude':isCodexRuntime?'codex':kind.replace(/-resume$/,''),cwd:spawnCwd,
         env:isAcp?ptyProcess.options.launch.env:sessionEnv,
-        claudeSettingsFile:isNativeClaude?ptyProcess.options.settingsFile:null,settingSources:opts.settingSources}),
+        claudeSettingsFile:isNativeClaude?ptyProcess.options.settingsFile:null,settingSources:opts.settingSources,
+        codeagentConfigDir:codeagentConfig?codeagentConfig.configDir:null}),
       codexMcpEntries: effectiveCodexMcpProfile !== 'none' && Array.isArray(opts.codexMcpEntries)
         ? opts.codexMcpEntries.map((entry) => ({ ...entry, env: { ...(entry.env || {}) } }))
         : [],

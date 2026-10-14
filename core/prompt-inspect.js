@@ -151,12 +151,13 @@ function discoverClaudeChain(cwd) {
 // ---------- CodeAgent 侧 ----------
 // 公司 Code Agent 是 Claude Code 的改版：配置目录 .claude → .cac（CODEAGENT3_CONFIG_DIR，默认 ~/.cac），
 // 项目里的配置目录也叫 .cac（信任框原文「load the contents of the .cac directory under the project」），
-// 规则文件名换成 AGENTS.md（exe 内嵌 INSTRUCTIONS_FILE:"AGENTS.md"）。
-// 真机实测过的只有一条（2026-10-08 公司探测 P4）：cwd 里的 AGENTS.md 会读，暗号出现在回答里。
-// 其余按 Claude Code 的发现规则平移，每条标 verified:false，界面上写明「推断，待实测」：
-//   <配置目录>/AGENTS.md（用户级，对所有目录生效）；
-//   cwd 到盘符根每一层的 AGENTS.md、.cac/AGENTS.md、AGENTS.local.md，从外到内；
-//   自动记忆 <配置目录>/projects/<slug>/memory/MEMORY.md（--help 里 --bare 写着会跳过 auto-memory）。
+// 规则文件名换成 AGENTS.md。
+// 2026-10-14 公司真机探测（CLI 1.2615.02.01，每处放不同暗号、两次模型调用、有无 git 结果相同）：
+//   会读：<配置目录>/AGENTS.md（用户级）、上层目录的 AGENTS.md、cwd 的 AGENTS.md（含 @文件 导入）、
+//         cwd 的 AGENTS.local.md、cwd 的 .cac/rules/*.md、自动记忆 <配置目录>/projects/<slug>/memory/MEMORY.md
+//         （slug 与 Claude 同一算法，实测吻合）；
+//   不读：任何 CLAUDE.md、.cac/AGENTS.md（cwd 和上层都不读）、记忆单条文件（只读索引，正文按需打开）。
+// 只有上层目录的 AGENTS.local.md 没测过，仍标 verified:false，界面上写「推断」。
 function defaultCodeAgentConfigDir() {
   try { return require('./codeagent-config').resolveCodeAgentConfig(process.env).configDir; }
   catch { return path.join(homeDir(), '.cac'); }
@@ -175,15 +176,18 @@ function discoverCodeAgentChain(cwd, configDir = defaultCodeAgentConfigDir()) {
     seen.add(key);
     entries.push({ path: file, source, bytes, verified, label, imports: expandImports(readText(file), path.dirname(file)) });
   };
-  pushFile(path.join(configDir, 'AGENTS.md'), 'user-global', false, 'AGENTS.md（用户级，所有目录生效）');
+  pushFile(path.join(configDir, 'AGENTS.md'), 'user-global', true, 'AGENTS.md（用户级，所有目录生效）');
   for (const dir of ancestorsOutsideIn(real)) {
     const atCwd = path.resolve(dir).toLowerCase() === cwdKey;
     // 面板上同名文件要能一眼分清是哪一层的。
     const where = atCwd ? '工作目录' : `上层目录 ${path.basename(dir) || dir}`;
-    pushFile(path.join(dir, 'AGENTS.md'), 'project', atCwd, `AGENTS.md（${where}）`);
-    pushFile(path.join(dir, '.cac', 'AGENTS.md'), 'project', false, `.cac/AGENTS.md（${where}）`);
-    pushFile(path.join(dir, 'AGENTS.local.md'), 'local', false, `AGENTS.local.md（${where}）`);
+    pushFile(path.join(dir, 'AGENTS.md'), 'project', true, `AGENTS.md（${where}）`);
+    pushFile(path.join(dir, 'AGENTS.local.md'), 'local', atCwd, `AGENTS.local.md（${where}）`);
   }
+  const rulesDir = path.join(real, '.cac', 'rules');
+  let ruleNames = [];
+  try { ruleNames = fs.readdirSync(rulesDir).filter(n => n.toLowerCase().endsWith('.md')).sort(); } catch { ruleNames = []; }
+  for (const name of ruleNames) pushFile(path.join(rulesDir, name), 'rules', true, `.cac/rules/${name}（工作目录）`);
   return { configDir, realCwd: real, entries };
 }
 
@@ -503,10 +507,11 @@ function buildHealth(insp) {
     const verified = ca.entries.filter(e => e.verified).length;
     push(ca.entries.length ? 'ok' : 'warn', `AGENTS.md ${ca.entries.length} 份`,
       ca.entries.length
-        ? `共 ${ca.entries.reduce((s, e) => s + e.bytes, 0)} 字节。实测会读的是工作目录里那份（${verified} 份），其余位置按 Claude Code 规则推断。`
+        ? `共 ${ca.entries.reduce((s, e) => s + e.bytes, 0)} 字节，其中 ${verified} 份的位置经公司电脑实测会读`
+          + (verified < ca.entries.length ? '，其余为推断。' : '。') + 'CodeAgent 不读 CLAUDE.md 和 .cac/AGENTS.md。'
         : '工作目录和上层目录都没有 AGENTS.md，用户级 ' + path.join(ca.configDir, 'AGENTS.md') + ' 也没有。');
     const mem = insp.codeagentMemory;
-    if (mem && mem.indexBytes > 0) push('ok', `自动记忆 ${mem.files} 条`, `索引 ${mem.indexBytes} 字节：${mem.indexPath}（位置为推断）`);
+    if (mem && mem.indexBytes > 0) push('ok', `自动记忆 ${mem.files} 条`, `索引 ${mem.indexBytes} 字节：${mem.indexPath}。会话开头只带索引，单条记忆按需打开。`);
     else push('warn', '这个目录还没有自动记忆', `按推断的位置 ${mem ? mem.indexPath : ''} 没有找到 MEMORY.md。记忆按工作目录分开存，每次换新目录都从空记忆开始。`);
   }
 
@@ -681,7 +686,7 @@ function collectRawSources(insp) {
     }));
     const cm = insp.codeagentMemory;
     if (cm) out.push({ id: 'codeagent:memory', group: 'memory', kind: 'memory-index', path: cm.indexPath, label: 'MEMORY.md',
-      source: 'memory', bytes: cm.indexBytes, exists: statSize(cm.indexPath) >= 0, injected: cm.indexBytes > 0, verified: false });
+      source: 'memory', bytes: cm.indexBytes, exists: statSize(cm.indexPath) >= 0, injected: cm.indexBytes > 0, verified: true });
   }
   const mem = (insp && insp.memory) || {};
   if (claudeMemoryApplies && mem.indexPath) {
@@ -793,12 +798,12 @@ function buildAssembly(insp, opts = {}) {
         orderTruth: 'measured', evidence: e.verified ? 'verified' : 'inferred' });
       (e.imports || []).forEach((im, j) => {
         if (im.effective) picked.push({ id: `codeagent-import:${i}:${j}`, path: im.resolved, label: `@${im.spec}`,
-          role: 'import', parent: e.path, orderTruth: 'approx', evidence: 'inferred' });
+          role: 'import', parent: e.path, orderTruth: 'approx', evidence: e.verified ? 'verified' : 'inferred' });
       });
     });
     const cm = insp.codeagentMemory;
     if (cm && cm.indexBytes > 0) picked.push({ id: 'codeagent:memory', path: cm.indexPath, label: 'MEMORY.md（自动记忆）',
-      role: 'memory-index', orderTruth: 'approx', evidence: 'inferred' });
+      role: 'memory-index', orderTruth: 'approx', evidence: 'verified' });
   } else if (isCodex) {
     (((insp && insp.codex) || {}).entries || []).forEach((e, i) => picked.push({
       id: `codex:${i}`, path: e.path, label: path.basename(e.path), role: e.source, orderTruth: 'measured',
