@@ -61,8 +61,13 @@ const OUT = path.join(ROOT, 'output', 'ctrl-wheel-zoom');
     await shot('01-card-zoomed');
     s = await wheel('#msg-overlay', 100, 2);
     check(s.reading === start.reading, '卡片上 Ctrl+滚轮缩小回原值', s);
-    const mainZoom = await c.eval(`getComputedStyle(document.documentElement).getPropertyValue('--main-zoom').trim()`);
-    check(Math.abs(Number(mainZoom) - start.reading / 16) < 0.002, '卡片字号随阅读缩放（--main-zoom）', { mainZoom });
+    // 只查 --main-zoom 变量会漏掉「变量变了、样式表没人读它」（2026-10-14 实际发生过）：量卡片区真实字号。
+    const overlayPx = () => c.eval(`parseFloat(getComputedStyle(document.getElementById('msg-overlay')).fontSize)`);
+    const basePx = await overlayPx();
+    await c.eval(`setFontSize(currentFontSize + 4)`);
+    const grownPx = await overlayPx();
+    await c.eval(`setFontSize(${start.reading})`);
+    check(Math.abs(grownPx - basePx * (start.reading + 4) / start.reading) < 0.05, '卡片正文字号随阅读缩放真实变大', { basePx, grownPx });
 
     // 2. 触控板：5 个 20px 的细碎滚动才算一格
     s = await wheel('#msg-overlay', -20, 5);
