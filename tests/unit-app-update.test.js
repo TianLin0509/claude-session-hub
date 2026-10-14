@@ -100,6 +100,10 @@ test('多源下载：拦截页、404、校验不符、超时各自写明原因�
   assert.match(reasons.bad, /校验不一致/);
   assert.match(reasons.slow, /连续 1 秒没有收到数据/);
   assert.equal(reasons.good, 'ok');
+  // 拦截页标上 blocked（界面据此给网址让用户放行），别的失败不标。
+  const blocked = Object.fromEntries(r.attempts.map(x => [x.id, !!x.blocked]));
+  assert.deepEqual(blocked, { block: true, missing: false, bad: false, slow: false, good: false });
+  assert.match(r.attempts[0].url, /\/block\/v1\.0\.1\/pkg\.gz$/);
   assert.ok(fs.readFileSync(dest).equals(body));
   assert.ok(progress.some(p => p.sourceId === 'good' && p.received === body.length));
   assert.equal(fs.existsSync(dest + '.part'), false);
@@ -122,6 +126,9 @@ test('查版本：两个源并行，拦截页和坏清单写明原因', async t 
   assert.match(results[1].reason, /网页.*可能被公司代理拦截/);
   assert.match(results[2].reason, /版本清单无效/);
   assert.match(results[3].reason, /HTTP 404/);
+  assert.equal(results[1].blocked, true, '拦截页标上 blocked');
+  assert.equal(results[1].url, `${base}/b/latest.json`, '带上被拦截的网址');
+  assert.ok(!results[2].blocked && !results[3].blocked, '坏清单、404 不算拦截');
 });
 
 function runHelper(paths) {
