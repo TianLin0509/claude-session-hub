@@ -125,7 +125,13 @@ class CompanyBridge {
     if (!/^[A-Za-z0-9-]{3,40}$/.test(id)) return;
     const question = String(message.question || '').slice(0, 60000);
     const round = Number(message.round) || 1;
-    const existing = this.thread(id);
+    let existing = this.thread(id);
+    // 家里换了数据目录、编号从头再来：同编号的新提问不是重复投递，旧记录改名留档。
+    if (existing && message.type === 'ask' && existing.rounds[0] && existing.rounds[0].mid && existing.rounds[0].mid !== message.mid) {
+      this.store.db.prepare('DELETE FROM bridge_threads WHERE id=?').run(id);
+      this.saveThread({ ...existing, id: id + '#' + existing.createdAt });
+      existing = null;
+    }
     if (existing && existing.rounds.some(r => r.round === round)) return; // 重复投递
     const t = existing || { id, title: short(message.title || question, 40), from: message.from || null, state: 'queued', sessionId: null, createdAt: this.now(), rounds: [] };
     t.rounds.push({ round, question, receivedAt: this.now(), mid: message.mid });
@@ -173,8 +179,8 @@ class CompanyBridge {
 
   async dispatch(t) {
     const s = this.settings();
-    const r = t.rounds.find(x => !x.sentAt && !x.reply);
-    if (!r) { this.saveThread({ ...t, state: 'replied' }); return; }
+    const r = t.rounds.find(x => !x.sentAt && !x.reply && !x.error);
+    if (!r) { this.saveThread({ ...t, state: t.rounds.some(x => x.error) ? 'failed' : 'replied' }); return; }
     try {
       let sessionId = t.sessionId;
       if (!sessionId || (!this.deps.getSession(sessionId) && !this.deps.getSessionMetadata?.(sessionId))) {
@@ -241,7 +247,7 @@ class CompanyBridge {
   retry(id) {
     const t = this.thread(id);
     if (!t) throw new Error('找不到这个问题');
-    const rounds = t.rounds.map(x => x.error ? { ...x, error: null, sentAt: null, failedAt: null } : x);
+    const rounds = t.rounds.map(x => x.error && !x.reply ? { ...x, error: null, sentAt: null, failedAt: null, baseline: null } : x);
     this.saveThread({ ...t, rounds, state: 'queued' }); this.changed();
     void this.tick({ force: true });
     return this.status();
