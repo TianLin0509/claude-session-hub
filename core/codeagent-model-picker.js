@@ -264,7 +264,13 @@ async function pickModel({ manager, sid, kind, modelId, configDir, sendToPty, sc
     return { ok: true, mode, confirmed: !!echo, restored };
   } finally {
     // 只关自己打开的菜单；用户的输入和正在进行的回答不碰。
-    if (opened) { try { manager.writeToSession(sid, '\x1b'); } catch {} }
+    if (opened) {
+      try { manager.writeToSession(sid, '\x1b'); } catch {}
+      // 紧跟在 Esc 后面到达的字符会被终端当成 Alt+键，排队等着的第一条消息就被吞了、输入框里什么也没有
+      // （2026-10-14 替身实录：菜单里没有要选的模型 → Esc → 第一条消息没发出去）。等菜单关掉、再留一拍才放行。
+      await waitFor(screen, lines => !parsePicker(lines), 3000).catch(() => {});
+      await sleep(400);
+    }
     screen.dispose();
   }
 }
