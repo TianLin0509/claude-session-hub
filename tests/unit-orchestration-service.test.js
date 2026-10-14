@@ -350,6 +350,18 @@ test('the tool endpoint path is known before the bridge starts', t => {
   assert.match(opts.codexMcpEntries[0].env.HUB_ORCH_ENDPOINT_FILE, /orchestration[\\/]bridge-endpoint\.json$/);
 });
 
+test('CodeAgent can be the orchestrator: same --mcp-config bridge as Claude (company build 2026-10-14)', t => {
+  const x = fixture(t);
+  const opts = x.service.launchOptions('codeagent', 'sid-ca');
+  assert.equal(opts.purpose, x.service.PURPOSE);
+  assert.equal(opts.mcpProfile, 'lean');
+  const config = JSON.parse(fs.readFileSync(opts.mcpConfigFile, 'utf8'));
+  const server = Object.values(config.mcpServers)[0];
+  assert.equal(server.env.HUB_ORCH_SESSION_ID, 'sid-ca', 'tool identity is the Hub session id, not a CLI --session-id');
+  assert.deepEqual(x.service.resumeOptions({ purpose: x.service.PURPOSE, kind: 'codeagent-resume', id: 'sid-ca' }).mcpConfigFile, opts.mcpConfigFile);
+  assert.throws(() => x.service.launchOptions('kimi', 'sid-k'), /Claude、Codex 或 CodeAgent/);
+});
+
 test('lightweight: existing roster is fixed and plan roles bind to member IDs', async t => {
   const x=fixture(t);
   await x.addExisting({role:'',kind:'codex'});

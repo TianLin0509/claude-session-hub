@@ -16,6 +16,7 @@
     "scripts/deepseek_repl.py",
     "scripts/firewall-whitelist-electron.ps1",
     "scripts/open-hub-github-auth.js",
+    "scripts/orchestrator-mcp.js",
     "scripts/prepared-projects.js",
     "scripts/provider-cli-hook.js",
     "scripts/provider-cli-tap.js",
