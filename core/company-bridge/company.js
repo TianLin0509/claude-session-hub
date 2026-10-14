@@ -281,7 +281,7 @@ class CompanyBridge {
       if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) {
         throw Object.assign(new Error(receipt?.error || '问题没有发进会话'), { notSent: true });
       }
-      if (receipt.ok === false) this.patchRound(this.thread(t.id), r.round, { sendUncertain: true });
+      if (receipt.ok === false || receipt.sendStatus === 'stuck' || receipt.unconfirmed) this.patchRound(this.thread(t.id), r.round, { sendUncertain: true });
       if (!r.rewrite) void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'running', note: '公司 CodeAgent 正在读代码' }).catch(() => {});
     } catch (error) {
       const fresh = this.thread(t.id) || t;
@@ -297,6 +297,12 @@ class CompanyBridge {
     if (!r) { this.saveThread(t); return; }
     if (this.sessionBusy(t.sessionId)) return;
     const final = this.lastFinal(t.sessionId);
+    // 发出结果未知、3 分钟后会话停着而原生记录文件都还没有：CodeAgent 确实没收到，重发一次（不会重复）。
+    if (!final && r.sendUncertain && !r.resent && this.now() - r.sentAt > 3 * 60000) {
+      const meta = this.deps.getSession(t.sessionId) || {};
+      const missing = !meta.transcriptPath || !(this.deps.fileExists ? this.deps.fileExists(meta.transcriptPath) : require('node:fs').existsSync(meta.transcriptPath));
+      if (missing) { this.patchRound(t, r.round, { sentAt: null, resent: true, sendUncertain: null }); return; }
+    }
     if (!final || final.id === r.baseline) {
       if (this.now() - r.sentAt > NO_ANSWER_MS && !this.deps.getSession(t.sessionId)) return this.failRound(t, r, '会话已关闭，没有读到回答');
       if (this.now() - r.sentAt > NO_ANSWER_MS * 3) return this.failRound(t, r, '会话停下了，但一直没读到回答');
