@@ -184,3 +184,11 @@ test('安全预检不误伤普通无线提案；提示词保留协作台执行�
   const text = buildExecutionPrompt(proposal('a1'), { install: { user: 'lintian-admin', site: 'https://x/superran-dev/', kitDir: 'C:/k' }, slot: 'wx-a1-1', day: '20261014' });
   for (const part of ['superran-ready.py --expected-user "lintian-admin"', 'claim a1 --slot wx-a1-1', '测试异议', 'progress a1 --action report --outcome modified', '你只提交候选，不验收、不批准、不合入', 'D:/AIWork/20261014-superran-a1-wx-a1-1']) assert.ok(text.includes(part), part);
 });
+
+test('同一轮发现的多份提案按协作台列表顺序排队', async t => {
+  const { service, state } = fixture(t, { proposals: [proposal('b2'), proposal('a1'), proposal('c3')], settings: { maxParallel: 1 } });
+  await service.poll();
+  assert.equal(state.created.length, 1);
+  assert.match(state.sent[0].text, /编号 b2/);
+  assert.deepEqual(service.status().jobs.filter(j => j.state === 'queued').map(j => j.order).sort(), [1, 2]);
+});

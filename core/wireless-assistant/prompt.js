@@ -12,6 +12,8 @@ function kitDirText(install) {
   return dir || '~/.superran/agent-kit/<成员编号>/';
 }
 
+function registryText(install) { return String(install.registry || '~/.config/superran/local-installation.json').replace(/\\/g, '/'); }
+
 function buildExecutionPrompt(p, { install, slot, worktreeRoot = 'D:/AIWork', day }) {
   const user = install.user || '<成员身份>';
   const site = install.site;
@@ -35,9 +37,9 @@ function buildExecutionPrompt(p, { install, slot, worktreeRoot = 'D:/AIWork', da
       '- 协作台：' + site + '。开工先读协议：接入包内 PROPOSALS.md、MEMBERS.md、TASKS.md 与网页 api/proposals/protocol、api/members/protocol 是同一份；用 python superran-proposals.py --config <配置> whoami 读回服务器认定的署名并以它为准。',
       '- 接入包固定在 ' + dir + '。在该目录运行 python superran-proposals.py --config superran-proposals.json whoami，能读回 user=' + user + ' 就直接使用。读不回、身份不符或协作台返回 401 时，不要自己想办法领取：按「常驻助理说明」写明原因后结束本轮（接入码只能由我在网页上复制时生成）。',
       '- 下面所有命令的 <配置> 都是固定目录里的 superran-proposals.json。核对身份只用 whoami，不要打印或 cat 任何配置文件；口令、token 不进聊天、正文、Git 或报告。脚本旁的 *-requests 目录是请求回执，保留不动。',
-      '- 代码：本机已有 SuperRAN 主安装（见 ~/.config/superran/local-installation.json 的 root）时，在主仓 git fetch origin develop，用 git rev-parse origin/develop 记完整 SHA；没有安装时用固定目录里的 superran-onboard.py 获取。实施在独立 worktree 进行；首次安装按项目 INSTALL_AGENT.md。运行时用 PYTHONPATH=<受检源码>/src 指定受检版本，不依赖本机 import 恰好指向哪里。',
+      '- 代码：' + (install.root ? '本机 SuperRAN 主仓在 ' + String(install.root).replace(/\\/g, '/') + '（登记文件 ' + registryText(install) + ' 的 root）：在主仓 git fetch origin develop，用 git rev-parse origin/develop 记完整 SHA；' : '本机还没有 SuperRAN 主安装：用固定目录里的 superran-onboard.py 获取；') + '实施在独立 worktree 进行；首次安装按项目 INSTALL_AGENT.md。运行时用 PYTHONPATH=<受检源码>/src 指定受检版本，不依赖本机 import 恰好指向哪里。',
       '- 开发时 SUPERRAN_TEAM_CONFIG 指向固定目录里的 superran-team.json；用 superran-onboard.py 获取 Git 代码，用 superran-pr.py 提交候选。两份凭据都不能审批或合入。',
-      '- 本机登记文件 ~/.config/superran/local-installation.json 的字段是 root、python、source_sha、source_version、executor_config、executor_user、development_config；执行时由 superran-ready.py 更新它。只记路径和元信息，不记 token，保留其他字段。',
+      '- 本机登记文件 ' + registryText(install) + ' 的字段是 root、python、source_sha、source_version、executor_config、executor_user、development_config；执行时由 superran-ready.py 更新它。只记路径和元信息，不记 token，保留其他字段。',
       '- 网络失败时保留原请求，用脚本的 retry 重试，不重复提交。',
     ]),
     block('版本', [

@@ -113,6 +113,8 @@ class WirelessAssistant {
         this.nextPollAt = this.now() + this.settings().pollMinutes * 60000;
       }
       this.watch();
+      // 先让页面显示新发现的提案，再逐个开会话（每个要等 CLI 就绪，约十几秒）。
+      this.changed();
       await this.dispatchQueued();
       this.changed();
       return this.status();
@@ -123,14 +125,14 @@ class WirelessAssistant {
 
   reconcile(list) {
     const now = this.now();
-    for (const p of list) {
+    for (const [order, p] of list.entries()) {
       if (!unclaimedAccepted(p)) continue;
       const id = jobKey(p);
       const existing = this.job(id);
       if (existing) { if (WAITING.includes(existing.state) && existing.title !== p.title) this.saveJob({ ...existing, title: p.title }); continue; }
       const risks = scanProposal(p);
       const job = this.saveJob({ id, proposalId: p.id, title: p.title, author: p.author, contentSha: p.content_sha, contentRevision: p.content_revision,
-        returned: !!p.result, state: risks.length ? 'held' : 'queued', risks, createdAt: now, attempts: [] });
+        returned: !!p.result, state: risks.length ? 'held' : 'queued', risks, createdAt: now, order, attempts: [] });
       if (risks.length) this.notify(job, '待你放行', `提案「${short(p.title)}」里有${risks.map(r => r.why).join('、')}，已停下等你看过再交给 Agent。`);
     }
     // 排队中的提案被别人接手、被撤回或改了版本：不再自动处理。
@@ -162,6 +164,8 @@ class WirelessAssistant {
       const session = this.deps.getSession(job.sessionId);
       const busy = this.sessionBusy(job.sessionId);
       const next = { ...job, idleSince: busy ? null : job.idleSince || now };
+      // 会话刚停下（交付、释放或卡住）：半分钟后就去协作台核对，排队的提案不用等满检查间隔。
+      if (!busy && !job.idleSince) this.nextPollAt = Math.min(this.nextPollAt, now + 30000);
       if (p) {
         if (p.executor && p.executor === job.slot) next.claimed = true;
         if (p.executor && p.executor !== job.slot) { this.finish(next, 'skipped', `已由 ${p.executor} 接手`); continue; }
@@ -195,7 +199,8 @@ class WirelessAssistant {
       const settings = this.settings();
       if (!settings.enabled || !this.ownsTimers()) return;
       let free = settings.maxParallel - this.jobs().filter(j => ACTIVE.includes(j.state)).length;
-      const queued = this.jobs().filter(j => j.state === 'queued').sort((a, b) => a.createdAt - b.createdAt);
+      // 先发现的先做；同一轮发现的按协作台列表顺序。
+      const queued = this.jobs().filter(j => j.state === 'queued').sort((a, b) => a.createdAt - b.createdAt || (a.order ?? 0) - (b.order ?? 0));
       for (const job of queued) {
         if (free <= 0) break;
         const p = this.proposals.get(job.proposalId);
@@ -215,6 +220,7 @@ class WirelessAssistant {
     const sessionId = randomUUID();
     let current = this.saveJob({ ...job, state: 'dispatching', route, slot, sessionId, kind: r.kind, model: r.model, effort: r.effort, startedAt: this.now(), claimed: false, idleSince: null, attention: null, wantRoute: null,
       attempts: [...job.attempts, { at: this.now(), route, kind: r.kind, model: r.model, effort: r.effort, sessionId, slot }] });
+    this.changed();
     try {
       const defaults = await this.deps.getDefaults?.(r.kind) || {};
       const picked = profiles.pick(r.kind, { model: r.model, effort: r.effort }, defaults);

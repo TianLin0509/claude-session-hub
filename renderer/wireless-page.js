@@ -95,7 +95,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
     const groups = {
       active: jobs.filter(j => ['working', 'dispatching'].includes(j.state)),
       held: jobs.filter(j => j.state === 'held'),
-      queued: jobs.filter(j => j.state === 'queued').sort((a, b) => a.createdAt - b.createdAt),
+      queued: jobs.filter(j => j.state === 'queued').sort((a, b) => a.createdAt - b.createdAt || (a.order ?? 0) - (b.order ?? 0)),
       recent: jobs.filter(j => !['working', 'dispatching', 'held', 'queued'].includes(j.state)).slice(0, 20),
     };
     const empty = { active: '没有正在处理的提案。', held: '', queued: '没有排队的提案。', recent: '还没有结果。' };
