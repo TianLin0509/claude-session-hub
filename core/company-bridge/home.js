@@ -108,7 +108,8 @@ class HomeBridge {
     const k = String(kind || '').replace(/-resume$/, '');
     if (!(k === 'claude' || require('../ai-kinds').isCodexCliKind(k))) return null;
     if (['hub-assistant', 'hub-photo-assistant'].includes(opts.purpose)) return null;
-    const env = { HUB_BRIDGE_SESSION_ID: id, HUB_BRIDGE_SESSION_PASS: this.passFor(id), HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile };
+    const env = { HUB_BRIDGE_SESSION_ID: id, HUB_BRIDGE_SESSION_PASS: this.passFor(id), HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile,
+      HUB_BRIDGE_CLI: this.deps.cliScript || path.resolve(__dirname, '../../scripts/company-ask.js') };
     return { env, mcp: this.wantsMcp({ kind, opts }) ? this.getMcpEntry(id) : null };
   }
   getMcpEntry(sessionId) {

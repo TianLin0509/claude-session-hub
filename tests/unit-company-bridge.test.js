@@ -422,6 +422,7 @@ test('挂载：配对后 Codex / Claude 会话拿到通行证；只有 SuperRAN 
   const plain = r.home.sessionPlan({ kind: 'codex', opts: { cwd: 'D:/AIWork/20261015-ppt' }, id: 'c' });
   assert.equal(plain.mcp, null, '普通会话不挂 MCP');
   assert.equal(plain.env.HUB_BRIDGE_SESSION_PASS, r.home.passFor('c'), '但有通行证，可用命令');
+  assert.ok(fs.existsSync(plain.env.HUB_BRIDGE_CLI), '命令路径由 Hub 注入');
   assert.equal(r.home.sessionPlan({ kind: 'gemini', opts: {}, id: 'd' }), null);
   assert.equal(r.home.sessionPlan({ kind: 'claude', opts: { purpose: 'hub-assistant', cwd: 'C:/x/superran' }, id: 'e' }), null);
   r.home.setSettings({ attach: 'all' });
