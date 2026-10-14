@@ -8929,8 +8929,8 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
     scheduleSessionListRender();
     return;
   }
-  // 无线页的 SuperRAN 助理在后台为每个提案开会话：不抢当前画面，用户从无线页或会话栏打开。
-  if (session.purpose === 'wireless-proposal') {
+  // 无线页的 SuperRAN 助理在后台为每个提案开会话、家里联动在公司 Hub 为每个问题开会话：不抢当前画面，用户从对应页面或会话栏打开。
+  if (session.purpose === 'wireless-proposal' || session.purpose === 'company-bridge') {
     if (wasDormant && activeSessionId === session.id) await selectSession(session.id, { forceScrollBottom: pendingResume?.forceScrollBottom === true });
     scheduleSessionListRender();
     return;

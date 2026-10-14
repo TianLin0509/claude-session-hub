@@ -2252,8 +2252,9 @@ try {
     const { HomeBridge } = require('./core/company-bridge/home');
     companyBridgeService = new HomeBridge({ ...bridgeDeps,
       isWirelessWorkspace: cwd => require('./core/claude-mcp-profile').isWirelessWorkspace(cwd),
+      // 测试可直接指定通道接口地址（本机通道服务）；平时取公司收件箱配置里的地址再加 /api。
+      bridgeApiUrl: () => (process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_BRIDGE_API_URL) || null,
       relayBaseUrl: () => {
-        if (process.env.CLAUDE_HUB_BRIDGE_BASE_URL) return process.env.CLAUDE_HUB_BRIDGE_BASE_URL;
         try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'company-drop', 'config.json'), 'utf8')).base_url || null; } catch { return null; }
       },
       relayPush: (text, label) => new Promise((resolve, reject) => {

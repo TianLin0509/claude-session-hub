@@ -144,7 +144,13 @@ class HomeBridge {
   }
 
   // ---- 配对 ----
-  baseUrl() { const url = this.deps.relayBaseUrl?.(); if (!url) throw new Error('没找到公司收件箱的配置，无法确定通道地址'); return url.replace(/\/+$/, '') + '/api'; }
+  baseUrl() {
+    const direct = this.deps.bridgeApiUrl?.();
+    if (direct) return direct.replace(/\/+$/, '');
+    const url = this.deps.relayBaseUrl?.();
+    if (!url) throw new Error('没找到公司收件箱的配置，无法确定通道地址');
+    return url.replace(/\/+$/, '') + '/api';
+  }
   createPairing() { const code = this.link.createPairing(this.baseUrl()); this.store.set('pairingCode', code); this.nextPullAt = 0; this.changed(); return { code, ...this.status() }; }
   async sendPairingToInbox() {
     const code = this.store.get('pairingCode');
