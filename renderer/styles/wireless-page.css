@@ -1,0 +1,57 @@
+/* 无线页（SuperRAN 助理）：与助理页同一套浅色配色，居中一列，只放状态与可做的操作。 */
+#btn-wireless.wireless-has-unread .btn-label:after{content:'';display:inline-block;width:6px;height:6px;background:#ff755c;border-radius:50%;margin:0 0 7px 6px}
+#btn-wireless .btn-icon svg{width:22px;height:22px}
+.wireless-page-open #session-sidebar{visibility:hidden}
+.wireless-page-open #toolbar-actions,.wireless-page-open #toolbar-crumb,.wireless-page-open #btn-expand-sidebar{visibility:hidden}
+.wireless-page{position:fixed;left:0;right:0;top:44px;bottom:0;z-index:880;display:flex;flex-direction:column;background:#f7f9fc;color:#1b2942;font:14px/1.7 var(--font-ui,"Microsoft YaHei",system-ui,sans-serif);-webkit-app-region:no-drag}
+.wireless-page[hidden]{display:none}
+.wp-head{display:flex;align-items:center;gap:10px;padding:14px 28px;border-bottom:1px solid #e3e9f2;background:#fff}
+.wp-mark{width:36px;height:36px;border-radius:10px;background:#edf3ff;color:#315acb;display:grid;place-items:center}
+.wp-mark svg{width:22px;height:22px}
+.wp-title{flex:1;min-width:0}
+.wp-title h1{font-size:18px;line-height:1.3;margin:0}
+.wp-title p{margin:0;color:#63728a;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wp-btn,.wp-switch{padding:6px 12px;border:1px solid #dfe6f1;border-radius:8px;background:#fff;color:#1b2942;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+.wp-btn:hover,.wp-switch:hover{background:#f2f6fd}
+.wp-btn.primary{background:#315acb;border-color:#315acb;color:#fff}
+.wp-btn.primary:hover{background:#2a4fb5}
+.wp-btn:disabled{opacity:.55;cursor:wait}
+.wp-switch.on{border-color:#b9cdf5;background:#edf3ff;color:#315acb;font-weight:600}
+.wp-link{border:0;background:transparent;color:#315acb;font:inherit;font-size:13px;cursor:pointer;padding:4px 6px}
+.wp-link:hover{text-decoration:underline}
+.wp-scroll{flex:1;overflow:auto}
+.wp-body{max-width:980px;margin:0 auto;padding:18px 28px 40px}
+.wp-strip{background:#fff;border:1px solid #e3e9f2;border-radius:12px;padding:6px 16px;margin-bottom:18px}
+.wp-row{display:grid;grid-template-columns:72px 1fr auto;gap:12px;padding:7px 0;font-size:13px;border-bottom:1px solid #f0f3f8}
+.wp-row:last-child{border-bottom:0}
+.wp-row .k{color:#77859b}
+.wp-row .r{color:#63728a;text-align:right;white-space:nowrap}
+.wp-section{margin-bottom:22px}
+.wp-section[hidden]{display:none}
+.wp-section h2{font-size:15px;margin:0 0 8px}
+.wp-hint{margin:-4px 0 8px;color:#77859b;font-size:12px}
+.wp-empty{margin:0;color:#8b97a9;font-size:13px}
+.wp-item{background:#fff;border:1px solid #e3e9f2;border-radius:12px;padding:12px 16px;margin-bottom:10px}
+.wp-item-head{display:flex;align-items:center;gap:8px;min-width:0}
+.wp-item-head strong{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wp-meta{color:#77859b;font-size:12px;margin-top:2px;overflow-wrap:anywhere}
+.wp-note{margin:6px 0 0;font-size:13px;color:#33435c;overflow-wrap:anywhere}
+.wp-note.warn,.wp-row .warn{color:#925000}
+.wp-row .bad{color:#b42318}
+.wp-risks{margin:6px 0 0;padding-left:18px;font-size:12px;color:#925000}
+.wp-risks code{font-size:12px;background:#fff6e5;padding:0 4px;border-radius:4px}
+.wp-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+.wp-pill{flex-shrink:0;font-size:12px;padding:1px 8px;border-radius:999px;background:#eef1f6;color:#4b5a70}
+.wp-pill.run{background:#e8f0ff;color:#315acb}
+.wp-pill.ok{background:#e7f6ec;color:#1d7a3e}
+.wp-pill.hold,.wp-pill.warn{background:#fff3df;color:#925000}
+.wp-pill.bad{background:#fdecea;color:#b42318}
+.wp-tag{flex-shrink:0;font-size:11px;padding:0 6px;border:1px solid #f0d8b0;border-radius:6px;color:#925000}
+.wp-settings{background:#fff;border:1px solid #dfe6f1;border-radius:12px;padding:14px 18px;margin-bottom:18px;box-shadow:0 6px 22px #172f5114}
+.wp-settings h3{margin:0 0 8px;font-size:15px}
+.wp-settings fieldset{border:0;border-top:1px solid #edf1f7;margin:0;padding:10px 0;display:flex;flex-wrap:wrap;gap:10px 16px}
+.wp-settings legend{font-size:12px;color:#77859b;padding:0}
+.wp-settings label{display:flex;align-items:center;gap:6px;font-size:13px}
+.wp-settings label[hidden]{display:none}
+.wp-settings select{padding:4px 6px;border:1px solid #dfe6f1;border-radius:6px;background:#fff;color:#1b2942;font:inherit;font-size:13px}
+.wp-settings-row{display:flex;justify-content:flex-end;gap:8px;padding-top:8px}
