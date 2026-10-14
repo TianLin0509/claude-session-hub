@@ -42,7 +42,12 @@ assert.strictEqual(main.productName, null);
 assert.strictEqual(main.updateConfig, null, '主仓库没有一键更新');
 
 const target = JSON.parse(fs.readFileSync(path.join(root, 'community', 'targets', 'company', 'target.json'), 'utf8'));
-assert.deepStrictEqual(target.kinds, ['codeagent'], '公司版只留 CodeAgent');
+// 2026-10-14 用户：PowerShell 公司也能用，启动中心加回来；CodeAgent 排第一（卡片默认头像取第一项）。
+assert.deepStrictEqual(target.kinds, ['codeagent', 'powershell'], '公司版留 CodeAgent 与 PowerShell');
+const company = loadDistribution({ edition: 'community', target: 'company', version: '1.0.3', kinds: target.kinds });
+assert.strictEqual(company.kindAllowed('powershell'), true, '公司版启动中心有 PowerShell');
+for (const kind of ['claude', 'codex', 'deepseek', 'gemini', 'kimi', 'qwen', 'glm', 'claude-resume']) assert.strictEqual(company.kindAllowed(kind), false, kind);
+assert.ok(!require('../core/ai-kinds').ALL_AI_KINDS.includes('powershell'), 'PowerShell 不是 AI：不进群聊成员与 AI 筛选');
 assert.strictEqual(target.features.quotaBar, false, '公司版不要底部余量');
 assert.strictEqual(target.features.accounts, false, '公司版不要账号页');
 assert.ok(Number(String(target.version).split('.')[0]) >= 1, '纯净版从 v1.0 起');
