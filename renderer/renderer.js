@@ -8493,6 +8493,12 @@ const keyboardShortcuts = createKeyboardShortcuts({
   copyText: text => clipboardController.copyText(text, { source: 'terminal-shortcut' }),
 });
 keyboardShortcuts.init();
+// Ctrl+鼠标滚轮：指针下是终端就调终端字号，其余（卡片、群聊、沉浸阅读）调阅读缩放，与 Ctrl+= / Ctrl+- 同一设置。
+window.__hubZoomLabel = require('./ctrl-wheel-zoom').installCtrlWheelZoom({
+  window, document,
+  getReadingSize: () => currentFontSize, setReadingSize: setFontSize,
+  getTerminalSize: () => currentTerminalFontSize, setTerminalSize: setTerminalFontSize,
+}).label;
 // --- Context menus ---
 const sessionContextMenu = createSessionContextMenuController({
   document,
