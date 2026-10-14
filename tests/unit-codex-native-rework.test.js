@@ -10,7 +10,9 @@ function fixture({sharedBroker=false}={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-rework-')),trace=path.join(root,'trace.jsonl');
   const make=id=>new CodexNativeSession({id,sharedBroker,cwd:root,env:{CODEX_HOME:root,CLAUDE_HUB_DATA_DIR:path.join(root,'hub')},
     threadParams:{model:'fixture-model'},turnParams:{model:'fixture-model',effort:'max'},
-    clientFactory:()=>new CodexAppServerClient({cwd:root,timeoutMs:1500,launch:{command:process.execPath,
+    // 每个会话都新起一个替身 app-server 进程；合并闸门并发跑全量时，起进程 + initialize 会超过 1.5 秒（2026-10-14 一天 4 次），
+    // 本文件没有断言依赖请求超时，所以给足 8 秒。
+    clientFactory:()=>new CodexAppServerClient({cwd:root,timeoutMs:8000,launch:{command:process.execPath,
       args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:{...process.env,CLAUDE_HUB_NATIVE_FIXTURE_TRACE:trace}}})});
   return {make,calls:()=>fs.readFileSync(trace,'utf8').trim().split('\n').map(JSON.parse)};
 }
