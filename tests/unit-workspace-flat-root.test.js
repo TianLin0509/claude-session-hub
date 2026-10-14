@@ -205,3 +205,52 @@ test('显式传入的 cwd 依然优先于任何默认档', () => {
   const ws = svc.resolveForSession(project, { select: false });
   assert.equal(path.resolve(ws.path).toLowerCase(), path.resolve(project).toLowerCase());
 });
+
+// 2026-10-14 公司同事：新装的电脑选「默认工作目录」，界面显示 ~\Workspaces，会话却开进
+// _scratch\inbox-* 随机目录。Hub 自己的默认根（没设 AI_HUB_WORKSPACE_ROOT、非隔离实例）不需要标记。
+function withoutRootEnv(fn) {
+  const saved = process.env.AI_HUB_WORKSPACE_ROOT;
+  delete process.env.AI_HUB_WORKSPACE_ROOT;
+  try { return fn(); } finally { if (saved === undefined) delete process.env.AI_HUB_WORKSPACE_ROOT; else process.env.AI_HUB_WORKSPACE_ROOT = saved; }
+}
+function hubDefaultService(home, isolated) {
+  return new WorkspaceService({
+    os: { ...os, homedir: () => home },
+    isIsolatedHub: () => isolated,
+    getHubDataDir: () => path.join(home, '.hub-data'),
+    registryPath: path.join(home, '_registry.json'),
+    initGit: () => false,
+    logger: { warn() {}, log() {} },
+  });
+}
+
+test('Hub 自己的默认根 ~\Workspaces 没有标记也直接开在根上', () => withoutRootEnv(() => {
+  const home = tempRoot('home');
+  const svc = hubDefaultService(home, false);
+  const root = path.join(home, 'Workspaces');
+  assert.equal(svc.getWorkspaceRoot(), root);
+  assert.equal(fs.existsSync(path.join(root, '.aiwork-root')), false);
+  assert.equal(svc.isFlatWorkRoot(), true);
+  const ws = svc.resolveForSession(undefined, { select: false, label: '未命名任务' });
+  assert.equal(path.resolve(ws.path).toLowerCase(), root.toLowerCase(), `应开在 ~\Workspaces，实际 ${ws.path}`);
+  assert.equal(svc.workspaceRejectReason(root), null);
+  // 用户明确要临时目录时照旧
+  assert.ok(svc.isScratchWorkspace(svc.resolveForSession(undefined, { select: false, workspaceMode: 'scratch' }).path));
+}));
+
+test('用户指定的根（AI_HUB_WORKSPACE_ROOT）没挂标记时仍按聚合根保护', () => withoutRootEnv(() => {
+  const home = tempRoot('home-env');
+  const custom = path.join(home, 'Vibe');
+  process.env.AI_HUB_WORKSPACE_ROOT = custom;
+  const svc = hubDefaultService(home, false);
+  assert.equal(svc.getWorkspaceRoot(), custom);
+  assert.equal(svc.isFlatWorkRoot(), false);
+  svc.ensureRoot();
+  assert.ok(svc.isScratchWorkspace(svc.resolveForSession(undefined, { select: false }).path));
+}));
+
+test('隔离实例的默认根保持原行为（测试依赖它落 scratch）', () => withoutRootEnv(() => {
+  const home = tempRoot('home-iso');
+  const svc = hubDefaultService(home, true);
+  assert.equal(svc.isFlatWorkRoot(), false);
+}));
