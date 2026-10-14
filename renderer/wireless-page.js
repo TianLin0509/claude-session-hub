@@ -77,7 +77,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
     if (['failed', 'stalled', 'released', 'skipped', 'dismissed'].includes(j.state)) actions.push(`<button type="button" class="wp-btn" data-wp="retry:${esc(j.id)}">重来</button>`);
     if (['held', 'queued', 'failed', 'stalled', 'released'].includes(j.state)) actions.push(`<button type="button" class="wp-link" data-wp="dismiss:${esc(j.id)}">不处理</button>`);
     actions.push(`<button type="button" class="wp-link" data-wp="portal">协作台</button>`);
-    const live = j.session && ['working', 'dispatching'].includes(j.state) ? (j.session.busy ? 'Agent 正在干活' : j.session.open ? '会话已停下' : '会话没开着') : '';
+    const live = j.state === 'dispatching' ? '会话启动中' : j.session && j.state === 'working' ? (j.session.busy ? 'Agent 正在干活' : j.session.open ? '会话已停下' : '会话没开着') : '';
     const route = j.kind ? (j.route === 'fallback' ? '替补 ' : '主力 ') + modelLabel({ kind: j.kind, model: j.model, effort: j.effort, speed: j.kind === 'codex' ? data.settings.primary.speed : undefined }) : '';
     const risks = (j.risks || []).map(r => `<li>${esc(r.why)}：<code>${esc(r.sample)}</code></li>`).join('');
     return `<article class="wp-item" data-job="${esc(j.id)}">
