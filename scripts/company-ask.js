@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // 「问公司」命令行入口（2026-10-15）：和 MCP 工具做同一件事，供没挂 MCP 的 Hub 会话在 shell 里调用。
-// 会话身份取 Hub 注入的 CLAUDE_HUB_SESSION_ID，回执到了 Hub 会作为新消息发回这个会话。
+// 会话身份与通行证取 Hub 注入的 HUB_BRIDGE_SESSION_ID / HUB_BRIDGE_SESSION_PASS，回执到了 Hub 会作为新消息发回这个会话。
 //
 //   node company-ask.js ask --file 问题.md [--title 标题]
 //   node company-ask.js followup --thread Q-1015-01 --file 追问.md
@@ -21,8 +21,9 @@ async function main() {
   const command = process.argv[2];
   const tool = { ask: 'ask_company', followup: 'followup_company', show: 'company_thread' }[command];
   if (!tool) throw new Error('用法：ask --file q.md [--title t] | followup --thread Q-xxxx --file f.md | show [--thread Q-xxxx]');
-  const session = arg('session') || process.env.HUB_BRIDGE_SESSION_ID || process.env.CLAUDE_HUB_SESSION_ID;
-  if (!session) throw new Error('不在 AI Hub 会话里（没有 CLAUDE_HUB_SESSION_ID），回执无处投递；请在 Hub 打开的会话里使用');
+  // 会话身份与通行证由 Hub 在开会话时注入；只能代表本会话提问。
+  const session = process.env.HUB_BRIDGE_SESSION_ID, pass = process.env.HUB_BRIDGE_SESSION_PASS;
+  if (!session || !pass) throw new Error('这个会话没有家里联动的通行证：请在家里和公司配对之后、由 AI Hub 新开（或重开）的 Codex / Claude 会话里使用');
   const dataDir = process.env.CLAUDE_HUB_DATA_DIR || path.join(os.homedir(), '.claude-session-hub');
   const endpointFile = process.env.HUB_BRIDGE_ENDPOINT_FILE || path.join(dataDir, 'company-bridge', 'mcp-endpoint.json');
   let endpoint;
@@ -30,7 +31,7 @@ async function main() {
   const args = command === 'ask' ? { question: text(), ...(arg('title') ? { title: arg('title') } : {}) }
     : command === 'followup' ? { thread: arg('thread'), question: text() }
     : (arg('thread') ? { thread: arg('thread') } : {});
-  const response = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + endpoint.token, 'Content-Type': 'application/json', 'X-Hub-Bridge-Session': session },
+  const response = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + pass, 'Content-Type': 'application/json', 'X-Hub-Bridge-Session': session },
     body: JSON.stringify({ name: tool, arguments: args }), signal: AbortSignal.timeout(60000) });
   const data = await response.json();
   process.stdout.write(JSON.stringify(data.ok ? { ok: true, ...data.result } : { ok: false, error: data.error }, null, 1) + '\n');

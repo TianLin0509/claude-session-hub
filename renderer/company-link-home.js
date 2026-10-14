@@ -45,7 +45,11 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   }
   async function action(name, el) {
     const [verb, arg] = name.split(/:(.*)/s);
-    if (verb === 'open') return openSession(arg);
+    if (verb === 'open') {
+      try { await call('bridge:open-session', { sessionId: arg }); await openSession(arg); }
+      catch (error) { showMessage?.('打开会话失败：' + error.message); }
+      return;
+    }
     if (verb === 'copy') { const box = root.querySelector('.cl-code'); box.select(); document.execCommand('copy'); showMessage?.('配对码已复制'); return; }
     if (verb === 'attach') return;
     el.disabled = true;

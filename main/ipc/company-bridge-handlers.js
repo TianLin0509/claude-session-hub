@@ -8,6 +8,16 @@ function registerCompanyBridgeIpc(ipcMain, service, { openGate } = {}) {
     'check-now': () => service.checkNow(),
     'set-settings': request => ({ ok: true, settings: service.setSettings(request || {}) }),
     unpair: () => service.unpair(),
+    // 「打开 / 找回会话」：会话已关闭（不在当前 Hub 里）就先按原生身份恢复，再交给界面选中。
+    'open-session': async request => {
+      const id = String(request?.sessionId || '');
+      if (!/^[a-zA-Z0-9_-]{1,160}$/.test(id)) throw new Error('会话编号无效');
+      if (service.deps.getSession(id)) return { ok: true, resumed: false };
+      if (!service.deps.getSessionMetadata?.(id)) throw new Error('这个会话的记录已经不在了');
+      await service.deps.resumeSession(id);
+      if (!service.deps.getSession(id)) throw new Error('会话没能恢复');
+      return { ok: true, resumed: true };
+    },
   };
   if (role === 'home') {
     handlers['create-pairing'] = () => service.createPairing();

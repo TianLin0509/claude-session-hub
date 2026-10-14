@@ -10,7 +10,7 @@
   const ago = at => { if (!at) return '还没有'; const m = Math.round((Date.now() - Date.parse(at)) / 60000); return m <= 1 ? '刚刚' : m < 60 ? m + ' 分钟前' : clock(at); };
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke(channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
   const toast = m => (window.__hubToast ? window.__hubToast(m) : console.log(m));
-  const STATE = { queued: ['排队', 'wait'], running: ['CodeAgent 在读代码', 'run'], replied: ['已回执', 'ok'], failed: ['没答上', 'bad'] };
+  const STATE = { queued: ['排队', 'wait'], running: ['CodeAgent 在读代码', 'run'], replied: ['已回执', 'ok'], failed: ['没答上', 'bad'], cancelled: ['已作废', ''] };
 
   const css = `
   .hl-dialog{position:fixed;inset:0;margin:auto;height:fit-content;max-height:calc(100vh - 40px);overflow:auto;width:min(760px,calc(100vw - 40px));padding:0;border:1px solid var(--border-subtle,#e3e1ea);border-radius:14px;background:var(--surface-raised,#fff);color:var(--fg-default,#1f2330);box-shadow:0 24px 60px rgba(30,24,60,.22);font:inherit}
@@ -43,7 +43,7 @@
 
   function pairingView() {
     const state = data.link.state;
-    if (state === 'waiting-welcome') return `<div class="hl-banner info"><span>已发出配对请求，等家里的 Hub 确认（家里 Hub 开着时 1 分钟内完成）。</span><button class="hl-btn" data-hl="check">立即检查</button></div>`;
+    if (state === 'waiting-welcome') return `<div class="hl-banner info"><span>已发出配对请求，等家里的 Hub 确认（家里 Hub 开着时 1 分钟内完成；24 小时没确认自动作废）。</span><button class="hl-btn" data-hl="check">立即检查</button><button class="hl-btn" data-hl="cancel-pair">取消，重新粘贴</button></div>`;
     return `<p>把家里 Hub「无线 → 公司联动」生成的配对码整段粘贴到下面（以 AIHUB-LINK-1. 开头）。配对后只有那一台家里电脑能向这里提问。</p>
       <textarea rows="3" data-hl-f="code" placeholder="AIHUB-LINK-1.…"></textarea>
       <div class="hl-foot"><button class="hl-btn primary" data-hl="pair">配对</button></div>`;
@@ -51,7 +51,8 @@
   function netView() {
     const n = data.net || {};
     if (n.gate) return `<div class="hl-banner bad"><span>公司网络要求重新「允许访问」（${clock(n.gate.since)} 起）。点右边打开放行页，点完允许后关掉那个窗口，这里会自动接上；期间收到的问题和要发的回执都不会丢。</span><button class="hl-btn primary" data-hl="gate">打开放行页</button></div>`;
-    if (n.lastError) return `<div class="hl-banner bad"><span>上次连接通道失败（${clock(n.lastError.at)}）：${esc(n.lastError.message)}</span><button class="hl-btn" data-hl="check">重试</button></div>`;
+    // 放行页有时表现为直接断连（代理掐掉了连接），这里也给放行入口。
+    if (n.lastError) return `<div class="hl-banner bad"><span>上次连接通道失败（${clock(n.lastError.at)}）：${esc(n.lastError.message)}。如果是公司网络要求重新允许访问，点「打开放行页」。</span><button class="hl-btn" data-hl="gate">打开放行页</button><button class="hl-btn" data-hl="check">重试</button></div>`;
     return `<div class="hl-banner ok"><span>通道正常 · 上次连通 ${clock(n.lastOkAt)} · ${n.peerSeen ? '家里 Hub ' + ago(n.peerSeen) + '在线' : '家里 Hub 还没来过（它每 3 分钟看一次）'}${data.link.outbox ? ` · 待发 ${data.link.outbox} 条` : ''}</span><button class="hl-btn" data-hl="check">立即检查</button></div>`;
   }
   function settingsView() {
@@ -100,13 +101,18 @@
   async function act(name, button) {
     const [verb, arg] = name.split(/:(.*)/s);
     if (verb === 'close') { dialog.close(); return; }
-    if (verb === 'open') { dialog.close(); await window.__hubOpenSession?.(arg); return; }
+    if (verb === 'open') {
+      try { await call('bridge:open-session', { sessionId: arg }); dialog.close(); await window.__hubOpenSession?.(arg); }
+      catch (error) { toast('打开会话失败：' + error.message); }
+      return;
+    }
     button && (button.disabled = true);
     try {
       if (verb === 'pair') { data = await call('bridge:pair', { code: field('code').value }); render(); toast('已发出配对请求，等家里 Hub 确认'); }
       else if (verb === 'check') { data = await call('bridge:check-now'); render(); }
       else if (verb === 'gate') { toast('放行页已打开：点完允许后关掉那个窗口'); data = await call('bridge:open-gate'); render(); }
       else if (verb === 'retry') { data = await call('bridge:retry', { id: arg }); render(); }
+      else if (verb === 'cancel-pair') { data = await call('bridge:unpair'); render(); }
       else if (verb === 'unpair') { if (!window.confirm('解除和家里 Hub 的配对？之后家里需要重新生成配对码。')) return; data = await call('bridge:unpair'); render(); }
       else if (verb === 'reset-instructions') { field('instructions').value = data.defaultInstructions; editing = true; }
       else if (verb === 'save') {

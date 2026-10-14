@@ -2267,7 +2267,7 @@ try {
       }),
     });
     void companyBridgeService.start().catch(error => console.warn('[company-bridge] start', error.message));
-    sessionManager.setExtraMcpProvider(({ kind, opts, id }) => companyBridgeService.wantsMcp({ kind, opts }) ? companyBridgeService.getMcpEntry(id) : null);
+    sessionManager.setExtraMcpProvider(({ kind, opts, id }) => companyBridgeService.sessionPlan({ kind, opts, id }));
   }
   // @community-end
   if (bridgeRole === 'company') {

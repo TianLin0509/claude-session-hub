@@ -1,32 +1,34 @@
 'use strict';
-// 家里联动：加密、配对换钥、提问 → 公司开 CodeAgent 会话 → 回执 → 送回家里会话 → 追问进同一会话；
-// 成段源码先请改写再兜底删除；放行页（代理返回网页）时发件箱保留、放行后补发；MCP 挂载规则。
+// 家里联动：加密、密钥协商配对、提问 → 公司开 CodeAgent 会话 → 回执 → 送回家里会话 → 追问进同一会话；
+// 源码检查（围栏 / 无围栏 / 压成一行）先请改写再兜底删除；放行页时发件箱保留、放行后补发；
+// 解除配对后旧任务作废；重试与追问不串轮；重复回执不重投；发件箱不丢关键消息；通道重建后游标归零；
+// 本机接口按会话通行证认身份；MCP 与通行证的挂载规则；会话管理器把它们并进启动参数。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const bridgeCrypto = require('../core/company-bridge/crypto');
-const { CompanyBridge, bigCodeBlocks, stripBigBlocks } = require('../core/company-bridge/company');
+const { CompanyBridge, sourceVerdict, stripCode } = require('../core/company-bridge/company');
 const { HomeBridge } = require('../core/company-bridge/home');
 
 const BASE = 'https://relay.example.test/drop/tok/api';
 
-// 内存版通道服务：语义与 relay_server.py 的 /bridge/<通道>/msg 一致。gate=true 时像公司代理一样返回网页。
+// 内存版通道服务：语义与 relay_server.py 的 /bridge/<通道>/msg 一致（GET 不建通道、带代次）。gate=true 时像公司代理一样返回网页。
 function fakeRelay() {
-  const relay = { channels: new Map(), gate: false, offline: false, posts: 0 };
+  const relay = { channels: new Map(), seen: new Map(), gate: false, offline: false, posts: 0 };
+  const headers = type => ({ get: k => (String(k).toLowerCase() === 'content-type' ? type : null) });
   relay.fetch = async (url, init = {}) => {
     if (relay.offline) throw new Error('ECONNRESET');
-    const page = body => ({ ok: true, status: 200, type: 'basic', headers: new Map([['content-type', 'text/html']]), text: async () => body });
-    if (relay.gate) return page('<html>请点击允许访问</html>');
+    if (relay.gate) return { ok: true, status: 200, type: 'basic', headers: headers('text/html'), text: async () => '<html>请点击允许访问</html>' };
     const u = new URL(url);
     const m = u.pathname.match(/\/bridge\/([a-f0-9]{32})\/msg$/);
-    const json = (status, body) => ({ ok: status < 400, status, type: 'basic', headers: new Map([['content-type', 'application/json']]), text: async () => JSON.stringify(body) });
+    const json = (status, body) => ({ ok: status < 400, status, type: 'basic', headers: headers('application/json'), text: async () => JSON.stringify(body) });
     if (!m) return json(404, { ok: false, error: { code: 'not_found' } });
-    const ch = relay.channels.get(m[1]) || { next: 1, rows: [], seen: {} };
-    relay.channels.set(m[1], ch);
     if ((init.method || 'GET') === 'POST') {
       relay.posts += 1;
+      const ch = relay.channels.get(m[1]) || { next: 1, rows: [], epoch: Math.random().toString(16).slice(2, 10) };
+      relay.channels.set(m[1], ch);
       const body = JSON.parse(init.body);
       const dup = ch.rows.find(r => r.mid === body.mid);
       if (dup) return json(200, { ok: true, seq: dup.seq, duplicate: true });
@@ -35,19 +37,18 @@ function fakeRelay() {
       return json(200, { ok: true, seq: row.seq, duplicate: false });
     }
     const to = u.searchParams.get('to'), after = Number(u.searchParams.get('after')), who = u.searchParams.get('who');
-    if (who) ch.seen[who] = new Date(relay.now ? relay.now() : Date.now()).toISOString();
-    return json(200, { ok: true, messages: ch.rows.filter(r => r.to === to && r.seq > after).map(r => ({ seq: r.seq, blob: r.blob })), seen: ch.seen, more: false });
+    if (who) relay.seen.set(m[1], { ...(relay.seen.get(m[1]) || {}), [who]: new Date(relay.now()).toISOString() });
+    const ch = relay.channels.get(m[1]);
+    return json(200, { ok: true, messages: ch ? ch.rows.filter(r => r.to === to && r.seq > after).map(r => ({ seq: r.seq, blob: r.blob })) : [], seen: relay.seen.get(m[1]) || {}, more: false, epoch: ch ? ch.epoch : null });
   };
-  // Map 当 headers 用：补一个 get
   return relay;
 }
-Map.prototype.get = Map.prototype.get; // headers.get 直接用 Map#get
 
 function sessions() {
-  const s = { map: new Map(), busy: new Set(), finals: new Map(), sent: [], created: [], resumed: [], stored: new Map() };
+  const s = { map: new Map(), busy: new Set(), finals: new Map(), sent: [], created: [], resumed: [], stored: new Map(), receipt: null };
   s.deps = {
     createSession: async (kind, opts) => { const x = { id: opts.id, kind, status: 'idle', title: opts.title, opts }; s.map.set(opts.id, x); s.created.push({ kind, opts }); return x; },
-    sendPrompt: async (id, text) => { if (!s.map.has(id)) return { ok: false, error: 'closed' }; s.sent.push({ id, text }); return { ok: true }; },
+    sendPrompt: async (id, text) => { if (!s.map.has(id)) return { ok: false, notSent: true, error: 'closed' }; s.sent.push({ id, text }); return s.receipt || { ok: true }; },
     getSession: id => s.map.get(id) || null,
     getSessionMetadata: id => s.map.get(id) || s.stored.get(id) || null,
     resumeSession: async id => { const m = s.stored.get(id); if (m) { s.map.set(id, { ...m, status: 'idle' }); s.resumed.push(id); } },
@@ -60,15 +61,16 @@ function sessions() {
 
 function rig(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-bridge-'));
+  let home, company;
   t.after(() => { try { home.close(); company.close(); } catch {} fs.rmSync(root, { recursive: true, force: true }); });
   const relay = fakeRelay();
   const clock = { now: 1_800_000_000_000 };
   relay.now = () => clock.now;
   const hs = sessions(), cs = sessions();
   const notices = [];
-  const home = new HomeBridge({ dataDir: path.join(root, 'home'), noTimer: true, fetchImpl: relay.fetch, now: () => clock.now, relayBaseUrl: () => BASE.replace(/\/api$/, ''),
+  home = new HomeBridge({ dataDir: path.join(root, 'home'), noTimer: true, fetchImpl: relay.fetch, now: () => clock.now, relayBaseUrl: () => BASE.replace(/\/api$/, ''),
     onNotify: n => notices.push(n), ...hs.deps });
-  const company = new CompanyBridge({ dataDir: path.join(root, 'company'), noTimer: true, fetchImpl: relay.fetch, now: () => clock.now, fallbackCwd: root,
+  company = new CompanyBridge({ dataDir: path.join(root, 'company'), noTimer: true, fetchImpl: relay.fetch, now: () => clock.now, fallbackCwd: root,
     isDirectory: () => true, onNotify: n => notices.push(n), ...cs.deps });
   return { root, relay, clock, hs, cs, home, company, notices };
 }
@@ -79,11 +81,15 @@ async function pair(r) {
   await r.home.checkNow();
   await r.company.checkNow();
   await r.home.checkNow();
+  await r.company.checkNow(); // 公司在正式通道上报一次在线
+  await r.home.checkNow();
   assert.equal(r.home.status().link.state, 'paired');
   assert.equal(r.company.status().link.state, 'paired');
+  return code;
 }
+const ask = (r, sid, question, title) => r.home.invoke({ name: 'ask_company', callerSessionId: sid, arguments: { question, ...(title ? { title } : {}) } });
 
-test('加密：同钥能解、换钥或换收件方都解不开；配对码往返', () => {
+test('加密：同钥能解、换钥或换收件方都解不开；配对码往返；密钥协商两端一致', () => {
   const secret = bridgeCrypto.newSecret(), link = bridgeCrypto.derive(secret);
   const blob = bridgeCrypto.seal(link, 'company', { type: 'ask', question: '你好' });
   assert.equal(bridgeCrypto.open(link, 'company', blob).question, '你好');
@@ -94,16 +100,23 @@ test('加密：同钥能解、换钥或换收件方都解不开；配对码往�
   assert.deepEqual(bridgeCrypto.parsePairingCode('请粘贴：' + code + ' 谢谢'), { baseUrl: BASE, secret });
   assert.throws(() => bridgeCrypto.makePairingCode('http://evil.example/api', secret), /https/);
   assert.throws(() => bridgeCrypto.parsePairingCode('AIHUB-LINK-1.abc'), /配对码/);
+  const a = bridgeCrypto.newKeyPair(), b = bridgeCrypto.newKeyPair();
+  assert.equal(bridgeCrypto.agree(a.privateKey, b.publicKey, secret), bridgeCrypto.agree(b.privateKey, a.publicKey, secret));
 });
 
-test('配对：公司换钥后两端只用新通道，旧配对码作废', async t => {
+test('配对：密钥协商后两端只用正式通道；拿到配对码的人从初始通道里解不出正式密钥', async t => {
   const r = rig(t);
-  const { code } = r.home.createPairing();
+  const code = await pair(r);
   const initial = bridgeCrypto.parsePairingCode(code).secret;
-  await pair(r);
   const homeSecret = r.home.link.config().secret, companySecret = r.company.link.config().secret;
   assert.equal(homeSecret, companySecret);
   assert.notEqual(homeSecret, initial);
+  assert.equal(r.home.link.gen(), r.company.link.gen());
+  // 旁观者：用配对码派生初始通道，解开上面所有消息——只看到公钥，没有正式密钥
+  const leak = bridgeCrypto.derive(initial), rows = r.relay.channels.get(leak.channel).rows;
+  const opened = rows.map(row => bridgeCrypto.open(leak, row.to, row.blob));
+  assert.deepEqual(opened.map(m => m.type).sort(), ['hello', 'welcome']);
+  assert.ok(!JSON.stringify(opened).includes(homeSecret));
   assert.ok(r.notices.some(n => /已和公司接通/.test(n.title)) && r.notices.some(n => /已和家里接通/.test(n.title)));
   assert.ok(r.home.status().peer.companyOnline);
 });
@@ -112,9 +125,8 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   const r = rig(t);
   await pair(r);
   r.company.setSettings({ codeRoots: 'D:/code/l2\nD:/code/common', model: 'GLM-5.2-WX-Auto' });
-  const asker = { id: 'home-s1', kind: 'codex', status: 'idle', title: 'SuperRAN PF 调度' };
-  r.hs.map.set(asker.id, asker);
-  const asked = await r.home.invoke({ name: 'ask_company', callerSessionId: 'home-s1', arguments: { question: '## 目的\n对齐 PF 调度\n## 问题\n1. 遗忘因子怎么取？', title: 'PF 遗忘因子' } });
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle', title: 'SuperRAN PF 调度' });
+  const asked = await ask(r, 'home-s1', '## 目的\n对齐 PF 调度\n## 问题\n1. 遗忘因子怎么取？', 'PF 遗忘因子');
   assert.match(asked.thread, /^Q-\d{4}-01$/);
   assert.match(asked.next, /结束本轮/);
 
@@ -131,11 +143,9 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   assert.match(r.cs.sent[0].text, /D:\/code\/l2/);
   assert.match(r.cs.sent[0].text, /遗忘因子/);
 
-  // 家里先收到「公司在读代码」
   await r.home.checkNow();
   assert.equal(r.home.thread(asked.thread).rounds[0].status, 'running');
 
-  // CodeAgent 还在忙：不收
   r.cs.busy.add(companySession); r.cs.answer(companySession, '半截');
   await r.company.checkNow();
   assert.equal(r.company.thread(asked.thread).state, 'running');
@@ -144,11 +154,10 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   await r.company.checkNow();
   assert.equal(r.company.thread(asked.thread).state, 'replied');
 
-  // 家里：提问会话在忙就等，停下再送
-  r.hs.busy.add('home-s1');
+  r.hs.map.get('home-s1').status = 'running';
   await r.home.checkNow();
-  assert.equal(r.hs.sent.length, 0);
-  r.hs.busy.delete('home-s1');
+  assert.equal(r.hs.sent.length, 0, '提问会话在忙就等');
+  r.hs.map.get('home-s1').status = 'idle';
   await r.home.checkNow();
   assert.equal(r.hs.sent.length, 1);
   assert.equal(r.hs.sent[0].id, 'home-s1');
@@ -157,15 +166,13 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   await r.home.checkNow();
   assert.equal(r.hs.sent.length, 1, '同一份回执只送一次');
 
-  // 别的会话不能追问这个编号
   await assert.rejects(r.home.invoke({ name: 'followup_company', callerSessionId: 'other', arguments: { thread: asked.thread, question: '再看看' } }), /另一个会话/);
-  // 追问：进同一个公司会话，不新开
+  await assert.rejects(r.home.invoke({ name: 'company_thread', callerSessionId: 'other', arguments: { thread: asked.thread } }), /找不到本会话/);
   await r.home.invoke({ name: 'followup_company', callerSessionId: 'home-s1', arguments: { thread: asked.thread, question: '初值怎么给？请读初始化部分' } });
   await r.company.checkNow();
-  assert.equal(r.cs.created.length, 1);
+  assert.equal(r.cs.created.length, 1, '追问不新开会话');
   assert.equal(r.cs.sent.at(-1).id, companySession);
   assert.match(r.cs.sent.at(-1).text, /第 2 轮/);
-  // 第 2 轮没回执前不能再追问
   await assert.rejects(r.home.invoke({ name: 'followup_company', callerSessionId: 'home-s1', arguments: { thread: asked.thread, question: '再看看初始化' } }), /还没回执/);
   r.cs.answer(companySession, '初值按宽带 CQI 估算。把握程度：高');
   await r.company.checkNow();
@@ -176,33 +183,44 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   assert.equal(view.threads[0].rounds.length, 2);
 });
 
-test('成段源码：先请 CodeAgent 改写，改写后仍有就删掉那几段再发', async t => {
+test('源码检查：围栏、~~~、无围栏代码行、压成一行都算；先请改写，改写后仍超就删掉再发', async t => {
+  const lines = n => Array.from({ length: n }, (_, i) => `x${i} = y${i} + z;`).join('\n');
+  assert.equal(sourceVerdict('结论：遗忘因子 1/64。\n- 每 TTI 更新\n- 未调度按 0 衰减').tooMuch, false);
+  assert.equal(sourceVerdict('```c\n' + lines(13) + '\n```').tooMuch, true, '围栏成段');
+  assert.equal(sourceVerdict('~~~\n' + lines(13) + '\n~~~').tooMuch, true, '~~~ 围栏');
+  assert.equal(sourceVerdict('说明如下\n' + lines(13)).tooMuch, true, '无围栏代码行');
+  assert.equal(sourceVerdict(['A', '```', lines(10), '```', 'B', '```', lines(10), '```', 'C', '```', lines(11), '```'].join('\n')).tooMuch, true, '多块累计');
+  assert.equal(sourceVerdict('一行：' + Array.from({ length: 40 }, (_, i) => `a${i}=b${i};`).join(' ')).tooMuch, true, '压成一行');
+  assert.equal(sourceVerdict('| 量 | 单位 |\n|---|---|\n| se | bit/s/Hz |').tooMuch, false, '表格不算');
+  const stripped = stripCode('前文\n```c\n' + lines(20) + '\n```\n后文');
+  assert.ok(!stripped.text.includes('x10 = y10'));
+  assert.match(stripped.text, /按规则不回传/);
+  assert.match(stripped.text, /后文/);
+
   const r = rig(t);
   await pair(r);
   r.hs.map.set('h', { id: 'h', kind: 'claude', status: 'idle' });
-  const { thread } = await r.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '请说明重传合并的逻辑' } });
+  const { thread } = await ask(r, 'h', '请说明重传合并的逻辑');
   await r.company.checkNow();
   const sid = r.cs.created[0].opts.id;
-  const code = '```c\n' + Array.from({ length: 20 }, (_, i) => `x${i} = y${i};`).join('\n') + '\n```';
-  r.cs.answer(sid, '结论如下\n' + code);
+  r.cs.answer(sid, '结论如下\n' + lines(20));
   await r.company.checkNow();
   assert.match(r.cs.sent.at(-1).text, /重写/);
   assert.equal(r.cs.sent.at(-1).id, sid);
-  r.cs.answer(sid, '改写稿\n' + code + '\n结尾');
+  r.cs.answer(sid, '改写稿\n~~~\n' + lines(20) + '\n~~~\n结尾');
   await r.company.checkNow();
   await r.home.checkNow();
   const reply = r.home.thread(thread).rounds[0].reply;
   assert.ok(!reply.includes('x10 = y10'));
-  assert.match(reply, /此处原有 20 行代码/);
-  assert.equal(bigCodeBlocks('```\na\nb\n```').length, 0);
-  assert.match(stripBigBlocks('前\n' + code), /按规则不回传/);
+  assert.match(reply, /按规则不回传/);
+  assert.match(reply, /结尾/);
 });
 
 test('放行页：公司代理返回网页时记为待放行、回执留在发件箱，放行后补发', async t => {
   const r = rig(t);
   await pair(r);
   r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
-  const { thread } = await r.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '请说明 HARQ 进程数怎么定' } });
+  const { thread } = await ask(r, 'h', '请说明 HARQ 进程数怎么定');
   await r.company.checkNow();
   const sid = r.cs.created[0].opts.id;
   r.cs.answer(sid, '8 个进程。把握程度：高');
@@ -220,13 +238,13 @@ test('放行页：公司代理返回网页时记为待放行、回执留在发�
   assert.equal(r.home.thread(thread).rounds[0].reply, '8 个进程。把握程度：高');
 });
 
-test('公司没能开会话：家里收到报错消息，可在公司页重试', async t => {
+test('公司没能开会话：家里收到报错；公司重试后家里的报错清掉、追问要等这一轮回来（不串轮）', async t => {
   const r = rig(t);
   await pair(r);
   r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
   const original = r.company.deps.createSession;
   r.company.deps.createSession = async () => { throw new Error('codeagent 不在 PATH'); };
-  const { thread } = await r.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '请说明 HARQ 进程数怎么定' } });
+  const { thread } = await ask(r, 'h', '请说明 HARQ 进程数怎么定');
   await r.company.checkNow();
   assert.equal(r.company.thread(thread).state, 'failed');
   await r.home.checkNow();
@@ -236,13 +254,20 @@ test('公司没能开会话：家里收到报错消息，可在公司页重试',
   r.company.retry(thread);
   await r.company.checkNow();
   assert.equal(r.company.thread(thread).state, 'running');
+  await r.home.checkNow();
+  assert.equal(r.home.thread(thread).rounds[0].error, null, '重试开始后家里清掉上次的报错');
+  await assert.rejects(r.home.invoke({ name: 'followup_company', callerSessionId: 'h', arguments: { thread, question: '换个问法再问' } }), /还没回执/);
+  r.cs.answer(r.cs.created[0].opts.id, '16 个进程');
+  await r.company.checkNow(); await r.home.checkNow();
+  assert.equal(r.home.thread(thread).rounds[0].reply, '16 个进程');
+  assert.match(r.hs.sent.at(-1).text, /16 个进程/);
 });
 
 test('提问会话已关闭：先恢复再送回执；会话不在了就留在列表里', async t => {
   const r = rig(t);
   await pair(r);
   r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
-  const { thread } = await r.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '请说明 HARQ 进程数怎么定' } });
+  const { thread } = await ask(r, 'h', '请说明 HARQ 进程数怎么定');
   await r.company.checkNow();
   r.cs.answer(r.cs.created[0].opts.id, '回答');
   await r.company.checkNow();
@@ -253,32 +278,109 @@ test('提问会话已关闭：先恢复再送回执；会话不在了就留在�
   assert.ok(r.home.thread(thread).rounds[0].delivered);
 });
 
-test('未配对时工具报清楚的错；问题太短被挡', async t => {
+test('送达结果未知（确认迟到）按已送达处理，不重发；重复回执不重投', async t => {
   const r = rig(t);
-  await assert.rejects(r.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '这是一个足够长的问题吗' } }), /还没配对/);
   await pair(r);
-  await assert.rejects(r.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '短' } }), /太短/);
-  await assert.rejects(r.home.invoke({ name: 'ask_company', callerSessionId: '', arguments: { question: '这是一个足够长的问题吗' } }), /无法识别/);
+  r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
+  const { thread } = await ask(r, 'h', '请说明 HARQ 进程数怎么定');
+  await r.company.checkNow();
+  r.cs.answer(r.cs.created[0].opts.id, '回答 A');
+  await r.company.checkNow();
+  r.hs.receipt = { ok: false, sendStatus: 'stuck' };
+  await r.home.checkNow();
+  assert.equal(r.hs.sent.length, 1);
+  const round = r.home.thread(thread).rounds[0];
+  assert.ok(round.delivered && round.deliveryUncertain);
+  await r.home.checkNow();
+  assert.equal(r.hs.sent.length, 1, '不重发');
+  // 公司把同一轮的回执又发了一遍（例如崩溃后重发）：家里不重投
+  await r.company.link.send('reply', { thread, gen: r.company.link.gen(), round: 1, text: '回答 A（重发）' });
+  await r.home.checkNow();
+  assert.equal(r.hs.sent.length, 1);
+  assert.equal(r.home.thread(thread).rounds[0].reply, '回答 A');
 });
 
-test('MCP 挂载范围：配对后只给 SuperRAN 相关的 Codex / Claude 会话；可改为全部', async t => {
+test('解除配对：没答完的问题作废；重新配对后旧回执不会发给新的对端', async t => {
   const r = rig(t);
-  assert.equal(r.home.wantsMcp({ kind: 'codex', opts: { purpose: 'wireless-proposal' } }), false, '未配对不挂');
   await pair(r);
-  assert.equal(r.home.wantsMcp({ kind: 'codex', opts: { purpose: 'wireless-proposal' } }), true);
-  assert.equal(r.home.wantsMcp({ kind: 'claude', opts: { cwd: 'D:/AIWork/20261015-superran-pf' } }), true);
-  assert.equal(r.home.wantsMcp({ kind: 'codex', opts: { cwd: 'D:/AIWork/20261015-ppt' } }), false);
-  assert.equal(r.home.wantsMcp({ kind: 'gemini', opts: { purpose: 'wireless-proposal' } }), false);
-  assert.equal(r.home.wantsMcp({ kind: 'claude', opts: { purpose: 'hub-assistant', cwd: 'C:/x/superran' } }), false);
+  r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
+  const { thread } = await ask(r, 'h', '请说明 HARQ 进程数怎么定');
+  await r.company.checkNow();
+  const sid = r.cs.created[0].opts.id;
+  r.company.unpair(); r.home.unpair();
+  assert.equal(r.company.thread(thread).state, 'cancelled');
+  assert.equal(r.home.thread(thread).state, 'cancelled');
+  await pair(r);
+  r.cs.answer(sid, '旧问题的回答');
+  const postsBefore = r.relay.posts;
+  await r.company.checkNow();
+  assert.equal(r.relay.posts, postsBefore, '旧问题的回执不发');
+  await assert.rejects(r.home.invoke({ name: 'followup_company', callerSessionId: 'h', arguments: { thread, question: '还在吗？' } }), /作废|找不到/);
+  const again = await ask(r, 'h', '新配对后重新提问一次');
+  assert.notEqual(again.thread, thread);
+});
+
+test('发件箱：网络断着时进度通知可以丢，问题和回执一条不丢', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.relay.offline = true;
+  r.company.link.store.set('outbox', Array.from({ length: 999 }, (_, i) => ({ channel: 'c', to: 'home', mid: 'm' + i, blob: 'QQ', type: i % 2 ? 'status' : 'reply' })));
+  await r.company.link.send('status', { note: 'x' });
+  await r.company.link.send('reply', { text: 'y' });
+  const box = r.company.link.store.get('outbox');
+  assert.equal(box.length, 1000);
+  assert.equal(box.filter(x => x.type === 'reply').length, 501, '回执一条没丢');
+  r.company.link.store.set('outbox', Array.from({ length: 1000 }, (_, i) => ({ channel: 'c', to: 'home', mid: 'r' + i, blob: 'QQ', type: 'reply' })));
+  await assert.rejects(r.company.link.send('reply', { text: 'z' }), /发件箱已满/);
+});
+
+test('通道被服务端清理重建（代次变了）：游标归零，新消息照样收到', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
+  await ask(r, 'h', '第一个问题：HARQ 进程数');
+  await r.company.checkNow();
+  assert.ok(r.company.link.config().cursor > 0);
+  const channel = bridgeCrypto.derive(r.company.link.config().secret).channel;
+  r.relay.channels.delete(channel); // 服务端清理
+  const { thread } = await ask(r, 'h', '第二个问题：最大重传次数');
+  await r.company.checkNow();
+  assert.ok(r.company.thread(thread), '重建后的新问题收到了');
+});
+
+test('本机接口：凭会话通行证认身份，冒充别的会话被拒', async t => {
+  const r = rig(t);
+  await pair(r);
+  await r.home.start();
+  const url = JSON.parse(fs.readFileSync(r.home.endpointFile, 'utf8')).url;
+  const call = (session, pass, body) => fetch(url, { method: 'POST', headers: { Authorization: 'Bearer ' + pass, 'X-Hub-Bridge-Session': session, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await call('s1', 'wrong', { name: 'company_thread', arguments: {} })).status, 403);
+  assert.equal((await call('s2', r.home.passFor('s1'), { name: 'company_thread', arguments: {} })).status, 403, '拿 s1 的通行证冒充 s2');
+  const ok = await (await call('s1', r.home.passFor('s1'), { name: 'ask_company', arguments: { question: '通过本机接口提问一次' } })).json();
+  assert.equal(ok.ok, true);
+  assert.equal(r.home.thread(ok.result.thread).sessionId, 's1');
+});
+
+test('挂载：配对后 Codex / Claude 会话拿到通行证；只有 SuperRAN 相关的挂 MCP（可改为全部）', async t => {
+  const r = rig(t);
+  assert.equal(r.home.sessionPlan({ kind: 'codex', opts: { purpose: 'wireless-proposal' }, id: 'a' }), null, '未配对什么都不挂');
+  await pair(r);
+  const wireless = r.home.sessionPlan({ kind: 'codex', opts: { purpose: 'wireless-proposal' }, id: 'a' });
+  assert.equal(wireless.mcp.name, 'company_bridge');
+  assert.equal(wireless.mcp.env.HUB_BRIDGE_SESSION_PASS, r.home.passFor('a'));
+  assert.equal(wireless.env.HUB_BRIDGE_SESSION_ID, 'a');
+  assert.ok(fs.existsSync(wireless.mcp.args[0]));
+  assert.ok(r.home.sessionPlan({ kind: 'claude', opts: { cwd: 'D:/AIWork/20261015-superran-pf' }, id: 'b' }).mcp);
+  const plain = r.home.sessionPlan({ kind: 'codex', opts: { cwd: 'D:/AIWork/20261015-ppt' }, id: 'c' });
+  assert.equal(plain.mcp, null, '普通会话不挂 MCP');
+  assert.equal(plain.env.HUB_BRIDGE_SESSION_PASS, r.home.passFor('c'), '但有通行证，可用命令');
+  assert.equal(r.home.sessionPlan({ kind: 'gemini', opts: {}, id: 'd' }), null);
+  assert.equal(r.home.sessionPlan({ kind: 'claude', opts: { purpose: 'hub-assistant', cwd: 'C:/x/superran' }, id: 'e' }), null);
   r.home.setSettings({ attach: 'all' });
-  assert.equal(r.home.wantsMcp({ kind: 'codex', opts: { cwd: 'D:/AIWork/20261015-ppt' } }), true);
-  const entry = r.home.getMcpEntry('sess-1');
-  assert.equal(entry.name, 'company_bridge');
-  assert.equal(entry.env.HUB_BRIDGE_SESSION_ID, 'sess-1');
-  assert.ok(fs.existsSync(entry.args[0]));
+  assert.ok(r.home.sessionPlan({ kind: 'codex', opts: { cwd: 'D:/AIWork/20261015-ppt' }, id: 'f' }).mcp);
 });
 
-test('会话管理器：Codex 固定挂载不受 none 档影响；Claude 并进 --mcp-config 配置', t => {
+test('会话管理器：Codex 固定挂载不受 none 档影响；Claude 并进 --mcp-config；通行证进会话环境', t => {
   const { SessionManager } = require('../core/session-manager');
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-extra-mcp-'));
   const old = process.env.CLAUDE_HUB_DATA_DIR; process.env.CLAUDE_HUB_DATA_DIR = dataDir;
@@ -286,15 +388,30 @@ test('会话管理器：Codex 固定挂载不受 none 档影响；Claude 并进 
   const sm = Object.create(SessionManager.prototype);
   const entry = { name: 'company_bridge', command: 'node', args: ['x.js'], env: { A: '1' } };
   assert.deepEqual(sm._withExtraMcp('codex', { id: 'a' }), { id: 'a' }, '没有提供者时原样');
-  sm.setExtraMcpProvider(() => entry);
-  const codex = sm._withExtraMcp('codex', { id: 'a', mcpProfile: 'none' });
+  sm.setExtraMcpProvider(() => ({ mcp: entry, env: { HUB_BRIDGE_SESSION_PASS: 'p' } }));
+  const codex = sm._withExtraMcp('codex', { id: 'a', mcpProfile: 'none', extraEnv: { X: '1' } });
   assert.deepEqual(codex.codexPinnedMcpEntries, [entry]);
+  assert.deepEqual(codex.extraEnv, { X: '1', HUB_BRIDGE_SESSION_PASS: 'p' });
   const existing = path.join(dataDir, 'assistant.json');
   fs.writeFileSync(existing, JSON.stringify({ mcpServers: { hub_assistant: { command: 'node', args: ['a.js'] } } }));
   const claude = sm._withExtraMcp('claude', { id: 'b', mcpConfigFile: existing });
   const merged = JSON.parse(fs.readFileSync(claude.mcpConfigFile, 'utf8'));
   assert.deepEqual(Object.keys(merged.mcpServers).sort(), ['company_bridge', 'hub_assistant']);
-  assert.equal(sm._withExtraMcp('gemini', { id: 'c' }).codexPinnedMcpEntries, undefined);
+  sm.setExtraMcpProvider(() => ({ mcp: null, env: { HUB_BRIDGE_SESSION_PASS: 'q' } }));
+  const envOnly = sm._withExtraMcp('codex', { id: 'c' });
+  assert.equal(envOnly.codexPinnedMcpEntries, undefined);
+  assert.equal(envOnly.extraEnv.HUB_BRIDGE_SESSION_PASS, 'q');
   sm.setExtraMcpProvider(() => null);
   assert.deepEqual(sm._withExtraMcp('codex', { id: 'd' }), { id: 'd' });
+});
+
+test('公司 CodeAgent 会话（purpose=company-bridge）启动参数上落实只读：禁用命令行与改写工具、不加载 MCP', () => {
+  const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
+  const config = { command: 'codeagent', configDir: os.tmpdir(), configDirEnv: 'CODEAGENT3_CONFIG_DIR', stateFile: '.cac.json' };
+  const ro = buildCodeAgentPtyLaunch('x', 'codeagent', { purpose: 'company-bridge', mcpProfile: 'full', mcpConfigFile: 'C:/x.json' }, os.tmpdir(), {}, config).cmd;
+  assert.match(ro, /--disallowedTools '?Bash,BashOutput,KillShell,Edit,MultiEdit,Write,NotebookEdit'?/);
+  assert.match(ro, /--strict-mcp-config/);
+  assert.doesNotMatch(ro, /x\.json/);
+  const normal = buildCodeAgentPtyLaunch('y', 'codeagent', { mcpProfile: 'full' }, os.tmpdir(), {}, config).cmd;
+  assert.doesNotMatch(normal, /disallowedTools/);
 });

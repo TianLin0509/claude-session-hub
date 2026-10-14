@@ -1,6 +1,6 @@
 'use strict';
 // 「问公司」MCP（2026-10-15）：家里的 Agent 向公司电脑上的 CodeAgent 提问。JSON-RPC over stdio。
-// 只转发给本机 Hub（地址与口令在继承的环境变量指向的文件里，不出现在工具输出）；本身不联网、不执行命令。
+// 只转发给本机 Hub：地址在环境变量指向的文件里，会话通行证在环境变量里（只能代表本会话），都不出现在工具输出；本身不联网、不执行命令。
 const readline = require('node:readline');
 const fs = require('node:fs');
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -38,7 +38,7 @@ async function handle(request) {
   if (request.method === 'tools/call') {
     if (!tools.some(t => t.name === request.params?.name)) throw new Error('未知工具');
     const endpoint = JSON.parse(fs.readFileSync(process.env.HUB_BRIDGE_ENDPOINT_FILE, 'utf8'));
-    const response = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + endpoint.token, 'Content-Type': 'application/json', 'X-Hub-Bridge-Session': process.env.HUB_BRIDGE_SESSION_ID || '' },
+    const response = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + (process.env.HUB_BRIDGE_SESSION_PASS || ''), 'Content-Type': 'application/json', 'X-Hub-Bridge-Session': process.env.HUB_BRIDGE_SESSION_ID || '' },
       body: JSON.stringify(request.params), signal: AbortSignal.timeout(60000) });
     const data = await response.json();
     return { content: [{ type: 'text', text: JSON.stringify(data.ok ? data.result : { error: data.error }, null, 1) }], isError: !data.ok };

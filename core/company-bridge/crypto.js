@@ -61,4 +61,18 @@ function parsePairingCode(text) {
   return { baseUrl, secret: value.k };
 }
 
-module.exports = { newSecret, derive, seal, open, makePairingCode, parsePairingCode, checkBaseUrl, PAIRING_PREFIX };
+// 换钥：两端各生成一对 X25519 临时密钥，只交换公钥（hello / welcome 用初始密钥加密，防篡改）。
+// 正式密钥 = HKDF(共享秘密, 初始密钥)。看到配对码的人能解开 hello / welcome，但只拿到公钥，算不出正式密钥。
+function newKeyPair() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('x25519');
+  return { publicKey: b64url(publicKey.export({ format: 'der', type: 'spki' })), privateKey: b64url(privateKey.export({ format: 'der', type: 'pkcs8' })) };
+}
+function agree(privateKey, peerPublicKey, initialSecret) {
+  const priv = crypto.createPrivateKey({ key: Buffer.from(String(privateKey), 'base64url'), format: 'der', type: 'pkcs8' });
+  const pub = crypto.createPublicKey({ key: Buffer.from(String(peerPublicKey || ''), 'base64url'), format: 'der', type: 'spki' });
+  if (pub.asymmetricKeyType !== 'x25519') throw new Error('对端公钥类型不对');
+  const shared = crypto.diffieHellman({ privateKey: priv, publicKey: pub });
+  return b64url(Buffer.from(crypto.hkdfSync('sha256', shared, Buffer.from(String(initialSecret), 'base64url'), Buffer.from('final-secret-v1'), 32)));
+}
+
+module.exports = { newSecret, derive, seal, open, makePairingCode, parsePairingCode, checkBaseUrl, newKeyPair, agree, PAIRING_PREFIX };

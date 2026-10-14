@@ -69,7 +69,15 @@ async function main() {
     for (const d of [codexHome, hdata, cwd]) fs.mkdirSync(d, { recursive: true });
     fs.copyFileSync(codexAuth, path.join(codexHome, 'auth.json'));
     const models = path.join(path.dirname(codexAuth), 'models_cache.json'); if (fs.existsSync(models)) fs.copyFileSync(models, path.join(codexHome, 'models_cache.json'));
-    fs.writeFileSync(path.join(codexHome, 'config.toml'), [root, workspaces, cwd].map(p => "[projects.'" + p.toLowerCase() + "']\ntrust_level = \"trusted\"").join('\n') + '\n');
+    // 技能「问公司」放进测试用的 Codex 目录；命令路径换成本仓库里的脚本（合入前生产目录还没有它）。
+    const skillSrc = path.join(os.homedir(), '.codex', 'skills', 'ask-company-codeagent', 'SKILL.md');
+    const plainCwd = path.join(workspaces, 'notes-harq'); fs.mkdirSync(plainCwd, { recursive: true });
+    if (fs.existsSync(skillSrc)) {
+      fs.mkdirSync(path.join(codexHome, 'skills', 'ask-company-codeagent'), { recursive: true });
+      fs.writeFileSync(path.join(codexHome, 'skills', 'ask-company-codeagent', 'SKILL.md'),
+        fs.readFileSync(skillSrc, 'utf8').split('C:\Users\lintian\claude-session-hub\scripts\company-ask.js').join(path.join(__dirname, '..', 'scripts', 'company-ask.js')));
+    }
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), [root, workspaces, cwd, plainCwd].map(p => "[projects.'" + p.toLowerCase() + "']\ntrust_level = \"trusted\"").join('\n') + '\n');
     fs.writeFileSync(path.join(hdata, 'config.json'), j({ providers: { codex: { backend: 'subscription', subscription_profile: profile.id, subscription_profiles: [{ id: profile.id, label: profile.label, home: codexHome }] } } }));
     // ---- 公司 Hub：CodeAgent 替身用真 Claude，凭据复制进它的配置目录 ----
     const cdata = path.join(root, 'company-data'), cac = path.join(root, 'cac'), l2 = path.join(root, 'company-code', 'l2');
@@ -201,13 +209,32 @@ async function main() {
     await until('round 2 delivered', async () => (await status(hc)).threads.find(x => x.id === homeThread.id).rounds[1]?.delivered, 8 * 60000, 3000);
     const summary = await until('home summary', async () => {
       const text = await hc.eval(`(async()=>{const s=(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(hsid)});const f=s&&s.transcriptPath;return f?require("fs").readFileSync(f,"utf8"):""})()`);
-      const from = text.lastIndexOf('· 第 2 轮】'); const idx = from >= 0 ? text.indexOf('HOME-DONE', from) : -1;
+      const from = text.lastIndexOf('第 2 轮'); const idx = from >= 0 ? text.indexOf('HOME-DONE', from) : -1;
       return idx > from && text.slice(idx, idx + 1500);
     }, 8 * 60000, 5000);
     result.summary = summary.slice(0, 1200);
     check('家里 Agent 第二次被唤醒，写出 HOME-DONE 总结');
     const delivered = (await status(hc)).threads.find(x => x.id === homeThread.id).rounds.every(r => r.delivered);
     assert.ok(delivered, '两轮回执都已送达');
+
+    // ---- 6b. 技能自己触发：不在 SuperRAN 目录（没挂 MCP），只提 AirView，看 Agent 会不会按技能用命令问公司 ----
+    if (process.env.BRIDGE_SKILL_CHECK !== '0') {
+      const plain = await hc.eval(`require("electron").ipcRenderer.invoke('create-session', ${j({ kind: 'codex', opts: { cwd: plainCwd, model: 'gpt-6-luna', effort: 'medium', title: 'HARQ 参数' } })})`);
+      const before = (await status(hc)).threads.length;
+      await hc.eval(`require("electron").ipcRenderer.invoke('session:send-prompt', ${j({ sessionId: plain.id, text: '我要在 SuperRAN 里实现下行 HARQ，参数想和公司 AirView 平台的实际代码保持一致：AirView 里每个 UE 的下行 HARQ 进程数和最大重传次数分别是多少？查到后告诉我，并给一句实现建议。' })})`);
+      const t2 = await until('skill-triggered thread', async () => (await status(hc)).threads.length > before && (await status(hc)).threads[0], 6 * 60000, 3000);
+      assert.equal(t2.sessionId, plain.id, '新问题来自没挂 MCP 的会话（走命令）');
+      check(`技能自动触发：没挂 MCP 的会话按技能用 company-ask 命令发出 ${t2.id}`);
+      const answer = await until('skill answer', async () => {
+        const t = (await status(hc)).threads.find(x => x.id === t2.id);
+        if (!t?.rounds[0]?.delivered) return false;
+        const text = await hc.eval(`(async()=>{const s=(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(plain.id)});const f=s&&s.transcriptPath;return f?require("fs").readFileSync(f,"utf8"):""})()`);
+        const from = text.lastIndexOf('第 1 轮'); const tail = from >= 0 ? text.slice(from + 200) : '';
+        return /16/.test(tail) && /"role":"assistant"/.test(tail) && tail.slice(0, 4000);
+      }, 15 * 60000, 5000);
+      result.skillAnswer = answer.slice(0, 600);
+      check('回执送回该会话，Agent 给出 16 个进程等结论');
+    }
 
     // ---- 7. 截图：两边的列表与会话 ----
     await click(hc, '#btn-wireless'); await wait(1200);
