@@ -2197,6 +2197,29 @@ if (require('./core/distribution').featureEnabled('assistant')) try {
   assistantService.startWatching();
   phoneService = require('./main/ipc/phone-handlers').registerPhoneIpc(ipcMain, assistantService, {dataDir:getHubDataDir(),electron:require('electron')});
 } catch (error) { console.error('[assistant] service unavailable:', error.message); }
+// @community-strip 无线 Tab · SuperRAN 助理（2026-10-14）：定时查看 SuperRAN 协作台，已推进、无人接手的提案
+// 每个新开一个会话交给 Agent 实现（同时最多 2 个）；只到提交候选 PR，验收、批准、合入仍走协作台。
+let wirelessService = null;
+try {
+  wirelessService = require('./main/ipc/wireless-handlers').registerWirelessIpc(ipcMain, {
+    dataDir: getHubDataDir(),
+    home: process.env.CLAUDE_HUB_WIRELESS_HOME || undefined,
+    noTimer: process.env.CLAUDE_HUB_WIRELESS_TIMER === '0',
+    fallbackCwd: require('./core/storage-roots').workspaceRoot({ fallback: 'D:/AIWork' }),
+    worktreeRoot: require('./core/storage-roots').workspaceRoot({ fallback: 'D:/AIWork' }),
+    createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
+    sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+    getSession: id => sessionManager.getSession(id),
+    isAgentTurnActive: id => sessionManager.isAgentTurnActive(id),
+    getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
+    onChanged: () => sendToRenderer('wireless:changed', {}),
+    onNotify: notice => {
+      sendToRenderer('wireless:notification', notice);
+      if (notice?.sessionId) { try { void desktopNotificationController?.show({ sessionId: notice.sessionId, title: notice.title, body: notice.text, kind: 'wireless' }); } catch (error) { console.warn('[wireless] notification', error.message); } }
+    },
+  });
+} catch (error) { console.error('[wireless] SuperRAN 助理未启动：', error.message); }
+// @community-end
 // AI 编排模式（2026-10-04）：编排员通过 hub_orchestrator 工具驱动群聊与交付工作流。
 try {
   global.__orchestrationService = require('./main/orchestration/service').createOrchestrationService({
@@ -3973,6 +3996,7 @@ async function runFinalShutdownCleanup() {
   capture('terminal-output-batcher', () => terminalOutputBatcher.dispose({ flush: true }));
   capture('dev-workbench', () => devWorkbench?.dispose());
   capture('hub-assistant', () => assistantService?.close());
+  capture('wireless-assistant', () => wirelessService?.close());
   capture('hub-orchestration', () => global.__orchestrationService?.stop());
   capture('hub-phone', () => phoneService?.close());
   clearTimeout(sessionSearchPrewarmTimer);
