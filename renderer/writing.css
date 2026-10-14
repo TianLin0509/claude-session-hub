@@ -167,6 +167,24 @@
 .wb-compose-text { font-size: 14px; }
 .wb-member { display: inline-flex; gap: 4px; align-items: center; font-size: 13px; }
 .wb-sel-btn { position: fixed; z-index: 10000; font: inherit; font-size: 12px; padding: 4px 10px; border-radius: var(--radius-md); border: 0; background: var(--brand); color: var(--fg-inverse, #fff); cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
+.wb-sel-btns { position: fixed; z-index: 10000; display: flex; gap: 6px; }
+.wb-sel-btns .wb-sel-btn { position: static; }
+.wb-sel-btn.alt { background: var(--surface-raised); color: var(--brand); border: 1px solid var(--brand); }
+/* 田哥手写：左 Markdown、右预览，铺满文章区宽度 */
+.wb-tab.hand { margin-left: 10px; }
+.wb-tab.hand .wb-tab-dot { background: transparent; border: 1.5px solid var(--brand); box-sizing: border-box; }
+.wb-tab.hand .wb-tab-name { color: var(--brand); }
+.wb-articles-body.wide .wb-panel-bar { max-width: none; }
+.wb-hand-status.bad { color: var(--status-danger, #e5484d); }
+.wb-hand-conflict { border-radius: var(--radius-md); margin-bottom: 10px; }
+.wb-hand-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; height: 440px; /* 实际高度由 fitHand 按窗口算 */ }
+.wb-hand-split.stacked { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); height: 560px; }
+.wb-hand-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.wb-hand-label { font-size: 11.5px; color: var(--fg-muted); padding: 0 2px 6px; }
+.wb-hand-input { flex: 1; min-height: 0; resize: none; box-sizing: border-box; padding: 18px 20px; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--surface-raised); color: var(--fg-default); font-family: "Cascadia Mono", Consolas, "Microsoft YaHei", monospace; font-size: 14px; line-height: 1.8; tab-size: 2; outline: none; }
+.wb-hand-input:focus { border-color: var(--brand); }
+.wb-panel .wr-paper.wb-hand-preview { flex: 1; min-height: 0; overflow: auto; padding: 24px 32px 28px; font-size: 15.5px; line-height: 1.9; }
+.wb-hand-empty { color: #9a9387; font-size: 14px; }
 .wb-pop { position: fixed; z-index: 10001; width: 320px; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--surface-raised); color: var(--fg-default); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: 0 10px 30px rgba(0,0,0,.25); }
 .wb-pop-quote { font-size: 12px; color: var(--fg-muted); line-height: 1.6; }
 .wb-pop-input { font: inherit; font-size: 13px; resize: vertical; padding: 6px 8px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); background: var(--surface-sunken); color: var(--fg-default); }

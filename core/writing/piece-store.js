@@ -7,6 +7,7 @@
 //   piece.json    群聊 id、创建时间、文风自动优化的状态（Hub 维护）
 //   drafts/*.md   群里每位 AI 的稿（AI 按写作群规则自己保存）
 //   final.md      汇总改定的定稿
+//   手写稿.md     田哥自己汇总的一稿（写作 Tab 的「田哥手写」页，2026-10-15）；不在 drafts/ 里，不会被当成 AI 的稿
 //   .vibe-root    让 Codex 把文章目录当项目根，不再往上读工作根的工程规则
 
 const fs = require('fs');
@@ -102,6 +103,29 @@ class PieceStore {
   }
 
   readFinal(dir) { return readText(path.join(this.resolve(dir), 'final.md')); }
+
+  /* 田哥手写：AI 给素材，田哥自己汇总一稿 */
+
+  readHand(dir) {
+    const file = path.join(this.resolve(dir), HAND_FILE);
+    return { text: readText(file), file };
+  }
+
+  // base 是编辑器上次读到 / 存下的内容。文件在别处（如 Typora）被改过、又和这次要存的不同，就不覆盖，交给田哥选
+  saveHand(dir, text, base) {
+    const file = path.join(this.resolve(dir), HAND_FILE);
+    const next = String(text == null ? '' : text).replace(/\r\n/g, '\n');
+    const disk = readText(file);
+    if (base != null && disk !== String(base).replace(/\r\n/g, '\n') && disk !== next) return { conflict: true, text: disk, file };
+    if (disk !== next || !fs.existsSync(file)) {
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, next, 'utf8');
+      fs.renameSync(tmp, file);
+    }
+    return { conflict: false, file, savedAt: Date.now() };
+  }
 }
 
-module.exports = { PieceStore, titleOf, stamp };
+const HAND_FILE = '手写稿.md';
+
+module.exports = { PieceStore, titleOf, stamp, HAND_FILE };

@@ -8,6 +8,8 @@
  *   文章区    每位 AI 一个标签页（2026-10-03 田哥要求），排版好的 Markdown 文章 + 写给田哥的话分开放；
  *             版本可切；出错、在写、有新稿都标在标签上；有定稿时「定稿」排第一个；宽屏可切「并排对比」
  *   点评篮    在稿里划线点评、写总评，攒好一次发出：「各自改一版」或「请某位汇总定稿」
+ *   田哥手写  标签栏最后一页（2026-10-15 田哥要求：AI 出素材，最后自己汇总一稿）。左边 Markdown 编辑、右边实时预览，
+ *             停笔即存进文章目录的 手写稿.md；AI 稿里选中一段可「摘到手写稿」，整篇可「放进手写稿」
  * 田哥在这里说的话，都通过群聊自己的发送入口（meeting-append-user-turn + groupchat:turn）发进群，
  * 与群聊输入框走同一条派发链路；不经过群聊界面层，不会动到正打开的那个群。
  */
@@ -19,13 +21,170 @@ const POLL_MS = 3000;
 const NARROW_PX = 980;
 
 function createWorkbench(ctx) {
-  const { h, call, toast, guarded, paper, ipcRenderer, openMeeting, onChanged } = ctx;
+  const { h, call, toast, guarded, paper, renderMarkdown, ipcRenderer, openMeeting, onChanged } = ctx;
   let composer = null;
   const S = {
     dir: null, view: null, sigs: {}, answers: {}, versionOf: {}, tab: null, seen: {}, hadFinal: false,
     compare: (() => { try { return localStorage.getItem('writing-compare') === '1'; } catch { return false; } })(),
     colSigs: [], sending: false, timer: null, visible: false, root: null, resize: null, narrow: false,
+    hand: freshHand(null),
   };
+
+  /* ─────────── 田哥手写：文章目录里的 手写稿.md ─────────── */
+
+  // base：上次从文件读到或存进去的内容，存盘时用它判断文件有没有在别处被改过
+  function freshHand(dir) { return { dir, text: '', base: '', loaded: false, loading: null, state: 'idle', savedAt: 0, disk: '', timer: null, els: null }; }
+  const hanCount = (t) => (String(t || '').match(/[一-鿿]/g) || []).length;
+
+  function loadHand(dir = S.dir) {
+    if (!dir) return Promise.resolve();
+    if (S.hand.dir !== dir) S.hand = freshHand(dir);
+    const hd = S.hand;
+    if (hd.loaded) return Promise.resolve();
+    if (!hd.loading) {
+      hd.loading = call('writing:handdraft-read', { dir }).then((r) => {
+        if (S.hand !== hd) return;
+        hd.text = hd.base = r.text || '';
+        hd.loaded = true;
+        // 正打开手写页才整块重画；否则只换标签栏上的字数，不打断正在读的稿
+        if (S.view && S.root) renderArticles(S.tab === HAND_KEY);
+      }).catch((e) => { hd.loading = null; toast(`手写稿没读出来：${e.message || e}`, true); });
+    }
+    return hd.loading;
+  }
+
+  function saveHandSoon() {
+    const hd = S.hand;
+    clearTimeout(hd.timer);
+    hd.state = 'dirty';
+    paintHandStatus();
+    hd.timer = setTimeout(() => saveHand(), 700);
+  }
+
+  // force：冲突时田哥选「用这里的版本」，不再比对文件
+  async function saveHand(force) {
+    const hd = S.hand;
+    clearTimeout(hd.timer); hd.timer = null;
+    if (!hd.dir || !hd.loaded || hd.state === 'conflict' && !force) return;
+    if (hd.text === hd.base && !force) { if (hd.state === 'dirty') { hd.state = 'saved'; paintHandStatus(); } return; }
+    const text = hd.text;
+    hd.state = 'saving'; paintHandStatus();
+    try {
+      const r = await call('writing:handdraft-save', { dir: hd.dir, text, base: force ? null : hd.base });
+      if (r.conflict) { hd.state = 'conflict'; hd.disk = r.text || ''; }
+      else { hd.base = text; hd.savedAt = r.savedAt || Date.now(); hd.state = hd.text === text ? 'saved' : 'dirty'; }
+    } catch (e) {
+      hd.state = 'error';
+      toast(`手写稿没存上：${e.message || e}`, true);
+    }
+    if (S.hand !== hd) return; // 存的是刚切走的那篇，界面已经换了
+    if (hd.state === 'dirty') saveHandSoon(); else paintHandStatus();
+  }
+
+  function flushHand() { if (S.hand.timer || S.hand.state === 'dirty') saveHand(); }
+  window.addEventListener('beforeunload', flushHand);
+
+  // 从 AI 的稿摘过来：接在手写稿末尾，空一行隔开
+  async function addToHand(text, from) {
+    const piece = String(text || '').trim();
+    if (!piece) return;
+    await loadHand();
+    const hd = S.hand;
+    if (!hd.loaded) return;
+    hd.text = hd.text.trim() ? `${hd.text.replace(/\s+$/, '')}\n\n${piece}\n` : `${piece}\n`;
+    if (hd.els) { hd.els.input.value = hd.text; paintHandPreview(); }
+    saveHandSoon();
+    renderArticles();
+    toast(`已把${from ? ` ${from} 的` : ''}内容放进手写稿末尾`);
+  }
+
+  function handStatusText() {
+    const hd = S.hand;
+    if (!hd.loaded) return '读取中…';
+    const n = `${hanCount(hd.text)} 字`;
+    if (hd.state === 'saving' || hd.state === 'dirty') return `${n} · 正在保存…`;
+    if (hd.state === 'error') return `${n} · 没存上，继续输入会再试`;
+    if (hd.state === 'conflict') return `${n} · 文件在别处被改过，先选用哪一版`;
+    if (hd.savedAt) { const d = new Date(hd.savedAt); return `${n} · 已自动保存 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`; }
+    return `${n} · 停笔自动保存`;
+  }
+
+  function paintHandStatus() {
+    const els = S.hand.els;
+    if (!els) return;
+    els.status.textContent = handStatusText();
+    els.status.classList.toggle('bad', S.hand.state === 'error' || S.hand.state === 'conflict');
+    const tabSub = S.root && S.root.querySelector(`.wb-tab[data-key="${HAND_KEY}"] .wb-tab-sub`);
+    if (tabSub) tabSub.textContent = handTabSub();
+    els.conflict.hidden = S.hand.state !== 'conflict';
+  }
+
+  let previewTimer = null;
+  function paintHandPreview() {
+    const els = S.hand.els;
+    if (!els) return;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      if (S.hand.els !== els) return;
+      if (S.hand.text.trim()) renderMarkdown(els.preview, S.hand.text);
+      else els.preview.replaceChildren(h('div', { class: 'wb-hand-empty', text: '预览会出现在这里' }));
+    }, 120);
+  }
+
+  function handTabSub() { return S.hand.loaded ? (S.hand.text.trim() ? `${hanCount(S.hand.text)} 字` : '还没写') : ''; }
+
+  function renderHandPanel() {
+    const hd = S.hand;
+    if (!hd.loaded) { loadHand(); return h('div', { class: 'wb-panel wb-hand', 'data-col': HAND_KEY }, h('div', { class: 'wb-empty-col' }, h('span', { class: 'wb-spin' }), h('span', { text: '读取手写稿…' }))); }
+    const input = h('textarea', { class: 'wb-hand-input', spellcheck: 'false', 'aria-label': '田哥手写 · Markdown',
+      placeholder: '在这里汇总你自己的一稿。\n\n· 在各位 AI 的稿里选中一段，点「摘到手写稿」；整篇用稿子上方的「放进手写稿」\n· 也可以直接粘贴、自己写\n· Markdown：# 标题、## 小标题、**加粗**、> 引用、- 列表\n\n停笔自动保存到文章目录的 手写稿.md' });
+    input.value = hd.text;
+    // 发点评等操作会整块重画文章区：正在手写的话，光标和滚动位置接着用
+    const prev = hd.els && document.activeElement === hd.els.input
+      ? { start: hd.els.input.selectionStart, end: hd.els.input.selectionEnd, top: hd.els.input.scrollTop } : null;
+    if (prev) setTimeout(() => { input.focus(); input.setSelectionRange(prev.start, prev.end); input.scrollTop = prev.top; }, 0);
+    const preview = h('div', { class: 'wr-paper wb-hand-preview' });
+    const status = h('span', { class: 'wb-hand-status wr-muted' });
+    const conflict = h('div', { class: 'wb-errbar wb-hand-conflict', hidden: true },
+      h('span', { text: '手写稿.md 在别处被改过（比如用别的编辑器打开改了），和这里的内容不一样。' }),
+      h('button', { class: 'wr-btn small', text: '用文件里的版本', onclick: () => { hd.text = hd.base = hd.disk; input.value = hd.text; hd.state = 'saved'; paintHandPreview(); paintHandStatus(); } }),
+      h('button', { class: 'wr-btn small', text: '用这里的版本覆盖文件', onclick: () => saveHand(true) }));
+    input.addEventListener('input', () => { hd.text = input.value; paintHandPreview(); saveHandSoon(); });
+    input.addEventListener('blur', flushHand);
+    // 左边滚到哪，右边按比例跟到哪
+    input.addEventListener('scroll', () => {
+      const max = input.scrollHeight - input.clientHeight;
+      if (max > 0) preview.scrollTop = (input.scrollTop / max) * (preview.scrollHeight - preview.clientHeight);
+    });
+    const split = h('div', { class: 'wb-hand-split' + (S.narrow ? ' stacked' : '') },
+      h('div', { class: 'wb-hand-pane' }, h('div', { class: 'wb-hand-label', text: 'Markdown' }), input),
+      h('div', { class: 'wb-hand-pane' }, h('div', { class: 'wb-hand-label', text: '预览' }), preview));
+    hd.els = { input, preview, status, conflict, split };
+    const panel = h('div', { class: 'wb-panel wb-hand', 'data-col': HAND_KEY },
+      h('div', { class: 'wb-panel-bar wb-hand-bar' },
+        h('b', { text: '田哥手写' }), status,
+        h('span', { class: 'wr-spacer' }),
+        h('button', { class: 'wr-btn small', text: '复制', title: '复制手写稿的 Markdown', onclick: () => guarded(async () => { await navigator.clipboard.writeText(hd.text); toast('手写稿已复制'); }) })),
+      conflict, split);
+    paintHandStatus();
+    paintHandPreview();
+    setTimeout(fitHand, 0);
+    return panel;
+  }
+
+  // 编辑区一直铺到底部点评框的上沿：点评框是贴底浮着的，按固定高度会被它盖住下半截
+  function fitHand() {
+    const els = S.hand.els;
+    if (!els || !els.split.isConnected) return;
+    const main = S.root.closest('.wr-studio-main') || S.root.parentElement;
+    const basket = section('basket');
+    const mr = main.getBoundingClientRect();
+    const top = els.split.getBoundingClientRect().top - mr.top + main.scrollTop;
+    const room = main.clientHeight - top - (basket ? basket.offsetHeight : 0) - 16;
+    const px = `${Math.max(S.narrow ? 560 : 380, Math.floor(room))}px`;
+    if (els.split.style.height !== px) els.split.style.height = px;
+  }
+  window.addEventListener('resize', () => fitHand());
 
   /* ─────────── 点评篮：按文章存在本机，切走再回来还在 ─────────── */
 
@@ -184,14 +343,18 @@ function createWorkbench(ctx) {
       hideSelBtn();
       if (!text || text.length < 2 || !sel.rangeCount) return;
       const rect = sel.getRangeAt(0).getBoundingClientRect();
-      selBtn = h('button', { class: 'wb-sel-btn', 'data-col': col.sid || col.name, text: '点评这段', style: { left: `${Math.min(rect.right, window.innerWidth - 110)}px`, top: `${Math.max(8, rect.top - 34)}px` },
-        onmousedown: (ev) => ev.preventDefault(),
-        onclick: () => { hideSelBtn(); askComment({ x: rect.left, y: rect.bottom + 8, col, quote: text }); } });
+      // 摘录保留段落：选区里的换行原样带走，只把行内多余空白收掉
+      const raw = sel.toString().split(/\n{2,}/).map((p) => p.replace(/[ \t]+/g, ' ').trim()).filter(Boolean).join('\n\n');
+      selBtn = h('div', { class: 'wb-sel-btns', 'data-col': col.sid || col.name, style: { left: `${Math.min(rect.right, window.innerWidth - 220)}px`, top: `${Math.max(8, rect.top - 34)}px` } },
+        col.sid ? h('button', { class: 'wb-sel-btn', text: '点评这段', onmousedown: (ev) => ev.preventDefault(),
+          onclick: () => { hideSelBtn(); askComment({ x: rect.left, y: rect.bottom + 8, col, quote: text }); } }) : null,
+        h('button', { class: 'wb-sel-btn alt', text: '摘到手写稿', title: '接在「田哥手写」末尾', onmousedown: (ev) => ev.preventDefault(),
+          onclick: () => { hideSelBtn(); window.getSelection()?.removeAllRanges(); addToHand(raw, col.name); } }));
       document.body.appendChild(selBtn);
     }, 0);
   }
   document.addEventListener('mousedown', (e) => {
-    if (selBtn && e.target !== selBtn) hideSelBtn();
+    if (selBtn && !selBtn.contains(e.target)) hideSelBtn();
     if (pop && !pop.contains(e.target)) closePop();
   });
 
@@ -283,6 +446,7 @@ function createWorkbench(ctx) {
   /* ─────────── 文章区：每位 AI 一个标签页，有定稿时「定稿」排第一；宽屏可切「并排对比」 ─────────── */
 
   const FINAL_KEY = '__final';
+  const HAND_KEY = '__hand';
   const keyOf = (c) => c.sid || c.name;
 
   function itemLabel(it) {
@@ -314,6 +478,7 @@ function createWorkbench(ctx) {
     const tabs = [];
     if (v.final) tabs.push({ key: FINAL_KEY, label: '定稿', sub: `${v.final.from ? `${v.final.from} 汇总 · ` : ''}${v.final.chars} 字`, status: 'final', count: 1 });
     for (const c of v.columns || []) tabs.push({ key: keyOf(c), label: c.name, sub: tabSub(c), status: c.status, count: (c.items || []).length, col: c });
+    tabs.push({ key: HAND_KEY, label: '田哥手写', sub: handTabSub(), status: 'hand', count: 0 });
     return tabs;
   }
 
@@ -322,7 +487,7 @@ function createWorkbench(ctx) {
     if (v.final && !S.hadFinal) { S.hadFinal = true; S.tab = FINAL_KEY; }
     if (!v.final) S.hadFinal = false;
     if (S.tab && tabs.some((t) => t.key === S.tab)) return S.tab;
-    const first = tabs.find((t) => t.key === FINAL_KEY) || tabs.find((t) => t.count) || tabs[0];
+    const first = tabs.find((t) => t.key === FINAL_KEY) || tabs.find((t) => t.count) || tabs.find((t) => t.key !== HAND_KEY) || tabs[0];
     S.tab = first ? first.key : null;
     return S.tab;
   }
@@ -368,8 +533,12 @@ function createWorkbench(ctx) {
 
   function articlePaper(col, it) {
     const p = paper(it.text);
-    p.addEventListener('mouseup', (e) => { if (col.sid) onPaperMouseUp(e, col); });
+    p.addEventListener('mouseup', (e) => onPaperMouseUp(e, col));
     return p;
+  }
+
+  function toHandBtn(text, from) {
+    return h('button', { class: 'wr-btn small', text: '放进手写稿', title: '把这份稿的 Markdown 整篇接到「田哥手写」末尾', onclick: () => addToHand(text, from) });
   }
 
   // 标签页模式下的一位 AI：工具条（版本、字数、状态、总评、复制）+ 写给你的话 + 排版好的文章
@@ -383,6 +552,7 @@ function createWorkbench(ctx) {
       status,
       h('span', { class: 'wr-spacer' }),
       it && col.sid ? h('button', { class: 'wr-btn small', text: '总评', title: '对这份稿写一句总体意见，放进点评篮', onclick: (e) => askComment({ x: e.clientX - 160, y: e.clientY + 12, col }) }) : null,
+      it && it.kind !== 'reply' ? toHandBtn(it.text, col.name) : null,
       it && it.kind !== 'reply' ? copyBtn(it.text, `${col.name} 的稿`) : null);
     const body = it
       ? [errBarOf(col, true), articlePaper(col, it), memberQuestions(col), ...asideOf(it)]
@@ -398,8 +568,8 @@ function createWorkbench(ctx) {
     return h('div', { class: 'wb-panel wb-final', 'data-col': FINAL_KEY },
       h('div', { class: 'wb-panel-bar' },
         h('b', { text: '定稿' }), h('span', { class: 'wr-muted', text: `${f.from ? `${f.from} 汇总 · ` : ''}${f.chars} 字` }),
-        voice, h('span', { class: 'wr-spacer' }), copyBtn(f.text, '定稿')),
-      h('div', { class: 'wb-panel-body' }, paper(f.text), ...asideOf({ note: f.note }).filter(Boolean)));
+        voice, h('span', { class: 'wr-spacer' }), toHandBtn(f.text, '定稿'), copyBtn(f.text, '定稿')),
+      h('div', { class: 'wb-panel-body' }, articlePaper({ name: '定稿' }, f), ...asideOf({ note: f.note }).filter(Boolean)));
   }
 
   // 并排对比模式下的一栏（宽屏、两位以上时可选）
@@ -433,7 +603,11 @@ function createWorkbench(ctx) {
     const shown = compare ? cols : cols.filter((c) => keyOf(c) === cur);
     // 出错栏的「重试」按钮要看这一轮过没过去，所以最新轮次也算进出错栏的签名
     const sigOf = (c) => JSON.stringify([c, questionsOf(c), S.sending, S.versionOf[keyOf(c)] ?? null, c.status === 'error' || c.status === 'stopped' ? v.latestTurn : 0]);
-    const contentSig = compare ? cols.map(sigOf) : cur === FINAL_KEY ? [JSON.stringify([v.final, v.voice])] : shown.map(sigOf);
+    // 手写页只在读完文件时重画一次；之后输入、保存状态都就地更新，轮询不碰编辑器
+    const contentSig = compare ? cols.map(sigOf) : cur === FINAL_KEY ? [JSON.stringify([v.final, v.voice])]
+      : cur === HAND_KEY ? [JSON.stringify(['hand', S.hand.dir, S.hand.loaded, S.narrow])] : shown.map(sigOf);
+    const panelOf = () => (cur === FINAL_KEY ? renderFinalPanel() : cur === HAND_KEY ? renderHandPanel() : renderPanel(shown[0]));
+    if (cur !== HAND_KEY && S.hand.els) { flushHand(); S.hand.els = null; }
     // 别的 AI 交稿 / 状态变化只换标签栏，不动正在读的那份稿（划线、滚动都保留）
     const layout = JSON.stringify([compare, cur, canCompare, compare ? cols.map(keyOf) : 0]);
     const barSig = JSON.stringify(tabs.map((t) => [t.key, t.label, t.sub, t.status, t.count > (S.seen[t.key] || 0)]));
@@ -446,7 +620,7 @@ function createWorkbench(ctx) {
         const node = blocks[i];
         if (!node || S.colSigs[i] === sig || busyIn(node)) return; // 正在划选 / 写点评：下一轮再换
         S.colSigs[i] = sig;
-        node.replaceWith(compare ? renderColumn(cols[i]) : cur === FINAL_KEY ? renderFinalPanel() : renderPanel(shown[0]));
+        node.replaceWith(compare ? renderColumn(cols[i]) : panelOf());
       });
       return;
     }
@@ -455,7 +629,7 @@ function createWorkbench(ctx) {
     S.colSigs = contentSig.slice();
     const body = compare
       ? h('div', { class: 'wb-articles-body wb-cols', style: { gridTemplateColumns: `repeat(${cols.length}, minmax(0, 1fr))` } }, ...cols.map(renderColumn))
-      : h('div', { class: 'wb-articles-body' }, cur === FINAL_KEY ? renderFinalPanel() : renderPanel(shown[0]));
+      : h('div', { class: 'wb-articles-body' + (cur === HAND_KEY ? ' wide' : '') }, panelOf());
     el.replaceChildren(tabBar(tabs, cur, compare, canCompare, cols), body);
   }
 
@@ -464,7 +638,8 @@ function createWorkbench(ctx) {
       ? [h('span', { class: 'wb-compare-title', text: `并排对比 · ${cols.length} 位` })]
       : tabs.map((t) => h('button', {
         class: `wb-tab ${t.status || ''}` + (t.key === cur ? ' on' : ''),
-        title: t.key === FINAL_KEY ? '汇总改定的定稿' : `${t.label} 的稿`,
+        'data-key': t.key,
+        title: t.key === FINAL_KEY ? '汇总改定的定稿' : t.key === HAND_KEY ? '自己汇总一稿：左边写 Markdown，右边看排版' : `${t.label} 的稿`,
         onclick: () => { S.tab = t.key; renderArticles(true); },
       },
       h('span', { class: 'wb-tab-dot' }),
@@ -556,7 +731,8 @@ function createWorkbench(ctx) {
   function mount(container, dir) {
     composer?.dispose(); composer = null;
     if (S.resize) { S.resize.disconnect(); S.resize = null; }
-    if (S.dir !== dir) { S.view = null; S.versionOf = {}; S.tab = null; S.seen = {}; S.hadFinal = false; }
+    if (S.dir !== dir) { flushHand(); S.hand = freshHand(dir); S.view = null; S.versionOf = {}; S.tab = null; S.seen = {}; S.hadFinal = false; }
+    S.hand.els = null;
     S.dir = dir;
     S.sigs = {};
     S.root = h('div', { class: 'wb' },
@@ -570,15 +746,18 @@ function createWorkbench(ctx) {
     S.resize = new ResizeObserver(() => {
       const narrow = S.root && S.root.clientWidth > 0 && S.root.clientWidth < NARROW_PX;
       if (narrow !== S.narrow) { S.narrow = narrow; if (S.view) renderArticles(true); }
+      fitHand();
     });
     S.resize.observe(S.root);
+    S.resize.observe(S.root.querySelector('[data-wb="basket"]')); // 点评框长高（攒了几条点评）时，手写区跟着让位
     syncTimer();
     refresh();
+    loadHand(dir);
   }
 
   function setVisible(v) {
     S.visible = v;
-    if (!v) { hideSelBtn(); closePop(); }
+    if (!v) { hideSelBtn(); closePop(); flushHand(); }
     syncTimer();
     if (v) refresh();
   }

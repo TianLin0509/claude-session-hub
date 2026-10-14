@@ -165,7 +165,7 @@
   // 文章工作台（renderer/writing-workbench.js）：右侧整块
   const { createWorkbench, kindLabel } = require('./writing-workbench.js');
   const workbench = createWorkbench({
-    h, call, toast, guarded, paper, ipcRenderer, openMeeting, voiceLabel,
+    h, call, toast, guarded, paper, renderMarkdown, ipcRenderer, openMeeting, voiceLabel,
     onChanged: () => { S.studio.sig = null; if (S.opened && S.view === 'studio' && !S.studio.creating) loadStudio(); },
   });
 
