@@ -292,6 +292,28 @@ test('公司没能开会话：家里收到报错；公司重试后家里的报�
   assert.match(r.hs.sent.at(-1).text, /16 个进程/);
 });
 
+test('公司发问结果未知、3 分钟后原生记录都没有：重发一次；之后照常收回答', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
+  r.cs.receipt = { ok: true, sendStatus: 'stuck' };
+  const { thread } = await ask(r, 'h', '请说明 HARQ 进程数怎么定');
+  await r.company.checkNow();
+  assert.equal(r.cs.sent.length, 1);
+  assert.equal(r.company.thread(thread).rounds[0].sendUncertain, true, '「stuck」即使 ok:true 也记为结果未知');
+  r.clock.now += 4 * 60000;
+  r.cs.receipt = { ok: true };
+  await r.company.checkNow();
+  await r.company.checkNow();
+  assert.equal(r.cs.sent.length, 2, '重发了一次');
+  r.clock.now += 4 * 60000;
+  await r.company.checkNow();
+  assert.equal(r.cs.sent.length, 2, '只重发一次');
+  r.cs.answer(r.cs.created[0].opts.id, '16 个进程');
+  await r.company.checkNow(); await r.home.checkNow();
+  assert.equal(r.home.thread(thread).rounds[0].reply, '16 个进程');
+});
+
 test('提问会话已关闭：先恢复再送回执；会话不在了就留在列表里', async t => {
   const r = rig(t);
   await pair(r);
