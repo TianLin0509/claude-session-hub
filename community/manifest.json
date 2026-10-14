@@ -42,6 +42,8 @@
     "tests/unit-window-keep-rendering.test.js",
     "tests/unit-renderer-crash-recovery.test.js",
     "tests/e2e-renderer-crash-recovery-cdp.js",
+    "tests/unit-session-search-first-build.test.js",
+    "tests/e2e-search-first-build-idle-cdp.js",
     "tests/unit-backstage-path.test.js",
     "tests/repro-backstage-render.js",
     "tests/fixtures/codeagent-tui-standin/**",
