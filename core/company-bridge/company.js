@@ -132,6 +132,7 @@ class CompanyBridge {
     if ('model' in patch) next.model = String(patch.model || '').trim().slice(0, 96);
     if ('effort' in patch) { if (!EFFORTS.includes(patch.effort)) throw new Error('思考深度只能是 low / medium / high / max'); next.effort = patch.effort; }
     if ('maxParallel' in patch) { const n = Number(patch.maxParallel); if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('同时处理的问题数只能是 1–4'); next.maxParallel = n; }
+    if ('strictReadOnly' in patch) require('./strict').setStrict(patch.strictReadOnly !== false);
     if ('pollSeconds' in patch) { const n = Number(patch.pollSeconds); if (!Number.isInteger(n) || n < 10 || n > 600) throw new Error('检查间隔只能是 10–600 秒'); next.pollSeconds = n; }
     this.store.set('settings', next); this.changed();
     return next;
@@ -353,7 +354,7 @@ class CompanyBridge {
   status() {
     const c = this.link.config(), st = this.link.status();
     return {
-      ok: true, role: 'company', settings: this.settings(), defaultInstructions: DEFAULT_INSTRUCTIONS,
+      ok: true, role: 'company', settings: { ...this.settings(), strictReadOnly: require('./strict').strictEnabled() }, defaultInstructions: DEFAULT_INSTRUCTIONS,
       link: { state: c.state || 'none', baseUrl: c.baseUrl || null, pairedAt: c.pairedAt || null, createdAt: c.createdAt || null, outbox: this.link.pendingOutbox() },
       net: { lastOkAt: st.lastOkAt || null, lastError: st.lastError || null, gate: st.gate || null, peerSeen: st.peerSeen || null },
       nextPullAt: this.nextPullAt, now: this.now(),

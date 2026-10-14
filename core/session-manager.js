@@ -476,7 +476,7 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config) {
   if (mcp.configPaths && mcp.configPaths.length) args.push('--mcp-config', ...mcp.configPaths);
   if (mcp.profile !== 'full') args.push('--strict-mcp-config');
   for (const dir of claudeNativeAddDirs(opts.addDirs)) args.push('--add-dir', dir);
-  if (readOnly) args.push('--disallowedTools', CODEAGENT_READONLY_DISALLOWED.join(','));
+  if (readOnly && require('./company-bridge/strict').strictEnabled()) args.push('--disallowedTools', CODEAGENT_READONLY_DISALLOWED.join(','));
   const { findNativeClaudeHistory } = require('./claude-native-history');
   const historyEnv = { ...env, CLAUDE_CONFIG_DIR: config.configDir };
   const isUuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));

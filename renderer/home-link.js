@@ -62,6 +62,7 @@
     const opt = (list, cur) => list.map(x => `<option value="${esc(x.id)}"${x.id === cur ? ' selected' : ''}>${esc(x.label)}</option>`).join('');
     return `<div class="hl-grid">
       <label>自动作答</label><div class="hl-row"><select data-hl-f="enabled"><option value="1"${s.enabled ? ' selected' : ''}>开：收到问题就开 CodeAgent 会话作答</option><option value="0"${s.enabled ? '' : ' selected'}>关：只收下问题，不作答</option></select></div>
+      <label>只读方式</label><div class="hl-row"><select data-hl-f="strictReadOnly"><option value="1"${s.strictReadOnly !== false ? ' selected' : ''}>启动参数禁用命令行与改写工具（推荐）</option><option value="0"${s.strictReadOnly === false ? ' selected' : ''}>只靠说明约束（CodeAgent 不认上面的参数时用）</option></select></div>
       <label>代码位置</label><div><textarea rows="3" data-hl-f="codeRoots" placeholder="每行一个目录，例如 D:\\code\\l2">${esc(s.codeRoots.join('\n'))}</textarea><div class="hl-muted">第一行作为 CodeAgent 会话的工作目录，其余目录一并开放读取。</div></div>
       <label>模型</label><div class="hl-row"><select data-hl-f="model">${opt(models, s.model || '')}</select>
         思考<select data-hl-f="effort">${opt(['low', 'medium', 'high', 'max'].map(x => ({ id: x, label: { low: '低', medium: '中', high: '高', max: '最高' }[x] })), s.effort)}</select>
@@ -116,7 +117,7 @@
       else if (verb === 'unpair') { if (!window.confirm('解除和家里 Hub 的配对？之后家里需要重新生成配对码。')) return; data = await call('bridge:unpair'); render(); }
       else if (verb === 'reset-instructions') { field('instructions').value = data.defaultInstructions; editing = true; }
       else if (verb === 'save') {
-        await call('bridge:set-settings', { enabled: field('enabled').value === '1', codeRoots: field('codeRoots').value, model: field('model').value, effort: field('effort').value,
+        await call('bridge:set-settings', { enabled: field('enabled').value === '1', strictReadOnly: field('strictReadOnly').value === '1', codeRoots: field('codeRoots').value, model: field('model').value, effort: field('effort').value,
           maxParallel: Number(field('maxParallel').value), pollSeconds: Number(field('pollSeconds').value), instructions: field('instructions').value });
         editing = false; await load(); toast('家里联动设置已保存');
       }
