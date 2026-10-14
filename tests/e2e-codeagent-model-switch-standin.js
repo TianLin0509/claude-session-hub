@@ -1,11 +1,15 @@
 'use strict';
-// 真实验收（替身）：CodeAgent 会话内换模型（2026-10-13 公司探测：`--resume <会话> --model <新模型>` 能接着原会话换模型）。
-// 替身 tests/fixtures/codeagent-standin 启动真 Claude Code（GLM / MiniMax 都换成 haiku），参数原样透传。
-//   ① 第一轮让它记住一个暗号；
-//   ② 点输入框下方的模型 → 菜单写明「用新模型接着这个会话重开」→ 选 MiniMax-M2.7；
-//   ③ Hub 重开 CodeAgent，敲出的命令带 --resume <原会话号> 和 --model MiniMax-M2.7；输入框和侧栏换成 MiniMax；
-//   ④ 再问暗号，回答里有它（对话接上了，不是新会话）。
-// 凭据复制进临时目录，finally 删除。
+// 真实验收（替身）：CodeAgent 选模型走它自己的 /model 菜单（2026-10-14 同事反馈：选了 MiniMax 启动后仍是 GLM，
+// 输入框下方换模型也无效；公司真机确认交互模式不认 --model）。
+// 替身 tests/fixtures/codeagent-standin 启动真 Claude Code，并用 CODEAGENT_STANDIN_IGNORE_MODEL=1 复现那个毛病：
+// 交互模式丢掉 --model，永远从配置里的默认模型（这里设成 sonnet，相当于公司的 GLM）开局。
+// 菜单里是 Claude 的模型名，用 AI_HUB_CODEAGENT_PICKER_LABELS 对应：MiniMax-M2.7 → Haiku，GLM-5.2-WX-Auto → Sonnet。
+//   ① 新建会话选 MiniMax-M2.7，不等就绪马上发第一条（记暗号）：第一条要等 Hub 在菜单里选好，回答用的是 Haiku；
+//   ② CLI 的默认模型没被改掉（菜单有「s 只用于本会话」时按 s）；
+//   ③ 点输入框下方的模型 → 菜单写明「在 /model 菜单里替你选中」→ 选 GLM-5.2-WX-Auto：
+//      不重开 CLI（会话号不变），下一条回答用的是 Sonnet，并且答出暗号（对话没断）；
+//   ④ 数据目录 logs\codeagent-model.log 里有两次 event=pick ok=true。
+// 凭据复制进临时目录，finally 删除。E2E_ENTRY 指向公司版导出目录时测公司版。
 const fs = require('fs'), path = require('path'), os = require('os'), net = require('net'), assert = require('assert/strict');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
@@ -15,15 +19,34 @@ const freePort = () => new Promise((resolve, reject) => { const s = net.createSe
 const STANDIN = path.join(__dirname, 'fixtures', 'codeagent-standin', 'codeagent.cmd');
 const SECRET = '蓝鲸-4271';
 
+// 原生记录里每条回答实际用的模型（替身 = 真 Claude Code 落盘格式）。
+function answerModels(cac) {
+  const out = [];
+  const root = path.join(cac, 'projects');
+  let dirs = [];
+  try { dirs = fs.readdirSync(root); } catch { return out; }
+  for (const d of dirs) {
+    let files = [];
+    try { files = fs.readdirSync(path.join(root, d)).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+    for (const f of files) {
+      for (const line of fs.readFileSync(path.join(root, d, f), 'utf8').split('\n')) {
+        try { const o = JSON.parse(line); if (o.type === 'assistant' && o.message && o.message.model && o.message.model !== '<synthetic>') out.push({ at: Date.parse(o.timestamp), model: o.message.model, file: f }); } catch {}
+      }
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-codeagent-switch-'));
-  const out = path.resolve(process.env.E2E_OUT || 'artifacts/20261013-codeagent-model-switch-claude1'); fs.mkdirSync(out, { recursive: true });
+  const out = path.resolve(process.env.E2E_OUT || 'artifacts/20261014-codeagent-model-picker-claude1'); fs.mkdirSync(out, { recursive: true });
   const claudeAuth = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), '.credentials.json');
   const cac = path.join(root, '.cac'), dataDir = path.join(root, 'data'), cwd = path.join(root, 'workspace');
   for (const d of [cac, cwd, dataDir]) fs.mkdirSync(d, { recursive: true });
-  const result = { checks: [], passed: false };
+  const result = { company: !!process.env.E2E_ENTRY, checks: [], passed: false };
   let hub, c;
   const until = async (expr, label, ms = 180000) => { const end = Date.now() + ms; while (Date.now() < end) { try { if (await c.eval(expr)) return; } catch (_) {} await sleep(300); } throw Error('timeout: ' + label); };
+  const waitFor = async (fn, label, ms = 240000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = await fn(); if (v) return v; await sleep(1000); } throw Error('timeout: ' + label); };
   const shot = async name => { const s = await c.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(s.data, 'base64')); };
   const click = async selector => {
     const p = await c.eval(`(()=>{const e=document.querySelector(${j(selector)});if(!e)throw Error('Missing control: '+${j(selector)});e.scrollIntoView({block:'center',behavior:'instant'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
@@ -33,77 +56,81 @@ async function main() {
   };
   const check = (ok, label) => { assert.ok(ok, label); result.checks.push(label); console.log('  ✓ ' + label); };
   const chip = `[...document.querySelectorAll('.composer-model')].find(e=>!e.hidden&&e.offsetParent)`;
+  const settingsModel = () => { try { return JSON.parse(fs.readFileSync(path.join(cac, 'settings.json'), 'utf8')).model; } catch { return null; } };
   try {
     fs.copyFileSync(claudeAuth, path.join(cac, '.credentials.json'));
     fs.writeFileSync(path.join(cac, '.claude.json'), j({ hasCompletedOnboarding: true, lastOnboardingVersion: '2.1.205', bypassPermissionsModeAccepted: true,
       skipDangerousModePermissionPrompt: true, hasSeenAutoDefaultNudge: true, hasResetAutoModeOptInForDefaultOffer: true,
       hasSeenAutoModeEntryWarning: true, theme: 'dark', projects: {} }));
     fs.writeFileSync(path.join(cac, '.cac.json'), j({ hasCompletedOnboarding: true, projects: {} }));
-    fs.writeFileSync(path.join(cac, 'settings.json'), j({ permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true }));
+    // CLI 自己的默认模型：sonnet（相当于公司电脑上的 GLM-5.2-WX-Auto）
+    fs.writeFileSync(path.join(cac, 'settings.json'), j({ model: 'sonnet', permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true }, null, 2));
 
-    hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'codeagent model switch', extraEnv: {
-      AI_HUB_CODEAGENT_COMMAND: STANDIN, AI_HUB_CODEAGENT_CONFIG_DIR: cac,
-      CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '', AI_HUB_RULES_BASE_URL: 'http://127.0.0.1:9/hub-rules/',
-      HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'none') } });
+    hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'codeagent model picker',
+      ...(process.env.E2E_ENTRY ? { entryPath: process.env.E2E_ENTRY } : {}), extraEnv: {
+        AI_HUB_CODEAGENT_COMMAND: STANDIN, AI_HUB_CODEAGENT_CONFIG_DIR: cac, CODEAGENT_STANDIN_IGNORE_MODEL: '1',
+        AI_HUB_CODEAGENT_PICKER_LABELS: j({ 'MiniMax-M2.7': 'Haiku', 'GLM-5.2-WX-Auto': 'Sonnet' }),
+        CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '', AI_HUB_RULES_BASE_URL: 'http://127.0.0.1:9/hub-rules/',
+        AI_HUB_UPDATE_SOURCES: j([{ id: 'x', name: 'x', manifest: 'http://127.0.0.1:9/x.json', files: 'http://127.0.0.1:9/' }]),
+        HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'none') } });
     c = await connectFirstPage(hub);
     await c.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 950, deviceScaleFactor: 1, mobile: false });
     await until('typeof sessions !== "undefined"', 'renderer');
+    result.product = await c.eval(`document.querySelector('#hub-identity strong')?.textContent || ''`);
 
-    const created = await c.eval(`ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd, effort: 'low', mcpProfile: 'none' } })})`);
+    // ① 选 MiniMax 新建，马上发第一条
+    const created = await c.eval(`ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd, model: 'MiniMax-M2.7', effort: 'low', mcpProfile: 'none' } })})`);
     const sid = created.id, q = j(sid);
     await until(`!!document.querySelector('.session-item[data-session-id="${sid}"]')`, 'row', 20000);
     await c.eval(`selectSession(${q})`);
     await c.eval(`applyViewMode('card')`);
-    const ask = async (text, label) => {
-      const before = await c.eval(`document.querySelectorAll('#msg-overlay .turn-card.assistant').length`);
-      await click('.floating-input-box');
-      await c.send('Input.insertText', { text });
-      await click('.floating-input-send');
-      await until(`getSessionRuntimeTruth(sessions.get(${q})).state === 'completed' && document.querySelectorAll('#msg-overlay .turn-card.assistant').length > ${before} && [...document.querySelectorAll('#msg-overlay .turn-card.assistant')].pop().innerText.trim().length > 1`, label, 240000);
-      await sleep(1500);
-      return c.eval(`[...document.querySelectorAll('#msg-overlay .turn-card.assistant')].pop().querySelector('.turn-body').innerText`);
-    };
-
-    // ① 记住暗号
-    const first = await ask(`不要调用工具。请记住这个暗号：${SECRET}。只回答“记住了”。`, 'first answer');
-    result.first = first;
+    const sentAt = Date.now();
+    await c.eval(`ipcRenderer.invoke('session:send-prompt', ${j({ sessionId: sid, text: `不要调用工具。请记住这个暗号：${SECRET}。只回答“记住了”。` })})`);
+    const firstAnswer = await waitFor(() => answerModels(cac).find(a => a.at > sentAt), 'first answer');
+    result.firstModel = firstAnswer.model;
+    check(/haiku/i.test(firstAnswer.model), `启动时选的 MiniMax（替身里对应 Haiku）生效：第一条就是 ${firstAnswer.model}，不是 CLI 默认的 Sonnet`);
+    check(settingsModel() === 'sonnet', 'CodeAgent 自己的默认模型没被改动（settings.json 仍是 sonnet）');
+    await until(`getSessionRuntimeTruth(sessions.get(${q})).state === 'completed'`, 'first completed', 120000);
     const nativeId = await c.eval(`sessions.get(${q}).ccSessionId || ''`);
-    check(/^[0-9a-f-]{36}$/.test(nativeId), `第一轮回答完成，CodeAgent 会话号 ${nativeId.slice(0, 8)}…`);
-    await shot('01-first');
+    await sleep(1500);
+    await shot('01-first-answer');
 
-    // ② 菜单换模型
+    // ③ 输入框下方换成 GLM（替身里对应 Sonnet）
     await c.eval(`${chip}.setAttribute('data-e2e-chip','1')`);
     await click('[data-e2e-chip="1"]');
-    await until(`!!document.querySelector('.model-picker-menu .model-picker-item[data-model-id="MiniMax-M2.7"]')`, 'menu', 10000);
+    await until(`!!document.querySelector('.model-picker-menu .model-picker-item[data-model-id="GLM-5.2-WX-Auto"]')`, 'menu', 10000);
     const note = await c.eval(`document.querySelector('.model-picker-menu .model-picker-note')?.textContent || ''`);
-    check(/用新模型接着这个会话重开/.test(note) && !(await c.eval(`document.querySelector('.model-picker-menu .model-picker-item[data-model-id="MiniMax-M2.7"]').classList.contains('disabled')`)),
-      '模型菜单可以点，写明「用新模型接着这个会话重开 CodeAgent，对话记录保留」');
+    check(/\/model 菜单里替你选中/.test(note), '模型菜单写明「在 CodeAgent 的 /model 菜单里替你选中，对话不中断」');
     await shot('02-menu');
-    await click('.model-picker-menu .model-picker-item[data-model-id="MiniMax-M2.7"]');
-    await until(`/已换成 MiniMax M2\\.7/.test(document.querySelector('.model-picker-menu .model-picker-note')?.textContent || '') || ${chip}?.querySelector('.composer-chip-label')?.textContent === 'MiniMax M2.7'`, 'switched', 120000);
+    await click('.model-picker-menu .model-picker-item[data-model-id="GLM-5.2-WX-Auto"]');
+    await until(`/已在 CodeAgent 里换成/.test(document.querySelector('.model-picker-menu .model-picker-note')?.textContent || '')`, 'switched', 60000);
     await shot('03-switched');
+    check(await c.eval(`sessions.get(${q}).ccSessionId === ${j(nativeId)}`), '切换没有重开 CLI，会话号不变');
+    check(settingsModel() === 'sonnet', '切换后 CodeAgent 的默认模型仍未被改动');
 
-    // ③ 重开命令与界面
-    const screen = `(() => { const t = terminalCache.get(${q})?.terminal; if (!t) return ''; const b = t.buffer.normal; let x = ''; for (let i = 0; i < b.length; i++) x += (b.getLine(i)?.translateToString(true) || '') + '\\n'; return x; })()`;
-    await until(`(${screen}).replace(/\\s+/g,'').includes('--resume${nativeId}')`, 'resume command', 60000);
-    const typed = (await c.eval(screen)).replace(/\s+/g, '');
-    check(typed.includes(`--resume${nativeId}`) && typed.includes('--modelMiniMax-M2.7'), '重开命令带 --resume <原会话号> 和 --model MiniMax-M2.7');
-    await until(`${chip}?.querySelector('.composer-chip-label')?.textContent === 'MiniMax M2.7'`, 'composer label', 30000);
-    const row = await c.eval(`document.querySelector('.session-item[data-session-id="${sid}"] .sl-kind')?.className || ''`);
-    check(row.includes('logo-minimax'), '输入框下方显示 MiniMax M2.7，侧栏图标换成 MiniMax');
-    await until(`getSessionRuntimeTruth(sessions.get(${q})).state !== 'starting' && sessions.get(${q}).ccSessionId === ${j(nativeId)}`, 'rebound', 120000);
-    check(true, '重开后仍绑定原来的会话号');
-
-    // ④ 对话接上了
-    const second = await ask('不要调用工具。我刚才让你记住的暗号是什么？只回答暗号本身。', 'second answer');
-    result.second = second;
-    check(second.includes('4271'), `换模型后再问暗号，回答「${second.trim().slice(0, 30)}」——对话接上了`);
+    const askedAt = Date.now();
+    await click('.floating-input-box');
+    await c.send('Input.insertText', { text: '不要调用工具。我刚才让你记住的暗号是什么？只回答暗号本身。' });
+    await click('.floating-input-send');
+    const second = await waitFor(() => answerModels(cac).find(a => a.at > askedAt), 'second answer');
+    result.secondModel = second.model;
+    check(/sonnet/i.test(second.model), `换模型后下一条回答用的是 ${second.model}`);
+    await until(`getSessionRuntimeTruth(sessions.get(${q})).state === 'completed' && [...document.querySelectorAll('#msg-overlay .turn-card.assistant')].pop().innerText.includes('4271')`, 'recall', 120000);
+    check(true, '回答里有暗号：对话接着原来的上下文');
+    await sleep(1000);
     await shot('04-recall');
+
+    // ④ 记录
+    const log = fs.readFileSync(path.join(dataDir, 'logs', 'codeagent-model.log'), 'utf8');
+    const picks = log.split('\n').filter(l => /event=pick/.test(l));
+    result.pickLog = picks;
+    check(picks.filter(l => /ok=true/.test(l)).length >= 2 && picks.some(l => /reason=launch/.test(l)) && picks.some(l => /reason=switch/.test(l)),
+      `codeagent-model.log 记下启动和切换两次选模型（${picks.map(l => (l.match(/mode=\S+/) || [''])[0]).join(' ')}）`);
     result.passed = true;
   } catch (error) {
     result.error = error && error.stack || String(error);
     if (c) { try { await shot('fail'); result.screen = await c.eval('document.body.innerText.slice(-1500)'); } catch {} }
-    if (hub) { try { result.hubLogTail = hub.log().slice(-40); } catch {} }
+    if (hub) { try { result.hubLogTail = hub.log().slice(-60); } catch {} }
   } finally {
     if (c) { try { c.close(); } catch {} }
     if (hub) { try { await gracefulQuit(hub); } catch (e) { result.teardownError = e.message; } }

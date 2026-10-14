@@ -51,16 +51,17 @@ test('Qwen 模型：卡片画像、侧栏图标跟着换，公司版保留 qwen 
   assert.match(src, /\['deepseek', 'minimax', 'qwen'\]\.includes\(family\)/);
 });
 
-test('CodeAgent 会话内可以换模型：走「用新模型接着原会话重开」', () => {
+test('CodeAgent 会话内可以换模型：在它自己的 /model 菜单里选（2026-10-14 起，交互模式不认 --model）', () => {
   const { modelSwitchStrategy, canSwitchInSession } = require('../core/model-options');
-  assert.strictEqual(modelSwitchStrategy('codeagent'), 'codeagent-restart');
-  assert.strictEqual(modelSwitchStrategy('codeagent-resume'), 'codeagent-restart');
+  assert.strictEqual(modelSwitchStrategy('codeagent'), 'codeagent-picker');
+  assert.strictEqual(modelSwitchStrategy('codeagent-resume'), 'codeagent-picker');
   assert.strictEqual(canSwitchInSession('codeagent'), true);
   const handlers = fs.readFileSync(path.join(root, 'main/ipc/session-handlers.js'), 'utf8');
   assert.match(handlers, /ipcMain\.handle\('codeagent:switch-model'/);
-  assert.match(handlers, /restartSession\(sessionId, \{ model: modelId \}\)/, '复用按新模型重启（--resume <会话> --model <新模型>）');
+  assert.match(handlers, /codeagentPicker\.schedulePick\(sessionId, \(\) => runCodeAgentPick\(sessionId, modelId, 'switch'\)\)/);
+  assert.doesNotMatch(handlers, /restartSession\(sessionId, \{ model: modelId \}\)/, '不再靠带 --model 重开');
   assert.match(handlers, /当前回答仍在运行，请结束后再切换/);
-  // 恢复时带的是原会话号 + 新模型
+  // 恢复时仍带原会话号 + 模型（-p 模式和以后可能修好的交互模式都认），之后再由菜单选一次
   const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ca-resume-'));
   try {

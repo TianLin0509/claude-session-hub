@@ -81,7 +81,7 @@ async function main() {
 
     hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'codeagent group parity',
       ...(process.env.E2E_ENTRY ? { entryPath: process.env.E2E_ENTRY } : {}), extraEnv: {
-        AI_HUB_CODEAGENT_COMMAND: STANDIN, AI_HUB_CODEAGENT_CONFIG_DIR: cac, AI_HUB_WORKSPACE_ROOT: work,
+        AI_HUB_CODEAGENT_COMMAND: STANDIN, AI_HUB_CODEAGENT_CONFIG_DIR: cac, AI_HUB_CODEAGENT_PICKER_LABELS: j({ 'GLM-5.2-WX-Auto': 'Haiku', 'MiniMax-M2.7': 'Haiku' }), AI_HUB_WORKSPACE_ROOT: work,
         CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '', AI_HUB_RULES_BASE_URL: 'http://127.0.0.1:9/hub-rules/',
         AI_HUB_UPDATE_SOURCES: j([{ id: 'x', name: 'x', manifest: 'http://127.0.0.1:9/x.json', files: 'http://127.0.0.1:9/' }]),
         HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'none') } });
