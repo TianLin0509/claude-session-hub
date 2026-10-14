@@ -7,6 +7,14 @@ const path = require('node:path');
 const test = require('node:test');
 const { SessionSearchEngine } = require('../core/session-search-engine');
 const { SqliteSessionSearchIndex } = require('../core/session-search-sqlite-index');
+// 刚写完的文件可能被 Windows 杀毒扫描短暂占住，目录改名会报 EPERM / EBUSY（合并闸门并发跑时见过）；
+// 这里要测的是根目录离线后的索引行为，不是改名本身，所以短暂重试。
+async function renameDir(from,to) {
+  for(let i=0;;i++) {
+    try { fs.renameSync(from,to); return; }
+    catch(error) { if(i>=40 || !['EPERM','EBUSY','EACCES'].includes(error.code)) throw error; await new Promise(r=>setTimeout(r,50)); }
+  }
+}
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-refresh-cost-'));
@@ -107,7 +115,7 @@ test('meeting metadata sharing a transcript source key remains stable and retain
   assert.equal((await engine.search({query:'MEETING_TRANSCRIPT_MARKER'})).totalSessions,1);
   const offline=path.join(f.root,'offline');
   assert.ok([f.options.meetingDir,offline].every(p=>path.resolve(p).startsWith(fs.realpathSync(f.root)+path.sep)));
-  fs.renameSync(f.options.meetingDir,offline);
+  await renameDir(f.options.meetingDir,offline);
   for(let i=0;i<2;i++) {
     const result=await refresh(engine,state);
     assert.equal(result.phase,'ready_with_errors');
@@ -125,7 +133,7 @@ test('legacy fallback signatures still update while an unrelated transcript root
   engine.index.db.prepare('UPDATE sources SET signature=? WHERE key=?').run('meta:old-signature','hub:title-one');
   const offline=path.join(f.root,'offline');
   assert.ok([claudeRoot,offline].every(p=>path.resolve(p).startsWith(fs.realpathSync(f.root)+path.sep)));
-  fs.renameSync(claudeRoot,offline);
+  await renameDir(claudeRoot,offline);
   state.sessions[0].lastOutputPreview='OFFLINE_NEW_PREVIEW_MARKER';
   await refresh(engine,state);
   assert.equal((await engine.search({query:'OFFLINE_NEW_PREVIEW_MARKER'})).totalSessions,1);
