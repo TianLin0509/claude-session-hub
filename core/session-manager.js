@@ -495,7 +495,7 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config) {
     event: 'launch', session: String(id || '').slice(0, 8), kind,
     requested: opts.model || '(default)', model: args[3], resume: identity.length ? identity[0] : '',
   });
-  return { cmd, sessionId };
+  return { cmd, sessionId, model: args[3] };
 }
 
 function applyClaudeSessionEnv(sessionEnv, cv) {
@@ -2398,6 +2398,9 @@ class SessionManager extends EventEmitter {
       });
       pendingTimers.push(setTimeout(launch, 3000));
       if (agentPtyLaunch.sessionId) queueMicrotask(() => this._refreshOpenIdentity(id));
+      // CodeAgent 交互模式不认 --model（2026-10-13 公司真机），明确选了模型就在它的 /model 菜单里再选一次。
+      // 同步发出：监听方马上登记闸门，渲染进程随后发来的第一条消息会等它做完。
+      if (codeagentLaunch && opts.model) this.emit('codeagent-model-pick', { sessionId: id, modelId: codeagentLaunch.model, reason: 'launch' });
     }
 
     if (isGemini) {
@@ -3357,6 +3360,7 @@ class SessionManager extends EventEmitter {
     // Code Agent 不认 --settings，群聊隔离 overlay 对它无效，不传。
     const isolation = isClaudeCli && !isCodeAgentKind(baseKind) ? buildGroupChatIsolationFlags(meetingId || autonomous) : '';
     let cmd;
+    let codeagentRelaunchModel = null;
     if (isCodeAgentKind(runtimeKind)) {
       // 原地重拉开一个新的 CLI 进程（同 Claude）。它不认 --session-id，新身份要等 hook 上报：
       // 先清掉旧绑定并标记待绑定，否则新进程的 hook 会因 id 不同被当成外来会话丢弃。
@@ -3370,6 +3374,7 @@ class SessionManager extends EventEmitter {
       }, s.info && s.info.cwd, s.pty.options?.env || process.env, config);
       Object.assign(s.info, { ccSessionId: undefined, transcriptPath: undefined, codeagentIdentityPending: true });
       cmd = launch.cmd;
+      codeagentRelaunchModel = modelId ? launch.model : null;
     } else if (isCodexCliKind(runtimeKind)) {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
@@ -3487,6 +3492,8 @@ class SessionManager extends EventEmitter {
     }
     // 重置 group-chat 快路径缓存：CLI 是新启动，必须重新走冷启动流程
     s.groupChatReady = false;
+    // 新的 CodeAgent 进程同样不认 --model：就绪标记清掉之后再排选模型，免得把旧画面当成已就绪。
+    if (codeagentRelaunchModel) this.emit('codeagent-model-pick', { sessionId, modelId: codeagentRelaunchModel, reason: 'relaunch' });
     return true;
   }
 
