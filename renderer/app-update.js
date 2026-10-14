@@ -233,6 +233,24 @@
     }
   }
 
+  // 左上角「内测先锋版」标签（2026-10-14 用户）：查到新版本时换成「有新版本 vX」加绿色呼吸圆点，点它打开更新窗。
+  // 下载中 / 已就绪由标题栏的进度小标签提示，标签恢复原样。
+  function renderBadge() {
+    const badge = document.getElementById('hub-edition-badge');
+    if (!badge) return;
+    const version = state && state.phase === 'available' ? pendingVersion() : '';
+    badge.classList.toggle('has-update', !!version);
+    badge.textContent = version ? `有新版本 v${version}` : (distribution.editionBadge || badge.textContent);
+    if (version) { badge.title = '点击查看并更新'; badge.setAttribute('role', 'button'); badge.tabIndex = 0; }
+    else { badge.removeAttribute('title'); badge.removeAttribute('role'); badge.removeAttribute('tabindex'); }
+    if (!badge.dataset.updateBound) {
+      badge.dataset.updateBound = '1';
+      const open = () => { if (!badge.classList.contains('has-update')) return; const v = pendingVersion(); if (v) { writeKey(SEEN_KEY, v); renderUnread(); } openDialog(); };
+      badge.addEventListener('click', open);
+      badge.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
+    }
+  }
+
   function renderPill() {
     let pill = document.getElementById('hub-update-pill');
     // 「有新版本」改由弹窗 + 设置红点提醒；标题栏只在下载中 / 已就绪时提示进度和重启。
@@ -272,7 +290,7 @@
     menu.appendChild(item);
   }
 
-  const update = next => { state = next; render(); renderPill(); renderUnread(); maybePromptOnce(); };
+  const update = next => { state = next; render(); renderPill(); renderBadge(); renderUnread(); maybePromptOnce(); };
   ipcRenderer.on('app-update:state', (_e, next) => update(next));
   addMenuEntry();
   ipcRenderer.invoke('app-update:get-state').then(initial => {

@@ -80,6 +80,7 @@ async function main() {
     check(text.includes('「阿里云」被公司网络拦截了，可以手动放行') && text.includes('点「允许」') && text.includes('重新检查'), '下面出现放行说明（打开网页 → 点允许 → 重新检查）');
     check(await c.eval(`document.querySelector('.au-allow-url').textContent === ${j(aliyunManifest)}`), `完整网址可见：${aliyunManifest}`);
     await shot('01-blocked');
+    check(await c.eval(`(()=>{const b=document.getElementById('hub-edition-badge');return b.textContent==='内测先锋版'&&!b.classList.contains('has-update');})()`), '没查到新版本时，左上角仍是「内测先锋版」');
 
     // ② 打开网页放行
     await click('.au-allow [data-au="allow-open"]');
@@ -98,6 +99,19 @@ async function main() {
     const after = await c.eval(dialogText);
     check(after.includes(`可用，最新 v${next}`) && after.includes(`v${next} 的更新说明`), `放行后点「重新检查」：阿里云可用，查到新版本 v${next}，放行说明消失`);
     await shot('02-after-allow');
+    // 左上角标签：有新版本 + 绿色呼吸圆点，点它打开更新窗（2026-10-14 用户）
+    const badge = await c.eval(`(()=>{const b=document.getElementById('hub-edition-badge');const dot=getComputedStyle(b,'::before');return {text:b.textContent,cls:b.classList.contains('has-update'),dot:dot.backgroundColor,anim:dot.animationName,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,color:getComputedStyle(b).color};})()`);
+    result.badge = badge;
+    check(badge.text === `有新版本 v${next}` && badge.cls && badge.dot === 'rgb(34, 197, 94)' && badge.anim === (badge.reduced ? 'none' : 'hub-update-pulse'),
+      `左上角标签变成「有新版本 v${next}」，带绿色圆点（${badge.reduced ? '系统关了动画效果，圆点不闪' : '呼吸闪动'}）`);
+    await click('dialog.app-update-dialog [data-au="close"]');
+    await until(`!document.querySelector('dialog.app-update-dialog[open]')`, 'dialog closed', 5000);
+    const box = await c.eval(`(()=>{const r=document.getElementById('hub-edition-badge').getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};})()`);
+    const shotBadge = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: Math.max(0, box.x - 260), y: Math.max(0, box.y - 12), width: box.w + 300, height: box.h + 24, scale: 2 } });
+    fs.writeFileSync(path.join(out, '03-badge.png'), Buffer.from(shotBadge.data, 'base64'));
+    await click('#hub-edition-badge');
+    await until(`!!document.querySelector('dialog.app-update-dialog[open]')`, 'dialog from badge', 5000);
+    check(true, '点左上角标签打开更新窗');
     result.passed = true;
   } catch (error) {
     result.error = error && error.stack || String(error);

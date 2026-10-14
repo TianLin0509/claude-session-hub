@@ -14,6 +14,8 @@
     "scripts/brand-hub-exe.js",
     "scripts/claude-hub-statusline.js",
     "scripts/deepseek_repl.py",
+    "scripts/desktop-icon-layout.cs",
+    "scripts/desktop-icon-layout.ps1",
     "scripts/firewall-whitelist-electron.ps1",
     "scripts/open-hub-github-auth.js",
     "scripts/orchestrator-mcp.js",
