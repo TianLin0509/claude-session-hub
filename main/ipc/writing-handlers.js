@@ -86,6 +86,9 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell, mee
   handle('writing:article-view', async ({ dir }) => ({ view: refreshPiece(pieces.resolve(dir)) }));
   handle('writing:article-open-dir', async ({ dir }) => { if (shell && shell.openPath) await shell.openPath(pieces.resolve(dir)); return {}; });
   handle('writing:voice-evolve', async ({ dir }) => { enqueue(pieces.resolve(dir), true); return {}; });
+  // 田哥手写：文章目录里的 手写稿.md，编辑器停笔即存
+  handle('writing:handdraft-read', async ({ dir }) => pieces.readHand(dir));
+  handle('writing:handdraft-save', async ({ dir, text, base }) => pieces.saveHand(dir, text, base));
 
   /* ─────────── 文章工作台：群聊记录 → 稿件、问题、成员状态 ─────────── */
 

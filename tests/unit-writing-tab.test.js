@@ -158,6 +158,30 @@ test('写作台：新文章不要标题；目录里有 .vibe-root；标题从稿
   assert.strictEqual(titleOf('正文\n# 《终局思维》'), '终局思维');
 });
 
+test('田哥手写：存进文章目录的 手写稿.md，不算 AI 的稿；文件在别处被改过就不覆盖', () => {
+  const p = fixturePaths();
+  const pieces = new PieceStore(p);
+  const dir = pieces.create();
+  assert.deepStrictEqual(pieces.readHand(dir).text, '', '还没写时是空的');
+  const r1 = pieces.saveHand(dir, '# 我的一稿\r\n\r\n第一段', '');
+  assert.strictEqual(r1.conflict, false);
+  assert.strictEqual(fs.readFileSync(path.join(dir, '手写稿.md'), 'utf8'), '# 我的一稿\n\n第一段', '换行统一成 \\n');
+  assert.strictEqual(pieces.readHand(dir).text, '# 我的一稿\n\n第一段');
+  assert.strictEqual(pieces.drafts(dir).length, 0, '手写稿不进 AI 稿件列表');
+  assert.strictEqual(pieces.summary(dir).hasFinal, false, '手写稿不当定稿');
+  // 用别的编辑器改了文件：编辑器拿旧内容当底，再存就报冲突、文件不动
+  fs.writeFileSync(path.join(dir, '手写稿.md'), '# 外面改的', 'utf8');
+  const r2 = pieces.saveHand(dir, '# 我的一稿\n\n第二段', '# 我的一稿\n\n第一段');
+  assert.strictEqual(r2.conflict, true);
+  assert.strictEqual(r2.text, '# 外面改的');
+  assert.strictEqual(pieces.readHand(dir).text, '# 外面改的');
+  // 田哥选「用这里的版本覆盖」：不带底，直接写
+  assert.strictEqual(pieces.saveHand(dir, '# 我的一稿\n\n第二段', null).conflict, false);
+  assert.strictEqual(pieces.readHand(dir).text, '# 我的一稿\n\n第二段');
+  assert.deepStrictEqual(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp')), [], '不留临时文件');
+  assert.throws(() => pieces.saveHand(path.join(p.root, '..'), 'x', ''), /不在写作台根下/);
+});
+
 /* ── 写作场景群聊 ── */
 
 test('群聊：新增 writing 场景（房名留给自动命名），分支也保留场景', () => {
