@@ -8727,20 +8727,24 @@ if (!require('../core/distribution').featureEnabled('assistant')) {
   if (assistantNav) assistantNav.style.display = 'none';
 }
 window.__assistantSync = session => assistantPanel.syncSession(session);
+// 家里联动（2026-10-15）：公司版的「家里联动」弹窗与家里的「公司联动」列表都用它按编号打开会话。
+async function openSessionById(sessionId) {
+  if (!sessions.has(sessionId)) {
+    const current = (await ipcRenderer.invoke('get-sessions')).find(item => item.id === sessionId);
+    if (!current) throw new Error('这个会话没在当前 Hub 打开：请在左侧会话栏的历史里找回');
+    sessions.set(sessionId, current); renderSessionList();
+  }
+  await selectSession(sessionId, { forceScrollBottom: true, splitBypass: true });
+}
+window.__hubOpenSession = openSessionById;
+window.__hubToast = message => showToast(message);
 // @community-strip 无线 Tab · SuperRAN 助理（2026-10-14）：写法同助理页，点左侧其他按钮自动关闭。
 try {
   const wirelessPage = require('./wireless-page').createWirelessPage({
     document, window, ipcRenderer,
     closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
     showMessage: message => showToast(message),
-    openSession: async sessionId => {
-      if (!sessions.has(sessionId)) {
-        const current = (await ipcRenderer.invoke('get-sessions')).find(item => item.id === sessionId);
-        if (!current) throw new Error('这个会话没在当前 Hub 打开：请在左侧会话栏的历史里找回');
-        sessions.set(sessionId, current); renderSessionList();
-      }
-      await selectSession(sessionId, { forceScrollBottom: true, splitBypass: true });
-    },
+    openSession: openSessionById,
   });
   window.__wirelessHide = () => wirelessPage.close();
 } catch (error) { console.warn('[wireless] 无线页未启动：', error.message); }

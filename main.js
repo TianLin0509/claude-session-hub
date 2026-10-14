@@ -2220,6 +2220,78 @@ try {
   });
 } catch (error) { console.error('[wireless] SuperRAN 助理未启动：', error.message); }
 // @community-end
+// 家里联动（2026-10-15）：家里 Hub 的 Agent 用「问公司」提问，公司 Hub 的 CodeAgent 只读代码作答，经加密任务通道往返。
+// 自用版是家里一端，公司版是公司一端，其余发行版不启用（core/company-bridge/role.js）。
+let companyBridgeService = null;
+try {
+  const bridgeRole = require('./core/company-bridge/role').bridgeRole();
+  const bridgeDeps = {
+    dataDir: getHubDataDir(),
+    noTimer: process.env.CLAUDE_HUB_BRIDGE_TIMER === '0',
+    createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
+    sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+    getSession: id => sessionManager.getSession(id),
+    getSessionMetadata: id => {
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return null;
+      const saved = require('./core/session-store').loadSessionFile(id, { strict: true });
+      return saved ? { ...saved, id: saved.hubId || id } : null;
+    },
+    resumeSession: async id => {
+      const meta = require('./core/session-store').loadSessionFile(id, { strict: true });
+      return meta ? resumeSession({ ...meta, hubId: id }) : null;
+    },
+    isAgentTurnActive: id => sessionManager.isAgentTurnActive(id),
+    onChanged: () => sendToRenderer('bridge:changed', {}),
+    onNotify: notice => {
+      sendToRenderer('bridge:notification', notice);
+      try { void desktopNotificationController?.show({ sessionId: notice.sessionId || 'company-bridge', title: notice.title, body: notice.text, kind: 'bridge' }); } catch (error) { console.warn('[company-bridge] notification', error.message); }
+    },
+  };
+  // @community-strip 家里一端只在自用版
+  if (bridgeRole === 'home') {
+    const { HomeBridge } = require('./core/company-bridge/home');
+    companyBridgeService = new HomeBridge({ ...bridgeDeps,
+      isWirelessWorkspace: cwd => require('./core/claude-mcp-profile').isWirelessWorkspace(cwd),
+      relayBaseUrl: () => {
+        if (process.env.CLAUDE_HUB_BRIDGE_BASE_URL) return process.env.CLAUDE_HUB_BRIDGE_BASE_URL;
+        try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'company-drop', 'config.json'), 'utf8')).base_url || null; } catch { return null; }
+      },
+      relayPush: (text, label) => new Promise((resolve, reject) => {
+        const cmd = path.join(os.homedir(), '.codex', 'skills', 'company-drop', 'scripts', 'company-relay.cmd');
+        require('child_process').execFile('cmd.exe', ['/d', '/c', cmd, 'push', '--text', text, '--label', label], { windowsHide: true, timeout: 60000 }, (error, stdout) => {
+          const last = String(stdout || '').trim().split(/\r?\n/).pop() || '';
+          let parsed = null; try { parsed = JSON.parse(last); } catch {}
+          if (error || !parsed || parsed.ok !== true) reject(new Error(parsed?.error?.message || error?.message || '发送失败')); else resolve(parsed);
+        });
+      }),
+    });
+    void companyBridgeService.start().catch(error => console.warn('[company-bridge] start', error.message));
+    sessionManager.setExtraMcpProvider(({ kind, opts, id }) => companyBridgeService.wantsMcp({ kind, opts }) ? companyBridgeService.getMcpEntry(id) : null);
+  }
+  // @community-end
+  if (bridgeRole === 'company') {
+    const { CompanyBridge } = require('./core/company-bridge/company');
+    const live = new (require('./core/hub-assistant/live-history').LiveHistory)();
+    companyBridgeService = new CompanyBridge({ ...bridgeDeps,
+      fallbackCwd: os.homedir(),
+      isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
+      // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
+      readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
+      modelOptions: () => { try { return require('./core/codeagent-models').modelOptions(getHubDataDir(), { configDir: require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir }); } catch { return []; } },
+    });
+    companyBridgeService.start();
+  }
+  if (companyBridgeService) {
+    require('./main/ipc/company-bridge-handlers').registerCompanyBridgeIpc(ipcMain, companyBridgeService, {
+      openGate: url => new Promise(resolve => {
+        // 放行页用默认会话打开：和任务通道的请求共用同一份网络状态，这里点过「允许访问」，后台请求就能通过。
+        const win = new BrowserWindow({ width: 1100, height: 780, title: '放行网络访问（点完关掉本窗口）', autoHideMenuBar: true, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+        win.on('closed', () => resolve());
+        void win.loadURL(url).catch(() => {});
+      }),
+    });
+  }
+} catch (error) { console.error('[company-bridge] 家里联动未启动：', error.message); }
 // AI 编排模式（2026-10-04）：编排员通过 hub_orchestrator 工具驱动群聊与交付工作流。
 try {
   global.__orchestrationService = require('./main/orchestration/service').createOrchestrationService({
@@ -3997,6 +4069,7 @@ async function runFinalShutdownCleanup() {
   capture('dev-workbench', () => devWorkbench?.dispose());
   capture('hub-assistant', () => assistantService?.close());
   capture('wireless-assistant', () => wirelessService?.close());
+  capture('company-bridge', () => companyBridgeService?.close());
   capture('hub-orchestration', () => global.__orchestrationService?.stop());
   capture('hub-phone', () => phoneService?.close());
   clearTimeout(sessionSearchPrewarmTimer);
