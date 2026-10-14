@@ -47,9 +47,9 @@ function checkBaseUrl(url) {
   return parsed.toString().replace(/\/+$/, '');
 }
 
-// 配对码：一段文字里带上通道地址和初始密钥，家里生成，公司粘贴。
-function makePairingCode(baseUrl, secret) {
-  return PAIRING_PREFIX + b64url(Buffer.from(JSON.stringify({ u: checkBaseUrl(baseUrl), k: secret }), 'utf8'));
+// 配对码：一段文字里带上通道地址、初始密钥和家里的公钥，家里生成，公司粘贴。
+function makePairingCode(baseUrl, secret, homePublicKey) {
+  return PAIRING_PREFIX + b64url(Buffer.from(JSON.stringify({ u: checkBaseUrl(baseUrl), k: secret, ...(homePublicKey ? { h: homePublicKey } : {}) }), 'utf8'));
 }
 function parsePairingCode(text) {
   const match = String(text || '').match(/AIHUB-LINK-1\.([A-Za-z0-9_-]{20,})/);
@@ -58,7 +58,7 @@ function parsePairingCode(text) {
   try { value = JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8')); } catch { throw new Error('配对码不完整，请整段复制'); }
   const baseUrl = checkBaseUrl(value && value.u);
   derive(value.k);
-  return { baseUrl, secret: value.k };
+  return { baseUrl, secret: value.k, ...(value.h ? { homePublicKey: String(value.h) } : {}) };
 }
 
 // 换钥：两端各生成一对 X25519 临时密钥，只交换公钥（hello / welcome 用初始密钥加密，防篡改）。
@@ -75,4 +75,7 @@ function agree(privateKey, peerPublicKey, initialSecret) {
   return b64url(Buffer.from(crypto.hkdfSync('sha256', shared, Buffer.from(String(initialSecret), 'base64url'), Buffer.from('final-secret-v1'), 32)));
 }
 
-module.exports = { newSecret, derive, seal, open, makePairingCode, parsePairingCode, checkBaseUrl, newKeyPair, agree, PAIRING_PREFIX };
+// 握手证明：只有算出同一把正式密钥的一方才能给出。
+function proof(secret, label) { return crypto.createHmac('sha256', Buffer.from(String(secret), 'base64url')).update('handshake:' + label).digest('base64url'); }
+
+module.exports = { newSecret, derive, seal, open, makePairingCode, parsePairingCode, checkBaseUrl, newKeyPair, agree, proof, PAIRING_PREFIX };

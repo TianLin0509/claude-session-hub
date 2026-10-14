@@ -68,12 +68,12 @@ function sourceVerdict(text) {
   return { total, maxRun, tooMuch: maxRun > MAX_CODE_RUN || total > MAX_CODE_TOTAL };
 }
 // 兜底：把超过 3 行的代码段换成一句说明（含围栏行）。
-function stripCode(text) {
+function stripCode(text, minLines = 3) {
   const { lines, runs } = codeRuns(text);
   let removed = 0;
   const out = [...lines];
   for (const r of [...runs].reverse()) {
-    if (r.lines <= 3) continue;
+    if (r.lines <= minLines) continue;
     let start = r.start, end = r.end;
     if (start > 0 && /^\s*(```|~~~)/.test(out[start - 1])) start -= 1;
     if (end + 1 < out.length && /^\s*(```|~~~)/.test(out[end + 1])) end += 1;
@@ -81,6 +81,17 @@ function stripCode(text) {
     removed += r.lines;
   }
   return { text: out.join('\n'), removed };
+}
+
+// 早期版本的表没有 open 列：补上并按内容回填（只有开发期的数据目录会遇到）。
+function ensureOpenColumn(db, needsWork) {
+  const cols = db.prepare('PRAGMA table_info(bridge_threads)').all().map(c => c.name);
+  if (cols.includes('open')) return;
+  db.exec('ALTER TABLE bridge_threads ADD COLUMN open INTEGER NOT NULL DEFAULT 0');
+  for (const row of db.prepare('SELECT id,payload FROM bridge_threads').all()) {
+    let t = null; try { t = JSON.parse(row.payload); } catch {}
+    if (t) db.prepare('UPDATE bridge_threads SET open=? WHERE id=?').run(needsWork(t) ? 1 : 0, row.id);
+  }
 }
 
 // ---- 线程状态：由各轮推导 ----
@@ -99,6 +110,7 @@ class CompanyBridge {
     this.deps = deps;
     this.store = new AssistantStore(path.join(deps.dataDir, 'company-bridge'));
     this.store.db.exec('CREATE TABLE IF NOT EXISTS bridge_threads(id TEXT PRIMARY KEY,payload TEXT NOT NULL,state TEXT NOT NULL,open INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL)');
+    ensureOpenColumn(this.store.db, t => ['queued', 'running'].includes(deriveState(t)));
     this.link = new BridgeLink({ side: 'company', store: this.store, fetchImpl: deps.fetchImpl, now: () => this.now() });
     this.busy = null; this.timer = null; this.nextPullAt = 0;
     if (!deps.noTimer) claimTimers(this.store);
@@ -130,7 +142,7 @@ class CompanyBridge {
   thread(id) { const r = this.store.db.prepare('SELECT payload FROM bridge_threads WHERE id=?').get(id); return r ? JSON.parse(r.payload) : null; }
   saveThread(t) {
     t.updatedAt = this.now(); t.state = deriveState(t);
-    this.store.db.prepare('INSERT INTO bridge_threads VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,state=excluded.state,open=excluded.open,updated=excluded.updated')
+    this.store.db.prepare('INSERT INTO bridge_threads(id,payload,state,open,updated) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,state=excluded.state,open=excluded.open,updated=excluded.updated')
       .run(t.id, JSON.stringify(t), t.state, ['queued', 'running'].includes(t.state) ? 1 : 0, t.updatedAt);
     return t;
   }
@@ -250,10 +262,16 @@ class CompanyBridge {
           effort: s.effort, ...(s.model ? { model: s.model } : {}), addDirs: s.codeRoots.filter(p => p !== cwd) };
         const created = await this.deps.createSession('codeagent', opts);
         if (!created || created.id !== sessionId) throw new Error('会话创建结果与预留编号不一致');
-        t = this.saveThread({ ...t, sessionId, everAnswered: false });
+        // 开会话要十几秒：期间可能已解除配对。重新读一次，作废了就不再发问题。
+        const latest = this.thread(t.id);
+        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen()) { if (latest) this.saveThread({ ...latest, sessionId }); return; }
+        t = this.saveThread({ ...latest, sessionId, everAnswered: false });
       } else if (!this.deps.getSession(sessionId)) {
         await this.deps.resumeSession(sessionId);
         if (!this.deps.getSession(sessionId)) throw new Error('原会话没能恢复');
+        const latest = this.thread(t.id);
+        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen()) return;
+        t = latest;
       }
       const before = this.lastFinal(sessionId);
       // 先记下「已派发」和发前最后一条回答，再发：发送结果未知时不会被当成失败重发。
@@ -290,16 +308,30 @@ class CompanyBridge {
       return;
     }
     let removed = 0;
-    if (sourceVerdict(text).tooMuch) ({ text, removed } = stripCode(text));
+    if (sourceVerdict(text).tooMuch) {
+      // 先删成段的；零散的小段累计仍超限，就把所有代码行都换掉。
+      const first = stripCode(text, 3); text = first.text; removed = first.removed;
+      if (sourceVerdict(text).tooMuch) { const second = stripCode(text, 0); text = second.text; removed += second.removed; }
+    }
     if (text.length > MAX_REPLY_CHARS) text = text.slice(0, MAX_REPLY_CHARS) + `\n\n（回答超过 ${MAX_REPLY_CHARS} 字，后面截掉了；需要的话请追问后半部分。）`;
     // 发送前再核对代次：解除配对后答完的旧问题不会发给新的对端。
     const fresh = this.thread(t.id);
     if (!fresh || fresh.state === 'cancelled' || fresh.gen !== this.link.gen()) return;
     const session = this.deps.getSession(t.sessionId);
     const meta = { model: session?.currentModel?.id || session?.model || null, elapsedSec: Math.round((this.now() - (r.firstSentAt || r.sentAt)) / 1000), codeLinesRemoved: removed, rewritten: !!r.rewriteAsked };
-    // 先落账再发：发件箱会重发，家里按轮次只收第一份。
-    this.saveThread({ ...fresh, everAnswered: true, rounds: fresh.rounds.map(x => x.round === r.round ? { ...x, reply: text, replyAt: this.now(), meta } : x) });
-    await this.link.send('reply', { thread: t.id, gen: fresh.gen, round: r.round, text, meta }).catch(error => this.notify('回执暂存', `${t.id}：${short(error.message, 80)}`, t.sessionId));
+    // 回答落账和回执入发件箱放在同一个事务：要么都成，要么都不成（下一轮再收）。之后发件箱负责重发。
+    const item = this.link.prepare('reply', { thread: t.id, gen: fresh.gen, round: r.round, text, meta });
+    this.store.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.link.enqueue(item);
+      this.saveThread({ ...fresh, everAnswered: true, rounds: fresh.rounds.map(x => x.round === r.round ? { ...x, reply: text, replyAt: this.now(), meta } : x) });
+      this.store.db.exec('COMMIT');
+    } catch (error) {
+      this.store.db.exec('ROLLBACK');
+      if (!r.queueFullNotified) { this.patchRound(fresh, r.round, { queueFullNotified: true }); this.notify('回执发不出去', `${t.id}：${short(error.message, 80)}`, t.sessionId); }
+      return;
+    }
+    await this.link.flush().catch(() => {});
     this.notify('已回执', `${t.id} 第 ${r.round} 轮：${short(text, 60)}`, t.sessionId);
   }
   failRound(t, r, why) {

@@ -37,12 +37,24 @@ function deriveState(t) {
 // 需要后台继续跟进：还有没回执的轮次，或回执还没送进会话。
 const needsWork = t => t.state !== 'cancelled' && t.rounds.some(r => (!r.reply && !r.error) || ((r.reply || r.error) && !r.delivered));
 
+// 早期版本的表没有 open 列：补上并按内容回填（只有开发期的数据目录会遇到）。
+function ensureOpenColumn(db, needsWork) {
+  const cols = db.prepare('PRAGMA table_info(bridge_threads)').all().map(c => c.name);
+  if (cols.includes('open')) return;
+  db.exec('ALTER TABLE bridge_threads ADD COLUMN open INTEGER NOT NULL DEFAULT 0');
+  for (const row of db.prepare('SELECT id,payload FROM bridge_threads').all()) {
+    let t = null; try { t = JSON.parse(row.payload); } catch {}
+    if (t) db.prepare('UPDATE bridge_threads SET open=? WHERE id=?').run(needsWork(t) ? 1 : 0, row.id);
+  }
+}
+
 class HomeBridge {
   constructor(deps) {
     this.deps = deps;
     this.dir = path.join(deps.dataDir, 'company-bridge');
     this.store = new AssistantStore(this.dir);
     this.store.db.exec('CREATE TABLE IF NOT EXISTS bridge_threads(id TEXT PRIMARY KEY,session TEXT,payload TEXT NOT NULL,state TEXT NOT NULL,open INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL)');
+    ensureOpenColumn(this.store.db, needsWork);
     this.link = new BridgeLink({ side: 'home', store: this.store, fetchImpl: deps.fetchImpl, now: () => this.now() });
     this.endpointFile = path.join(this.dir, 'mcp-endpoint.json');
     let master = this.store.get('localMaster');
@@ -120,7 +132,7 @@ class HomeBridge {
   thread(id) { const r = this.store.db.prepare('SELECT payload FROM bridge_threads WHERE id=?').get(id); return r ? JSON.parse(r.payload) : null; }
   saveThread(t) {
     t.updatedAt = this.now(); t.state = deriveState(t);
-    this.store.db.prepare('INSERT INTO bridge_threads VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET session=excluded.session,payload=excluded.payload,state=excluded.state,open=excluded.open,updated=excluded.updated')
+    this.store.db.prepare('INSERT INTO bridge_threads(id,session,payload,state,open,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET session=excluded.session,payload=excluded.payload,state=excluded.state,open=excluded.open,updated=excluded.updated')
       .run(t.id, t.sessionId, JSON.stringify(t), t.state, needsWork(t) ? 1 : 0, t.updatedAt);
     return t;
   }
@@ -140,6 +152,7 @@ class HomeBridge {
     const args = request.arguments || {};
     if (!sessionId) throw new Error('无法识别提问的会话');
     if (!this.link.paired()) throw new Error('家里和公司还没配对：请田哥在 Hub「无线」页的「公司联动」里先配对');
+    if (!this.deps.getSession(sessionId) && !this.deps.getSessionMetadata?.(sessionId)) throw new Error('提问的会话已不在 Hub 里，回执无处投递');
     if (request.name === 'ask_company') return this.ask(sessionId, args);
     if (request.name === 'followup_company') return this.followup(sessionId, args);
     if (request.name === 'company_thread') return this.view(sessionId, args);
@@ -226,6 +239,12 @@ class HomeBridge {
       if (force || this.now() >= this.nextPullAt) {
         this.nextPullAt = this.now() + (state === 'pending' || this.openThreads().length ? ACTIVE_POLL_MS : IDLE_POLL_MS);
         try { await this.link.pull(message => this.receive(message)); } catch {}
+        try {
+          if (await this.link.checkPairingConflict()) {
+            this.cancelOpen('配对码被另一台设备用过'); this.link.unpair();
+            this.notify('已解除配对', '配对码被另一台设备用过（出现了第二个配对请求）。为安全起见已解除，请重新生成配对码再配。');
+          }
+        } catch {}
         this.changed();
       }
       await this.deliver();

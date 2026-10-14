@@ -75,7 +75,7 @@ async function main() {
     if (fs.existsSync(skillSrc)) {
       fs.mkdirSync(path.join(codexHome, 'skills', 'ask-company-codeagent'), { recursive: true });
       fs.writeFileSync(path.join(codexHome, 'skills', 'ask-company-codeagent', 'SKILL.md'),
-        fs.readFileSync(skillSrc, 'utf8').split('C:\Users\lintian\claude-session-hub\scripts\company-ask.js').join(path.join(__dirname, '..', 'scripts', 'company-ask.js')));
+        fs.readFileSync(skillSrc, 'utf8').split(String.raw`C:\Users\lintian\claude-session-hub\scripts\company-ask.js`).join(path.join(__dirname, '..', 'scripts', 'company-ask.js')));
     }
     fs.writeFileSync(path.join(codexHome, 'config.toml'), [root, workspaces, cwd, plainCwd].map(p => "[projects.'" + p.toLowerCase() + "']\ntrust_level = \"trusted\"").join('\n') + '\n');
     fs.writeFileSync(path.join(hdata, 'config.json'), j({ providers: { codex: { backend: 'subscription', subscription_profile: profile.id, subscription_profiles: [{ id: profile.id, label: profile.label, home: codexHome }] } } }));

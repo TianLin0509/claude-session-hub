@@ -96,15 +96,15 @@ test('加密：同钥能解、换钥或换收件方都解不开；配对码往�
   assert.throws(() => bridgeCrypto.open(link, 'home', blob));
   assert.throws(() => bridgeCrypto.open(bridgeCrypto.derive(bridgeCrypto.newSecret()), 'company', blob));
   assert.match(link.channel, /^[a-f0-9]{32}$/);
-  const code = bridgeCrypto.makePairingCode(BASE, secret);
-  assert.deepEqual(bridgeCrypto.parsePairingCode('请粘贴：' + code + ' 谢谢'), { baseUrl: BASE, secret });
+  const code = bridgeCrypto.makePairingCode(BASE, secret, 'PUB');
+  assert.deepEqual(bridgeCrypto.parsePairingCode('请粘贴：' + code + ' 谢谢'), { baseUrl: BASE, secret, homePublicKey: 'PUB' });
   assert.throws(() => bridgeCrypto.makePairingCode('http://evil.example/api', secret), /https/);
   assert.throws(() => bridgeCrypto.parsePairingCode('AIHUB-LINK-1.abc'), /配对码/);
   const a = bridgeCrypto.newKeyPair(), b = bridgeCrypto.newKeyPair();
   assert.equal(bridgeCrypto.agree(a.privateKey, b.publicKey, secret), bridgeCrypto.agree(b.privateKey, a.publicKey, secret));
 });
 
-test('配对：密钥协商后两端只用正式通道；拿到配对码的人从初始通道里解不出正式密钥', async t => {
+test('配对：密钥协商后两端只用正式通道；拿到配对码的人解不出正式密钥，也冒充不了家里', async t => {
   const r = rig(t);
   const code = await pair(r);
   const initial = bridgeCrypto.parsePairingCode(code).secret;
@@ -112,13 +112,35 @@ test('配对：密钥协商后两端只用正式通道；拿到配对码的人�
   assert.equal(homeSecret, companySecret);
   assert.notEqual(homeSecret, initial);
   assert.equal(r.home.link.gen(), r.company.link.gen());
-  // 旁观者：用配对码派生初始通道，解开上面所有消息——只看到公钥，没有正式密钥
+  // 旁观者：用配对码派生初始通道，解开上面所有消息——只有公司公钥和证明，没有正式密钥
   const leak = bridgeCrypto.derive(initial), rows = r.relay.channels.get(leak.channel).rows;
   const opened = rows.map(row => bridgeCrypto.open(leak, row.to, row.blob));
-  assert.deepEqual(opened.map(m => m.type).sort(), ['hello', 'welcome']);
+  assert.deepEqual(opened.map(m => m.type), ['hello']);
   assert.ok(!JSON.stringify(opened).includes(homeSecret));
   assert.ok(r.notices.some(n => /已和公司接通/.test(n.title)) && r.notices.some(n => /已和家里接通/.test(n.title)));
   assert.ok(r.home.status().peer.companyOnline);
+});
+
+test('冒充：拿到配对码的人抢在家里前面发 welcome，公司不认；配对后再出现第二个 hello，家里解除配对', async t => {
+  const r = rig(t);
+  const { code } = r.home.createPairing();
+  await r.company.pair(code);
+  const { baseUrl, secret: initial } = bridgeCrypto.parsePairingCode(code);
+  // 攻击者知道初始密钥：往初始通道发 welcome，也往猜测的通道发——公司只在正式通道收，且要家里私钥才产生得了
+  const forged = bridgeCrypto.derive(initial);
+  await r.relay.fetch(baseUrl + `/bridge/${forged.channel}/msg`, { method: 'POST', body: JSON.stringify({ to: 'company', mid: 'forged-0001', blob: bridgeCrypto.seal(forged, 'company', { type: 'welcome', proof: 'x', mid: 'forged-0001' }) }) });
+  await r.company.checkNow();
+  assert.equal(r.company.status().link.state, 'waiting-welcome', '假 welcome 不被接受');
+  await r.home.checkNow(); await r.company.checkNow();
+  assert.equal(r.company.status().link.state, 'paired');
+  // 另一台设备拿同一个配对码又来配：家里发现第二个 hello，解除配对
+  const intruder = new CompanyBridge({ dataDir: path.join(r.root, 'intruder'), noTimer: true, fetchImpl: r.relay.fetch, now: () => r.clock.now, ...sessions().deps });
+  await intruder.pair(code);
+  intruder.close();
+  r.clock.now += 60000;
+  await r.home.checkNow();
+  assert.equal(r.home.status().link.state, 'none');
+  assert.ok(r.notices.some(n => /已解除配对/.test(n.title)));
 });
 
 test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回提问会话 → 追问进同一会话', async t => {
@@ -126,6 +148,7 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   await pair(r);
   r.company.setSettings({ codeRoots: 'D:/code/l2\nD:/code/common', model: 'GLM-5.2-WX-Auto' });
   r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle', title: 'SuperRAN PF 调度' });
+  r.hs.map.set('other', { id: 'other', kind: 'codex', status: 'idle' });
   const asked = await ask(r, 'home-s1', '## 目的\n对齐 PF 调度\n## 问题\n1. 遗忘因子怎么取？', 'PF 遗忘因子');
   assert.match(asked.thread, /^Q-\d{4}-01$/);
   assert.match(asked.next, /结束本轮/);
@@ -192,6 +215,12 @@ test('源码检查：围栏、~~~、无围栏代码行、压成一行都算；�
   assert.equal(sourceVerdict(['A', '```', lines(10), '```', 'B', '```', lines(10), '```', 'C', '```', lines(11), '```'].join('\n')).tooMuch, true, '多块累计');
   assert.equal(sourceVerdict('一行：' + Array.from({ length: 40 }, (_, i) => `a${i}=b${i};`).join(' ')).tooMuch, true, '压成一行');
   assert.equal(sourceVerdict('| 量 | 单位 |\n|---|---|\n| se | bit/s/Hz |').tooMuch, false, '表格不算');
+  // 零散小段（每段 3 行、11 段）累计超限：兜底后不再超限
+  const scattered = Array.from({ length: 11 }, (_, i) => `说明 ${i}\n` + lines(3)).join('\n');
+  assert.equal(sourceVerdict(scattered).tooMuch, true);
+  const first = stripCode(scattered, 3);
+  assert.equal(sourceVerdict(first.text).tooMuch, true, '只删成段的不够');
+  assert.equal(sourceVerdict(stripCode(first.text, 0).text).tooMuch, false);
   const stripped = stripCode('前文\n```c\n' + lines(20) + '\n```\n后文');
   assert.ok(!stripped.text.includes('x10 = y10'));
   assert.match(stripped.text, /按规则不回传/);
@@ -351,6 +380,7 @@ test('通道被服务端清理重建（代次变了）：游标归零，新消�
 test('本机接口：凭会话通行证认身份，冒充别的会话被拒', async t => {
   const r = rig(t);
   await pair(r);
+  r.hs.map.set('s1', { id: 's1', kind: 'codex', status: 'idle' });
   await r.home.start();
   const url = JSON.parse(fs.readFileSync(r.home.endpointFile, 'utf8')).url;
   const call = (session, pass, body) => fetch(url, { method: 'POST', headers: { Authorization: 'Bearer ' + pass, 'X-Hub-Bridge-Session': session, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -359,6 +389,24 @@ test('本机接口：凭会话通行证认身份，冒充别的会话被拒', as
   const ok = await (await call('s1', r.home.passFor('s1'), { name: 'ask_company', arguments: { question: '通过本机接口提问一次' } })).json();
   assert.equal(ok.ok, true);
   assert.equal(r.home.thread(ok.result.thread).sessionId, 's1');
+  const gone = await (await call('s9', r.home.passFor('s9'), { name: 'ask_company', arguments: { question: '已删除的会话来提问' } })).json();
+  assert.match(gone.error, /不在 Hub 里/);
+});
+
+test('旧版数据库（没有 open 列）能升级并回填', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-bridge-migrate-'));
+  let c = null;
+  t.after(() => { try { c?.close(); } catch {} fs.rmSync(root, { recursive: true, force: true }); });
+  const { DatabaseSync } = require('node:sqlite');
+  fs.mkdirSync(path.join(root, 'company-bridge'), { recursive: true });
+  const db = new DatabaseSync(path.join(root, 'company-bridge', 'assistant.sqlite'));
+  db.exec('CREATE TABLE bridge_threads(id TEXT PRIMARY KEY,payload TEXT NOT NULL,state TEXT NOT NULL,updated INTEGER NOT NULL)');
+  db.prepare('INSERT INTO bridge_threads VALUES(?,?,?,?)').run('Q-1', JSON.stringify({ id: 'Q-1', rounds: [{ round: 1, question: 'q', receivedAt: 1 }] }), 'queued', 1);
+  db.close();
+  c = new CompanyBridge({ dataDir: root, noTimer: true, ...sessions().deps });
+  assert.equal(c.openThreads().length, 1);
+  c.saveThread({ ...c.thread('Q-1'), rounds: [{ round: 1, question: 'q', reply: 'a' }] });
+  assert.equal(c.openThreads().length, 0);
 });
 
 test('挂载：配对后 Codex / Claude 会话拿到通行证；只有 SuperRAN 相关的挂 MCP（可改为全部）', async t => {
