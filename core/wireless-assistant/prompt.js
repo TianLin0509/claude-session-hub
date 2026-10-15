@@ -133,12 +133,13 @@ function buildExecutionPrompt(p, { install, slot, worktreeRoot = 'D:/AIWork', da
 }
 
 // 初审结论发回实现会话（会话写完计划后停在那里）。
-function buildGoAheadPrompt(p, { slot, checked, waited, force, note } = {}) {
+function buildGoAheadPrompt(p, { slot, checked, waited, force, note, reclaim = false } = {}) {
   const head = force ? '初审：田哥选择不等' + (waited ? ' ' + waited.label : '') + '，直接开始实现。' + (waited ? '撞车点是：' + waited.reason + '。尽量少动这处、改动保持最小；合入时脚本会再判一次，有冲突会退回返工。' : '')
     : waited ? '初审通过：之前要等的 ' + waited.label + ' 已合入或不再冲突，现在开始实现。'
       : '初审通过：你计划改动的位置没有和在途改动撞车' + (checked != null ? '（核对了 ' + checked + ' 个在途候选和其他在途计划）' : '') + '，现在开始实现。';
   return join([
     head + (note ? '（' + note + '）' : ''),
+    reclaim ? '接手租约在等待期间过期了：先重新接手 python superran-proposals.py --config <执行配置> claim ' + p.id + ' --slot ' + slot + ' --base <最新 develop 完整 SHA>，再继续。' : '',
     '按原提示词「收到「初审通过」后」的步骤继续：在隔离 worktree 实施（席位仍是 ' + slot + '，接手凭据还在接入包里），红灯测试变绿，补跑相关回归，用 superran-pr.py 提交候选 PR，progress ' + p.id + ' --action report 回传双层报告。实现中如果发现要改的位置和计划差很多，用 progress --action plan 更新计划。',
     OUTPUT(),
   ]);

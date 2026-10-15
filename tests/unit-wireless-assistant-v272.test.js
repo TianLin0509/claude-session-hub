@@ -461,3 +461,40 @@ test('合入在跑时，初审解除等待也不自动开始', async t => {
   assert.match(service.job(id).note, /合入进行中/);
   assert.equal(state.sent.length, sent);
 });
+
+test('发送失败转新会话的路上关了自动处理：不开新会话、不发开始指令（独立审查 r7 第 1 条）', async t => {
+  const { service, state, deps } = (() => { const f = fixture(t, { proposals: [proposal('n1')], tasks: [] }); return { ...f, deps: f.service.deps }; })();
+  await service.poll();
+  const job = implJob(service);
+  state.list = [proposal('n1', { state: 'implementing', executor: job.slot, plan: PLAN(['docs/x.md']) })];
+  idle(state, job);
+  const realSend = deps.sendPrompt;
+  deps.sendPrompt = async (id, text) => { service.setSettings({ enabled: false }); return { ok: false, notSent: true, error: '会话没收到' }; };
+  const sessions = state.created.length;
+  await service.poll();
+  deps.sendPrompt = realSend;
+  assert.equal(state.created.length, sessions, '没有新开会话');
+  assert.equal(service.job(job.id).phase, 'precheck');
+  assert.match(service.job(job.id).note, /自动处理已关/);
+});
+
+test('暂停期间照常续接手租约；租约已过期时放行提示先请会话重新接手（独立审查 r7 第 2 条）', async t => {
+  const { service, state } = fixture(t, { proposals: [proposal('n1')], tasks: [] });
+  await service.poll();
+  const job = implJob(service);
+  state.list = [proposal('n1', { state: 'implementing', executor: job.slot, plan: PLAN(['docs/x.md']) })];
+  idle(state, job);
+  service.setSettings({ enabled: false });
+  await service.poll();
+  const renewed = state.progress.length;
+  assert.ok(renewed >= 1, '暂停时写了状态（顺带续约）');
+  assert.match(state.progress.at(-1).join(' '), /初审：已不冲突｜/);
+  state.now += 2 * 3600000;
+  await service.poll();
+  assert.ok(state.progress.length > renewed, '过一小时再续一次');
+  state.list = [proposal('n1', { state: 'implementing', executor: job.slot, plan: PLAN(['docs/x.md']), lease_until: (state.now - 60000) / 1000 })];
+  service.setSettings({ enabled: true });
+  await service.poll(); await flush(6);
+  assert.equal(service.job(job.id).phase, 'implementing');
+  assert.match(state.sent.at(-1).text, /接手租约在等待期间过期了：先重新接手/);
+});

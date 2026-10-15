@@ -323,7 +323,13 @@ class WirelessAssistant {
         if (job.phase === 'waiting' && this.busySlots() >= this.settings().maxParallel) { this.saveJob({ ...job, note: '初审已不冲突，等会话名额' }); continue; }
         // 自动开始和正常派发守同一道闸：自动处理关着、不归本窗口、或合入在跑，就先不开始（独立审查 r6）。
         const paused = this.dispatchPaused();
-        if (paused) { if (job.note !== paused) this.saveJob({ ...job, note: paused }); continue; }
+        if (paused) {
+          // 暂停不等于放弃接手：照常每小时续接手租约，恢复后原会话能直接接着做（独立审查 r7 第 2 条）。
+          let next = { ...job, note: paused };
+          if (now - (job.renewedAt || 0) > RENEW_MS) { await this.writeStatus(p, '初审：已不冲突｜' + paused + '｜预计：恢复后自动开始'); next.renewedAt = now; }
+          if (next.note !== job.note || next.renewedAt !== job.renewedAt) this.saveJob(next);
+          continue;
+        }
         await this.goAhead(job, p, { checked: (inflight.tasks || []).length });
         continue;
       }
@@ -388,7 +394,8 @@ class WirelessAssistant {
   async goAhead(job, p, { note = '', checked, force = false } = {}) {
     // 异步比对之后、真正发提示前再核对一次；人点的「不等了，直接开始」是明确决定，不受这道闸限制。
     if (!force && this.dispatchPaused()) { this.saveJob({ ...(this.job(job.id) || job), note: this.dispatchPaused() }); return; }
-    const text = buildGoAheadPrompt(p, { slot: job.slot, checked, waited: job.phase === 'waiting' ? job.waitFor : null, force, note });
+    const lapsed = Number(p.lease_until || 0) > 0 && Number(p.lease_until) * 1000 < this.now();
+    const text = buildGoAheadPrompt(p, { slot: job.slot, checked, waited: job.phase === 'waiting' ? job.waitFor : null, force, note, reclaim: lapsed });
     let sent = false;
     if (this.deps.getSession(job.sessionId)) {
       try {
@@ -398,11 +405,18 @@ class WirelessAssistant {
       } catch (error) { sent = false; console.warn('[wireless] go-ahead send failed', error.message); }
     }
     if (!sent) {
+      // 发送期间可能关了自动处理或开始合入：转新会话之前、新会话发提示之前都再核对一次（独立审查 r7 第 1 条）。
+      const gate = () => force ? null : this.dispatchPaused();
+      if (gate()) { this.saveJob({ ...(this.job(job.id) || job), note: gate() }); return; }
       // 原会话不在了：新开一个会话接着做（接手凭据在本机接入包里，不重新 claim）。
       const r = this.settings()[job.route || 'primary'];
-      const opened = await this.openSession({ ...job }, r, { slot: job.slot, title: '无线 · ' + short(job.title, 24),
+      const opened = await this.openSession({ ...job }, r, { slot: job.slot, title: '无线 · ' + short(job.title, 24), guard: gate,
         text: install => buildExecutionPrompt(p, { install, slot: job.slot, worktreeRoot: this.deps.worktreeRoot || 'D:/AIWork', continueAfterPrecheck: true }) + '\n\n' + text });
-      if (!opened.ok) { this.saveJob({ ...job, attention: '初审通过，但会话没开起来：' + short(opened.error.message, 60) }); return; }
+      if (!opened.ok) {
+        const reason = gate();
+        this.saveJob({ ...(this.job(job.id) || job), state: 'working', phase: job.phase, ...(reason ? { note: reason } : { attention: '初审通过，但会话没开起来：' + short(opened.error.message, 60) }) });
+        return;
+      }
     }
     const fresh = this.job(job.id) || job;
     this.saveJob({ ...fresh, state: 'working', phase: 'implementing', force: false, attention: null,
@@ -478,7 +492,7 @@ class WirelessAssistant {
     return prefix + n;
   }
 
-  async openSession(job, r, { slot, title, text }) {
+  async openSession(job, r, { slot, title, text, guard }) {
     const install = this.install();
     const sessionId = randomUUID();
     let current = this.saveJob({ ...job, state: 'dispatching', slot, sessionId, kind: r.kind, model: r.model, effort: r.effort, startedAt: this.now(), claimed: false, idleSince: null, attention: null, wantRoute: null,
@@ -493,6 +507,8 @@ class WirelessAssistant {
       if (r.kind === 'codex') opts.codexSpeedTier = r.speed || 'standard';
       const session = await this.deps.createSession(r.kind, opts);
       if (!session || session.id !== sessionId) throw new Error('会话创建结果与预留编号不一致');
+      const stop = guard?.();
+      if (stop) throw new Error(stop);
       const receipt = await this.deps.sendPrompt(sessionId, text(install), randomUUID());
       if (!receipt || receipt.ok === false || receipt.notSent) throw new Error(receipt?.error || '提示词没有发出去');
       const confirmed = receipt.receipt?.status === 'confirmed';
