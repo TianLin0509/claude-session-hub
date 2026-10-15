@@ -42,6 +42,11 @@ function buildExecutionPrompt(p, { install, slot, worktreeRoot = 'D:/AIWork', da
       '- 本机登记文件 ' + registryText(install) + ' 的字段是 root、python、source_sha、source_version、executor_config、executor_user、development_config；执行时由 superran-ready.py 更新它。只记路径和元信息，不记 token，保留其他字段。',
       '- 网络失败时保留原请求，用脚本的 retry 重试，不重复提交。',
     ]),
+    returned && p.pr_number ? block('返工（沿用原 PR）', [
+      '- 上次交付对应 PR #' + p.pr_number + '，沿用同一个分支和 PR，不新开 PR：python superran-pr.py --repository <主仓> status 的 prs 里按 PR 号找到分支名；git fetch origin <分支> develop，在新的独立 worktree 检出 origin/<分支>，建同名本地分支跟踪它。',
+      '- 退回原因是主干已更新时，在该分支上 git merge origin/develop（不 rebase、不强推），解决冲突后重跑红灯测试和相关回归；其他退回原因按意见修改。claim 的 --base 用最新 develop 完整 SHA。',
+      '- 提交仍用 superran-pr.py submit（同一分支会自动更新原 PR）；回传报告时 --pr-number 仍写 ' + p.pr_number + '。',
+    ]) : '',
     block('版本', [
       '- 新任务使用阿里云 develop 最新已合入版本：核验 refs/heads/develop 完整 SHA，增量获取并固定为本任务基线，claim 的 --base 用这个 SHA。',
       '- 已有 claim 或在途任务先恢复原基线，执行中不追新提交；保留本机领先、分叉和未提交改动，在任务 worktree 开发，核对 Python 实际 import 指向任务源码。',
@@ -64,8 +69,36 @@ function buildExecutionPrompt(p, { install, slot, worktreeRoot = 'D:/AIWork', da
       '会话最后一条回复用中文，第一行以「📌 **」开头写结论（已修改 / 不修改 / 已释放及原因），再给 PR 编号和报告要点。',
     ]),
     block('公司代码（可选）', '- 结论确实取决于公司 AirView / L2 代码的实际写法时，可以用 ask_company 工具（技能 ask-company-codeagent）向公司电脑上的 CodeAgent 提问。它读公司代码、不改动公司电脑、回执不含源码，一个来回 10 分钟以上，回执到达后自动发回本会话；判断以你为主，回执当作证据核对。没有这个工具或公司没回执时按现有证据继续，并在报告里写明待核实的点。'),
-    block('边界', '你只提交候选，不验收、不批准、不合入自己的代码。提出人及其 Agent 验收后，由队长或审批人批准，独立合并 Agent 合入。'),
+    block('边界', '你只提交候选，不验收、不批准、不合入自己的代码。提出人及其 Agent 验收后，审批人在网页批准，常驻助理另开会话、换一个模型独立审查，通过后合入。'),
   ]);
 }
 
-module.exports = { buildExecutionPrompt };
+// 独立审查（2026-10-15）：提出人验收通过后，助理另开一个会话、换一个与实现不同的模型审查候选。
+// 审查步骤与本机合并位 skill（superran-review-merge）一致：prepare 定深度 → 只读审查 → record 回写。
+// 合入不在这里：审批人批准后，由助理直接跑 merge 脚本（不调用模型）。
+function buildReviewPrompt(task, p, { script, slot, reviewer }) {
+  const file = String(script).replace(/\\/g, '/');
+  const cmd = 'python "' + file + '"';
+  return join([
+    '请作为 SuperRAN 的独立审查 Agent，审查 PR #' + task.pr + (p ? '（提案「' + p.title + '」，编号 ' + p.id + '）' : '') + '。你不是这个 PR 的作者会话，与实现它的 Agent 用的是不同的模型。',
+    block('常驻助理说明', [
+      '- 这条任务由 AI Hub「无线」页的 SuperRAN 助理自动派发：提出人已验收通过，旁边没有人实时看着。中途不要停下来问我。',
+      '- 只读审查：不改候选代码、不提交、不批准、不合并、不推送；不另起子代理或其他模型会话。',
+      '- 审查记录里的审查者写「' + reviewer + ' · 常驻助理 ' + slot + '」。',
+    ]),
+    block('材料', [
+      '- 候选完整 SHA ' + task.candidate + '，主干完整 SHA ' + task.base + '。',
+      p ? '- 提案、执行报告与提出人验收报告：' + (p.site || '') + 'api/proposals/' + p.id + '/export?snapshot=true（也可在 prepare 后读审查工作区里的代码与测试）。' : '',
+      '- 审查规则：' + file.replace(/scripts\/review_merge\.py$/, 'SKILL.md') + ' 的「按深度审查」和「审查清单」两节。',
+    ]),
+    block('步骤', steps([
+      cmd + ' prepare ' + task.pr + '：读回 depth、roles、revision、review_worktree、diff_command 和 changed_files。脚本说主干已变化（已标 stale）或不在待审查状态时，不再审查，用一段话说明后结束本轮。',
+      '按 depth 审查（light / standard / deep；deep 要 Physics 与 Integration 两个角色依次审）。在审查工作区亲自复跑红灯测试（主干上失败、候选上通过），并跑改动涉及的测试文件（对照仓库 CLAUDE.md 的测试表）；完整测试闸门在合并时由脚本统一跑，这里不必跑全量。',
+      '回写结论：' + cmd + ' record ' + task.pr + ' --candidate ' + task.candidate + ' --revision <prepare 读回的 revision> --reviewer "' + reviewer + ' · 常驻助理 ' + slot + '" --review Integration PASS|BLOCK "<结论>"（deep 档 Physics、Integration 各一条 --review；修物理 bug 的加 --requires-ratchet）。revision 变了就重新 prepare 再 record。',
+      'BLOCK 时把问题一次列全，每条写清触发条件和改法：意见会原样退回给常驻助理返工，返工后的复审只核对这些问题是否解决。',
+    ])),
+    block('最后', '会话最后一条回复用中文，第一行以「📌 **」开头写结论（PASS / BLOCK / 没审及原因），再列跑了哪些测试和主要发现。批准由审批人在网页点；审查通过且已批准后，合入由常驻助理用脚本完成。'),
+  ]);
+}
+
+module.exports = { buildExecutionPrompt, buildReviewPrompt };

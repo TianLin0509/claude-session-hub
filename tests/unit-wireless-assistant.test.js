@@ -46,7 +46,7 @@ function fixture(t, { proposals, createSession, settings } = {}) {
 }
 
 test('已推进、无人接手的提案：每个新开一个会话，主力 GPT-6 Astra · 最高 · 标准速度，同时最多 2 个', async t => {
-  const { service, state } = fixture(t, { proposals: [proposal('a1'), proposal('b2'), proposal('c3'), proposal('d4', { state: 'submitted' }), proposal('e5', { executor: 'someone' })] });
+  const { service, state } = fixture(t, { proposals: [proposal('a1'), proposal('b2'), proposal('c3'), proposal('d4', { state: 'submitted' }), proposal('e5', { state: 'implementing', executor: 'someone' })] });
   await service.poll();
   assert.equal(state.created.length, 2);
   for (const { kind, opts } of state.created) {

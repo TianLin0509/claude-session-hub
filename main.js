@@ -2198,7 +2198,8 @@ if (require('./core/distribution').featureEnabled('assistant')) try {
   phoneService = require('./main/ipc/phone-handlers').registerPhoneIpc(ipcMain, assistantService, {dataDir:getHubDataDir(),electron:require('electron')});
 } catch (error) { console.error('[assistant] service unavailable:', error.message); }
 // @community-strip 无线 Tab · SuperRAN 助理（2026-10-14）：定时查看 SuperRAN 协作台，已推进、无人接手的提案
-// 每个新开一个会话交给 Agent 实现（同时最多 2 个）；只到提交候选 PR，验收、批准、合入仍走协作台。
+// 每个新开一个会话交给 Agent 实现（同时最多 2 个）。2026-10-15 起：提出人验收后换一家模型另开会话审查，
+// 审批人在协作台点「批准合入」且审查通过后，跑本机合并位脚本合入并同步阿里云（不调用模型）。
 let wirelessService = null;
 try {
   wirelessService = require('./main/ipc/wireless-handlers').registerWirelessIpc(ipcMain, {
