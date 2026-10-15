@@ -16,8 +16,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { renameWithRetrySync } = require('./claude-project-trust');
 
 const FILE = 'web-risk.json';
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY']);
 // Paused, not failed: a site that challenged automation is left alone this long.
 const BACKOFF_MS = [30, 120, 360, 1440].map(m => m * 60000);
 const HANDOFF_MS = 15 * 60000;
@@ -97,13 +99,30 @@ function update(root, fn) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
+  let tmp = null, failed = false;
   try {
     const state = read(root), result = fn(state);
-    const tmp = file(root) + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+    tmp = file(root) + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(state), 'utf8');
-    fs.renameSync(tmp, file(root));
+    // A Windows reader can briefly prevent replacement. Keep the write lock and
+    // retry only this snapshot; replaying fn would charge a visit or lease twice.
+    renameWithRetrySync(tmp, file(root), {
+      retries: process.platform === 'win32' ? 8 : 0,
+      retryDelayMs: 15,
+      retryCodes: RENAME_RETRY_CODES,
+    });
     return result;
-  } finally { fs.closeSync(fd); fs.rmSync(lock, { force: true }); }
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    // Best effort: a held temp must not replace the original save error.
+    if (tmp) { try { fs.rmSync(tmp, { force: true }); } catch {} }
+    let cleanupError = null;
+    try { fs.closeSync(fd); } catch (error) { cleanupError = error; }
+    try { fs.rmSync(lock, { force: true }); } catch (error) { cleanupError ||= error; }
+    if (!failed && cleanupError) throw cleanupError;
+  }
 }
 const key = (identity, site) => identity + ':' + site;
 

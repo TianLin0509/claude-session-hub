@@ -7,6 +7,8 @@ const Gate=require('./delivery-gate'),Overlap=require('./delivery-overlap');
 const GATE_LIMIT=3;
 const {getSessionRuntimeTruth}=require('../../core/session-runtime-truth');
 const {SessionOpenOwnership}=require('../../core/session-open-ownership');
+const {renameWithRetrySync}=require('../../core/claude-project-trust');
+const RENAME_RETRY_CODES=new Set(['EPERM','EBUSY']);
 const terminal=r=>['done','cancelled'].includes(r?.status);
 function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDispatcher,ensureMemberReady,getMembers=()=>[],getAttemptEvidence=()=>null,sendToRenderer=()=>{},onStatus=()=>{},logger=console}) {
   const owners=new Map(),busy=new Set(),watching=new Set(),actions=new Set(),retiring=new Map(),activeDispatches=new Set(),gates=new Map();let timer=null,events=null,suspended=false,ownership=null;
@@ -29,7 +31,15 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     if(ownership?.owner(D.hash(id))?.nonce!==owners.get(id)?.nonce || !owners.has(id))throw new Error('工作流归属已变化，停止写入');
     run.updatedAt=Date.now();const tmp=record(id)+'.'+crypto.randomUUID()+'.tmp';
     const fd=fs.openSync(tmp,'wx');try{fs.writeFileSync(fd,JSON.stringify(run,null,2),'utf8');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
-    fs.renameSync(tmp,record(id));emit(id);
+    try {
+      // Windows 短占用只重试同一候选文件，计划等待合计 120ms；不重跑状态更新。
+      renameWithRetrySync(tmp,record(id),{retries:process.platform==='win32'?8:0,retryDelayMs:15,retryCodes:RENAME_RETRY_CODES});
+    } catch(error) {
+      try {fs.unlinkSync(tmp);}
+      catch(cleanupError){if(cleanupError.code!=='ENOENT')logger.warn?.('[delivery] temporary save cleanup failed:',cleanupError);}
+      finally {throw error;} // 清理/记录清理错误都不能替换原始保存失败。
+    }
+    emit(id);
   }
   function status(id) {
     if(!D.enabled(meeting(id)))return null;
