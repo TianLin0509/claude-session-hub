@@ -45,6 +45,8 @@ function runRunner(root, args = [], env = {}) {
       HUB_UNIT_NO_LOCK: '1',
       HUB_UNIT_STRICT: '',
       HUB_UNIT_DEFAULT_TIMEOUT_MS: '',
+      // 维护者给外层合并开的放宽开关不能漏进被测的运行器，否则「失败必须判失败」这类断言会被放行
+      HUB_UNIT_LENIENT: '',
     }, env),
   });
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
@@ -93,6 +95,7 @@ test('两个总入口实例互斥排队，排队与执行分开计时', async ()
         HUB_UNIT_LOCK_NAME: lockName,
         HUB_UNIT_NO_LOCK: '0',
         HUB_UNIT_SUITE_LOCK_HELD: '',
+        HUB_UNIT_LENIENT: '',
       }),
     });
     p.stdout.on('data', d => { out += d; });

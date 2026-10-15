@@ -40,6 +40,9 @@ function createResumeSessionHandler(deps) {
 
   return async function resumeSession(meta) {
     if (!meta || !meta.hubId) return null;
+    // 只消费本次调用提供的覆盖，磁盘里的历史选型标记不代表新的操作意图。
+    const launchOverrides = meta.launchOverrides;
+    let codeagentModelPick = false;
     const reservedId=meta.hubId;
     // Login may wait on an official CLI/browser. Do this before taking the
     // writer reservation, so the dormant card remains editable during login.
@@ -54,11 +57,20 @@ function createResumeSessionHandler(deps) {
     const saved = require('../../core/session-store').loadSessionFile(meta.hubId,{strict:true});
     if (saved) meta = {...meta, ...saved, hubId:meta.hubId};
     // 显式的启动覆盖（助理切换模型/深度）在磁盘记录之后生效，否则会被旧记录里的型号盖回去。
-    if (meta.launchOverrides) {
-      const { model, ...rest } = meta.launchOverrides;
+    if (launchOverrides) {
+      const { model, ...rest } = launchOverrides;
       meta = { ...meta, ...rest, ...(model ? { model, currentModel: { id: model, displayName: model } } : {}) };
-      delete meta.launchOverrides;
+      if (model && /^codeagent(?:-resume)?$/.test(meta.kind)) codeagentModelPick = rest.codeagentModelPick !== false;
     }
+    delete meta.launchOverrides;
+
+    // A polluted fork may still store the source id beside its exact child file.
+    // Reconcile that evidence before id-based discovery can overwrite the child path.
+    const codeagentFork = require('../../core/codeagent-fork-identity').recoverCodeAgentFork(meta, {
+      getSession: id => sessionManager.getSession(id),
+      loadSessionFile: id => require('../../core/session-store').loadSessionFile(id, { strict: true }),
+    });
+    meta = codeagentFork.meta;
 
     require('../../core/session-meeting-membership.js').restoreMissingMeetingIds(
       [meta], meetingManager.getAllMeetings?.() || []);
@@ -324,11 +336,15 @@ function createResumeSessionHandler(deps) {
       meetingId: meta.meetingId || null,
       completionNotificationEnabled: meta.completionNotificationEnabled === true,
       model: safeResumeModel || undefined,
+      // 普通恢复只沿用原生模型，只有本次明确更换模型的覆盖才需要操作菜单。
+      ...(/^codeagent(?:-resume)?$/.test(meta.kind) ? { codeagentModelPick } : {}),
       ...(meta.effort ? { effort: meta.effort } : {}),
       ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
       // DeepSeek on Claude Code：沿用会话自己的接入方式（Token Plan / 官方 API），缺 Key 时报错而不是换线。
       ...(meta.deepseekRoute ? { deepseekRoute: meta.deepseekRoute } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
+      ...(codeagentFork.forkCCSessionId ? { forkCCSessionId: codeagentFork.forkCCSessionId } : {}),
+      ...(meta.codeagentForkSourceSessionId ? { codeagentForkSourceSessionId: meta.codeagentForkSourceSessionId } : {}),
       ...(meta.runtimeBackend === 'claude-stream-json' ? { ...meta.nativeConfig, nativeRuntime: meta.nativeRuntime } : {}),
       resumeTranscriptPath: resumeTranscriptPath || undefined,
       // Code Agent 没有身份时从头开：--continue 会接上这个目录里最近的别的对话（它不认 --session-id，身份只能等 hook）。

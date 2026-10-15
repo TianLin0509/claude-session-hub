@@ -5,38 +5,52 @@ const assert = require('node:assert/strict');
 const fs = require('fs'), os = require('os'), path = require('path');
 const { linkWithRetry } = require('../core/acp-profiles');
 
-test('目录链接遇到 EBUSY 会重试并建成', t => {
+test('目录链接遇到两次 EBUSY 后恰好第三次成功', t => {
+  // 重试计数使用受控文件系统；真实 Windows 建链接还可能额外遇到 EBUSY/EPERM。
+  // Atomics.wait 是同步等待，mock timers 无法控制它；直接记录请求的等待时长。
+  const target = path.join(os.tmpdir(), 'hub-acp-link-controlled-target');
+  const link = path.join(os.tmpdir(), 'hub-acp-link-controlled-link');
+  const attempts = [], waits = [];
+  t.mock.method(fs, 'symlinkSync', (...args) => {
+    attempts.push(args);
+    if (attempts.length <= 2) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+  });
+  t.mock.method(fs, 'existsSync', checked => { assert.equal(checked, link); return false; });
+  t.mock.method(Atomics, 'wait', (_array, _index, _value, timeout) => { waits.push(timeout); return 'timed-out'; });
+  linkWithRetry(target, link);
+  assert.equal(attempts.length, 3);
+  assert.deepEqual(attempts, Array.from({ length: 3 }, () => [target, link, process.platform === 'win32' ? 'junction' : 'dir']));
+  assert.deepEqual(waits, [100, 200]);
+});
+
+test('目录链接确实建成并指向目标', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-acp-link-'));
   t.after(() => { try { fs.unlinkSync(path.join(root, 'link')); } catch {} fs.rmSync(root, { recursive: true, force: true }); });
   const target = path.join(root, 'target'); fs.mkdirSync(target);
-  const real = fs.symlinkSync; let calls = 0; const nativeRetryErrors = [];
-  fs.symlinkSync = (...args) => {
-    calls++;
-    if (calls <= 2) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
-    try { return real.apply(fs, args); }
-    catch (error) { nativeRetryErrors.push(error.code); throw error; }
-  };
-  try { linkWithRetry(target, path.join(root, 'link')); } finally { fs.symlinkSync = real; }
-  // 注入的两次占用之后，真实 Windows 仍可能短暂占用；逐次记录，而非假设第三次一定成功。
-  assert.equal(calls, 3 + nativeRetryErrors.length);
-  assert.ok(calls <= 5, '目录链接最多尝试 5 次');
-  assert.ok(nativeRetryErrors.every(code => ['EBUSY', 'EPERM'].includes(code)));
+  linkWithRetry(target, path.join(root, 'link'));
   assert.equal(fs.realpathSync(path.join(root, 'link')), fs.realpathSync(target));
 });
 
-test('连续占用达到 5 次后必须返回原错误', () => {
-  const real = fs.symlinkSync; let calls = 0;
+test('连续占用达到 5 次后必须返回原错误', t => {
   const busy = Object.assign(new Error('still busy'), { code: 'EBUSY' });
-  const link = path.join(os.tmpdir(), `hub-acp-link-exhausted-${process.pid}-${Date.now()}`);
-  fs.symlinkSync = () => { calls++; if (calls > 5) throw new Error('超过重试上限'); throw busy; };
-  try { assert.throws(() => linkWithRetry('C:/nonexistent-target', link), error => error === busy); }
-  finally { fs.symlinkSync = real; }
-  assert.equal(calls, 5);
+  const waits = [];
+  const symlink = t.mock.method(fs, 'symlinkSync', () => {
+    if (symlink.mock.callCount() > 5) throw new Error('超过重试上限');
+    throw busy;
+  });
+  t.mock.method(fs, 'existsSync', () => false);
+  t.mock.method(Atomics, 'wait', (_array, _index, _value, timeout) => { waits.push(timeout); return 'timed-out'; });
+  assert.throws(() => linkWithRetry('C:/nonexistent-target', path.join(os.tmpdir(), 'hub-acp-link-exhausted')), error => error === busy);
+  assert.equal(symlink.mock.callCount(), 5);
+  assert.deepEqual(waits, [100, 200, 300, 400]);
 });
 
-test('其他错误不重试，直接抛出', () => {
-  const real = fs.symlinkSync; let calls = 0;
-  fs.symlinkSync = () => { calls++; throw Object.assign(new Error('nope'), { code: 'ENOENT' }); };
-  try { assert.throws(() => linkWithRetry('C:/nonexistent-target', path.join(os.tmpdir(), 'hub-acp-link-none')), /nope/); } finally { fs.symlinkSync = real; }
-  assert.equal(calls, 1);
+test('其他错误不重试，直接抛出', t => {
+  const error = Object.assign(new Error('nope'), { code: 'ENOENT' });
+  const symlink = t.mock.method(fs, 'symlinkSync', () => { throw error; });
+  t.mock.method(fs, 'existsSync', () => false);
+  const wait = t.mock.method(Atomics, 'wait', () => 'timed-out');
+  assert.throws(() => linkWithRetry('C:/nonexistent-target', path.join(os.tmpdir(), 'hub-acp-link-none')), thrown => thrown === error);
+  assert.equal(symlink.mock.callCount(), 1);
+  assert.equal(wait.mock.callCount(), 0);
 });

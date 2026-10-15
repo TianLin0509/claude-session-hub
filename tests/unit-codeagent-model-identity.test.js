@@ -6,6 +6,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// 启动构造会落模型日志和 MCP 配置，测试必须在自己的临时数据目录内。
+const isolatedData = fs.mkdtempSync(path.join(os.tmpdir(), 'codeagent-identity-'));
+process.env.CLAUDE_HUB_DATA_DIR = path.join(isolatedData, 'hub');
+process.on('exit', () => fs.rmSync(isolatedData, { recursive: true, force: true }));
 
 const models = require('../core/codeagent-models');
 const { normalizeCodeAgentModel } = require('../core/codeagent-config');
@@ -32,7 +36,7 @@ test('不认识的安全模型名原样传给 CodeAgent，不再被换成 GLM', 
 
 test('启动命令带的是会话里记的真实模型', () => {
   const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
-  const launch = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { model: DS }, os.tmpdir(), {}, { command: 'codeagent', configDir: os.tmpdir() });
+  const launch = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { model: DS, codeagentModelPick: true }, os.tmpdir(), {}, { command: 'codeagent', configDir: os.tmpdir() });
   assert.match(launch.cmd, new RegExp(`--model ${DS}\\b`));
   assert.doesNotMatch(launch.cmd, /GLM-5\.2/);
 });

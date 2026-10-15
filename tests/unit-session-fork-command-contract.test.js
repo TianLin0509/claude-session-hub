@@ -38,10 +38,12 @@ test('Codex branches use codex fork and preserve model/reasoning/permission flag
   );
 });
 
-test('fork source ids are launch-only and are not persisted as the new branch id', () => {
+test('fork launch inputs never become the child writer identity', () => {
   const infoBlock = SRC.slice(SRC.indexOf('const info = {'), SRC.indexOf('const pendingTimers = []'));
-  assert.doesNotMatch(infoBlock, /forkCCSessionId/);
-  assert.doesNotMatch(infoBlock, /codexForkSid/);
+  assert.doesNotMatch(infoBlock, /^\s*forkCCSessionId\s*:/m);
+  assert.doesNotMatch(infoBlock, /^\s*codexForkSid\s*:/m);
+  assert.doesNotMatch(infoBlock, /ccSessionId:\s*opts\.forkCCSessionId/);
+  assert.doesNotMatch(infoBlock, /codexSid:\s*opts\.codexForkSid/);
 });
 
 console.log('All native session fork command contract tests passed.');

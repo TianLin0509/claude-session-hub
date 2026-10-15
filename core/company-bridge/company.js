@@ -13,6 +13,9 @@ const { randomUUID } = require('node:crypto');
 const { AssistantStore } = require('../hub-assistant/store');
 const { claimTimers, ownsTimers } = require('../hub-assistant/timer-owner');
 const { BridgeLink } = require('./link');
+const { receiptPromptFingerprint } = require('./receipt-reader');
+// 反方向（这台电脑上的 CodeAgent 用 ask_home 向家里求助）由 ask-home.js 处理，共用这条通道和数据库。
+const { AskHome } = require('./ask-home');
 
 const PURPOSE = 'company-bridge';
 // 历代默认说明：没改过的老设置里存的就是它们，读设置时换成当前默认。
@@ -33,7 +36,7 @@ const V2_INSTRUCTIONS = [
   '5. 末尾写「把握程度」（高 / 中 / 低及原因）和「没读到的部分」。',
   '6. 篇幅控制在 2 万字以内。',
 ].join('\n');
-const DEFAULT_INSTRUCTIONS = [
+const V3_INSTRUCTIONS = [
   '你是公司电脑上的助手，替家里的 Agent 办事：读公司代码（如 AirView、L2 的实际实现），查这台电脑上的文件、文档和环境，运行查询类命令，也可以用这台电脑上已注册的 MCP 工具（如 AirView、内网搜索）收集信息。请遵守：',
   '1. 保持公司电脑原样：可以打开、搜索、阅读文件，运行查询类命令（如 git log、dir、findstr）；修改、新建、删除文件，提交代码，安装软件，这些都不做。',
   '2. 有副作用的动作（提交或运行仿真、同步工程、发消息、改动共享平台上的内容），只在家里的问题里明确要求时才做，并在回答里写清做了什么。',
@@ -42,8 +45,12 @@ const DEFAULT_INSTRUCTIONS = [
   '5. 末尾写「把握程度」（高 / 中 / 低及原因）和「没读到的部分」。',
   '6. 篇幅控制在 2 万字以内。',
 ].join('\n');
-const OLD_DEFAULTS = [V1_INSTRUCTIONS, V2_INSTRUCTIONS];
+// 只迁移未改过的默认说明；成员自己写的说明原样保留。
+const DEFAULT_INSTRUCTIONS = V3_INSTRUCTIONS.replace('替家里的 Agent 办事', '为已配对的授权 Agent 处理任务').replace('家里的问题里', '任务中');
+const OLD_DEFAULTS = [V1_INSTRUCTIONS, V2_INSTRUCTIONS, V3_INSTRUCTIONS];
 const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructions: DEFAULT_INSTRUCTIONS, effort: 'high', maxParallel: 2, pollSeconds: 30 });
+const ACTIVE_POLL_MS = 10000;
+const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
 const MAX_REPLY_CHARS = 40000;
 // 源码检查的限度：成段（连续）超过 12 行，或全篇累计超过 30 行像代码的内容。
@@ -154,7 +161,8 @@ class CompanyBridge {
     this.store.db.exec('CREATE TABLE IF NOT EXISTS bridge_threads(id TEXT PRIMARY KEY,payload TEXT NOT NULL,state TEXT NOT NULL,open INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL)');
     ensureOpenColumn(this.store.db, t => ['queued', 'running'].includes(deriveState(t)));
     this.link = new BridgeLink({ side: 'company', store: this.store, fetchImpl: deps.fetchImpl, now: () => this.now() });
-    this.busy = null; this.timer = null; this.nextPullAt = 0;
+    this.busy = null; this.advanceBusy = null; this.deliverBusy = null; this.timer = null; this.nextPullAt = 0; this.lastPullAt = 0;
+    this.askHome = new AskHome({ bridge: this, deps });
     if (!deps.noTimer) claimTimers(this.store);
   }
   now() { return this.deps.now ? this.deps.now() : Date.now(); }
@@ -175,8 +183,25 @@ class CompanyBridge {
     if ('effort' in patch) { if (!EFFORTS.includes(patch.effort)) throw new Error('思考深度只能是 low / medium / high / max'); next.effort = patch.effort; }
     if ('maxParallel' in patch) { const n = Number(patch.maxParallel); if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('同时处理的问题数只能是 1–4'); next.maxParallel = n; }
     if ('pollSeconds' in patch) { const n = Number(patch.pollSeconds); if (!Number.isInteger(n) || n < 10 || n > 600) throw new Error('检查间隔只能是 10–600 秒'); next.pollSeconds = n; }
-    this.store.set('settings', next); this.changed();
+    this.store.set('settings', next);
+    this.tightenPoll(); this.changed();
     return next;
+  }
+
+  // 任务进行中和答完后的追问窗口加快检查；空闲沿用成员原来的设置。
+  // 窗口随配对代次持久化，程序重开可接上，换配对不会继承旧窗口。
+  polling() {
+    const c = this.link.config();
+    if (!c.state || c.state === 'none') return { intervalSeconds: 0, active: false, activeUntil: null };
+    if (c.state !== 'paired') return { intervalSeconds: ACTIVE_POLL_MS / 1000, active: false, activeUntil: null };
+    const recent = this.store.get('pollActivity');
+    const activeUntil = recent?.gen === c.gen ? recent.until : null;
+    const active = activeUntil > this.now() || this.openThreads().some(t => t.gen === c.gen) || this.askHome.openThreads().length > 0 || this.link.pendingOutbox() > 0;
+    return { intervalSeconds: active ? ACTIVE_POLL_MS / 1000 : this.settings().pollSeconds, active, activeUntil: activeUntil > this.now() ? activeUntil : null };
+  }
+  tightenPoll() {
+    const ms = this.polling().intervalSeconds * 1000;
+    if (ms) this.nextPullAt = Math.min(this.nextPullAt, (this.lastPullAt || this.now()) + ms);
   }
 
   threads(limit = 60) { return this.store.db.prepare('SELECT payload FROM bridge_threads ORDER BY updated DESC LIMIT ?').all(limit).map(r => JSON.parse(r.payload)); }
@@ -186,30 +211,46 @@ class CompanyBridge {
     t.updatedAt = this.now(); t.state = deriveState(t);
     this.store.db.prepare('INSERT INTO bridge_threads(id,payload,state,open,updated) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,state=excluded.state,open=excluded.open,updated=excluded.updated')
       .run(t.id, JSON.stringify(t), t.state, ['queued', 'running'].includes(t.state) ? 1 : 0, t.updatedAt);
+    if (t.state !== 'cancelled' && t.gen && t.gen === this.link.gen()) {
+      this.store.set('pollActivity', { gen: t.gen, until: this.now() + FOLLOWUP_WINDOW_MS });
+      this.tightenPoll();
+    }
     return t;
   }
   patchRound(t, round, patch) { return this.saveThread({ ...t, rounds: t.rounds.map(x => x.round === round ? { ...x, ...patch } : x) }); }
 
+  sessionPlan(request) { return this.askHome.sessionPlan(request); }
   start() {
+    if (!this.askHome.server) void this.askHome.start().catch(e => console.warn('[company-bridge] ask-home', e.message));
     if (this.deps.noTimer || this.timer) return;
     this.timer = setInterval(() => { void this.tick().catch(e => console.warn('[company-bridge] tick', e.message)); }, 5000);
     this.timer.unref?.();
   }
   async tick({ force = false } = {}) {
     if (!force && !this.deps.noTimer && !ownsTimers(this.store)) return;
-    if (this.busy) return this.busy;
-    this.busy = (async () => {
-      const s = this.settings(), state = this.link.config().state;
+    // 收件和会话推进分别去重：开会话或发送问题可能等很久，期间仍能收下一条任务。
+    if (!this.busy) this.busy = (async () => {
+      const state = this.link.config().state;
       if (!state || state === 'none') return;
-      if (this.link.pairingExpired()) { this.link.unpair(); this.notify('配对已过期', '24 小时内家里没有确认，请让家里重新生成配对码。'); this.changed(); return; }
+      if (this.link.pairingExpired()) { this.link.unpair(); this.notify('配对已过期', '24 小时内对端没有确认，请重新获取配对码。'); this.changed(); return; }
+      this.tightenPoll();
       if (force || this.now() >= this.nextPullAt) {
-        this.nextPullAt = this.now() + (state === 'paired' ? s.pollSeconds : 15) * 1000;
+        this.lastPullAt = this.now();
+        this.nextPullAt = this.lastPullAt + this.polling().intervalSeconds * 1000;
         try { await this.link.pull(message => this.receive(message)); } catch {}
         this.changed();
       }
-      if (s.enabled && this.link.paired()) await this.advance();
     })().finally(() => { this.busy = null; });
-    return this.busy;
+    await this.busy;
+    if (this.settings().enabled && this.link.paired()) {
+      if (!this.advanceBusy) this.advanceBusy = this.advance().finally(() => { this.advanceBusy = null; });
+      await this.advanceBusy;
+    }
+    // 家里对 ask_home 的回复：和「自动作答」开关无关，配对了就送。
+    if (this.link.paired()) {
+      if (!this.deliverBusy) this.deliverBusy = this.askHome.deliver().finally(() => { this.deliverBusy = null; });
+      await this.deliverBusy;
+    }
   }
   checkNow() { this.nextPullAt = 0; return this.tick({ force: true }).then(() => this.status()); }
 
@@ -222,13 +263,14 @@ class CompanyBridge {
   }
   unpair() { this.cancelOpen('已解除配对'); this.link.unpair(); this.changed(); return this.status(); }
   // 解除或重新配对：没答完的问题作废，答完的也不会再发给新的对端（发送前核对代次）。
-  cancelOpen(why) { for (const t of this.openThreads()) this.saveThread({ ...t, state: 'cancelled', cancelNote: why }); }
+  cancelOpen(why) { this.askHome.cancelOpen(why); for (const t of this.openThreads()) this.saveThread({ ...t, state: 'cancelled', cancelNote: why }); }
 
   receive(message) {
     if (message.type === 'welcome') {
-      if (this.link.completeAsCompany(message)) this.notify('已和家里接通', '家里的 Agent 现在可以向这台电脑提问了。');
+      if (this.link.completeAsCompany(message)) this.notify('配对已完成', 'AI特战队专用功能已接通。');
       return;
     }
+    if (this.askHome.receive(message)) return;
     if (message.type !== 'ask' && message.type !== 'followup') return;
     const id = String(message.thread || '').slice(0, 40);
     if (!/^[A-Za-z0-9-]{3,40}$/.test(id)) return;
@@ -250,7 +292,7 @@ class CompanyBridge {
     t.rounds = [...t.rounds, { round, question, receivedAt: this.now(), mid: message.mid }];
     this.saveThread(t);
     void this.link.send('status', { thread: id, gen, round, state: 'received', note: '公司已收到' }).catch(() => {});
-    this.notify(existing ? '家里追问' : '家里提问', `${id}：${short(question, 60)}`, t.sessionId);
+    this.notify(existing ? '收到追问' : '收到任务', `${id}：${short(question, 60)}`, t.sessionId);
   }
 
   sessionBusy(id) {
@@ -285,9 +327,9 @@ class CompanyBridge {
     if (r.rewrite) return `（编号 ${t.id}，第 ${r.round} 轮）你上一条回答里有成段的源码。按规则不能回传源码：请把整份回答重写一遍，代码部分改成文字说明或几行伪代码，其余内容保持。直接输出重写后的完整回答。`;
     const roots = s.codeRoots.length ? s.codeRoots.map(p => '- ' + p).join('\n') : '- （未设置，请在当前目录里找）';
     if (r.round === 1 || !t.everAnswered) {
-      return [s.instructions, '', '代码位置：', roots, '', `## 家里的问题（编号 ${t.id}${r.round > 1 ? `，第 ${r.round} 轮` : ''}）`, '', r.question].join('\n');
+      return [s.instructions, '', '代码位置：', roots, '', `## 成员请求（编号 ${t.id}${r.round > 1 ? `，第 ${r.round} 轮` : ''}）`, '', r.question].join('\n');
     }
-    return [`## 家里的追问（编号 ${t.id}，第 ${r.round} 轮）`, '', r.question, '', '（规则同前：保持公司电脑原样、不回传源码和凭据、末尾写把握程度和没读到的部分。）'].join('\n');
+    return [`## 成员追问（编号 ${t.id}，第 ${r.round} 轮）`, '', r.question, '', '（规则同前：保持公司电脑原样、不回传源码和凭据、末尾写把握程度和没读到的部分。）'].join('\n');
   }
 
   async dispatch(t) {
@@ -300,7 +342,7 @@ class CompanyBridge {
       if (!known) {
         sessionId = randomUUID();
         const cwd = s.codeRoots.find(p => this.deps.isDirectory ? this.deps.isDirectory(p) : true) || this.deps.fallbackCwd;
-        const opts = { id: sessionId, cwd, title: '家里 · ' + short(t.title, 22), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
+        const opts = { id: sessionId, cwd, title: 'AI特战队 · ' + short(t.title, 22), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
           effort: s.effort, addDirs: s.codeRoots.filter(p => p !== cwd) };
         const created = await this.deps.createSession('codeagent', opts);
         if (!created || created.id !== sessionId) throw new Error('会话创建结果与预留编号不一致');
@@ -316,9 +358,11 @@ class CompanyBridge {
         t = latest;
       }
       const before = this.lastFinal(sessionId);
+      const prompt = this.promptFor(t, r, s);
       // 先记下「已派发」和发前最后一条回答，再发：发送结果未知时不会被当成失败重发。
-      t = this.patchRound(t, r.round, { sentAt: this.now(), firstSentAt: r.firstSentAt || this.now(), baseline: before ? before.id : null, error: null, sendUncertain: null });
-      const receipt = await this.deps.sendPrompt(sessionId, this.promptFor(t, r, s), randomUUID());
+      t = this.patchRound(t, r.round, { sentAt: this.now(), firstSentAt: r.firstSentAt || this.now(), baseline: before ? before.id : null,
+        promptFingerprint: receiptPromptFingerprint(prompt), receiptIssue: null, error: null, sendUncertain: null });
+      const receipt = await this.deps.sendPrompt(sessionId, prompt, randomUUID());
       if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) {
         throw Object.assign(new Error(receipt?.error || '问题没有发进会话'), { notSent: true });
       }
@@ -351,12 +395,30 @@ class CompanyBridge {
     }
     if (this.promptCheck(t, r) === 'hijacked') {
       const n = (r.hijacked || 0) + 1;
-      if (n > MAX_HIJACK) return this.failRound(t, r, '问题连续被公司电脑剪贴板里的图片顶掉（CodeAgent 粘贴时会读剪贴板）：清空剪贴板后在「家里联动」里点重试');
+      if (n > MAX_HIJACK) return this.failRound(t, r, '问题连续被公司电脑剪贴板里的图片顶掉（CodeAgent 粘贴时会读剪贴板）：清空剪贴板后在「AI特战队专用功能」里点重试');
       this.patchRound(t, r.round, { sentAt: null, hijacked: n });
-      this.notify('问题被剪贴板图片顶掉', `${t.id}：CodeAgent 收到的是剪贴板里的图片，不是家里的问题；那条回答不发回家，已重新发问`, t.sessionId);
+      this.notify('问题被剪贴板图片顶掉', `${t.id}：CodeAgent 收到的图片与本轮任务不符；已保留记录并重新发问`, t.sessionId);
       return;
     }
-    let text = String(final.text || '').trim();
+    let receipt = null;
+    if (this.deps.readReceipt) {
+      const session = this.deps.getSession(t.sessionId) || this.deps.getSessionMetadata?.(t.sessionId);
+      try { receipt = this.deps.readReceipt(session, { ...r, threadId: t.id }); }
+      catch (error) { receipt = { available: false, issue: '原生回执核对失败：' + error.message }; }
+      if (!receipt?.available) {
+        const issue = receipt?.issue || '本次请求的原生回执尚未核对';
+        if (this.now() - r.sentAt > NO_ANSWER_MS * 3) return this.failRound(t, r, issue);
+        if (r.receiptIssue !== issue) {
+          this.patchRound(t, r.round, { receiptIssue: issue });
+          this.notify('回执待核对', `${t.id}：${issue}；记录已保留，稍后会继续核对`, t.sessionId);
+          void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'running', note: '回执待核对：' + issue }).catch(() => {});
+          this.changed();
+        }
+        return;
+      }
+      if (r.receiptIssue) t = this.patchRound(t, r.round, { receiptIssue: null });
+    }
+    let text = String(receipt ? receipt.text : final.text || '').trim();
     if (sourceVerdict(text).tooMuch && !r.rewriteAsked) {
       // 第一次发现成段源码：请它自己改写（同一会话），改写稿出来再发。
       this.patchRound(t, r.round, { rewriteAsked: true, rewrite: true, sentAt: null, firstDraftChars: text.length });
@@ -373,7 +435,8 @@ class CompanyBridge {
     const fresh = this.thread(t.id);
     if (!fresh || fresh.state === 'cancelled' || fresh.gen !== this.link.gen()) return;
     const session = this.deps.getSession(t.sessionId);
-    const meta = { model: session?.currentModel?.id || session?.model || null, elapsedSec: Math.round((this.now() - (r.firstSentAt || r.sentAt)) / 1000), codeLinesRemoved: removed, rewritten: !!r.rewriteAsked };
+    const meta = { model: session?.currentModel?.id || session?.model || null, elapsedSec: Math.round((this.now() - (r.firstSentAt || r.sentAt)) / 1000), codeLinesRemoved: removed, rewritten: !!r.rewriteAsked,
+      ...(receipt ? { userMessageId: receipt.userMessageId, sourceMessageIds: receipt.records.map(record => record.messageId) } : {}) };
     // 回答落账和回执入发件箱放在同一个事务：要么都成，要么都不成（下一轮再收）。之后发件箱负责重发。
     const item = this.link.prepare('reply', { thread: t.id, gen: fresh.gen, round: r.round, text, meta });
     this.store.db.exec('BEGIN IMMEDIATE');
@@ -387,7 +450,10 @@ class CompanyBridge {
       return;
     }
     await this.link.flush().catch(() => {});
-    this.notify('已回执', `${t.id} 第 ${r.round} 轮：${short(text, 60)}`, t.sessionId);
+    const pending = (this.store.get('outbox') || []).some(x => x.mid === item.mid);
+    this.notify(pending ? '回执待发送' : '已回执', pending
+      ? `${t.id} 第 ${r.round} 轮已保存；连接恢复后会自动发送。`
+      : `${t.id} 第 ${r.round} 轮：${short(text, 60)}`, t.sessionId);
   }
   // ok：收到的消息里有本题编号；hijacked：这一轮之后只收到过带图片、却没有编号的消息；unknown：读不到记录，照旧处理。
   promptCheck(t, r) {
@@ -419,13 +485,14 @@ class CompanyBridge {
       ok: true, role: 'company', settings: this.settings(), defaultInstructions: DEFAULT_INSTRUCTIONS,
       link: { state: c.state || 'none', baseUrl: c.baseUrl || null, pairedAt: c.pairedAt || null, createdAt: c.createdAt || null, outbox: this.link.pendingOutbox() },
       net: { lastOkAt: st.lastOkAt || null, lastError: st.lastError || null, gate: st.gate || null, peerSeen: st.peerSeen || null },
-      nextPullAt: this.nextPullAt, now: this.now(),
+      nextPullAt: this.nextPullAt, now: this.now(), polling: this.polling(),
       threads: this.threads().map(t => ({ ...t, session: t.sessionId ? { open: !!this.deps.getSession(t.sessionId), busy: this.sessionBusy(t.sessionId) } : null })),
+      askHome: this.askHome.status(),
     };
   }
-  notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: '家里联动 · ' + title, text, sessionId }); } catch {} }
+  notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: 'AI特战队 · ' + title, text, sessionId }); } catch {} }
   changed() { try { this.deps.onChanged?.(); } catch {} }
-  close() { clearInterval(this.timer); this.timer = null; try { this.store.close(); } catch {} }
+  close() { clearInterval(this.timer); this.timer = null; this.askHome.close(); try { this.store.close(); } catch {} }
 }
 
-module.exports = { CompanyBridge, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS, V2_INSTRUCTIONS, PURPOSE, userTurnsFromTranscript, sourceVerdict, stripCode, deriveState };
+module.exports = { CompanyBridge, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS, V2_INSTRUCTIONS, V3_INSTRUCTIONS, PURPOSE, userTurnsFromTranscript, sourceVerdict, stripCode, deriveState };

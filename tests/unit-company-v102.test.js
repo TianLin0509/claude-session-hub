@@ -61,7 +61,8 @@ test('CodeAgent 会话内可以换模型：在它自己的 /model 菜单里选�
   assert.match(handlers, /codeagentPicker\.schedulePick\(sessionId, \(\) => runCodeAgentPick\(sessionId, modelId, 'switch'\)\)/);
   assert.doesNotMatch(handlers, /restartSession\(sessionId, \{ model: modelId \}\)/, '不再靠带 --model 重开');
   assert.match(handlers, /当前回答仍在运行，请结束后再切换/);
-  // 恢复时仍带原会话号 + 模型（-p 模式和以后可能修好的交互模式都认），之后再由菜单选一次
+  // 恢复时带原会话号；模型只在本次明确要选时才带（2026-10-15 田哥确认：默认沿用 CodeAgent 当前模型，
+  // 恢复、分支、历史元数据里的 model 都不能自己打开菜单），要选时之后再由菜单选一次
   const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ca-resume-'));
   try {
@@ -70,7 +71,10 @@ test('CodeAgent 会话内可以换模型：在它自己的 /model 菜单里选�
     const slug = path.resolve(cwd).replace(/[^A-Za-z0-9]/g, '-');
     fs.mkdirSync(path.join(dir, 'projects', slug), { recursive: true });
     fs.writeFileSync(path.join(dir, 'projects', slug, seat + '.jsonl'), '{}\n');
-    const launch = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { resumeCCSessionId: seat, model: 'MiniMax-M2.7' }, cwd, {}, { command: 'codeagent', configDir: dir });
+    const inherit = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { resumeCCSessionId: seat, model: 'MiniMax-M2.7' }, cwd, {}, { command: 'codeagent', configDir: dir });
+    assert.match(inherit.cmd, new RegExp(`--resume ${seat} `));
+    assert.doesNotMatch(inherit.cmd, /--model/, '没有本次选型意图时沿用 CodeAgent 当前模型');
+    const launch = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { resumeCCSessionId: seat, model: 'MiniMax-M2.7', codeagentModelPick: true }, cwd, {}, { command: 'codeagent', configDir: dir });
     assert.match(launch.cmd, new RegExp(`--resume ${seat} .*--model MiniMax-M2\\.7`));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

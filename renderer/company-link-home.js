@@ -7,15 +7,18 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   const clock = at => at ? new Date(at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke(channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
   const ROUND = { sent: ['已发出', 'wait'], received: ['公司已收到', 'wait'], running: ['公司在处理', 'run'], replied: ['已回执', 'ok'], error: ['公司报错', 'bad'] };
+  const CONSULT = { queued: ['排队', 'wait'], running: ['家里在作答', 'run'], replied: ['已回复公司', 'ok'], failed: ['没答上', 'bad'], cancelled: ['已作废', 'mute'] };
+  const AGENT = { claude: 'Claude', codex: 'Codex' };
 
   function head() {
     const st = data.link.state, net = data.net || {};
     if (st === 'none') return `<div class="wp-row"><span class="k">状态</span><span class="v">还没和公司 Hub 配对。配对后，Hub 新开的会话里的 Agent 可以请公司电脑上的 CodeAgent 办事：查 AirView / L2 代码、查公司电脑上的文件与环境（不改动公司电脑，回执不含源码）。</span><span class="r"><button type="button" class="wp-btn primary" data-cl="create">生成配对码</button></span></div>`;
-    if (st === 'pending') return `<div class="wp-row"><span class="k">配对码</span><span class="v">把下面整段发到公司电脑，在公司 Hub「设置菜单 → 🏠 家里联动」里粘贴。公司确认后这段就作废了。<textarea class="cl-code" readonly rows="4">${esc(data.link.pairingCode || '')}</textarea></span>
+    if (st === 'pending') return `<div class="wp-row"><span class="k">配对码</span><span class="v">把下面整段发到公司电脑，在公司 Hub「设置菜单 → AI特战队专用功能」里粘贴。公司确认后这段就作废了。<textarea class="cl-code" readonly rows="4">${esc(data.link.pairingCode || '')}</textarea></span>
       <span class="r cl-col"><button type="button" class="wp-btn primary" data-cl="send">发到公司收件箱</button><button type="button" class="wp-btn" data-cl="copy">复制</button><button type="button" class="wp-link" data-cl="unpair">取消</button></span></div>
-      <div class="wp-row"><span class="k">等待</span><span class="v">${net.lastError ? `<span class="bad">通道连不上：${esc(net.lastError.message)}</span>` : '等公司 Hub 粘贴配对码……（每 30 秒看一次）'}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button></span></div>`;
+      <div class="wp-row"><span class="k">等待</span><span class="v">${net.lastError ? `<span class="bad">通道连不上：${esc(net.lastError.message)}</span>` : `等公司 Hub 粘贴配对码……${data.polling ? `（每 ${esc(data.polling.intervalSeconds)} 秒检查）` : ''}`}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button></span></div>`;
     const peer = data.peer || {};
     return `<div class="wp-row"><span class="k">状态</span><span class="v">已接通 · 公司 Hub ${esc(peer.companyLastSeen || '')}${net.lastError ? ` · <span class="bad">上次连通道失败：${esc(net.lastError.message)}</span>` : ''}${data.link.outbox ? ` · 待发 ${data.link.outbox} 条` : ''}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button><button type="button" class="wp-link" data-cl="unpair">解除配对</button></span></div>
+      ${data.polling ? `<div class="wp-row"><span class="k">检查频率</span><span class="v">${data.polling.active ? '联动中' : '空闲中'} · 本机每 ${esc(data.polling.intervalSeconds)} 秒检查回执</span><span class="r"></span></div>` : ''}
       <div class="wp-row"><span class="k">挂给谁</span><span class="v"><select data-cl="attach"><option value="wireless"${data.settings.attach === 'wireless' ? ' selected' : ''}>SuperRAN 相关会话（无线助理开的、目录在 SuperRAN 下的）</option><option value="all"${data.settings.attach === 'all' ? ' selected' : ''}>所有 Codex / Claude 会话</option></select></span><span class="r">新开的会话生效；其余会话可用 company-ask 命令</span></div>`;
   }
   function threads() {
@@ -33,10 +36,24 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
         <div class="wp-actions"><button type="button" class="wp-link" data-cl="open:${esc(t.sessionId)}">${t.session?.open ? '打开提问的会话' : '找回提问的会话'}</button></div></article>`;
     }).join('');
   }
+  // 公司 CodeAgent 用 ask_home 发来的求助（2026-10-15）：家里开 Claude 会话作答，不行换 Codex。
+  function consults() {
+    const list = (data.consults || []).slice(0, 30);
+    if (!list.length) return '';
+    return '<h3 class="cl-sub">公司来的求助</h3>' + list.map(t => {
+      const [label, tone] = CONSULT[t.state] || [t.state, 'mute'];
+      const rounds = t.rounds.map(r => `<div class="cl-round"><b>第 ${r.round} 轮</b> <span class="wp-meta">收于 ${clock(r.receivedAt)}${r.agent ? ' · ' + AGENT[r.agent] : ''}${r.fallbackReason ? '（Claude ' + esc(r.fallbackReason) + '）' : ''}${r.companyAsks?.length ? ' · 回公司查证据 ' + esc(r.companyAsks.join('、')) : ''}${r.replyAt ? ' · 回复 ' + clock(r.replyAt) : ''}${r.meta?.elapsedSec ? ' · 用时 ' + Math.round(r.meta.elapsedSec / 60) + ' 分钟' : ''}</span>
+        <pre>${esc(r.question)}</pre>${r.reply ? `<pre class="ans">${esc(r.reply)}</pre>` : ''}${r.error ? `<p class="wp-note warn">${esc(r.error)}</p>` : ''}</div>`).join('');
+      return `<article class="wp-item"><div class="wp-item-head"><span class="wp-pill ${tone}">${label}</span><strong>${esc(t.id)} · ${esc(t.title)}</strong>${t.agent ? `<span class="wp-tag">${AGENT[t.agent] || esc(t.agent)}</span>` : ''}</div>
+        <div class="wp-meta">${t.from?.title ? '来自公司会话「' + esc(t.from.title) + '」 · ' : ''}${t.rounds.length} 轮 · 收到 ${clock(t.createdAt)}</div>
+        <details class="cl-details"><summary>看问答</summary>${rounds}</details>
+        ${t.sessionId ? `<div class="wp-actions"><button type="button" class="wp-link" data-cl="open:${esc(t.sessionId)}">${t.session?.open ? '打开作答的会话' : '找回作答的会话'}</button></div>` : ''}</article>`;
+    }).join('');
+  }
   function render() {
     if (!root || !data) return;
     root.querySelector('.cl-head').innerHTML = head();
-    root.querySelector('.wp-list').innerHTML = threads();
+    root.querySelector('.wp-list').innerHTML = threads() + consults();
   }
   async function load() {
     if (!root) return;
@@ -65,7 +82,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   function mount(container) {
     root = document.createElement('section');
     root.className = 'wp-section cl-section'; root.hidden = true;
-    root.innerHTML = '<h2>公司联动</h2><p class="wp-hint">家里的 Agent 需要核对公司代码时，向公司 Hub 的 CodeAgent 提问；回执到了自动发回提问的会话。</p><div class="wp-strip cl-head"></div><div class="wp-list"></div>';
+    root.innerHTML = '<h2>公司联动</h2><p class="wp-hint">家里的 Agent 需要核对公司代码时，向公司 Hub 的 CodeAgent 提问；回执到了自动发回提问的会话。公司 CodeAgent 遇到难题也会用 ask_home 向家里求助，家里开 Claude 会话作答（不行换 Codex），回复自动发回公司。</p><div class="wp-strip cl-head"></div><div class="wp-list"></div>';
     container.append(root);
     root.addEventListener('click', e => { const b = e.target.closest('[data-cl]'); if (b && b.tagName !== 'SELECT') void action(b.dataset.cl, b); });
     root.addEventListener('change', e => { if (e.target.dataset.cl === 'attach') void call('bridge:set-settings', { attach: e.target.value }).then(load).catch(err => showMessage?.(err.message)); });

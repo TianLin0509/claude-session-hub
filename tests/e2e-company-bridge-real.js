@@ -25,7 +25,7 @@ const COMPANY_ENTRY = process.env.COMPANY_ENTRY || null;
 
 // 模拟公司代理：/api/* 去掉前缀转给通道服务（同 Caddy）；gate 打开时公司一端的请求拿到放行网页；/ 是放行页，点按钮放行。
 function startGateProxy(relayPort) {
-  const state = { gate: false, companyBlocked: 0, allowedAt: null };
+  const state = { gate: false, companyBlocked: 0, allowedAt: null, companyPolls: [] };
   const page = '<!doctype html><meta charset="utf-8"><title>访问确认</title><body style="font:16px sans-serif;padding:40px"><h2>公司网络：访问外部网站需要确认</h2><button id="allow" onclick="fetch(\'/allow\',{method:\'POST\'}).then(()=>{document.body.insertAdjacentHTML(\'beforeend\',\'<p id=ok>已允许访问</p>\')})">允许访问</button></body>';
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -35,6 +35,7 @@ function startGateProxy(relayPort) {
       if (req.url === '/allow' && req.method === 'POST') { state.gate = false; state.allowedAt = Date.now(); res.end('ok'); return; }
       if (!req.url.startsWith('/api/')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(page); return; }
       const fromCompany = /[?&]to=company/.test(req.url) || /"to":"home"/.test(body.toString('utf8'));
+      if (req.method === 'GET' && /[?&]who=company(?:&|$)/.test(req.url)) state.companyPolls.push(Date.now());
       if (state.gate && fromCompany) { state.companyBlocked += 1; res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(page); return; }
       const up = http.request({ host: '127.0.0.1', port: relayPort, path: req.url.slice(4), method: req.method, headers: { 'content-type': req.headers['content-type'] || 'application/json', 'content-length': body.length } }, r => {
         res.writeHead(r.statusCode, r.headers); r.pipe(res);
@@ -125,21 +126,23 @@ async function main() {
     check('家里无线页生成配对码');
     await click(cc, '#btn-options');
     await until('menu entry', () => cc.eval('!!document.getElementById("options-home-link")'), 15000, 300);
+    assert.equal(await cc.eval('document.getElementById("options-home-link").textContent'), 'AI特战队专用功能');
     await click(cc, '#options-home-link');
     await until('dialog', () => cc.eval('!!document.querySelector("#home-link-dialog[open] [data-hl-f=code]")'), 15000, 300);
     await cc.eval('(()=>{const t=document.querySelector("[data-hl-f=code]");t.value=' + j('请在公司 Hub 粘贴：' + code) + ';t.dispatchEvent(new Event("input",{bubbles:true}))})()');
     await click(cc, '[data-hl=pair]');
-    await until('company paired', async () => (await status(cc)).link.state === 'paired' || (await cc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")')).link.state === 'paired', 120000, 3000);
+    await until('company paired', async () => (await status(cc)).link.state === 'paired', 120000, 3000);
     await until('home paired', async () => (await status(hc)).link.state === 'paired', 120000, 2000);
     const hs = await status(hc), cs = await status(cc);
     assert.equal(hs.link.state, 'paired'); assert.equal(cs.link.state, 'paired');
     check('公司粘贴配对码后两端接通（公司换钥，家里收到 hello 回 welcome）');
 
-    // ---- 2. 公司页：填代码位置、检查间隔调到 10 秒（测试加速）----
+    // ---- 2. 公司页：填代码位置，保留默认空闲 30 秒，验证任务会自动提速 ----
     await until('settings form', () => cc.eval('!!document.querySelector("[data-hl-f=codeRoots]")'), 20000, 300);
-    await cc.eval('(()=>{const t=document.querySelector("[data-hl-f=codeRoots]");t.value=' + j(l2) + ';t.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("[data-hl-f=effort]").value="low";const p=document.querySelector("[data-hl-f=pollSeconds]");p.insertAdjacentHTML("beforeend","<option value=10>10 秒</option>");p.value="10"})()');
+    await cc.eval('(()=>{const t=document.querySelector("[data-hl-f=codeRoots]");t.value=' + j(l2) + ';t.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("[data-hl-f=effort]").value="low"})()');
     await click(cc, '[data-hl=save]');
     await until('saved', async () => (await status(cc)).settings.codeRoots[0] === l2, 15000, 500);
+    assert.equal((await status(cc)).settings.pollSeconds, 30);
     await shot(cc, '02-company-dialog-paired');
     check('公司页保存代码位置');
     await cc.eval('document.getElementById("home-link-dialog")?.close()');
@@ -186,6 +189,10 @@ async function main() {
     // ---- 5. 公司收到问题 → 新开 CodeAgent 会话作答 ----
     const ct = await until('company thread running', async () => (await status(cc)).threads.find(t => t.id === homeThread.id && t.sessionId), 3 * 60000, 2000);
     const companySession = ct.sessionId;
+    const activeStartedAt = Date.now();
+    assert.equal((await status(cc)).polling.intervalSeconds, 10);
+    assert.equal((await status(hc)).polling.intervalSeconds, 10);
+    check('公司保留空闲30秒设置，任务开始后两端自动切到10秒');
     await until('company session in sidebar', () => cc.eval(`!!document.querySelector('.session-item[data-session-id="${companySession}"]')`), 30000, 500);
     await shot(cc, '04-company-session-in-sidebar');
     check('公司为这个问题新开 CodeAgent 会话 ' + companySession.slice(0, 8) + '，会话栏可见');
@@ -207,6 +214,8 @@ async function main() {
     assert.match(result.reply2, /0\.8|80\s*%/, '第 2 轮读到了折扣 0.8');
     assert.match(result.reply2, /200/, '第 2 轮读到了上限 200 Mbps');
     check('家里 Agent 被唤醒后追问；追问进同一个公司会话，第 2 轮读到折扣 0.8 与上限 200 Mbps');
+    result.roundTimings = r2.rounds.map(r => ({ round: r.round, elapsedSec: (r.replyAt - r.sentAt) / 1000, agentSec: r.meta?.elapsedSec,
+      companyReceivedSec: (companyAfter.threads.find(t => t.id === r2.id).rounds.find(x => x.round === r.round).receivedAt - r.sentAt) / 1000 }));
     // 第 2 轮回执送进会话之后，Agent 的回答里才算总结（提示词本身也含 HOME-DONE 字样）。
     await until('round 2 delivered', async () => (await status(hc)).threads.find(x => x.id === homeThread.id).rounds[1]?.delivered, 8 * 60000, 3000);
     const summary = await until('home summary', async () => {
@@ -287,6 +296,14 @@ async function main() {
     await hc.eval(`window.__hubOpenSession(${j(hsid)})`); await wait(2500);
     await shot(hc, '08-home-agent-card');
     result.companySessionTitle = (await cc.eval(`(async()=>(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(companySession)})?.title)()`));
+    assert.match(result.companySessionTitle, /^AI特战队 · /);
+    const polls = proxy.state.companyPolls.filter(at => at >= activeStartedAt);
+    const gaps = polls.slice(1).map((at, i) => (at - polls[i]) / 1000).sort((a, b) => a - b);
+    result.companyPollTiming = { count: polls.length, minSeconds: gaps[0], medianSeconds: gaps[Math.floor(gaps.length / 2)], maxSeconds: gaps[gaps.length - 1] };
+    assert.ok(gaps.length >= 3, '至少观察3个真实检查间隔');
+    assert.ok(result.companyPollTiming.medianSeconds >= 9 && result.companyPollTiming.medianSeconds <= 15.5, '活跃检查约10秒，允许5秒计时刻度抖动：' + j(result.companyPollTiming));
+    assert.ok(result.companyPollTiming.maxSeconds < 21, '开会话没有长时间阻塞收件：' + j(result.companyPollTiming));
+    check('真实HTTP检查间隔：中位数 ' + result.companyPollTiming.medianSeconds + ' 秒，最长 ' + result.companyPollTiming.maxSeconds + ' 秒');
     result.elapsed = at();
     result.passed = true;
     log('全部通过，用时 ' + at());
