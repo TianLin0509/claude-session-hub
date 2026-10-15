@@ -5,7 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'];
-const SHELL_TOOLS = ['Bash', 'BashOutput', 'KillShell'];
+const SHELL_TOOLS = ['Bash', 'BashOutput', 'KillShell', 'PowerShell']; // Windows 上的 CodeAgent / Claude 另有 PowerShell 工具
 const MODES = Object.freeze({
   'no-edit': { label: '可运行查询命令，禁用改写文件的工具（推荐）', disallowed: EDIT_TOOLS },
   'read-only': { label: '只能读文件：命令行和改写工具都禁用', disallowed: [...SHELL_TOOLS, ...EDIT_TOOLS] },

@@ -488,11 +488,11 @@ test('公司 CodeAgent 会话（purpose=company-bridge）按页面选的权限�
   assert.equal(strict.mode(), 'no-edit');
   let ro = launch();
   assert.match(ro, /--disallowedTools '?Edit,MultiEdit,Write,NotebookEdit'?/);
-  assert.doesNotMatch(ro, /Bash/);
+  assert.doesNotMatch(ro, /Bash|PowerShell/);
   assert.match(ro, /--strict-mcp-config/);
   assert.doesNotMatch(ro, /x\.json/);
   strict.setMode('read-only');
-  assert.match(launch(), /--disallowedTools '?Bash,BashOutput,KillShell,Edit,MultiEdit,Write,NotebookEdit'?/);
+  assert.match(launch(), /--disallowedTools '?Bash,BashOutput,KillShell,PowerShell,Edit,MultiEdit,Write,NotebookEdit'?/);
   strict.setMode('prompt-only');
   assert.doesNotMatch(launch(), /disallowedTools/);
   assert.throws(() => strict.setMode('anything'), /权限只能是/);

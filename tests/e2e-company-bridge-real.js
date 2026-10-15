@@ -256,7 +256,7 @@ async function main() {
       const cMeta = await cc.eval(`(async()=>(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(cThread.sessionId)}))()`);
       const cTranscript = cMeta && cMeta.transcriptPath && fs.existsSync(cMeta.transcriptPath) ? fs.readFileSync(cMeta.transcriptPath, 'utf8') : '';
       result.generalCompanyTools = [...new Set([...cTranscript.matchAll(/"type":"tool_use","id":"[^"]+","name":"([^"]+)"/g)].map(m => m[1]))];
-      assert.ok(result.generalCompanyTools.includes('Bash'), '公司默认权限下能跑命令行：' + j(result.generalCompanyTools));
+      assert.ok(result.generalCompanyTools.some(x => x === 'Bash' || x === 'PowerShell'), '公司默认权限下能跑命令行：' + j(result.generalCompanyTools));
       const buffer = String(await cc.eval(`require("electron").ipcRenderer.invoke('debug:get-session-buffer', ${j(cThread.sessionId)})`) || '');
       assert.doesNotMatch(buffer, /\/model\b/, '公司会话没走 /model 菜单');
       check('公司会话默认可跑命令行（用了 ' + result.generalCompanyTools.join('/') + '）、没走 /model；回执读到最新周报 10-15 的「联调 PF-Z9 调度器」');
