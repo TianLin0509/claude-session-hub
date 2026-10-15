@@ -145,10 +145,11 @@ test('合入失败如实标出原因；点重来再跑', async t => {
   const { service, state } = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'approved')] });
   await service.poll();
   state.children[0].finish(1, '', 'Traceback...\n合入未完成：test_system 未通过\n');
-  await flush(); await flush();
+  await flush(); await flush(); await flush();
   const failed = service.status().jobs.find(j => j.type === 'merge');
   assert.equal(failed.state, 'failed');
-  assert.match(failed.note, /test_system 未通过/);
+  assert.match(failed.note, /test_system 未通过。网络或环境问题/);
+  assert.doesNotMatch(failed.note, /。。/);
   assert.ok(state.notices.some(n => /合入未完成/.test(n.title)));
   service.act(failed.id, 'retry');
   await flush(); await flush();
@@ -219,6 +220,17 @@ test('合入在跑时不派审查（合并机目录在试合并中），合完�
   state.children[0].finish(0, JSON.stringify({ pr: 21, state: 'completed', merged: 'e'.repeat(40) }, null, 2) + String.fromCharCode(10));
   await flush(); await flush(); await flush();
   assert.equal(service.status().jobs.find(j => j.type === 'review').state, 'working');
+});
+
+test('完整测试没过、协作台已标合入未完成：提示审批人退回返工，不叫你点重来', async t => {
+  const { service, state } = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'approved')] });
+  await service.poll();
+  state.tasks = [task(21, 'merge_failed')];
+  state.children[0].finish(1, '', '合入未完成：python 未通过；保留现场，详细证据在合并机私有日志。\n');
+  await flush(); await flush(); await flush();
+  const failed = service.status().jobs.find(j => j.type === 'merge');
+  assert.match(failed.note, /审批人在第 4 步看原因/);
+  assert.doesNotMatch(failed.note, /点「重来」/);
 });
 
 test('v2.6 退回时留下旧席位的提案：照样接手返工，新席位不撞名，也不会被误判为已释放', async t => {

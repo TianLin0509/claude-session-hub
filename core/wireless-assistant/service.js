@@ -403,15 +403,19 @@ class WirelessAssistant {
       attempts: [...(job.attempts || []), { at: this.now(), logFile }] });
     this.changed();
     this.mergeRun = merger.runMerge({ python: install.python, script: this.script(), pr: job.pr, candidate: job.candidate, logFile, spawnFn: this.deps.spawn, timeoutMs: MERGE_TIMEOUT_MS, onChild: c => { this.mergeChild = c; } })
-      .then(res => {
+      .then(async res => {
         const current = this.job(job.id) || job;
         if (res.ok && res.result?.state === 'completed') this.finish(current, 'done', `已合入 develop（${String(res.result.merged || '').slice(0, 8)}），阿里云已读回`, true, '已合入');
         else {
-          const state = res.result?.state;
-          const why = res.ok ? '合并脚本结束，但交付状态是「' + (TASK_LABELS[state] || state || '未知') + '」' : String(res.error || '').replace(/^合入未完成：/, '');
-          // 主干已更新会自动退回返工；合入未完成（多半是完整测试没过）由审批人在协作台退回返工；其余是网络或环境问题，点「重来」。
-          const next = state === 'stale' || /主干|候选或主干已经更新/.test(why) ? '主干已更新，协作台会把提案退回常驻助理重做'
-            : state === 'merge_failed' || /merge_failed|合并已停止/.test(why) ? '请审批人在协作台第 4 步看原因，代码问题点「退回修改」交常驻助理返工'
+          // 下一步找谁，看协作台此刻的真实状态（脚本的报错常常只有「python 未通过」，看不出原因）。
+          let state = res.result?.state;
+          try {
+            const code = await merger.listTasks({ python: install.python, script: this.script(), run: this.deps.runTasks || this.deps.run });
+            state = code.tasks.find(t => t.pr === job.pr)?.state || state;
+          } catch { /* 读不到就按脚本输出判断 */ }
+          const why = (res.ok ? '合并脚本结束，但交付状态是「' + (TASK_LABELS[state] || state || '未知') + '」' : String(res.error || '').replace(/^合入未完成：/, '')).replace(/[。；;\s]+$/, '');
+          const next = state === 'stale' || /主干已变化|候选或主干已经更新/.test(why) ? '主干已更新，协作台会把提案退回常驻助理重做'
+            : state === 'merge_failed' || state === 'returned' || /合并已停止/.test(why) ? '协作台已标「合入未完成」：请审批人在第 4 步看原因，代码问题点「退回修改」交常驻助理返工'
             : '网络或环境问题修好后点「重来」（脚本从中断处接着做，不会重复合并）';
           this.finish(current, 'failed', why + '。' + next + '。日志 ' + logFile, true, '合入未完成');
         }
