@@ -11,11 +11,12 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   function head() {
     const st = data.link.state, net = data.net || {};
     if (st === 'none') return `<div class="wp-row"><span class="k">状态</span><span class="v">还没和公司 Hub 配对。配对后，Hub 新开的会话里的 Agent 可以请公司电脑上的 CodeAgent 办事：查 AirView / L2 代码、查公司电脑上的文件与环境（不改动公司电脑，回执不含源码）。</span><span class="r"><button type="button" class="wp-btn primary" data-cl="create">生成配对码</button></span></div>`;
-    if (st === 'pending') return `<div class="wp-row"><span class="k">配对码</span><span class="v">把下面整段发到公司电脑，在公司 Hub「设置菜单 → 🏠 家里联动」里粘贴。公司确认后这段就作废了。<textarea class="cl-code" readonly rows="4">${esc(data.link.pairingCode || '')}</textarea></span>
+    if (st === 'pending') return `<div class="wp-row"><span class="k">配对码</span><span class="v">把下面整段发到公司电脑，在公司 Hub「设置菜单 → AI特战队专用功能」里粘贴。公司确认后这段就作废了。<textarea class="cl-code" readonly rows="4">${esc(data.link.pairingCode || '')}</textarea></span>
       <span class="r cl-col"><button type="button" class="wp-btn primary" data-cl="send">发到公司收件箱</button><button type="button" class="wp-btn" data-cl="copy">复制</button><button type="button" class="wp-link" data-cl="unpair">取消</button></span></div>
-      <div class="wp-row"><span class="k">等待</span><span class="v">${net.lastError ? `<span class="bad">通道连不上：${esc(net.lastError.message)}</span>` : '等公司 Hub 粘贴配对码……（每 30 秒看一次）'}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button></span></div>`;
+      <div class="wp-row"><span class="k">等待</span><span class="v">${net.lastError ? `<span class="bad">通道连不上：${esc(net.lastError.message)}</span>` : `等公司 Hub 粘贴配对码……${data.polling ? `（每 ${esc(data.polling.intervalSeconds)} 秒检查）` : ''}`}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button></span></div>`;
     const peer = data.peer || {};
     return `<div class="wp-row"><span class="k">状态</span><span class="v">已接通 · 公司 Hub ${esc(peer.companyLastSeen || '')}${net.lastError ? ` · <span class="bad">上次连通道失败：${esc(net.lastError.message)}</span>` : ''}${data.link.outbox ? ` · 待发 ${data.link.outbox} 条` : ''}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button><button type="button" class="wp-link" data-cl="unpair">解除配对</button></span></div>
+      ${data.polling ? `<div class="wp-row"><span class="k">检查频率</span><span class="v">${data.polling.active ? '联动中' : '空闲中'} · 本机每 ${esc(data.polling.intervalSeconds)} 秒检查回执</span><span class="r"></span></div>` : ''}
       <div class="wp-row"><span class="k">挂给谁</span><span class="v"><select data-cl="attach"><option value="wireless"${data.settings.attach === 'wireless' ? ' selected' : ''}>SuperRAN 相关会话（无线助理开的、目录在 SuperRAN 下的）</option><option value="all"${data.settings.attach === 'all' ? ' selected' : ''}>所有 Codex / Claude 会话</option></select></span><span class="r">新开的会话生效；其余会话可用 company-ask 命令</span></div>`;
   }
   function threads() {

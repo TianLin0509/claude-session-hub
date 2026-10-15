@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const bridgeCrypto = require('../core/company-bridge/crypto');
-const { CompanyBridge, sourceVerdict, stripCode, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS, V2_INSTRUCTIONS } = require('../core/company-bridge/company');
+const { CompanyBridge, sourceVerdict, stripCode, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS, V2_INSTRUCTIONS, V3_INSTRUCTIONS } = require('../core/company-bridge/company');
 const { HomeBridge } = require('../core/company-bridge/home');
 
 const BASE = 'https://relay.example.test/drop/tok/api';
@@ -117,7 +117,7 @@ test('配对：密钥协商后两端只用正式通道；拿到配对码的人�
   const opened = rows.map(row => bridgeCrypto.open(leak, row.to, row.blob));
   assert.deepEqual(opened.map(m => m.type), ['hello']);
   assert.ok(!JSON.stringify(opened).includes(homeSecret));
-  assert.ok(r.notices.some(n => /已和公司接通/.test(n.title)) && r.notices.some(n => /已和家里接通/.test(n.title)));
+  assert.ok(r.notices.some(n => /已和公司接通/.test(n.title)) && r.notices.some(n => /AI特战队 · 配对已完成/.test(n.title)));
   assert.ok(r.home.status().peer.companyOnline);
 });
 
@@ -574,6 +574,9 @@ test('公司设置：旧版存的模型不再生效；没改过的历代默认�
   r.company.store.set('settings', { ...r.company.store.get('settings'), instructions: V2_INSTRUCTIONS });
   assert.equal(r.company.settings().instructions, DEFAULT_INSTRUCTIONS);
   assert.match(DEFAULT_INSTRUCTIONS, /MCP/);
+  r.company.store.set('settings', { ...r.company.store.get('settings'), instructions: V3_INSTRUCTIONS });
+  assert.equal(r.company.settings().instructions, DEFAULT_INSTRUCTIONS);
+  assert.doesNotMatch(DEFAULT_INSTRUCTIONS, /家里/);
   assert.match(DEFAULT_INSTRUCTIONS, /明确要求时才做/);
   r.company.setSettings({ instructions: '我自己写的说明' });
   assert.equal(r.company.settings().instructions, '我自己写的说明');
@@ -584,4 +587,235 @@ test('公司设置：旧版存的模型不再生效；没改过的历代默认�
 test('公司 CodeAgent 会话即使带了模型也不走 /model 菜单；普通 CodeAgent 会话照旧', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
   assert.match(src, /if \(codeagentLaunch && opts\.model && !codeAgentReadOnly\(opts\)\) this\.emit\('codeagent-model-pick'/);
+});
+
+test('自动检查：空闲按原设置；首问收到后立即缩短到 10 秒，不沿用刚排好的空闲倒计时', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.company.setSettings({ enabled: false, pollSeconds: 120 });
+  await r.company.checkNow();
+  assert.equal(r.company.status().polling.intervalSeconds, 120);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const first = await ask(r, 'home-s1', '请检查自动轮询何时收到这条测试任务');
+  r.clock.now += 119000;
+  await r.company.tick();
+  assert.equal(r.company.thread(first.thread), null, '空闲时还没到下一次检查');
+  r.clock.now += 1000;
+  await r.company.tick();
+  assert.ok(r.company.thread(first.thread), '自动检查收到首问');
+  assert.equal(r.company.status().polling.intervalSeconds, 10);
+  assert.equal(r.company.nextPullAt, r.clock.now + 10000);
+  const second = await ask(r, 'home-s1', '另一条任务也应在十秒内被检查收到');
+  r.clock.now += 9999;
+  await r.company.tick();
+  assert.equal(r.company.thread(second.thread), null);
+  r.clock.now += 1;
+  await r.company.tick();
+  assert.ok(r.company.thread(second.thread));
+});
+
+test('自动检查：长任务持续 10 秒，完成后保留 10 分钟追问窗口，再恢复空闲间隔', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const { thread } = await ask(r, 'home-s1', '请处理一项超过十分钟的测试任务');
+  await r.company.checkNow();
+  const sid = r.company.thread(thread).sessionId;
+  r.cs.busy.add(sid);
+  r.clock.now += 20 * 60000;
+  await r.company.tick();
+  assert.equal(r.company.status().polling.intervalSeconds, 10);
+  r.cs.busy.delete(sid); r.cs.answer(sid, '长任务已完成。');
+  await r.company.tick();
+  const doneAt = r.clock.now;
+  assert.equal(r.company.status().polling.activeUntil, doneAt + 10 * 60000);
+  r.clock.now = doneAt + 10 * 60000 - 1;
+  assert.equal(r.company.status().polling.intervalSeconds, 10);
+  r.clock.now += 1;
+  await r.company.tick();
+  assert.equal(r.company.status().polling.intervalSeconds, 30);
+  assert.equal(r.company.nextPullAt, r.clock.now + 30000);
+});
+
+test('自动检查：断网时未发出的回执保持 10 秒重试，恢复后只发一次', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const { thread } = await ask(r, 'home-s1', '请验证断网期间回执排队和网络恢复');
+  await r.company.checkNow();
+  r.relay.offline = true;
+  r.cs.answer(r.company.thread(thread).sessionId, '网络恢复后送达这条回执。');
+  await r.company.tick();
+  r.clock.now += 11 * 60000;
+  await r.company.tick();
+  assert.equal(r.company.status().polling.intervalSeconds, 10);
+  assert.ok(r.company.status().link.outbox > 0);
+  assert.ok(r.company.status().net.lastError);
+  r.relay.offline = false;
+  r.clock.now += 10000;
+  await r.company.tick();
+  assert.equal(r.company.status().link.outbox, 0);
+  await r.home.checkNow();
+  await r.home.checkNow();
+  assert.equal(r.hs.sent.length, 1);
+});
+
+test('自动检查：重开程序保留近期追问窗口，换配对不继承旧窗口', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const { thread } = await ask(r, 'home-s1', '请验证重新启动之后保留追问窗口');
+  await r.company.checkNow();
+  r.cs.answer(r.company.thread(thread).sessionId, '完成。');
+  await r.company.tick();
+  r.company.close();
+  const company = new CompanyBridge({ ...r.company.deps });
+  try {
+  r.clock.now += 60000;
+  assert.equal(company.status().polling.intervalSeconds, 10);
+  company.unpair();
+  assert.equal(company.status().polling.intervalSeconds, 0);
+  await company.pair(r.home.createPairing().code);
+  await r.home.checkNow(); await company.checkNow();
+  assert.equal(company.status().polling.intervalSeconds, 30);
+  } finally { company.close(); }
+});
+
+test('自动检查：调低空闲间隔立即收紧倒计时；未配对不发请求', async t => {
+  const r = rig(t);
+  let pulls = 0;
+  const pull = r.company.link.pull.bind(r.company.link);
+  r.company.link.pull = (...args) => { pulls++; return pull(...args); };
+  await r.company.tick();
+  assert.equal(pulls, 0);
+  await pair(r);
+  r.company.setSettings({ pollSeconds: 600 });
+  await r.company.checkNow();
+  assert.equal(r.company.nextPullAt, r.clock.now + 600000);
+  r.company.setSettings({ pollSeconds: 10 });
+  assert.equal(r.company.nextPullAt, r.clock.now + 10000);
+});
+
+test('家里自动检查：发问与追问都把空闲的 3 分钟等待收紧为 10 秒', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  await r.home.checkNow();
+  assert.equal(r.home.nextPullAt, r.clock.now + 180000);
+  const { thread } = await ask(r, 'home-s1', '请验证家里收到回执不再多等三十秒');
+  assert.equal(r.home.nextPullAt, r.clock.now + 10000);
+  await r.company.checkNow();
+  r.cs.answer(r.company.thread(thread).sessionId, '第一轮回答。');
+  await r.company.tick();
+  r.clock.now += 9999;
+  await r.home.tick();
+  assert.equal(r.hs.sent.length, 0);
+  r.clock.now += 1;
+  await r.home.tick();
+  assert.equal(r.hs.sent.length, 1);
+  await r.home.checkNow();
+  assert.equal(r.home.nextPullAt, r.clock.now + 180000);
+  await r.home.followup('home-s1', { thread, question: '请继续验证第二轮追问' });
+  assert.equal(r.home.nextPullAt, r.clock.now + 10000);
+});
+
+test('公司开会话慢时仍每 10 秒收新任务，同一任务不会并发派发两次', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const first = await ask(r, 'home-s1', '第一项测试任务，模拟创建会话很慢');
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  const create = r.company.deps.createSession;
+  let calls = 0;
+  r.company.deps.createSession = async (...args) => { calls++; entered(); await blocked; return create(...args); };
+  const ticks = [r.company.checkNow()];
+  try {
+    await started;
+    const second = await ask(r, 'home-s1', '第二项测试任务，应在首项还在开会话时收到');
+    r.clock.now += 10000;
+    ticks.push(r.company.tick());
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(r.company.thread(second.thread), '创建会话的等待不能挡住收件检查');
+    assert.equal(calls, 1, '并发 tick 共用一次派发');
+  } finally { release(); await Promise.all(ticks); }
+  assert.equal(r.cs.sent.filter(x => x.text.includes(first.thread)).length, 1);
+});
+
+test('家里投递回执慢时仍每 10 秒收其他回执，不重复唤醒会话', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const first = await ask(r, 'home-s1', '第一项测试任务，模拟回执投递很慢');
+  const second = await ask(r, 'home-s1', '第二项测试任务，需独立收取新回执');
+  await r.company.checkNow();
+  r.cs.answer(r.company.thread(first.thread).sessionId, '第一项已完成');
+  await r.company.tick();
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  const send = r.home.deps.sendPrompt;
+  let calls = 0;
+  r.home.deps.sendPrompt = async (...args) => { calls++; entered(); await blocked; return send(...args); };
+  const ticks = [r.home.checkNow()];
+  try {
+    await started;
+    r.cs.answer(r.company.thread(second.thread).sessionId, '第二项已完成');
+    await r.company.tick();
+    r.clock.now += 10000;
+    ticks.push(r.home.tick());
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(r.home.thread(second.thread).rounds[0].reply, '第二项已完成');
+    assert.equal(calls, 1, '同一轮回执只有一个投递者');
+  } finally { release(); await Promise.all(ticks); }
+  await r.home.tick();
+  assert.equal(r.hs.sent.length, 2);
+});
+
+test('只有上传失败时保留待发提示，不因收件成功而误报回执已发出', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const { thread } = await ask(r, 'home-s1', '请验证网络只允许收件、不允许上传时的提示');
+  await r.company.checkNow();
+  r.company.link.fetchImpl = async (url, init = {}) => {
+    if (init.method === 'POST') throw new Error('POST-only failure');
+    return r.relay.fetch(url, init);
+  };
+  r.cs.answer(r.company.thread(thread).sessionId, '回执已生成，但等待上传。');
+  await r.company.tick();
+  r.clock.now += 10000;
+  await r.company.tick();
+  assert.match(r.company.status().net.lastError?.message || '', /POST-only/);
+  assert.equal(r.company.status().link.outbox, 1);
+  assert.ok(r.notices.some(n => n.title.includes('回执待发送')));
+  assert.ok(!r.notices.some(n => n.title.includes('已回执')));
+  r.company.link.fetchImpl = r.relay.fetch;
+  r.clock.now += 10000;
+  await r.company.tick();
+  assert.equal(r.company.status().net.lastError, null);
+  assert.equal(r.company.status().link.outbox, 0);
+  await r.home.checkNow();
+  assert.equal(r.hs.sent.length, 1);
+});
+
+test('首问响应晚到时按本次检查的起点收紧到 10 秒，不错过下个定时刻度', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.company.setSettings({ enabled: false });
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
+  const first = await ask(r, 'home-s1', '第一项测试，模拟收件响应晚了一毫秒');
+  const begin = r.clock.now;
+  r.company.link.fetchImpl = async (url, init = {}) => {
+    if (!init.method || init.method === 'GET') r.clock.now += 1;
+    return r.relay.fetch(url, init);
+  };
+  await r.company.checkNow();
+  assert.ok(r.company.thread(first.thread));
+  assert.equal(r.company.nextPullAt, begin + 10000);
+  const second = await ask(r, 'home-s1', '第二项测试，应在下一次十秒检查收到');
+  r.clock.now = begin + 10000;
+  await r.company.tick();
+  assert.ok(r.company.thread(second.thread));
 });
