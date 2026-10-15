@@ -295,7 +295,7 @@ class WirelessAssistant {
       const install = this.install();
       inflight = await merger.inflight({ python: install.python, script: this.script(), run: this.deps.runTasks || this.deps.run });
       // 先排除已终止的对象（PR 已关闭 / 合入、提案已撤回或暂缓），只有仍在途的候选取不到才算材料不全。
-      const missing = (inflight.errors || []).filter(e => this.stillInFlight({ pr: e.pr, state: e.state, pr_state: e.pr_state }));
+      const missing = (inflight.errors || []).filter(e => e.live !== false && this.stillInFlight({ pr: e.pr, state: e.state, pr_state: e.pr_state }));
       if (missing.length) inflightError = '取不到 ' + missing.map(e => 'PR #' + e.pr).join('、') + ' 的候选';
     } catch (error) { inflightError = '读不到在途改动（' + short(error.message, 60) + '）'; }
     const now = this.now();
