@@ -45,5 +45,5 @@ test('自动标题只取用户自己的话', async () => {
   });
   manager.maybeAutoTitleSessionFromPrompt({ hubSessionId: 's1', text: `${RULES}\n\n${QUESTION}` });
   await new Promise(r => setTimeout(r, 30));
-  assert.equal(sessions.get('s1').title, `Codex · ${QUESTION}`);
+  assert.equal(sessions.get('s1').title, QUESTION);
 });

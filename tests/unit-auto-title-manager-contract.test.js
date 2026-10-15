@@ -58,8 +58,8 @@ function delay(ms) {
   });
 
   assert.strictEqual(manager.fallbackSessionTitleFromPrompt('请帮我分析这个 repo 的结构', 'codex'),
-    'Codex · 请帮我分析这个 repo 的结构',
-    'session fallback should preserve provider label and trim prompt text');
+    '请帮我分析这个 repo 的结构',
+    'session fallback should spend its width on the task, with the provider shown by its logo');
 
   assert.strictEqual(manager.isGenericAutoSessionTitle('Codex 12'), true,
     'default session titles should be eligible for auto-title');

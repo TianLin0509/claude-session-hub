@@ -11,6 +11,7 @@ const {
   normalizeLegacyBranchSessionTitle,
   parseBranchSessionIndex,
   shouldAcceptExternalSessionTitle,
+  sessionDisplayTitle,
 } = require('../core/session-title-guards.js');
 
 function test(name, fn) {
@@ -25,6 +26,18 @@ function test(name, fn) {
 }
 
 console.log('Running session title guard tests...');
+
+test('legacy auto-title provider prefixes disappear while manual names and topic words remain', () => {
+  for (const label of ['Claude', 'Codex', 'Gemini', 'Kimi']) {
+    const session = { kind: label.toLowerCase(), title: `${label} · 检查复制问题`, autoTitleGenerated: true };
+    assert.equal(sessionDisplayTitle(session), '检查复制问题');
+    assert.equal(migrateLegacyBranchSessionMeta(session).title, '检查复制问题');
+    assert.equal(sessionDisplayTitle({ ...session, userRenamed: true }), session.title);
+    assert.equal(sessionDisplayTitle({ ...session, title: `分支2: ${session.title}` }), '分支2: 检查复制问题');
+  }
+  assert.equal(sessionDisplayTitle({ title: 'Claude 与 Codex 的复制差异' }), 'Claude 与 Codex 的复制差异');
+  assert.equal(sessionDisplayTitle({ title: 'Codex · ' }), 'Codex ·');
+});
 
 test('default provider titles are generic', () => {
   assert.strictEqual(isGenericAutoSessionTitle('claude'), true);

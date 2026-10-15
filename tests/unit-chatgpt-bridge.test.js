@@ -326,7 +326,7 @@ test('card selection menu copies or syncs exactly the selected text', async () =
     document: {},
     window: {},
     menuEl: {},
-    clipboard: { writeText(text) { copied.push(text); } },
+    copyText: async text => { copied.push(text); return { ok: true }; },
     requestAnimationFrameFn: fn => fn(),
     pushToChatgpt: async (text, label) => {
       pushed.push({ text, label });
