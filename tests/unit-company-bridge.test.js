@@ -696,12 +696,12 @@ test('自动检查：调低空闲间隔立即收紧倒计时；未配对不发�
   assert.equal(r.company.nextPullAt, r.clock.now + 10000);
 });
 
-test('家里自动检查：发问与追问都把空闲的 3 分钟等待收紧为 10 秒', async t => {
+test('家里自动检查：发问与追问都把空闲的 1 分钟等待收紧为 10 秒', async t => {
   const r = rig(t);
   await pair(r);
   r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
   await r.home.checkNow();
-  assert.equal(r.home.nextPullAt, r.clock.now + 180000);
+  assert.equal(r.home.nextPullAt, r.clock.now + 60000);
   const { thread } = await ask(r, 'home-s1', '请验证家里收到回执不再多等三十秒');
   assert.equal(r.home.nextPullAt, r.clock.now + 10000);
   await r.company.checkNow();
@@ -714,7 +714,7 @@ test('家里自动检查：发问与追问都把空闲的 3 分钟等待收紧�
   await r.home.tick();
   assert.equal(r.hs.sent.length, 1);
   await r.home.checkNow();
-  assert.equal(r.home.nextPullAt, r.clock.now + 180000);
+  assert.equal(r.home.nextPullAt, r.clock.now + 60000);
   await r.home.followup('home-s1', { thread, question: '请继续验证第二轮追问' });
   assert.equal(r.home.nextPullAt, r.clock.now + 10000);
 });

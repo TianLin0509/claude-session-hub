@@ -7,6 +7,8 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   const clock = at => at ? new Date(at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke(channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
   const ROUND = { sent: ['已发出', 'wait'], received: ['公司已收到', 'wait'], running: ['公司在处理', 'run'], replied: ['已回执', 'ok'], error: ['公司报错', 'bad'] };
+  const CONSULT = { queued: ['排队', 'wait'], running: ['家里在作答', 'run'], replied: ['已回复公司', 'ok'], failed: ['没答上', 'bad'], cancelled: ['已作废', 'mute'] };
+  const AGENT = { claude: 'Claude', codex: 'Codex' };
 
   function head() {
     const st = data.link.state, net = data.net || {};
@@ -34,10 +36,24 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
         <div class="wp-actions"><button type="button" class="wp-link" data-cl="open:${esc(t.sessionId)}">${t.session?.open ? '打开提问的会话' : '找回提问的会话'}</button></div></article>`;
     }).join('');
   }
+  // 公司 CodeAgent 用 ask_home 发来的求助（2026-10-15）：家里开 Claude 会话作答，不行换 Codex。
+  function consults() {
+    const list = (data.consults || []).slice(0, 30);
+    if (!list.length) return '';
+    return '<h3 class="cl-sub">公司来的求助</h3>' + list.map(t => {
+      const [label, tone] = CONSULT[t.state] || [t.state, 'mute'];
+      const rounds = t.rounds.map(r => `<div class="cl-round"><b>第 ${r.round} 轮</b> <span class="wp-meta">收于 ${clock(r.receivedAt)}${r.agent ? ' · ' + AGENT[r.agent] : ''}${r.fallbackReason ? '（Claude ' + esc(r.fallbackReason) + '）' : ''}${r.companyAsks?.length ? ' · 回公司查证据 ' + esc(r.companyAsks.join('、')) : ''}${r.replyAt ? ' · 回复 ' + clock(r.replyAt) : ''}${r.meta?.elapsedSec ? ' · 用时 ' + Math.round(r.meta.elapsedSec / 60) + ' 分钟' : ''}</span>
+        <pre>${esc(r.question)}</pre>${r.reply ? `<pre class="ans">${esc(r.reply)}</pre>` : ''}${r.error ? `<p class="wp-note warn">${esc(r.error)}</p>` : ''}</div>`).join('');
+      return `<article class="wp-item"><div class="wp-item-head"><span class="wp-pill ${tone}">${label}</span><strong>${esc(t.id)} · ${esc(t.title)}</strong>${t.agent ? `<span class="wp-tag">${AGENT[t.agent] || esc(t.agent)}</span>` : ''}</div>
+        <div class="wp-meta">${t.from?.title ? '来自公司会话「' + esc(t.from.title) + '」 · ' : ''}${t.rounds.length} 轮 · 收到 ${clock(t.createdAt)}</div>
+        <details class="cl-details"><summary>看问答</summary>${rounds}</details>
+        ${t.sessionId ? `<div class="wp-actions"><button type="button" class="wp-link" data-cl="open:${esc(t.sessionId)}">${t.session?.open ? '打开作答的会话' : '找回作答的会话'}</button></div>` : ''}</article>`;
+    }).join('');
+  }
   function render() {
     if (!root || !data) return;
     root.querySelector('.cl-head').innerHTML = head();
-    root.querySelector('.wp-list').innerHTML = threads();
+    root.querySelector('.wp-list').innerHTML = threads() + consults();
   }
   async function load() {
     if (!root) return;
@@ -66,7 +82,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   function mount(container) {
     root = document.createElement('section');
     root.className = 'wp-section cl-section'; root.hidden = true;
-    root.innerHTML = '<h2>公司联动</h2><p class="wp-hint">家里的 Agent 需要核对公司代码时，向公司 Hub 的 CodeAgent 提问；回执到了自动发回提问的会话。</p><div class="wp-strip cl-head"></div><div class="wp-list"></div>';
+    root.innerHTML = '<h2>公司联动</h2><p class="wp-hint">家里的 Agent 需要核对公司代码时，向公司 Hub 的 CodeAgent 提问；回执到了自动发回提问的会话。公司 CodeAgent 遇到难题也会用 ask_home 向家里求助，家里开 Claude 会话作答（不行换 Codex），回复自动发回公司。</p><div class="wp-strip cl-head"></div><div class="wp-list"></div>';
     container.append(root);
     root.addEventListener('click', e => { const b = e.target.closest('[data-cl]'); if (b && b.tagName !== 'SELECT') void action(b.dataset.cl, b); });
     root.addEventListener('change', e => { if (e.target.dataset.cl === 'attach') void call('bridge:set-settings', { attach: e.target.value }).then(load).catch(err => showMessage?.(err.message)); });

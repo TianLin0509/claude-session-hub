@@ -66,3 +66,4 @@
 .cl-round{margin-top:8px}
 .cl-round pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;background:#f7f9fc;border:1px solid #edf1f7;border-radius:8px;padding:8px 10px;margin:4px 0;font:12.5px/1.6 var(--font-ui,"Microsoft YaHei",system-ui,sans-serif)}
 .cl-round pre.ans{background:#f3f8f4;border-color:#e1efe5}
+.cl-sub{font-size:13px;margin:16px 0 4px;color:#1b2942}

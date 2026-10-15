@@ -2251,7 +2251,15 @@ try {
   // @community-strip 家里一端只在自用版
   if (bridgeRole === 'home') {
     const { HomeBridge } = require('./core/company-bridge/home');
+    const live = new (require('./core/hub-assistant/live-history').LiveHistory)();
     companyBridgeService = new HomeBridge({ ...bridgeDeps,
+      // 公司求助（ask_home）由家里新开的 Claude / Codex 会话作答：用 Hub 的默认配置，按各自的原生记录读最终回答。
+      getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
+      readFinals: meta => {
+        const kind = require('./core/ai-kinds').isCodexCliKind(String(meta.kind || '').replace(/-resume$/, '')) ? 'codex' : 'claude';
+        const r = live.read({ ...meta, id: meta.id || meta.hubId, kind });
+        return r && r.available ? r.records : [];
+      },
       isWirelessWorkspace: cwd => require('./core/claude-mcp-profile').isWirelessWorkspace(cwd),
       // 测试可直接指定通道接口地址（本机通道服务）；平时取公司收件箱配置里的地址再加 /api。
       bridgeApiUrl: () => (process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_BRIDGE_API_URL) || null,
@@ -2282,8 +2290,11 @@ try {
       isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
+      // 「问家里」的 MCP 和命令行由 Hub 自己的程序以 Node 方式运行（公司版脚本在 app.asar 里，系统 node 读不到）。
+      nodeExecutable: process.execPath,
     });
     companyBridgeService.start();
+    sessionManager.setExtraMcpProvider(({ kind, opts, id }) => companyBridgeService.sessionPlan({ kind, opts, id }));
   }
   if (companyBridgeService) {
     require('./main/ipc/company-bridge-handlers').registerCompanyBridgeIpc(ipcMain, companyBridgeService, {
