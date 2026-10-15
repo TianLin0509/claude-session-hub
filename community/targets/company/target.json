@@ -16,7 +16,7 @@
       "to": "AIHubHuawei-"
     }
   ],
-  "version": "1.0.9",
+  "version": "2.0.0",
   "$kinds": "v1.0 纯净版（2026-10-12 用户要求）：公司只能用 CodeAgent，启动中心、群聊成员、首页检测都只留它。2026-10-14 用户：PowerShell 公司也能用，启动中心加回来（它不是 AI，不进群聊成员和 AI 筛选）。CodeAgent 必须排第一，卡片默认头像取第一项",
   "kinds": [
     "codeagent",

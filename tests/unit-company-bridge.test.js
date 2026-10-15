@@ -586,7 +586,9 @@ test('公司设置：旧版存的模型不再生效；没改过的历代默认�
 
 test('公司 CodeAgent 会话即使带了模型也不走 /model 菜单；普通 CodeAgent 会话照旧', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
-  assert.match(src, /if \(codeagentLaunch && opts\.model && !codeAgentReadOnly\(opts\)\) this\.emit\('codeagent-model-pick'/);
+  const { shouldPickCodeAgentModel } = require('../core/session-manager')._private;
+  assert.equal(shouldPickCodeAgentModel({ model: 'MiniMax-M2.7', purpose: 'company-bridge' }), false);
+  assert.equal(shouldPickCodeAgentModel({ model: 'MiniMax-M2.7', purpose: 'company-bridge', codeagentModelPick: true }), false);
 });
 
 test('自动检查：空闲按原设置；首问收到后立即缩短到 10 秒，不沿用刚排好的空闲倒计时', async t => {
@@ -696,12 +698,12 @@ test('自动检查：调低空闲间隔立即收紧倒计时；未配对不发�
   assert.equal(r.company.nextPullAt, r.clock.now + 10000);
 });
 
-test('家里自动检查：发问与追问都把空闲的 3 分钟等待收紧为 10 秒', async t => {
+test('家里自动检查：发问与追问都把空闲的 1 分钟等待收紧为 10 秒', async t => {
   const r = rig(t);
   await pair(r);
   r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle' });
   await r.home.checkNow();
-  assert.equal(r.home.nextPullAt, r.clock.now + 180000);
+  assert.equal(r.home.nextPullAt, r.clock.now + 60000);
   const { thread } = await ask(r, 'home-s1', '请验证家里收到回执不再多等三十秒');
   assert.equal(r.home.nextPullAt, r.clock.now + 10000);
   await r.company.checkNow();
@@ -714,7 +716,7 @@ test('家里自动检查：发问与追问都把空闲的 3 分钟等待收紧�
   await r.home.tick();
   assert.equal(r.hs.sent.length, 1);
   await r.home.checkNow();
-  assert.equal(r.home.nextPullAt, r.clock.now + 180000);
+  assert.equal(r.home.nextPullAt, r.clock.now + 60000);
   await r.home.followup('home-s1', { thread, question: '请继续验证第二轮追问' });
   assert.equal(r.home.nextPullAt, r.clock.now + 10000);
 });
