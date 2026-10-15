@@ -41,7 +41,7 @@ test('安装：只在 Windows 生效且只装一次；单测运行器与 Hub 主
   const root = path.join(__dirname, '..');
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
   assert.ok(main.indexOf("require('./core/fs-rename-retry').install()") < main.indexOf("require('electron')"));
-  assert.match(fs.readFileSync(path.join(root, 'scripts', 'run_unit_tests.js'), 'utf8'), /'--require', path\.join\(__dirname, '\.\.', 'core', 'fs-rename-retry-register\.js'\)/);
+  assert.match(fs.readFileSync(path.join(root, 'scripts', 'run_unit_tests.js'), 'utf8'), /\['--require', RENAME_RETRY_REGISTER\][\s\S]*spawn\(process\.execPath, \[\.\.\.RENAME_RETRY_ARGS, /);
 });
 
 test('装上后真实文件改名照常工作', () => {
