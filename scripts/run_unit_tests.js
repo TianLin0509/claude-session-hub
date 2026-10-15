@@ -105,6 +105,11 @@ const DEFAULT_BUDGET_MS = Number(process.env.HUB_UNIT_DEFAULT_TIMEOUT_MS) > 0
   ? Number(process.env.HUB_UNIT_DEFAULT_TIMEOUT_MS)
   : DEFAULT_TIMEOUT_MS;
 
+// 每个测试进程一启动就装上改名重试，和 Hub 主进程同一规则（core/fs-rename-retry.js）；
+// 运行器被复制到没有这个文件的夹具仓库里测试时不加。
+const RENAME_RETRY_REGISTER = path.join(__dirname, '..', 'core', 'fs-rename-retry-register.js');
+const RENAME_RETRY_ARGS = fs.existsSync(RENAME_RETRY_REGISTER) ? ['--require', RENAME_RETRY_REGISTER] : [];
+
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (e) { return fallback; }
@@ -239,7 +244,7 @@ function runOne(file, opts = {}) {
       HUB_UNIT_SUITE_LOCK_HELD: '1',
     });
     delete childEnv.CHUXIN_AGENT_LEAGUE_ALLOW_EXTERNAL_SCHEDULER;
-    const p = spawn(process.execPath, [path.join(TESTS, file)], {
+    const p = spawn(process.execPath, [...RENAME_RETRY_ARGS, path.join(TESTS, file)], {
       cwd: REPO,
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],

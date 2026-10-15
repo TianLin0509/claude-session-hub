@@ -8,6 +8,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
+const { unlockPhrase, typeKeys, typeUnlock } = require('./helpers/company-unlock');
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const freePort = () => new Promise((resolve, reject) => {
@@ -23,12 +24,16 @@ const json = JSON.stringify;
   const result = { passed: false, scope: '真实隔离 Hub 界面；未配对为真实状态，其余为状态夹具，不代表真实公司端往返', checks: [], screenshots: [], out };
   let hub, c;
   const check = message => { result.checks.push(message); console.log('✓ ' + message); };
-  try {
+  const launch = async () => {
     hub = await launchIsolatedHub({ dataDir: path.join(testRoot, 'data'), port: await freePort(), label: 'company-link-ui', windowMode: 'background',
       ...(process.env.COMPANY_ENTRY ? { entryPath: process.env.COMPANY_ENTRY } : {}),
       extraEnv: { CLAUDE_HUB_E2E: '1', CLAUDE_HUB_HOME_DIR: path.join(testRoot, 'home'), CLAUDE_HUB_BRIDGE_ROLE: 'company',
         CLAUDE_HUB_WIRELESS_TIMER: '0', HUB_ASSISTANT_FAST_LANE: '0', DEEPSEEK_API_KEY: '', ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', CODEX_API_KEY: '' } });
     c = await connectFirstPage(hub);
+  };
+  try {
+    const phrase = unlockPhrase();
+    await launch();
     await c.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     const until = async (label, read) => {
       for (const end = Date.now() + 30000; Date.now() < end;) { if (await read()) return; await wait(200); }
@@ -39,15 +44,66 @@ const json = JSON.stringify;
       const p = await c.eval(`(() => { const r = document.querySelector(${json(selector)}).getBoundingClientRect(); return { x: r.x+r.width/2, y: r.y+r.height/2 }; })()`);
       for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, ...p, button: 'left', clickCount: 1 });
     };
+    const shot0 = async name => {
+      const image = await c.send('Page.captureScreenshot', { format: 'png' });
+      const file = path.join(out, name + '.png'); fs.writeFileSync(file, Buffer.from(image.data, 'base64')); result.screenshots.push(file);
+    };
     const shot = async name => {
       const overflow = await c.eval('(() => { const e = document.querySelector("#home-link-dialog"); return e.scrollWidth > e.clientWidth + 1; })()');
       assert.equal(overflow, false, name + ' 不应横向溢出');
       const image = await c.send('Page.captureScreenshot', { format: 'png' });
       const file = path.join(out, name + '.png'); fs.writeFileSync(file, Buffer.from(image.data, 'base64')); result.screenshots.push(file);
     };
-    await until('menu entry', () => c.eval('!!document.getElementById("options-home-link")'));
+    // ---- 隐藏入口：没解锁时菜单里没有这一项，主进程接口也不应答 ----
+    const menuOpen = () => c.eval('(() => { const m = document.getElementById("options-menu"); return !!m && m.style.display !== "none" && m.getClientRects().length > 0; })()');
+    const hasEntry = () => c.eval('!!document.getElementById("options-home-link")');
+    await until('company renderer', () => c.eval('require("electron").ipcRenderer.invoke("bridge:status").then(s => s && s.role === "company")'));
+    assert.deepEqual(await c.eval('require("electron").ipcRenderer.invoke("bridge:status")'), { ok: true, role: 'company', unlocked: false });
+    assert.equal((await c.eval('require("electron").ipcRenderer.invoke("bridge:set-settings", { autoGate: true })')).error, '功能未启用');
     await click('#btn-options');
+    await until('options menu open', menuOpen);
+    assert.equal(await hasEntry(), false);
+    await shot0('00-locked-menu');
+    check('没解锁：设置菜单里没有「AI特战队专用功能」，主进程接口只回答未解锁');
+    // 焦点在输入框里时敲口令：是在打字，不算解锁。
+    // 优先用页面上真实可见的输入框；首页没有会话时没有，就放一个临时输入框（不在菜单里），检查的是「焦点在输入框」这条规则本身。
+    const field = await c.eval(`(() => {
+      for (const e of document.querySelectorAll("textarea, input:not([type]), input[type=text], input[type=search]")) {
+        if (e.closest("#options-menu") || e.disabled || !e.getClientRects().length) continue;
+        e.focus(); if (document.activeElement !== e) continue;
+        e.setAttribute("data-unlock-probe", "1"); return e.id || e.className || e.tagName;
+      }
+      const e = document.createElement("input"); e.type = "text"; e.style.cssText = "position:fixed;left:400px;top:20px;z-index:1"; e.setAttribute("data-unlock-probe", "temp");
+      document.body.append(e); e.focus(); return document.activeElement === e ? "临时输入框" : null;
+    })()`);
+    assert.ok(field, '页面上应有可聚焦的输入框'); result.probeField = field;
+    assert.equal(await menuOpen(), true);
+    await typeKeys(c, phrase); await wait(500);
+    assert.equal(await hasEntry(), false, '在输入框里打字不应解锁');
+    await c.eval('(() => { const e = document.querySelector("[data-unlock-probe]"); if (e && "value" in e) { e.value = ""; e.dispatchEvent(new Event("input", { bubbles: true })); } const temp = e?.getAttribute("data-unlock-probe") === "temp"; e?.removeAttribute("data-unlock-probe"); e?.blur(); if (temp) e.remove(); })()');
+    check('焦点在输入框里敲口令不解锁');
+    // 敲错（字母顺序反了）不解锁。
+    if (!(await menuOpen())) await click('#btn-options');
+    await typeKeys(c, [...phrase].reverse().join('')); await wait(500);
+    assert.equal(await hasEntry(), false, '敲错不应解锁');
+    // 菜单关着时敲对也不算。
+    await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until('menu closed', async () => !(await menuOpen()));
+    await typeKeys(c, phrase); await wait(500);
+    assert.equal(await hasEntry(), false, '菜单关着时不应解锁');
+    check('敲错不解锁；菜单关着时敲对也不解锁');
+    // 菜单开着、焦点不在输入框：敲对立即出现，不弹提示。
+    await click('#btn-options');
+    await until('options menu open', menuOpen);
+    const toastsBefore = await c.eval('document.body.innerText.includes("解锁")');
+    await typeUnlock(c, { phrase });
     assert.equal(await c.eval('document.getElementById("options-home-link").textContent'), 'AI特战队专用功能');
+    assert.equal(await menuOpen(), true, '解锁后菜单保持打开');
+    assert.equal(await c.eval('document.body.innerText.includes("解锁")'), toastsBefore, '解锁不应有任何提示');
+    assert.equal((await c.eval('require("electron").ipcRenderer.invoke("bridge:status")')).unlocked, true);
+    await shot0('00-unlocked-menu');
+    check('菜单开着时敲对口令：入口立即出现在菜单里，没有任何提示');
     await click('#options-home-link');
     await until('unpaired dialog', () => c.eval('!!document.querySelector("#home-link-dialog[open] [data-hl-f=code]")'));
     const unpaired = await c.eval('document.getElementById("home-link-dialog").innerText');
@@ -87,7 +143,8 @@ const json = JSON.stringify;
     await until('active interval', () => c.eval('document.querySelector(".hl-polling")?.textContent.includes("活跃检查 · 每 10 秒")'));
     const options = await c.eval('Array.from(document.querySelector("[data-hl-f=pollSeconds]").options).map(o => o.value)');
     assert.deepEqual(options, ['10', '15', '30', '45', '60', '120']);
-    const pairedText = await c.eval('document.getElementById("home-link-dialog").innerText');
+    // 「向家里求助」一节（ask_home，2026-10-15 起）按设计写明家里；其余部分保持中性。
+    const pairedText = await c.eval('(() => { const d = document.getElementById("home-link-dialog").cloneNode(true); d.querySelector("[data-hl-sec=ask-home]")?.remove(); document.body.append(d); const t = d.innerText; d.remove(); return t; })()');
     assert.match(pairedText, /任务记录/); assert.match(pairedText, /空闲检查间隔/); assert.match(pairedText, /45 秒/); assert.doesNotMatch(pairedText, /家里/);
     await shot('02-active'); check('活跃状态显示每 10 秒；空闲设置包含 10 秒及原有自定义值，任务记录保留');
 
@@ -114,6 +171,12 @@ const json = JSON.stringify;
     const waiting = await c.eval('document.getElementById("home-link-dialog").innerText');
     assert.match(waiting, /等待对端确认/); assert.doesNotMatch(waiting, /家里|公司代码|内网|回传/);
     await shot('05-waiting'); check('等待配对文案保持中性，取消和立即检查入口保留');
+
+    // 重开 Hub（同一数据目录）：不用再敲，入口一直在。
+    await c.close(); c = null; await gracefulQuit(hub); hub = null;
+    await launch();
+    await until('entry after restart', hasEntry);
+    check('重开 Hub 后入口仍在，不用再解锁');
     result.passed = true;
   } catch (error) { result.error = error.stack || String(error); throw error; }
   finally {
