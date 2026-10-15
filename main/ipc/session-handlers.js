@@ -531,7 +531,9 @@ function registerSessionIpc(ipcMain, deps) {
       } catch { /* 只是排查用的附件 */ }
     }
     if (result.ok) {
-      const updated = sessionManager.updateSessionMeta(sessionId, { currentModel: { id: modelId, displayName: codeagentModels.modelLabel(modelId) }, codeagentRequestedModel: undefined, codeagentModelPick: false });
+      const updated = sessionManager.updateSessionMeta(sessionId, { currentModel: { id: modelId, displayName: codeagentModels.modelLabel(modelId) }, codeagentRequestedModel: undefined, codeagentModelPick: false,
+        // 用户明确选中过的模型：CLI 自己退出、Hub 原地重拉时据此再选一次（core/session-manager.js 的 relaunch）。
+        codeagentUserModel: modelId });
       if (updated) sendToRenderer('session-updated', { session: updated });
     }
     return result;

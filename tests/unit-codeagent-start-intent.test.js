@@ -113,6 +113,23 @@ test('原地重拉不会把已经选过的模型再次当作新请求', () => {
   assert.equal(events.some(([name]) => name === 'codeagent-model-pick'), false);
 });
 
+test('原地重拉：用户明确选中过、且当前仍是那个模型时，重拉后再选一次（2026-10-16）', () => {
+  const run = extra => {
+    const writes = [], events = [];
+    const info = { id: 'relaunch-user-model', kind: 'codeagent', cwd: root, currentModel: { id: 'MiniMax-M2.7' }, ...extra };
+    const session = { info, pty: { write: text => writes.push(text), options: { env: {} } } };
+    const manager = { sessions: new Map([[info.id, session]]), hubRulesSystemPrompt: () => null, emit: (...args) => events.push(args) };
+    assert.equal(SessionManager.prototype.relaunchCli.call(manager, info.id), true);
+    assert.doesNotMatch(writes[0], /--model/);
+    return events.filter(([name]) => name === 'codeagent-model-pick').map(([, payload]) => payload);
+  };
+  assert.deepEqual(run({ codeagentUserModel: 'MiniMax-M2.7' }), [{ sessionId: 'relaunch-user-model', modelId: 'MiniMax-M2.7', reason: 'relaunch' }]);
+  // 之后用户在 CLI 里自己换了模型（记录里观察到的不再是选中的那个）：不替他改回去。
+  assert.deepEqual(run({ codeagentUserModel: 'GLM-5.2-WX-Auto' }), []);
+  // 替家里办事的会话一律用默认模型。
+  assert.deepEqual(run({ codeagentUserModel: 'MiniMax-M2.7', purpose: 'company-bridge' }), []);
+});
+
 test('恢复时明确覆盖模型仍算选模型，显式选择沿用也可覆盖旧意图', async () => {
   const resume = resumeHandler();
   const base = { kind: 'codeagent', cwd: root, currentModel: { id: 'GLM-5.2-WX-Auto' }, codeagentModelPick: false };
@@ -141,4 +158,9 @@ test('磁盘旧覆盖不能冒充本轮请求，本轮覆盖仍优先于磁盘',
   const explicit = await resume({ hubId, launchOverrides: { model: 'GLM-5.2-WX-Auto' } });
   assert.equal(explicit.opts.model, 'GLM-5.2-WX-Auto');
   assert.equal(explicit.opts.codeagentModelPick, true);
+});
+
+test('选模型成功后记下用户明确选中的模型，供原地重拉使用', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main', 'ipc', 'session-handlers.js'), 'utf8');
+  assert.match(src, /codeagentModelPick: false,\s*\n\s*\/\/[^\n]*\n\s*codeagentUserModel: modelId \}\)/);
 });
