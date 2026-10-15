@@ -56,13 +56,13 @@ test('launch never passes --session-id or --settings and always disables the upd
   const { cwd, config, configDir } = sandbox(t);
   const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
   const env = {};
-  const fresh = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { model: 'minimax-m2.7', effort: 'max' }, cwd, env, config);
+  const fresh = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { model: 'minimax-m2.7', effort: 'max', codeagentModelPick: true }, cwd, env, config);
   assert.equal(fresh.sessionId, null, 'identity is bound from the first hook, not assigned');
   assert.match(fresh.cmd, /^ codeagent --disable-update --skip-safe-check --model MiniMax-M2\.7 --effort max --permission-mode bypassPermissions/);
   assert.doesNotMatch(fresh.cmd, /--session-id|--settings|--continue|--setting-sources/);
   assert.ok(fresh.cmd.endsWith('\r\n'));
 
-  const unknownModel = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { model: 'claude-opus-5', effort: 'xhigh' }, cwd, env, config);
+  const unknownModel = buildCodeAgentPtyLaunch('hub-1', 'codeagent', { model: 'claude-opus-5', effort: 'xhigh', codeagentModelPick: true }, cwd, env, config);
   assert.match(unknownModel.cmd, /--model GLM-5\.2-WX-Auto/, 'unknown models fall back to the CLI default model');
   assert.doesNotMatch(unknownModel.cmd, /--effort/, 'unsupported effort is not passed');
 

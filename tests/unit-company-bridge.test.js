@@ -586,7 +586,9 @@ test('公司设置：旧版存的模型不再生效；没改过的历代默认�
 
 test('公司 CodeAgent 会话即使带了模型也不走 /model 菜单；普通 CodeAgent 会话照旧', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
-  assert.match(src, /if \(codeagentLaunch && opts\.model && !codeAgentReadOnly\(opts\)\) this\.emit\('codeagent-model-pick'/);
+  const { shouldPickCodeAgentModel } = require('../core/session-manager')._private;
+  assert.equal(shouldPickCodeAgentModel({ model: 'MiniMax-M2.7', purpose: 'company-bridge' }), false);
+  assert.equal(shouldPickCodeAgentModel({ model: 'MiniMax-M2.7', purpose: 'company-bridge', codeagentModelPick: true }), false);
 });
 
 test('自动检查：空闲按原设置；首问收到后立即缩短到 10 秒，不沿用刚排好的空闲倒计时', async t => {

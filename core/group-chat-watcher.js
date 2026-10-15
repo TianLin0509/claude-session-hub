@@ -468,6 +468,13 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
   if (options.submissionReceipt?.resolved) return alreadySubmitted();
   const requireReady = options.requireReady !== false;
   kind = resolveRuntimeKind(sessionManager, sid, kind);
+  // ready 缓存只证明 CLI 曾经启动，不能证明现在仍是聊天输入框。
+  // 检查放在提交队列内，避免另一条排队消息/模型失败在入队后改变输入目标。
+  if (isCodeAgentKind(kind) && !options.codeagentModelPick) {
+    // 启动前屏幕可能还没画完，先拦明确菜单/pending；真正写正文前再要求
+    // 当前普通输入区的正向证据，不能把这里的早期检查当作持久许可。
+    await require('./codeagent-model-picker').beforePrompt(sessionManager, sid, { allowUnready: true });
+  }
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
   const FAST_PATH_POLL_MS = 50;
@@ -571,7 +578,15 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     // "agent really began work" signal that drives ordinary-session status.
     const turnStart = options.submissionReceipt || observeAgentTurnStart(sessionManager, sid, kind);
     const livePtyObserver = createLivePtyRuntimeObserver(sessionManager, sid, kind);
+    let modelPickerScreen = null;
     try {
+    const modelCommand = require('./cli-model-command').modelCommandType(kind, String(prompt || ''));
+    if (modelCommand === 'codeagent-picker') {
+      try { modelPickerScreen = await require('./codeagent-model-picker').openSessionScreen(sessionManager, sid); }
+      catch (error) {
+        throw Object.assign(new Error(`无法读取 CodeAgent 模型菜单，本条命令未发送：${error?.message || String(error)}`), { notSent: true });
+      }
+    }
     const codexBusyBaseline = isCodexCliKind(kind) && /^\s*\//.test(String(prompt || ''))
       ? await visibleBusyRejections(livePtyObserver) : 0;
     const codexThreadSwitch = isCodexCliKind(kind) && CODEX_THREAD_SWITCH_COMMAND_RE.test(String(prompt || ''));
@@ -584,6 +599,11 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       && await sessionManager.tryLoadCodexEditorInput?.(sid, prompt, { attachments: options.attachments || [] });
     if (!usedCodexEditorInput) await clearCodexInputLine(sessionManager, sid, kind);
     if (options.submissionReceipt?.resolved) return alreadySubmitted();
+    if (isCodeAgentKind(kind) && !options.codeagentModelPick) {
+      // 冷启动等待期间可能才出现 /model；检查必须在所有等待之后、首个
+      // payload 之前。队列内只拒绝 pending，不等它，避免 /model 自锁。
+      await require('./codeagent-model-picker').beforePrompt(sessionManager, sid);
+    }
     const beforeBufferLength = String(sessionManager.getSessionBuffer(sid) || '').length;
     const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
     // 分块投喂（2026-09-03）：单次 write 几十 KB 会把 node-pty 的 inSocket 队列灌满，
@@ -627,12 +647,14 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     // empty submissions after a prompt already started.
     sessionManager.writeToSession(sid, '\r');
     let enterAttempts = 1;
-    const modelCommand = require('./cli-model-command').modelCommandType(kind, String(prompt || ''));
     if (modelCommand) {
       const deadline = Date.now() + 12000;
       const probe = {};
       while (Date.now() < deadline) {
-        await livePtyObserver?.probe(probe);
+        // CodeAgent 的菜单回执必须与 picker 使用相同的实际尺寸和有序 resize。
+        // 固定 120×30 的普通运行探针会把 36 行重绘的菜单顶部滚走，误报未打开。
+        if (modelPickerScreen) probe.lastLiveScreen = await modelPickerScreen.lines();
+        else await livePtyObserver?.probe(probe);
         const fresh = stripAnsi(sessionManager.getSessionOutputSince?.(sid, outputMarkBefore) || '');
         if (require('./cli-model-command').modelCommandAcknowledged(modelCommand, (probe.lastLiveScreen || []).join('\n'), fresh)) {
           return { ok: true, sendStatus: 'ok', enterAttempts, acknowledgementSource: 'cli-model-command' };
@@ -837,6 +859,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       // along the path must still release the semantic acknowledgement hook.
       if (turnStart) turnStart.dispose();
       if (livePtyObserver) livePtyObserver.dispose();
+      if (modelPickerScreen) modelPickerScreen.dispose();
     }
   }
   // ===========================================================================

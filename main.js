@@ -627,19 +627,34 @@ sessionManager.on('native-agent-lifecycle', event => {
 // CodeAgent：回答里的真实模型才算数（请求的模型可能因为没有权限而没生效），见 core/codeagent-models.js。
 // Stop hook 那一刻才开始盯的记录拿不到 model（尾巴从文件末尾读起），这时从记录末尾补读最后一条回答的 model。
 // 2026-10-13 公司真机：会话答了几十轮，Hub 一次实际模型都没记下（回合结束事件没走到这里）。
-// 所以 CodeAgent 的 Stop hook 也直接来这里读一次（via=stop-hook）；两条路先后到达时，第二次发现没有变化就不做事。
+// 所以 CodeAgent 的 Stop hook 也直接来这里读一次（via=stop-hook）。
+// 两条路可能乱序：完成事件携带的 tail 缓存可落后于磁盘，模型与用量必须取同一条最新回答。
+// 按实际 writer 排序异步读取；关闭重开或读期间改选模型后，旧结果不能回写。
+const codeAgentModelObservations = new WeakMap();
 async function observeCodeAgentModel(hubSessionId, ev, transcriptPath, source = 'turn-complete') {
   try {
+    const writer = sessionManager.sessions.get(hubSessionId);
+    const before = sessionManager.getSession(hubSessionId);
+    if (!writer || !before) return;
+    const observation = {};
+    codeAgentModelObservations.set(writer, observation);
+    const requestedModel = before.currentModel?.id;
     const codeAgentModels = require('./core/codeagent-models');
     let modelId = ev.modelId || null;
     let usage = ev.usage && typeof ev.usage === 'object' ? ev.usage : null;
-    const file = ev.transcriptPath || transcriptPath || sessionManager.getSession(hubSessionId)?.transcriptPath;
-    if ((!modelId || !usage) && file) {
+    const file = before.transcriptPath || transcriptPath || ev.transcriptPath;
+    if (file) {
       const last = await require('./core/read-last-assistant').readLastAssistantMessage(file);
-      modelId = modelId || last?.model || null;
-      usage = usage || last?.usage || null;
+      if (last) {
+        modelId = last.model || null;
+        usage = last.usage || null;
+      }
     }
     let session = sessionManager.getSession(hubSessionId);
+    if (!session || sessionManager.sessions.get(hubSessionId) !== writer
+      || codeAgentModelObservations.get(writer) !== observation
+      || session.currentModel?.id !== requestedModel
+      || session.transcriptPath !== before.transcriptPath) return;
     // 上下文占比（输入框旁的圆环）：CodeAgent 没有状态栏回调，按这一轮的用量算，见 core/codeagent-models.js。
     if (session && usage) {
       const configDir = session.codeagentConfigDir || require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
@@ -1562,6 +1577,18 @@ function handleCodexPtyHook(session, event, parsed) {
   return _codexPtyHookHandler(session, event, parsed);
 }
 
+function codeAgentIdentityRejection(hubSessionId, current, fields) {
+  if (!isCodeAgentKind(current?.kind)) return null;
+  const identity = require('./core/codeagent-fork-identity');
+  const sourceId = identity.forkSourceIdentity({ ...current,
+    codeagentForkSourceSessionId: current.codeagentForkSourceSessionId
+      || sessionManager.openLeases?.get(hubSessionId)?.forkSource }, {
+    getSession: id => sessionManager.getSession(id),
+    loadSessionFile: id => require('./core/session-store').loadSessionFile(id, { strict: true }),
+  });
+  return identity.identityRejection(fields, sourceId);
+}
+
 function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   if (!hubSessionId) return null;
   const next = {};
@@ -1570,6 +1597,16 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   if (Object.keys(next).length === 0) return null;
   const current = sessionManager.getSession(hubSessionId);
   if (!current) return null;
+  const identityRejected = codeAgentIdentityRejection(hubSessionId, current, {
+    ccSessionId: fields.ccSessionId || current.ccSessionId,
+    transcriptPath: fields.transcriptPath,
+  });
+  if (identityRejected) {
+    console.warn(`[codeagent binding] ignored ${identityRejected} for ${String(hubSessionId).slice(0, 8)}`);
+    return null;
+  }
+  // 首次绑定和 pending 的消费同一次提交；租约拒绝时不能遗留半个身份。
+  if (isCodeAgentKind(current.kind) && fields.codeagentIdentityPending === false) next.codeagentIdentityPending = false;
   // 子进程劫持防护：在会话里再跑一个 `claude`（跑测试、批处理、脚本探针）时，
   // 子进程会继承 CLAUDE_HUB_SESSION_ID，它的 Stop hook 会把本卡片重绑到子进程的
   // transcript 上；子进程目录一旦被清理，卡片视图就 ENOENT 打不开。
@@ -2290,6 +2327,7 @@ try {
       isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
+      readReceipt: (meta, round) => require('./core/company-bridge/receipt-reader').readCompanyReceipt(meta, round),
       // 「问家里」的 MCP 和命令行由 Hub 自己的程序以 Node 方式运行（公司版脚本在 app.asar 里，系统 node 读不到）。
       nodeExecutable: process.execPath,
     });
@@ -2880,6 +2918,15 @@ const hookServer = http.createServer((req, res) => {
         const eventAt = Date.now();
         let boundClaudeSessionId = String(hookTargetSession.ccSessionId || '');
         const incomingClaudeSessionId = String(parsed.claudeSessionId || '');
+        if (!parsed.agentId) {
+          const identityRejected = codeAgentIdentityRejection(parsed.sessionId, hookTargetSession, {
+            ccSessionId: incomingClaudeSessionId, transcriptPath: parsed.transcriptPath,
+          });
+          if (identityRejected) {
+            console.warn(`[codeagent hook] ignored ${identityRejected} for ${parsed.sessionId.slice(0, 8)} (${event})`);
+            res.writeHead(202); res.end(JSON.stringify({ ignored: identityRejected })); return;
+          }
+        }
         let initialCwdMismatch = false;
         let initialTranscriptBucketMismatch = false;
         if (!boundClaudeSessionId && parsed.cwd && hookTargetSession.cwd) {
@@ -2890,7 +2937,7 @@ const hookServer = http.createServer((req, res) => {
         }
         // 公司 Code Agent 不认 --session-id，Hub 启动时无法预定身份（core/codeagent-config.js）。
         // 待绑定期间（新建、分支、没有记录可恢复的重启），工作目录与记录所在目录都对得上的第一个
-        // 顶层 hook 就是这个会话本人：绑定后立刻撤掉待绑定标记，之后与 Claude 一样严格拒收外来 id。
+        // 顶层 hook 才能绑定；分支不接受父身份，编号必须与记录文件一致。绑定成功后再撤销 pending。
         // 子代理（agentId）和在会话里另起的 CLI（目录不同）不会被当成本人。
         if (hookTargetSession.codeagentIdentityPending === true && isCodeAgentKind(hookTargetSession.kind)
             && !parsed.agentId && incomingClaudeSessionId && hookTargetSession.cwd) {
@@ -2899,9 +2946,9 @@ const hookServer = http.createServer((req, res) => {
           try { sameCwd = !parsed.cwd || sameWorkDir(parsed.cwd, hookTargetSession.cwd); } catch {}
           try { if (parsed.transcriptPath) sameBucket = transcriptBucketMatches(parsed.transcriptPath, hookTargetSession.cwd); } catch {}
           if (sameCwd && sameBucket) {
-            sessionManager.updateSessionMeta(parsed.sessionId, { codeagentIdentityPending: false, ccSessionId: null });
             const bound = updateSessionTranscriptBinding(parsed.sessionId, {
               ccSessionId: incomingClaudeSessionId, transcriptPath: parsed.transcriptPath, cwd: parsed.cwd,
+              codeagentIdentityPending: false,
             });
             if (bound && bound.ccSessionId === incomingClaudeSessionId) {
               boundClaudeSessionId = incomingClaudeSessionId;
