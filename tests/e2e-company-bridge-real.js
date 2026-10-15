@@ -125,6 +125,8 @@ async function main() {
     await shot(hc, '01-home-pairing-code');
     check('家里无线页生成配对码');
     await click(cc, '#btn-options');
+    assert.equal(await cc.eval('!!document.getElementById("options-home-link")'), false, '没解锁时设置菜单里不应有入口');
+    await require('./helpers/company-unlock').typeUnlock(cc);
     await until('menu entry', () => cc.eval('!!document.getElementById("options-home-link")'), 15000, 300);
     assert.equal(await cc.eval('document.getElementById("options-home-link").textContent'), 'AI特战队专用功能');
     await click(cc, '#options-home-link');

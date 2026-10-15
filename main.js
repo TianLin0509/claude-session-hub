@@ -2330,6 +2330,8 @@ try {
       readReceipt: (meta, round) => require('./core/company-bridge/receipt-reader').readCompanyReceipt(meta, round),
       // 「问家里」的 MCP 和命令行由 Hub 自己的程序以 Node 方式运行（公司版脚本在 app.asar 里，系统 node 读不到）。
       nodeExecutable: process.execPath,
+      // 放行页自动点击（设置里打开后才用）：看不见的窗口，默认会话，和通道请求共用网络状态。
+      openHiddenGate: url => require('./core/company-bridge/gate-pass').openHiddenGateWindow(BrowserWindow, url),
     });
     companyBridgeService.start();
     sessionManager.setExtraMcpProvider(({ kind, opts, id }) => companyBridgeService.sessionPlan({ kind, opts, id }));

@@ -123,6 +123,7 @@ async function main() {
     await click(hc, '.cl-section [data-cl=create]');
     const code = await until('pairing code', () => hc.eval('document.querySelector(".cl-code")?.value || ""'), 15000, 300);
     await click(cc, '#btn-options');
+    await require('./helpers/company-unlock').typeUnlock(cc);
     await until('menu entry', () => cc.eval('!!document.getElementById("options-home-link")'), 15000, 300);
     await click(cc, '#options-home-link');
     await until('dialog', () => cc.eval('!!document.querySelector("#home-link-dialog[open] [data-hl-f=code]")'), 15000, 300);

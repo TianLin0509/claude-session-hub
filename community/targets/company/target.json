@@ -16,13 +16,13 @@
       "to": "AIHubHuawei-"
     }
   ],
-  "version": "2.0.0",
+  "version": "2.1.0",
   "$kinds": "v1.0 纯净版（2026-10-12 用户要求）：公司只能用 CodeAgent，启动中心、群聊成员、首页检测都只留它。2026-10-14 用户：PowerShell 公司也能用，启动中心加回来（它不是 AI，不进群聊成员和 AI 筛选）。CodeAgent 必须排第一，卡片默认头像取第一项",
   "kinds": [
     "codeagent",
     "powershell"
   ],
-  "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）；quotaBar=底部状态栏的各家 AI 余量；accounts=左侧「账号」页（各家 AI 网页与命令行账号）。homeLink=AI特战队专用功能（2026-10-15，设置菜单同名入口，配对后才工作）",
+  "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）；quotaBar=底部状态栏的各家 AI 余量；accounts=左侧「账号」页（各家 AI 网页与命令行账号）。homeLink=AI特战队专用功能（2026-10-15，设置菜单同名入口，配对后才工作；2.1.0 起入口默认隐藏，本机解锁一次后出现，见 core/company-bridge/unlock.js）",
   "features": {
     "assistant": false,
     "quotaBar": false,
