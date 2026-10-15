@@ -30,6 +30,8 @@ const WAITING = ['queued', 'held'];
 const STALL_MS = 30 * 60000;
 // 已接手的提案，会话停下这么久还没交付：提醒田哥去看一眼（可能在等人判断）。
 const IDLE_ATTENTION_MS = 20 * 60000;
+// 一次合入（完整测试闸门 + 推送）的时限。
+const MERGE_TIMEOUT_MS = 90 * 60000;
 const STATE_LABELS = { submitted: '待推进', accepted: '已推进', implementing: '实现中', reported: '待提出人验收', deferred: '暂缓', withdrawn: '已撤回', needs_info: '待补充', approved: '已批准', merged: '已合入' };
 // 协作台代码交付记录（PR）的状态。
 const REVIEWABLE = ['submitted', 'reviewing'];
@@ -58,7 +60,7 @@ class WirelessAssistant {
     this.store = new AssistantStore(path.join(deps.dataDir, 'wireless'));
     this.store.db.exec('CREATE TABLE IF NOT EXISTS wireless_jobs(id TEXT PRIMARY KEY,proposal TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL,updated INTEGER NOT NULL)');
     this.proposals = new Map();
-    this.tasks = new Map(); this.tasksLoaded = false;
+    this.tasks = new Map(); this.tasksLoaded = false; this.tasksAt = 0;
     this.last = this.store.get('lastPoll') || { at: null, error: null, total: 0, candidates: 0 };
     this.nextPollAt = Date.now() + (deps.firstPollDelayMs ?? 15000);
     this.polling = null; this.dispatching = null; this.timer = null; this.mergeRun = null; this.mergeChild = null;
@@ -128,7 +130,9 @@ class WirelessAssistant {
         let taskError = null;
         try {
           const code = await merger.listTasks({ python: install.python, script: this.script(), run: this.deps.runTasks || this.deps.run });
-          this.tasks = new Map(code.tasks.filter(t => t.pr).map(t => [t.pr, t])); this.tasksLoaded = true;
+          // 缺字段的记录逐条跳过，不让一条坏记录停掉整轮审查与合入。
+          this.tasks = new Map(code.tasks.filter(t => t.pr && /^[0-9a-f]{40}$/.test(t.candidate || '') && /^[0-9a-f]{40}$/.test(t.base || '')).map(t => [t.pr, t]));
+          this.tasksLoaded = true; this.tasksAt = this.now();
           this.reconcileCode();
         } catch (error) { this.tasksLoaded = false; taskError = error.message; }
         this.last = { at: startedAt, error: null, total: value.proposals.length, candidates: value.proposals.filter(unclaimedAccepted).length,
@@ -212,9 +216,16 @@ class WirelessAssistant {
       if (this.deps.getSession(job.sessionId) || (typeOf(job) === 'implement' && p && p.executor === job.slot)) this.saveJob({ ...job, state: 'working', note: '已交给 Agent' });
       else this.finish(job, 'failed', '上次派发没有确认结果（Hub 中途退出？），点「重来」再派', true);
     }
-    // 合入由本进程跑脚本；Hub 重启后「合入中」的记录没有对应进程，交给田哥点重来（脚本会从中断处接着做）。
+    // 合入由本进程跑脚本。Hub 退出时不杀它（杀在半路会把合并机目录留在试合并中），所以重启后
+    // 「合入中」的记录可能还在后台跑：先标「后台核对中」，按协作台状态收尾，超过合入时限才算没合完。
     if (!this.mergeRun) for (const job of this.jobs().filter(j => typeOf(j) === 'merge' && j.state === 'running')) {
-      this.finish(job, 'failed', '上次合入被 Hub 重启打断：点「重来」继续（脚本从中断处接着做，不会重复合并）', true, '合入被打断');
+      this.saveJob({ ...job, state: 'detached', note: 'Hub 重启前已开始合入，脚本可能仍在后台跑：按协作台状态核对' });
+    }
+    if (this.tasksLoaded) for (const job of this.jobs().filter(j => typeOf(j) === 'merge' && j.state === 'detached')) {
+      const t = this.tasks.get(job.pr);
+      if (t?.state === 'completed') this.finish(job, 'done', '已合入 develop（Hub 重启期间在后台完成）', true, '已合入');
+      else if (!t || t.candidate !== job.candidate || ['merge_failed', 'stale', 'returned'].includes(t.state)) this.finish(job, 'failed', '交付状态变为「' + (TASK_LABELS[t?.state] || t?.state || '不在协作台') + '」，请审批人在协作台第 4 步看原因', true, '合入未完成');
+      else if (now - (job.startedAt || now) > MERGE_TIMEOUT_MS) this.finish(job, 'failed', 'Hub 重启前开始的合入超过时限仍没完成：网络或环境问题修好后点「重来」（脚本从中断处接着做，不会重复合并）', true, '合入未完成');
     }
     for (const job of this.jobs().filter(j => j.state === 'working')) {
       if (typeOf(job) === 'review') { this.watchReview(job, now); continue; }
@@ -254,7 +265,9 @@ class WirelessAssistant {
       const t = this.tasks.get(job.pr);
       if (!t || t.candidate !== job.candidate) { this.finish(next, 'skipped', '候选已更新或 PR 不在协作台，本次审查作废'); return; }
       if (!REVIEWABLE.includes(t.state)) { this.finish(next, 'done', REVIEW_OUTCOME[t.state] || '交付状态变为「' + (TASK_LABELS[t.state] || t.state) + '」', true, t.state === 'review_failed' ? '审查没通过' : '审查完成'); return; }
-      if (!busy && now - (job.startedAt || now) > STALL_MS) { this.finish(next, 'stalled', this.deps.getSession(job.sessionId) ? '会话停下了，但审查结论没有回写到协作台' : '会话已关闭，审查结论没有回写', true); return; }
+      // 判卡住前必须有一次在会话停下之后读回的交付记录：审查常常超过半小时，交完结论一停下，
+      // 手上的还是上一轮读到的「待审查」，不能据此误报。
+      if (!busy && next.idleSince && this.tasksAt > next.idleSince && now - (job.startedAt || now) > STALL_MS) { this.finish(next, 'stalled', this.deps.getSession(job.sessionId) ? '会话停下了，但审查结论没有回写到协作台' : '会话已关闭，审查结论没有回写', true); return; }
     }
     this.saveJob(next);
   }
@@ -265,6 +278,8 @@ class WirelessAssistant {
 
   async dispatchQueued() {
     if (this.dispatching) return this.dispatching;
+    // 先起合入：合入在跑时审查要排着（见下），反过来会让审查撞上试合并中的合并机目录。
+    void this.runMerges();
     this.dispatching = (async () => {
       const settings = this.settings();
       if (!settings.enabled || !this.ownsTimers()) return;
@@ -276,6 +291,8 @@ class WirelessAssistant {
         if (typeOf(job) === 'review') {
           const t = this.tasks.get(job.pr);
           if (!this.tasksLoaded || !t || !this.reviewable(t) || t.candidate !== job.candidate) continue;
+          // 合入在跑时合并机主目录处于试合并中，prepare 会失败：审查等合入结束再派。
+          if (this.mergeRun || this.mergeBusy()) continue;
           await this.dispatchReview(job, t);
         } else {
           const p = this.proposals.get(job.proposalId);
@@ -303,13 +320,13 @@ class WirelessAssistant {
     let current = this.saveJob({ ...job, state: 'dispatching', slot, sessionId, kind: r.kind, model: r.model, effort: r.effort, startedAt: this.now(), claimed: false, idleSince: null, attention: null, wantRoute: null,
       attempts: [...(job.attempts || []), { at: this.now(), route: job.route, kind: r.kind, model: r.model, effort: r.effort, sessionId, slot }] });
     this.changed();
-    const defaults = await this.deps.getDefaults?.(r.kind) || {};
-    const picked = profiles.pick(r.kind, { model: r.model, effort: r.effort }, defaults);
-    const opts = { ...profiles.withModel(r.kind, defaults, picked), id: sessionId, cwd: install.root || this.deps.fallbackCwd,
-      title, purpose: PURPOSE, autonomous: true, noInheritCursor: true, mcpProfile: 'none',
-      wirelessProposal: { id: job.proposalId, slot, role: typeOf(job) } };
-    if (r.kind === 'codex') opts.codexSpeedTier = r.speed || 'standard';
     try {
+      const defaults = await this.deps.getDefaults?.(r.kind) || {};
+      const picked = profiles.pick(r.kind, { model: r.model, effort: r.effort }, defaults);
+      const opts = { ...profiles.withModel(r.kind, defaults, picked), id: sessionId, cwd: install.root || this.deps.fallbackCwd,
+        title, purpose: PURPOSE, autonomous: true, noInheritCursor: true, mcpProfile: 'none',
+        wirelessProposal: { id: job.proposalId, slot, role: typeOf(job) } };
+      if (r.kind === 'codex') opts.codexSpeedTier = r.speed || 'standard';
       const session = await this.deps.createSession(r.kind, opts);
       if (!session || session.id !== sessionId) throw new Error('会话创建结果与预留编号不一致');
       const receipt = await this.deps.sendPrompt(sessionId, text(install), randomUUID());
@@ -370,8 +387,10 @@ class WirelessAssistant {
   }
 
   // 合入：一次只跑一个（完整测试闸门占整机），不开会话、不调用模型。
+  mergeBusy() { return this.jobs().some(j => typeOf(j) === 'merge' && j.state === 'detached'); }
   runMerges() {
     if (this.mergeRun) return this.mergeRun;
+    if (this.mergeBusy()) return null;
     const settings = this.settings();
     if (!settings.enabled || !this.ownsTimers() || !this.tasksLoaded) return null;
     const job = this.jobs().filter(j => typeOf(j) === 'merge' && j.state === 'queued').sort((a, b) => a.createdAt - b.createdAt)[0];
@@ -383,15 +402,22 @@ class WirelessAssistant {
     this.saveJob({ ...job, state: 'running', startedAt: this.now(), logFile, note: '正在跑完整测试并合入（约 15–30 分钟），完成后同步阿里云',
       attempts: [...(job.attempts || []), { at: this.now(), logFile }] });
     this.changed();
-    this.mergeRun = merger.runMerge({ python: install.python, script: this.script(), pr: job.pr, candidate: job.candidate, logFile, spawnFn: this.deps.spawn, onChild: c => { this.mergeChild = c; } })
+    this.mergeRun = merger.runMerge({ python: install.python, script: this.script(), pr: job.pr, candidate: job.candidate, logFile, spawnFn: this.deps.spawn, timeoutMs: MERGE_TIMEOUT_MS, onChild: c => { this.mergeChild = c; } })
       .then(res => {
         const current = this.job(job.id) || job;
         if (res.ok && res.result?.state === 'completed') this.finish(current, 'done', `已合入 develop（${String(res.result.merged || '').slice(0, 8)}），阿里云已读回`, true, '已合入');
-        else if (res.ok) this.finish(current, 'failed', '合并脚本结束，但交付状态是「' + (TASK_LABELS[res.result?.state] || res.result?.state || '未知') + '」：点「重来」继续，日志 ' + logFile, true, '合入未完成');
-        else this.finish(current, 'failed', '合入未完成：' + res.error + '。日志 ' + logFile, true, '合入未完成');
+        else {
+          const state = res.result?.state;
+          const why = res.ok ? '合并脚本结束，但交付状态是「' + (TASK_LABELS[state] || state || '未知') + '」' : String(res.error || '').replace(/^合入未完成：/, '');
+          // 主干已更新会自动退回返工；合入未完成（多半是完整测试没过）由审批人在协作台退回返工；其余是网络或环境问题，点「重来」。
+          const next = state === 'stale' || /主干|候选或主干已经更新/.test(why) ? '主干已更新，协作台会把提案退回常驻助理重做'
+            : state === 'merge_failed' || /merge_failed|合并已停止/.test(why) ? '请审批人在协作台第 4 步看原因，代码问题点「退回修改」交常驻助理返工'
+            : '网络或环境问题修好后点「重来」（脚本从中断处接着做，不会重复合并）';
+          this.finish(current, 'failed', why + '。' + next + '。日志 ' + logFile, true, '合入未完成');
+        }
         this.nextPollAt = Math.min(this.nextPollAt, this.now() + 30000);
       })
-      .finally(() => { this.mergeRun = null; this.mergeChild = null; this.changed(); void this.runMerges(); });
+      .finally(() => { this.mergeRun = null; this.mergeChild = null; this.changed(); void this.runMerges(); void this.dispatchQueued(); });
     return this.mergeRun;
   }
 
@@ -401,7 +427,7 @@ class WirelessAssistant {
     if (!job) throw new Error('找不到这条记录');
     if (action === 'approve') { if (job.state !== 'held') throw new Error('这条不在「待你放行」'); this.saveJob({ ...job, state: 'queued', note: '你已放行' }); }
     else if (action === 'retry') { if (!['failed', 'stalled', 'released', 'skipped', 'dismissed'].includes(job.state)) throw new Error('这条正在处理，不能重来'); this.saveJob({ ...job, state: 'queued', note: '你要求重来', wantRoute: null }); }
-    else if (action === 'dismiss') { if ([...ACTIVE, 'running'].includes(job.state)) throw new Error('正在处理的任务请到会话里停下'); this.saveJob({ ...job, state: 'dismissed', note: '你选择不处理', finishedAt: this.now() }); }
+    else if (action === 'dismiss') { if ([...ACTIVE, 'running', 'detached'].includes(job.state)) throw new Error('正在处理的任务请到会话里停下'); this.saveJob({ ...job, state: 'dismissed', note: '你选择不处理', finishedAt: this.now() }); }
     else throw new Error('未知操作');
     this.changed();
     void this.dispatchQueued().then(() => this.changed());

@@ -155,17 +155,70 @@ test('合入失败如实标出原因；点重来再跑', async t => {
   assert.equal(state.children.length, 2);
 });
 
-test('Hub 重启打断合入：标「被打断」，不自动重跑', async t => {
-  const first = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'merging')] });
+test('Hub 重启时合入可能仍在后台：标「后台核对中」，不重跑、不开新合入；协作台显示已合入就收尾', async t => {
+  const first = fixture(t, { proposals: [accepted('a1', 21), accepted('b2', 22)], tasks: [task(21, 'merging'), task(22, 'approved', { candidate: CAND2 })] });
   await first.service.poll();
   assert.equal(first.state.children.length, 1);
   first.service.close();
+  const second = fixture(t, { proposals: [accepted('a1', 21), accepted('b2', 22)], tasks: [task(21, 'merging'), task(22, 'approved', { candidate: CAND2 })], dataDir: first.deps.dataDir });
+  await second.service.poll();
+  const job = () => second.service.status().jobs.find(j => j.type === 'merge' && j.pr === 21);
+  assert.equal(job().state, 'detached');
+  assert.equal(second.state.children.length, 0, '后台可能还在合：不重跑，也不开下一个合入');
+  second.state.tasks = [task(21, 'completed'), task(22, 'approved', { candidate: CAND2 })];
+  await second.service.poll();
+  assert.equal(job().state, 'done');
+  assert.match(job().note, /Hub 重启期间在后台完成/);
+  await flush();
+  assert.equal(second.state.children.length, 1, '收尾后接着合下一个');
+});
+
+test('后台核对超过合入时限仍没完成：标失败，提示点重来', async t => {
+  const first = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'merging')] });
+  await first.service.poll();
+  first.service.close();
   const second = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'merging')], dataDir: first.deps.dataDir });
-  second.service.watch();
+  second.state.now = first.state.now + 91 * 60000;
+  await second.service.poll();
   const job = second.service.status().jobs.find(j => j.type === 'merge');
   assert.equal(job.state, 'failed');
-  assert.match(job.note, /被 Hub 重启打断/);
-  assert.equal(second.state.children.length, 0);
+  assert.match(job.note, /超过时限/);
+});
+
+test('审查超过半小时、交完结论才停下：等读回协作台再判断，不误报「没跑起来」', async t => {
+  const { service, state } = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'submitted')] });
+  await service.poll();
+  const review = service.status().jobs.find(j => j.type === 'review');
+  state.now += 40 * 60000;
+  state.tasks = [task(21, 'awaiting_approval')];
+  state.busy.delete(review.sessionId); state.sessions.get(review.sessionId).status = 'idle';
+  service.watch();
+  assert.equal(service.status().jobs.find(j => j.type === 'review').state, 'working', '手上的还是旧状态，不判卡住');
+  await service.poll();
+  const done = service.status().jobs.find(j => j.type === 'review');
+  assert.equal(done.state, 'done');
+  assert.match(done.note, /审查通过/);
+});
+
+test('读会话默认配置出错也算主力没开起来，换替补', async t => {
+  const { service, state, deps } = fixture(t, { proposals: [proposal('a1')] });
+  const original = deps.getDefaults;
+  deps.getDefaults = async kind => { if (kind === 'codex') throw new Error('读不到 Codex 配置'); return original(kind); };
+  await service.poll();
+  const job = service.status().jobs[0];
+  assert.equal(job.state, 'working');
+  assert.equal(job.route, 'fallback');
+  assert.equal(state.created.at(-1).kind, 'claude');
+});
+
+test('合入在跑时不派审查（合并机目录在试合并中），合完再派', async t => {
+  const { service, state } = fixture(t, { proposals: [accepted('a1', 21), accepted('b2', 22)], tasks: [task(21, 'approved'), task(22, 'submitted', { candidate: CAND2 })] });
+  await service.poll();
+  assert.equal(state.children.length, 1);
+  assert.equal(service.status().jobs.find(j => j.type === 'review').state, 'queued');
+  state.children[0].finish(0, JSON.stringify({ pr: 21, state: 'completed', merged: 'e'.repeat(40) }, null, 2) + String.fromCharCode(10));
+  await flush(); await flush(); await flush();
+  assert.equal(service.status().jobs.find(j => j.type === 'review').state, 'working');
 });
 
 test('v2.6 退回时留下旧席位的提案：照样接手返工，新席位不撞名，也不会被误判为已释放', async t => {

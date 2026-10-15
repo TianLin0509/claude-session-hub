@@ -19,7 +19,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
   const EFF = { low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', ultra: '极限' };
   const STATE = {
     working: ['处理中', 'run'], dispatching: ['正在开会话', 'run'], queued: ['排队中', 'wait'], held: ['待你放行', 'hold'],
-    running: ['合入中', 'run'], done: ['已完成', 'ok'], released: ['已释放', 'warn'], stalled: ['没跑起来', 'bad'], failed: ['没跑起来', 'bad'],
+    running: ['合入中', 'run'], detached: ['后台核对中', 'run'], done: ['已完成', 'ok'], released: ['已释放', 'warn'], stalled: ['没跑起来', 'bad'], failed: ['没跑起来', 'bad'],
     skipped: ['不再处理', 'mute'], dismissed: ['你选择不处理', 'mute'],
   };
   const modelLabel = (r) => {
@@ -100,13 +100,13 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
     page.querySelector('[data-wp="check"]').disabled = !!data.polling;
     page.querySelector('.wp-strip').innerHTML = strip();
     const groups = {
-      active: jobs.filter(j => ['working', 'dispatching', 'running'].includes(j.state)),
+      active: jobs.filter(j => ['working', 'dispatching', 'running', 'detached'].includes(j.state)),
       held: jobs.filter(j => j.state === 'held'),
       queued: jobs.filter(j => j.state === 'queued').sort((a, b) => a.createdAt - b.createdAt || (a.order ?? 0) - (b.order ?? 0)),
-      recent: jobs.filter(j => !['working', 'dispatching', 'running', 'held', 'queued'].includes(j.state)).slice(0, 20),
+      recent: jobs.filter(j => !['working', 'dispatching', 'running', 'detached', 'held', 'queued'].includes(j.state)).slice(0, 20),
     };
     const empty = { active: '没有正在处理的事。', held: '', queued: '没有排队的事。', recent: '还没有结果。' };
-    const sessions = groups.active.filter(j => j.state !== 'running').length;
+    const sessions = groups.active.filter(j => !['running', 'detached'].includes(j.state)).length;
     for (const [key, list] of Object.entries(groups)) {
       const sec = page.querySelector(`[data-sec="${key}"]`);
       sec.hidden = key === 'held' && !list.length;

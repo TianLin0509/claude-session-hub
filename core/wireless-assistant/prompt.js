@@ -94,7 +94,7 @@ function buildReviewPrompt(task, p, { script, slot, reviewer }) {
     block('步骤', steps([
       cmd + ' prepare ' + task.pr + '：读回 depth、roles、revision、review_worktree、diff_command 和 changed_files。脚本说主干已变化（已标 stale）或不在待审查状态时，不再审查，用一段话说明后结束本轮。',
       '按 depth 审查（light / standard / deep；deep 要 Physics 与 Integration 两个角色依次审）。在审查工作区亲自复跑红灯测试（主干上失败、候选上通过），并跑改动涉及的测试文件（对照仓库 CLAUDE.md 的测试表）；完整测试闸门在合并时由脚本统一跑，这里不必跑全量。',
-      '回写结论：' + cmd + ' record ' + task.pr + ' --candidate ' + task.candidate + ' --revision <prepare 读回的 revision> --reviewer "' + reviewer + ' · 常驻助理 ' + slot + '" --review Integration PASS|BLOCK "<结论>"（deep 档 Physics、Integration 各一条 --review；修物理 bug 的加 --requires-ratchet）。revision 变了就重新 prepare 再 record。',
+      '回写结论：' + cmd + ' record ' + task.pr + ' --candidate ' + task.candidate + ' --revision <prepare 读回的 revision> --reviewer "' + reviewer + ' · 常驻助理 ' + slot + '" --review Integration PASS|BLOCK "<结论>"（deep 档 Physics、Integration 各一条 --review；修物理 bug 的加 --requires-ratchet）。revision 变了（例如审查期间审批人点了批准或撤回）就重新 prepare；候选没变时沿用原结论 record，不必重审。',
       'BLOCK 时把问题一次列全，每条写清触发条件和改法：意见会原样退回给常驻助理返工，返工后的复审只核对这些问题是否解决。',
     ])),
     block('最后', '会话最后一条回复用中文，第一行以「📌 **」开头写结论（PASS / BLOCK / 没审及原因），再列跑了哪些测试和主要发现。批准由审批人在网页点；审查通过且已批准后，合入由常驻助理用脚本完成。'),

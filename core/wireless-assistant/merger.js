@@ -31,19 +31,29 @@ function listTasks({ python = 'python', script, run = execFile, timeoutMs = 1200
 }
 
 // 合入一个已批准的 PR：完整测试闸门约 15–30 分钟。输出全部写进日志文件，结束后解析最后的 JSON 回执。
+// 连同完整测试闸门的子进程一起停（Windows 上只杀 python 会留下测试进程）。
+function killTree(child) {
+  if (!child?.pid || process.platform !== 'win32') { try { child?.kill?.(); } catch {} return; }
+  try { execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {}); } catch {}
+}
+
 function runMerge({ python = 'python', script, pr, candidate, logFile, spawnFn = spawn, timeoutMs = 90 * 60000, onChild }) {
   return new Promise(resolve => {
-    fs.mkdirSync(path.dirname(logFile), { recursive: true });
-    const log = fs.createWriteStream(logFile, { flags: 'a' });
-    log.write(`\n=== ${new Date().toISOString()} merge PR #${pr} ${candidate}\n`);
-    let out = '', err = '', done = false;
-    const child = spawnFn(python, [script, 'merge', String(pr), '--candidate', candidate], { cwd: path.dirname(script), windowsHide: true, env: ENV() });
+    let out = '', err = '', done = false, log = null, timer = null, child = null;
+    const write = d => { if (!done && log) log.write(d); };
+    const finish = value => { if (done) return; done = true; clearTimeout(timer); try { log?.end(); } catch {} resolve(value); };
+    try {
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+      log = fs.createWriteStream(logFile, { flags: 'a' });
+      log.on('error', () => {});
+      log.write(`\n=== ${new Date().toISOString()} merge PR #${pr} ${candidate}\n`);
+      child = spawnFn(python, [script, 'merge', String(pr), '--candidate', candidate], { cwd: path.dirname(script), windowsHide: true, env: ENV() });
+    } catch (error) { finish({ ok: false, error: '合并脚本没有启动：' + error.message }); return; }
     onChild?.(child);
-    const finish = value => { if (done) return; done = true; clearTimeout(timer); log.end(); resolve(value); };
-    const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ ok: false, error: '超过 ' + Math.round(timeoutMs / 60000) + ' 分钟还没合完，已停止' }); }, timeoutMs);
+    timer = setTimeout(() => { killTree(child); finish({ ok: false, error: '超过 ' + Math.round(timeoutMs / 60000) + ' 分钟还没合完，已停止' }); }, timeoutMs);
     timer.unref?.();
-    child.stdout?.on('data', d => { out += d; log.write(d); });
-    child.stderr?.on('data', d => { err += d; log.write(d); });
+    child.stdout?.on('data', d => { out += d; write(d); });
+    child.stderr?.on('data', d => { err += d; write(d); });
     child.on('error', e => finish({ ok: false, error: '合并脚本没有启动：' + e.message }));
     child.on('close', code => {
       let result = null;
@@ -55,4 +65,4 @@ function runMerge({ python = 'python', script, pr, candidate, logFile, spawnFn =
   });
 }
 
-module.exports = { defaultScript, listTasks, runMerge };
+module.exports = { defaultScript, listTasks, runMerge, killTree };
