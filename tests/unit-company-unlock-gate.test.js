@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { rig, pair } = require('./helpers/company-bridge-rig');
 const { matchesUnlock, unlockDigest, UNLOCK_LENGTH } = require('../core/company-bridge/unlock');
-const { pickGateButton, MAX_TRIES, COOLDOWN_MS } = require('../core/company-bridge/gate-pass');
+const { pickGateButton, gateClickScript, MAX_TRIES, COOLDOWN_MS } = require('../core/company-bridge/gate-pass');
 const { registerCompanyBridgeIpc } = require('../main/ipc/company-bridge-handlers');
 
 // 真口令不进任何文件（公司版代码在公开仓库）：逻辑用一个测试口令的摘要验证；
@@ -97,6 +97,19 @@ test('放行按钮识别：优先「继续访问 / 我已知晓」，不点「�
   assert.equal(pickGateButton(['帮助', '首页']), -1);
   assert.equal(pickGateButton(['这是一大段页面说明文字，里面提到了继续访问这几个字但不是按钮本身的文字内容']), -1);
   assert.equal(pickGateButton([]), -1);
+});
+
+test('放行页脚本：打开的是我们自己的收件箱网页（没被拦）时一个按钮都不点；真放行页照常点', () => {
+  const run = (title, labels) => {
+    const clicked = [];
+    const els = labels.map(text => ({ innerText: text, getBoundingClientRect: () => ({ width: 10, height: 10 }), click: () => clicked.push(text) }));
+    const sandbox = { document: { title, querySelectorAll: () => els }, getComputedStyle: () => ({ visibility: 'visible', display: 'block' }) };
+    return { result: require('node:vm').runInNewContext(gateClickScript(), sandbox), clicked };
+  };
+  const inbox = run('公司文件收件箱 · 文字往来', ['文字往来', '发送', '确定']);
+  assert.equal(inbox.result.notGate, true); assert.deepEqual(inbox.clicked, []);
+  const gate = run('安全提示', ['返回', '继续访问']);
+  assert.equal(gate.result.clicked, true); assert.deepEqual(gate.clicked, ['继续访问']);
 });
 
 // 通道被公司代理拦着：所有请求都跳转到放行页；放行页上的按钮被点过才恢复。

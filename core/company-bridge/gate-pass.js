@@ -17,6 +17,8 @@ const SAMPLE_LIMIT = 200 * 1024;
 const GATE_WORDS = ['继续访问', '我已知晓', '知晓风险', '已知晓', '继续', '接受', '同意', '允许', '确定', 'continue', 'proceed', 'i understand', 'accept', 'allow', 'agree', 'ok'];
 // 带这些字的是「不同意 / 返回 / 取消」，不点。
 const NEGATIVE = /不|取消|拒绝|返回|关闭|cancel|back|decline|deny|close|reject/i;
+// 放行页地址退回的是收件箱网页本身（代理会把它跳到放行页）；没被拦时打开的就是它，标题里有这几个字。
+const INBOX_TITLE = '公司文件收件箱';
 
 // 候选按钮的文字 → 该点哪一个（下标，没有返回 -1）。纯函数：页面里注入的脚本和单测用的是同一份。
 function pickGateButton(texts) {
@@ -30,6 +32,8 @@ function pickGateButton(texts) {
 // 注入放行页执行：收集可点击元素，选中后点一下，返回点了什么。
 function gateClickScript() {
   return `(() => {
+    // 打开的其实是我们自己的收件箱网页（这时已经不拦了）：不点任何按钮。
+    if (String(document.title || '').includes(${JSON.stringify(INBOX_TITLE)})) return { clicked: false, notGate: true, text: null, candidates: [] };
     const GATE_WORDS = ${JSON.stringify(GATE_WORDS)}, NEGATIVE = ${NEGATIVE.toString()};
     const pickGateButton = ${pickGateButton.toString()};
     const visible = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
@@ -57,7 +61,7 @@ async function openHiddenGateWindow(BrowserWindow, url, { loadTimeoutMs = 20000,
     result.loaded = true;
     result.html = String(await js('document.documentElement ? document.documentElement.outerHTML : ""') || '');
     const clicked = await js(gateClickScript());
-    Object.assign(result, { clicked: !!clicked?.clicked, text: clicked?.text || null, candidates: clicked?.candidates || [] });
+    Object.assign(result, { clicked: !!clicked?.clicked, notGate: !!clicked?.notGate, text: clicked?.text || null, candidates: clicked?.candidates || [] });
     if (result.clicked) {
       // 点完等页面跳走并加载完；没有跳转（按钮只发了个请求）就等满 settleMs。
       await new Promise(resolve => {
@@ -102,7 +106,7 @@ class GatePasser {
       try { fs.mkdirSync(this.logDir, { recursive: true }); fs.writeFileSync(path.join(this.logDir, 'company-gate-sample.html'), Buffer.from(r.html, 'utf8').subarray(0, SAMPLE_LIMIT)); } catch {}
     }
     this.log({ host: hostOf(url), try: this.tries, clicked: !!r?.clicked, button: r?.text || null,
-      result: r?.error ? 'error' : r?.clicked ? 'clicked' : 'no-button', error: r?.error || null, candidates: r?.clicked ? undefined : (r?.candidates || []).slice(0, 10) });
+      result: r?.error ? 'error' : r?.clicked ? 'clicked' : r?.notGate ? 'not-gate' : 'no-button', error: r?.error || null, candidates: r?.clicked ? undefined : (r?.candidates || []).slice(0, 10) });
     return !!r?.clicked;
   }
   // 通道恢复：清零计数；之前自动点过就记一笔成功。
