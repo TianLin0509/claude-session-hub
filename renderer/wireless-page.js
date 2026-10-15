@@ -144,7 +144,8 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
     const box = document.createElement('div'); box.className = 'wp-settings'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', 'SuperRAN 助理设置');
     box.innerHTML = `<h3>SuperRAN 助理设置</h3>${routeForm('primary', '主力')}${routeForm('fallback', '替补（主力开不起来或没接手时用）')}
       <fieldset><legend>节奏</legend><label>同时处理<select data-f="maxParallel">${opts(['1', '2', '3', '4'], String(s.maxParallel), x => x + ' 个')}</select></label>
-      <label>检查间隔<select data-f="pollMinutes">${opts(['5', '10', '15', '30', '60'], String(s.pollMinutes), x => x + ' 分钟')}</select></label></fieldset>
+      <label>检查间隔<select data-f="pollMinutes">${opts(['5', '10', '15', '30', '60'], String(s.pollMinutes), x => x + ' 分钟')}</select></label>
+      <label>等公司回执最多<select data-f="companyWaitMinutes">${opts(['30', '60', '120', '240'], String(s.companyWaitMinutes || 120), x => x + ' 分钟')}</select></label></fieldset>
       <div class="wp-settings-row"><button type="button" class="wp-btn" data-x="cancel">取消</button><button type="button" class="wp-btn primary" data-x="save">保存</button></div>`;
     page.querySelector('.wp-body').prepend(box);
     for (const fs of box.querySelectorAll('fieldset[data-route]')) {
@@ -167,7 +168,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
       if (x === 'cancel') { box.remove(); return; }
       const route = r => { const fs = box.querySelector(`fieldset[data-route="${r}"]`), v = f => fs.querySelector(`[data-f="${f}"]`).value; return { kind: v('kind'), model: v('model'), effort: v('effort') || undefined, speed: v('speed') }; };
       const btn = e.target; btn.disabled = true;
-      try { await call('wireless:set-settings', { primary: route('primary'), fallback: route('fallback'), maxParallel: Number(box.querySelector('[data-f="maxParallel"]').value), pollMinutes: Number(box.querySelector('[data-f="pollMinutes"]').value) }); box.remove(); await load(); }
+      try { await call('wireless:set-settings', { primary: route('primary'), fallback: route('fallback'), maxParallel: Number(box.querySelector('[data-f="maxParallel"]').value), pollMinutes: Number(box.querySelector('[data-f="pollMinutes"]').value), companyWaitMinutes: Number(box.querySelector('[data-f="companyWaitMinutes"]').value) }); box.remove(); await load(); }
       catch (error) { btn.disabled = false; showMessage?.('没有保存：' + error.message); }
     });
   }

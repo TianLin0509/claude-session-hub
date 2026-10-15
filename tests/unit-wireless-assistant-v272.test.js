@@ -381,3 +381,29 @@ test('收回审批权后排队的合入被跳过，别人重新批准同一候�
   assert.equal(state.children.length, 2);
   assert.deepEqual(state.children[1].args.slice(1, 3), ['merge', '32']);
 });
+
+test('AirView：有关的提案初审建议问公司、审查必须问公司并按上限等待；无关不问；旧提案标未核实', () => {
+  const { buildExecutionPrompt, buildReviewPrompt, buildReReviewPrompt } = require('../core/wireless-assistant/prompt');
+  const install = { user: 'u', site: 'https://x/', kitDir: 'k' };
+  const t0 = { pr: 13, candidate: CAND, base: BASE };
+  const opts = { script: 'C:/s/scripts/review_merge.py', slot: 'wr-13-1', reviewer: 'Opus', companyWaitMinutes: 90 };
+  const related = proposal('r1', { airview: { state: 'related', refs: ['src/ul/GUlMeasure.cc（selServArrayForJT）'] } });
+  const exec = buildExecutionPrompt(related, { install, slot: 'wx-r1-1', precheck: true });
+  for (const part of ['AirView 对齐（初审时建议做）', 'align-list', 'ask_company', 'GUlMeasure.cc', '不要求发成段源码']) assert.ok(exec.includes(part), part);
+  const review = buildReviewPrompt(t0, related, opts);
+  for (const part of ['公司 CodeAgent 对齐检查（必须）', '等回执最多 90 分钟', 'followup_company', '有意偏离', '待公司核实', 'AirView｜', '变异测试', '--report-file', '作者自测不能写成审查复跑']) assert.ok(review.includes(part), part);
+  assert.ok(buildReReviewPrompt(t0, related, opts).includes('公司 CodeAgent 对齐检查'));
+  const unrelated = proposal('u1', { airview: { state: 'unrelated', refs: [] } });
+  assert.ok(!buildExecutionPrompt(unrelated, { install, slot: 'wx-u1-1', precheck: true }).includes('ask_company'));
+  assert.ok(!buildReviewPrompt(t0, unrelated, opts).includes('ask_company'), '无关不询问');
+  const old = proposal('o1');
+  assert.match(buildReviewPrompt(t0, old, opts), /没写 AirView 关系（旧提案）：不问公司，报告里 AirView 对齐标「未核实」/);
+});
+
+test('等公司回执的上限可在设置里改（10–480 分钟）', async t => {
+  const { service } = fixture(t, {});
+  assert.equal(service.settings().companyWaitMinutes, 120);
+  service.setSettings({ companyWaitMinutes: 60 });
+  assert.equal(service.settings().companyWaitMinutes, 60);
+  assert.throws(() => service.setSettings({ companyWaitMinutes: 5 }), /10–480/);
+});

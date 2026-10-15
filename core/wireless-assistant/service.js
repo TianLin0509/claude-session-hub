@@ -25,7 +25,7 @@ const { scanProposal } = require('./risk');
 const PURPOSE = 'wireless-proposal';
 const KINDS = ['codex', 'claude'];
 const DEFAULT_SETTINGS = Object.freeze({
-  enabled: true, maxParallel: 2, pollMinutes: 10,
+  enabled: true, maxParallel: 2, pollMinutes: 10, companyWaitMinutes: 120,
   primary: { kind: 'codex', model: 'gpt-6-astra', effort: 'max', speed: 'standard' },
   fallback: { kind: 'claude', model: 'claude-opus-5-5', effort: 'max' },
 });
@@ -95,6 +95,7 @@ class WirelessAssistant {
     const next = this.settings();
     if ('enabled' in patch) next.enabled = patch.enabled === true;
     if ('maxParallel' in patch) { const n = Number(patch.maxParallel); if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('同时处理的提案数只能是 1–4'); next.maxParallel = n; }
+    if ('companyWaitMinutes' in patch) { const n = Number(patch.companyWaitMinutes); if (!Number.isInteger(n) || n < 10 || n > 480) throw new Error('等公司回执的上限只能是 10–480 分钟'); next.companyWaitMinutes = n; }
     if ('pollMinutes' in patch) { const n = Number(patch.pollMinutes); if (!Number.isInteger(n) || n < 2 || n > 120) throw new Error('检查间隔只能是 2–120 分钟'); next.pollMinutes = n; }
     for (const route of ['primary', 'fallback']) {
       if (!patch[route]) continue;
@@ -551,12 +552,12 @@ class WirelessAssistant {
     // 同一 PR 的复审续用原审查会话（它记得上次列的问题，省得重读）。
     const prev = this.reusableSession(this.jobs().filter(j => typeOf(j) === 'review' && j.pr === job.pr && j.id !== job.id), r.kind);
     if (prev) {
-      const done = await this.reuse(job, prev, route, buildReReviewPrompt(task, p ? { ...p, site: this.install().site } : null, { script: this.script(), slot: prev.slot, reviewer: r.model, round: job.round }));
+      const done = await this.reuse(job, prev, route, buildReReviewPrompt(task, p ? { ...p, site: this.install().site } : null, { script: this.script(), slot: prev.slot, reviewer: r.model, round: job.round, companyWaitMinutes: settings.companyWaitMinutes }));
       if (done.ok) { this.changed(); return done.job; }
     }
     const slot = this.nextSlot('wr-' + job.pr + '-', j => typeOf(j) === 'review' && j.pr === job.pr);
     const opened = await this.openSession({ ...job, route }, r, { slot, title: '无线 · 审查 · ' + short(job.title, 20),
-      text: install => buildReviewPrompt(task, p ? { ...p, site: install.site } : null, { script: this.script(), slot, reviewer: r.model, round: job.round }) });
+      text: install => buildReviewPrompt(task, p ? { ...p, site: install.site } : null, { script: this.script(), slot, reviewer: r.model, round: job.round, companyWaitMinutes: settings.companyWaitMinutes }) });
     if (opened.ok) return opened.job;
     this.finish(opened.job, 'failed', '审查会话没开起来：' + short(opened.error.message, 80) + '（为保证换模型审查，不改用同一家模型）', true, '审查没开始');
     this.changed();
