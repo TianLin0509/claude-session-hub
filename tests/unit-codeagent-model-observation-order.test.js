@@ -210,3 +210,13 @@ test('Auto family policy preserves the selected family model while recording act
   assert.equal(h.state().codeagentRequestedModel, undefined);
   assert.equal(h.emitted.filter(e => e.channel === 'session-notice').length, 0);
 });
+
+test('latest disk answer without a model does not borrow the stale event model', async () => {
+  const h = harness({ model: MINI, read: async () => ({ usage: usage(4200), id: 'latest-no-model' }) });
+  await h.observe({ modelId: GLM, usage: usage(100) });
+  h.healthy();
+  assert.equal(h.state().currentModel.id, MINI, 'missing model in the latest answer cannot authorize an old model rollback');
+  assert.equal(h.state().codeagentActualModel, MINI);
+  assert.equal(h.state().contextUsed, 4290, 'latest usage remains valid independently of a missing model field');
+  assert.equal(h.emitted.filter(e => e.channel === 'session-notice').length, 0);
+});

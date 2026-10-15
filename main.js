@@ -646,7 +646,7 @@ async function observeCodeAgentModel(hubSessionId, ev, transcriptPath, source = 
     if (file) {
       const last = await require('./core/read-last-assistant').readLastAssistantMessage(file);
       if (last) {
-        modelId = last.model || modelId;
+        modelId = last.model || null;
         usage = last.usage || null;
       }
     }
