@@ -54,9 +54,10 @@ function killTree(child) {
 
 function runMerge({ python = 'python', script, pr, candidate, logFile, spawnFn = spawn, timeoutMs = 90 * 60000, onChild }) {
   return new Promise(resolve => {
-    let out = '', err = '', done = false, log = null, timer = null, child = null;
-    const write = d => { if (!done && log) log.write(d); };
-    const finish = value => { if (done) return; done = true; clearTimeout(timer); try { log?.end(); } catch {} resolve(value); };
+    let out = '', err = '', done = false, closed = false, log = null, timer = null, child = null;
+    // 超时后仍把脚本输出写进日志（进程没被结束），进程真正退出时才关日志。
+    const write = d => { if (!closed && log) log.write(d); };
+    const finish = (value, keepLog = false) => { if (done) return; done = true; clearTimeout(timer); if (!keepLog) { closed = true; try { log?.end(); } catch {} } resolve(value); };
     try {
       fs.mkdirSync(path.dirname(logFile), { recursive: true });
       log = fs.createWriteStream(logFile, { flags: 'a' });
@@ -65,12 +66,14 @@ function runMerge({ python = 'python', script, pr, candidate, logFile, spawnFn =
       child = spawnFn(python, [script, 'merge', String(pr), '--candidate', candidate], { cwd: path.dirname(script), windowsHide: true, env: ENV() });
     } catch (error) { finish({ ok: false, error: '合并脚本没有启动：' + error.message }); return; }
     onChild?.(child);
-    timer = setTimeout(() => { killTree(child); finish({ ok: false, error: '超过 ' + Math.round(timeoutMs / 60000) + ' 分钟还没合完，已停止' }); }, timeoutMs);
+    // 超时不强杀：合并脚本自己的闸门时限会让它回滚收尾；强杀会留下试合并现场（2026-10-16 PR #22）。
+    timer = setTimeout(() => finish({ ok: false, timedOut: true, error: '超过 ' + Math.round(timeoutMs / 60000) + ' 分钟还没合完' }, true), timeoutMs);
     timer.unref?.();
     child.stdout?.on('data', d => { out += d; write(d); });
     child.stderr?.on('data', d => { err += d; write(d); });
     child.on('error', e => finish({ ok: false, error: '合并脚本没有启动：' + e.message }));
     child.on('close', code => {
+      if (done) { closed = true; try { log?.end(); } catch {} return; }
       let result = null;
       const at = out.lastIndexOf('\n{');
       try { result = JSON.parse((at >= 0 ? out.slice(at + 1) : out).trim()); } catch { result = null; }

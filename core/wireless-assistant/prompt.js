@@ -100,9 +100,10 @@ function buildGoAheadPrompt(p, { slot, checked, waited, force, note } = {}) {
 }
 
 // 返修发回原实现会话：审查没通过、提出人或审批人退回、和主干冲突，都走这里（续用原会话，省得重读代码）。
-function buildReworkPrompt(p, { slot }) {
+function buildReworkPrompt(p, { slot, findings = '' }) {
   return join([
     'PR #' + (p.pr_number || '?') + ' 需要返修：' + (p.note || '见提案讨论'),
+    findings ? block('完整意见（逐条处理，一条不漏）', findings) : '',
     block('返修步骤', steps([
       '交付退回后接手已释放：先重新接手 python superran-proposals.py --config <执行配置> claim ' + p.id + ' --slot ' + slot + ' --base <最新 develop 完整 SHA>。',
       '在原分支、原 PR 上逐条按意见修改；退回原因是和主干有冲突时，先 git merge origin/develop（不 rebase、不强推）解决冲突。',
@@ -144,6 +145,12 @@ function buildReviewPrompt(task, p, { script, slot, reviewer, round }) {
   ]);
 }
 
+// 计划缺「### 预计改动」时请会话补写（初审要靠它做确定性比对）。
+function buildPlanFixPrompt(p) {
+  return '初审还差一步：你的计划里没有「### 预计改动」清单，助理没法核对会不会和在途改动撞车。' + PLAN_FORMAT
+    + '请用 progress ' + p.id + ' --action plan --file <计划.md> 重新回写完整计划（保留原有内容，补上这一节），然后结束本轮，等「初审通过」。';
+}
+
 // 复审发回原审查会话（同一 PR 的候选更新后）：它记得上次列的问题，只核对是否解决。
 function buildReReviewPrompt(task, p, { script, slot, reviewer, round }) {
   const file = String(script).replace(/\\/g, '/');
@@ -159,4 +166,4 @@ function buildReReviewPrompt(task, p, { script, slot, reviewer, round }) {
   ]);
 }
 
-module.exports = { buildExecutionPrompt, buildReviewPrompt, buildGoAheadPrompt, buildReworkPrompt, buildReReviewPrompt, PLAN_FORMAT };
+module.exports = { buildExecutionPrompt, buildReviewPrompt, buildGoAheadPrompt, buildReworkPrompt, buildReReviewPrompt, buildPlanFixPrompt, PLAN_FORMAT };

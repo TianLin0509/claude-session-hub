@@ -111,7 +111,7 @@ test('初审：新提案先只读出计划；碰到在途 PR 的红档文件就�
   assert.equal(job.waitFor.label, 'PR #17');
   assert.match(job.note, /初审：等 PR #17 合入或终止/);
   assert.ok(state.notices.some(n => /初审：先等 PR #17/.test(n.title)));
-  assert.match(state.progress.at(-1).join(' '), /--action renew --note 【执行状态】初审：等 PR #17 合入｜/);
+  assert.match(state.progress.at(-1).join(' '), /--action renew --note 【执行状态】初审：等 PR #17 合入或终止｜/);
   const sentBefore = state.sent.length;
   await service.poll();
   assert.equal(service.job(job.id).phase, 'waiting', 'PR 还在途就继续等，不重复发提示');
@@ -171,14 +171,107 @@ test('初审等待超过 24 小时只提醒一次；点「不等了，直接开�
   assert.match(state.sent.at(-1).text, /田哥选择不等 PR #17，直接开始实现/);
 });
 
-test('读不到在途改动：第一次等下一轮，第二次起按不冲突放行（不卡死）', async t => {
+test('比对材料不全不算通过：读不到在途改动就停在等待并写明缺什么，恢复后自动继续；缺清单先请会话补写', async t => {
   const { service, state } = fixture(t, { proposals: [proposal('n1')], tasks: [] });
   state.inflightError = '失败：网络不通';
-  const job = await planned(service, state, 'n1', ['src/superran/channel/native.py: f']);
-  assert.equal(job.phase, 'precheck');
+  let job = await planned(service, state, 'n1', ['src/superran/channel/native.py: f']);
+  assert.equal(job.phase, 'waiting');
+  assert.equal(job.waitFor.key, 'material');
+  assert.match(job.note, /读不到在途改动/);
   await service.poll();
-  assert.equal(service.job(job.id).phase, 'implementing');
-  assert.match(state.sent.at(-1).text, /读不到在途改动/);
+  assert.equal(service.job(job.id).phase, 'waiting', '不会因为重试几次就自动放行');
+  state.inflightError = null;
+  await service.poll();
+  assert.equal(service.job(job.id).phase, 'implementing', '材料齐了自动继续');
+  // 计划没有「预计改动」：先请会话补写一次，补不上就等人决定
+  const two = fixture(t, { proposals: [proposal('m1')], tasks: [] });
+  await two.service.poll();
+  const j2 = implJob(two.service, 'm1');
+  two.state.list = [proposal('m1', { state: 'implementing', executor: j2.slot, plan: '只写了范围' })];
+  idle(two.state, j2);
+  await two.service.poll();
+  assert.match(two.state.sent.at(-1).text, /没有「### 预计改动」清单/);
+  idle(two.state, j2);
+  await two.service.poll();
+  job = two.service.job(j2.id);
+  assert.equal((job.phase, job.waitFor.key), 'material');
+  two.service.act(j2.id, 'force');
+  await flush(6);
+  assert.equal(two.service.job(j2.id).phase, 'implementing', '人点了才放行');
+});
+
+test('被等的 PR 所属提案撤回、或分支换了候选：不再等', async t => {
+  const { service, state } = fixture(t, {
+    proposals: [proposal('n1'), delivered('y1', 17)], tasks: [task(17, 'submitted')],
+    inflight: [{ pr: 17, state: 'submitted', title: 'PR 17', candidate: CAND, live: true, changed: ['src/superran/channel/native.py'], functions: {} }],
+  });
+  const job = await planned(service, state, 'n1', ['src/superran/channel/native.py: f'], [delivered('y1', 17)]);
+  assert.equal(job.phase, 'waiting');
+  state.list = [proposal('n1', { state: 'implementing', executor: job.slot, plan: PLAN(['src/superran/channel/native.py: f']) }), delivered('y1', 17, { state: 'withdrawn' })];
+  await service.poll();
+  assert.equal(service.job(job.id).phase, 'implementing', '提案撤回优先于代码记录的状态');
+});
+
+test('初审等待不占会话名额：两个等待中的实现不挡住它们要等的审查', async t => {
+  const { service, state } = fixture(t, {
+    proposals: [proposal('n1'), proposal('n2'), delivered('y1', 17)], tasks: [task(17, 'review_failed')],
+    inflight: [{ pr: 17, state: 'review_failed', title: 'PR 17', candidate: CAND, live: true, changed: ['src/superran/channel/native.py'], functions: {} }],
+  });
+  await service.poll();
+  const a = implJob(service, 'n1'), b = implJob(service, 'n2');
+  const plan = PLAN(['src/superran/channel/native.py: f']);
+  state.list = [proposal('n1', { state: 'implementing', executor: a.slot, plan }), proposal('n2', { state: 'implementing', executor: b.slot, plan }), delivered('y1', 17)];
+  idle(state, a); idle(state, b);
+  await service.poll();
+  assert.equal(service.job(a.id).phase, 'waiting');
+  // PR 17 返修后重交，需要审查：两个等待中的会话不占名额，审查照常派出
+  state.tasks = [task(17, 'submitted', { candidate: CAND2 })];
+  await service.poll();
+  assert.equal(service.status().jobs.find(j => j.type === 'review' && j.pr === 17)?.state, 'working');
+});
+
+test('同一候选补证据后重新送审（submit_seq 变了）：开新一轮审查，不被上一轮记录挡住', async t => {
+  const { service, state } = fixture(t, { proposals: [delivered('a1', 21)], tasks: [task(21, 'submitted', { submit_seq: 1 })] });
+  await service.poll();
+  const first = service.status().jobs.find(j => j.type === 'review');
+  state.tasks = [task(21, 'review_failed', { submit_seq: 1, review_rounds: 1 })];
+  idle(state, first);
+  await service.poll();
+  state.tasks = [task(21, 'submitted', { submit_seq: 2, review_rounds: 1 })];
+  await service.poll();
+  const reviews = service.status().jobs.filter(j => j.type === 'review');
+  assert.equal(reviews.length, 2);
+  assert.equal(reviews.find(j => /:s2/.test(j.id)).state, 'working');
+});
+
+test('返修发回原会话时带上完整审查意见（讨论里的完整版，不用被截断的摘要）', async t => {
+  const { service, state } = fixture(t, { proposals: [proposal('n1')], tasks: [] });
+  const job = await planned(service, state, 'n1', ['docs/x.md']);
+  state.list = [delivered('n1', 21, { executor: job.slot })];
+  idle(state, job);
+  await service.poll();
+  const full = ['换模型审查第 1 轮没通过（完整意见，候选 cccc）：', '', 'Physics BLOCK：' + '甲'.repeat(800) + '；Integration BLOCK：最后一条阻断'].join('\n');
+  state.list = [proposal('n1', { state: 'accepted', result: '📌 已修改', pr_number: 21, rework_round: 1, note: '换模型审查第 1 轮没通过：Physics BLOCK：甲甲…（完整意见见讨论）', comments: [{ author: 'lintian-admin', markdown: full }] })];
+  for (const [id, s] of state.sessions) { state.busy.delete(id); s.status = 'idle'; }
+  await service.poll();
+  assert.ok(state.sent.at(-1).text.includes('最后一条阻断'));
+});
+
+test('合入超过外层时限不强杀：结果标 timedOut，进程继续、日志继续写，退出时才关日志', async t => {
+  const merger = require('../core/wireless-assistant/merger');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-merge-timeout-'));
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+  const script = path.join(dir, 'review_merge.py'); fs.writeFileSync(script, '');
+  let killed = false;
+  const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => { killed = true; }; child.pid = undefined;
+  const logFile = path.join(dir, 'merge.log');
+  const res = await merger.runMerge({ python: 'python', script, pr: 21, candidate: CAND, logFile, timeoutMs: 20, spawnFn: () => child });
+  assert.equal(res.timedOut, true);
+  assert.equal(killed, false, '不强杀');
+  child.stdout.emit('data', '闸门继续跑完：回滚收尾\n');
+  child.emit('close', 1);
+  await flush(6);
+  assert.match(fs.readFileSync(logFile, 'utf8'), /闸门继续跑完/);
 });
 
 test('返修续用原实现会话：审查没通过退回后，把意见发回同一个会话（同一席位），不另开会话', async t => {

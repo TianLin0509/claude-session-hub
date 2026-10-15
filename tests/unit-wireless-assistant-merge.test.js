@@ -179,7 +179,7 @@ test('后台核对超过合入时限仍没完成：标失败，提示点重来',
   await first.service.poll();
   first.service.close();
   const second = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'merging')], dataDir: first.deps.dataDir });
-  second.state.now = first.state.now + 91 * 60000;
+  second.state.now = first.state.now + 4 * 3600000 + 60000;  // v2.7.2：闸门允许 3 小时，后台核对 4 小时后才算没合完
   await second.service.poll();
   const job = second.service.status().jobs.find(j => j.type === 'merge');
   assert.equal(job.state, 'failed');

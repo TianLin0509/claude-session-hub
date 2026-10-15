@@ -19,7 +19,7 @@ const { claimTimers, ownsTimers } = require('../hub-assistant/timer-owner');
 const profiles = require('../hub-assistant/profiles');
 const portal = require('./portal');
 const merger = require('./merger');
-const { buildExecutionPrompt, buildReviewPrompt, buildGoAheadPrompt, buildReworkPrompt, buildReReviewPrompt } = require('./prompt');
+const { buildExecutionPrompt, buildReviewPrompt, buildGoAheadPrompt, buildReworkPrompt, buildReReviewPrompt, buildPlanFixPrompt } = require('./prompt');
 const { scanProposal } = require('./risk');
 
 const PURPOSE = 'wireless-proposal';
@@ -43,8 +43,10 @@ const INFLIGHT_PROPOSAL = ['accepted', 'implementing', 'reported'];
 const STALL_MS = 30 * 60000;
 // 已接手的提案，会话停下这么久还没交付：提醒田哥去看一眼（可能在等人判断）。
 const IDLE_ATTENTION_MS = 20 * 60000;
-// 一次合入（完整测试闸门 + 推送）的时限。
-const MERGE_TIMEOUT_MS = 90 * 60000;
+// 一次合入（完整测试闸门 + 推送）的时限：合并脚本自己给闸门 3 小时（MERGE_COMMAND_TIMEOUT_S），外层再留收尾时间。
+// 超时不强杀进程树（强杀会让闸门来不及回滚，留下试合并现场），改为「后台核对中」，按协作台状态收尾。
+const MERGE_TIMEOUT_MS = 200 * 60000;
+const DETACHED_LIMIT_MS = 4 * 3600000;
 const STATE_LABELS = { submitted: '待推进', accepted: '已推进', implementing: '实现中', reported: '已交付', deferred: '暂缓', withdrawn: '已撤回', needs_info: '待补充', approved: '已批准', merged: '已合入', disputed: '等提出人判断分歧' };
 // 协作台代码交付记录（PR）的状态。
 const REVIEWABLE = ['submitted', 'reviewing'];
@@ -58,7 +60,8 @@ const REVIEW_OUTCOME = {
 
 function jobKey(p) {
   const result = p.result ? createHash('sha256').update(String(p.result)).digest('hex').slice(0, 8) : 'r0';
-  return p.id + ':' + String(p.content_sha || '').slice(0, 12) + ':' + result;
+  // rework_round：协作台每次退回返修（含提出人选「按审查意见改」）加一，同一份报告的下一轮也是新任务。
+  return p.id + ':' + String(p.content_sha || '').slice(0, 12) + ':' + result + (p.rework_round ? ':w' + p.rework_round : '');
 }
 // 「已推进」本身就表示没有有效接手（claim 后是「实现中」）。v2.6 的协作台退回时不清旧执行席位，
 // 所以这里只看状态，不看 executor 字段，旧数据里退回的提案也能被接手返工。
@@ -208,7 +211,7 @@ class WirelessAssistant {
         if (old.state === 'skipped' && !busy(job.type)) this.saveJob({ ...old, state: 'queued', note: '交付状态恢复，重新排队', finishedAt: null, createdAt: now });
       };
       if (this.reviewable(t)) {
-        const id = `review:${t.pr}:${t.candidate.slice(0, 12)}:${t.base.slice(0, 12)}` + (t.rereview ? ':' + t.rereview.slice(0, 12) : '');
+        const id = `review:${t.pr}:${t.candidate.slice(0, 12)}:${t.base.slice(0, 12)}` + (t.submit_seq ? ':s' + t.submit_seq : '') + (t.rereview ? ':' + t.rereview.slice(0, 12) : '');
         ensure(id, { id, type: 'review', proposalId: p.id, pr: t.pr, candidate: t.candidate, base: t.base, rereview: t.rereview || '', round: (t.review_rounds || 0) + 1, title: p.title, author: p.author, state: 'queued', createdAt: now, order: t.pr, attempts: [] });
       }
       if (this.mergeable(t)) {
@@ -249,7 +252,7 @@ class WirelessAssistant {
       const t = this.tasks.get(job.pr);
       if (t?.state === 'completed') this.finish(job, 'done', '已合入 develop（Hub 重启期间在后台完成）', true, '已合入');
       else if (!t || t.candidate !== job.candidate || ['merge_failed', 'stale', 'returned'].includes(t.state)) this.finish(job, 'failed', '交付状态变为「' + (TASK_LABELS[t?.state] || t?.state || '不在协作台') + '」，请审批人在协作台第 4 步看原因', true, '合入未完成');
-      else if (now - (job.startedAt || now) > MERGE_TIMEOUT_MS) this.finish(job, 'failed', 'Hub 重启前开始的合入超过时限仍没完成：网络或环境问题修好后点「重来」（脚本从中断处接着做，不会重复合并）', true, '合入未完成');
+      else if (now - (job.startedAt || now) > DETACHED_LIMIT_MS) this.finish(job, 'failed', 'Hub 重启前开始的合入超过时限仍没完成：网络或环境问题修好后点「重来」（脚本从中断处接着做，不会重复合并）', true, '合入未完成');
     }
     for (const job of this.jobs().filter(j => j.state === 'working')) {
       if (typeOf(job) === 'review') { this.watchReview(job, now); continue; }
@@ -290,41 +293,56 @@ class WirelessAssistant {
     try {
       const install = this.install();
       inflight = await merger.inflight({ python: install.python, script: this.script(), run: this.deps.runTasks || this.deps.run });
-    } catch (error) { inflightError = error.message; }
+      if (inflight.errors?.length) inflightError = '取不到 ' + inflight.errors.map(e => 'PR #' + e.pr).join('、') + ' 的候选';
+    } catch (error) { inflightError = '读不到在途改动（' + short(error.message, 60) + '）'; }
     const now = this.now();
     for (const job of jobs) {
       const p = this.proposals.get(job.proposalId);
       if (!p || p.state !== 'implementing' || p.executor !== job.slot || this.sessionBusy(job.sessionId)) continue;
+      if (!p.plan) continue; // 会话还没写完计划
+      if (job.force) { await this.goAhead(job, p, { force: true }); continue; }
       const mine = parsePlan(p.plan);
+      // 材料不全不等于通过（独立审查 r2 第 5 条）：缺清单先请会话补写一次；读不到在途改动就每轮重试。
+      // 两种情况都停在「等待」里并写明缺什么，只有人点「不等了，直接开始」才放行。
+      let missing = null;
       if (!mine) {
-        if (p.plan) await this.goAhead(job, p, { note: '计划里没有「预计改动」清单，按不冲突处理' });
+        if (!job.planAsked && this.deps.getSession(job.sessionId)) {
+          await this.deps.sendPrompt(job.sessionId, buildPlanFixPrompt(p), randomUUID()).catch(() => null);
+          this.saveJob({ ...job, planAsked: true, note: '初审：计划里没有「预计改动」清单，已请会话补写' });
+          continue;
+        }
+        missing = '计划里没有「预计改动」清单，没法比对';
+      } else if (inflightError) missing = inflightError + '，没法比对';
+      if (missing) { await this.park(job, p, { key: 'material', label: '核对材料', reason: missing }, now); continue; }
+      const hit = findConflict(mine, this.precheckOthers(p, inflight), new Set(inflight.red || []));
+      if (!hit) {
+        // 解除等待要重新占一个会话名额；名额满就等下一轮（独立审查 r2 第 2 条）。
+        if (job.phase === 'waiting' && this.busySlots() >= this.settings().maxParallel) { this.saveJob({ ...job, note: '初审已不冲突，等会话名额' }); continue; }
+        await this.goAhead(job, p, { checked: (inflight.tasks || []).length });
         continue;
       }
-      if (!inflight) {
-        // 读不到在途改动：第一次先等下一轮，第二次起不挡（不加会卡死的闸门）。
-        if (job.precheckMisses >= 1) await this.goAhead(job, p, { note: '读不到在途改动（' + short(inflightError, 60) + '），没法比对，按不冲突处理' });
-        else this.saveJob({ ...job, precheckMisses: (job.precheckMisses || 0) + 1, note: '初审：读在途改动失败，下一轮再比对' });
-        continue;
-      }
-      const hit = job.force ? null : findConflict(mine, this.precheckOthers(p, inflight), new Set(inflight.red || []));
-      if (!hit) { await this.goAhead(job, p, { checked: inflight.tasks.length }); continue; }
-      const changed = job.phase !== 'waiting' || job.waitFor?.key !== hit.key || job.waitFor?.reason !== hit.reason;
-      let next = { ...job, phase: 'waiting', waitFor: hit, waitSince: job.phase === 'waiting' ? job.waitSince : now,
-        note: '初审：等 ' + hit.label + ' 合入或终止。' + hit.reason };
-      if (changed) {
-        this.notify(job, '初审：先等 ' + hit.label, `提案「${short(job.title)}」${hit.reason}；${hit.label} 合入或撤回后自动继续，不用你操作。`);
-        await this.writeStatus(p, '初审：等 ' + hit.label + ' 合入｜' + hit.reason + '｜预计：' + hit.label + ' 合入或撤回后自动继续');
-        next.renewedAt = now;
-      } else if (now - (job.renewedAt || 0) > RENEW_MS) {
-        await this.writeStatus(p, '初审：等 ' + hit.label + ' 合入｜' + hit.reason + '｜预计：' + hit.label + ' 合入或撤回后自动继续');
-        next.renewedAt = now;
-      }
-      if (!next.waitReminded && now - (next.waitSince || now) > WAIT_REMIND_MS) {
-        next = { ...next, waitReminded: true, attention: '等 ' + hit.label + ' 已经 24 小时：可以点「不等了，直接开始」' };
-        this.notify(job, '等得有点久', `提案「${short(job.title)}」在等 ${hit.label}，已经 24 小时；可以在「无线」页点「不等了，直接开始」。`);
-      }
-      this.saveJob(next);
+      await this.park(job, p, hit, now);
     }
+  }
+  // 初审判「等待」：写清等谁、为什么；内容变了才通知；等待期间每小时续接手租约；24 小时提醒一次。
+  async park(job, p, hit, now) {
+    const changed = job.phase !== 'waiting' || job.waitFor?.key !== hit.key || job.waitFor?.reason !== hit.reason;
+    const label = hit.key === 'material' ? '补齐' + hit.label : hit.label + ' 合入或终止';
+    let next = { ...job, phase: 'waiting', waitFor: hit, waitSince: job.phase === 'waiting' ? job.waitSince : now, note: '初审：等 ' + label + '。' + hit.reason };
+    const status = '初审：等 ' + label + '｜' + hit.reason + '｜预计：' + (hit.key === 'material' ? '材料齐了自动继续，也可以在 AI Hub 点「不等了，直接开始」' : hit.label + ' 合入或撤回后自动继续');
+    if (changed) {
+      this.notify(job, '初审：先等 ' + hit.label, `提案「${short(job.title)}」${hit.reason}；${hit.key === 'material' ? '补齐后' : hit.label + ' 合入或撤回后'}自动继续，也可以在「无线」页点「不等了，直接开始」。`);
+      await this.writeStatus(p, status);
+      next.renewedAt = now;
+    } else if (now - (job.renewedAt || 0) > RENEW_MS) {
+      await this.writeStatus(p, status);
+      next.renewedAt = now;
+    }
+    if (!next.waitReminded && now - (next.waitSince || now) > WAIT_REMIND_MS) {
+      next = { ...next, waitReminded: true, attention: '等 ' + hit.label + ' 已经 24 小时：可以点「不等了，直接开始」' };
+      this.notify(job, '等得有点久', `提案「${short(job.title)}」在等 ${hit.label}，已经 24 小时；可以在「无线」页点「不等了，直接开始」。`);
+    }
+    this.saveJob(next);
   }
   // 比对对象：在途候选的实际改动（PR 还没合入）+ 别人已经开工的计划。自己在初审 / 等待中的计划不算，避免互相等。
   precheckOthers(p, inflight) {
@@ -333,7 +351,9 @@ class WirelessAssistant {
     for (const t of inflight.tasks || []) {
       const owner = this.proposalOfPr(t.pr);
       if (t.pr === p.pr_number || (owner && owner.id === p.id)) continue;
-      if (!(INFLIGHT_TASK.includes(t.state) || (owner && INFLIGHT_PROPOSAL.includes(owner.state)))) continue;
+      // 提案已撤回 / 暂缓 / 合入优先于代码记录的状态；分支删了或换了候选（live=false）就不算这个候选在途。
+      if (t.live === false || (owner && !INFLIGHT_PROPOSAL.includes(owner.state))) continue;
+      if (!(INFLIGHT_TASK.includes(t.state) || owner)) continue;
       prs.add(t.pr);
       others.push({ key: 'pr:' + t.pr + ':' + String(t.candidate || '').slice(0, 12), label: 'PR #' + t.pr, title: owner?.title || t.title, files: new Set(t.changed || []), functions: t.functions || {} });
     }
@@ -400,7 +420,7 @@ class WirelessAssistant {
       // 并行的会话和测试会把闸门拖过时限（PR #22 第一次合入就是这样超时的）。
       if (this.mergeRun || this.mergeBusy()) { this.paused = '合入进行中，暂缓派新任务'; return; }
       this.paused = null;
-      let free = settings.maxParallel - this.jobs().filter(j => ACTIVE.includes(j.state)).length;
+      let free = settings.maxParallel - this.busySlots();
       // 先发现的先做；同一轮发现的按协作台列表顺序。实现与审查共用会话名额，合入不占（不开会话）。
       const queued = this.jobs().filter(j => j.state === 'queued' && typeOf(j) !== 'merge').sort((a, b) => a.createdAt - b.createdAt || (a.order ?? 0) - (b.order ?? 0));
       for (const job of queued) {
@@ -422,6 +442,9 @@ class WirelessAssistant {
     await this.dispatching;
     void this.runMerges();
   }
+
+  // 占会话名额的任务：初审判「等待」后停着的会话不占（独立审查 r2 第 2 条：否则被等的审查 / 返修派不出去）。
+  busySlots() { return this.jobs().filter(j => ACTIVE.includes(j.state) && j.phase !== 'waiting').length; }
 
   // 席位号在同一提案（或同一 PR）的所有任务里递增：返工是新任务，不能和上一轮的席位撞名；
   // 也避开协作台上残留的旧席位（v2.6 退回时不清），否则会把旧记录误认成「已接手」。
@@ -487,7 +510,7 @@ class WirelessAssistant {
     if (p?.result) {
       const prev = this.reusableSession(this.jobs().filter(j => typeOf(j) === 'implement' && j.proposalId === job.proposalId && j.id !== job.id), r.kind);
       if (prev) {
-        const done = await this.reuse({ ...job, phase: 'implementing' }, prev, route, buildReworkPrompt(p, { slot: prev.slot }));
+        const done = await this.reuse({ ...job, phase: 'implementing' }, prev, route, buildReworkPrompt(p, { slot: prev.slot, findings: latestFindings(p) }));
         if (done.ok) { this.changed(); return done.job; }
       }
     }
@@ -559,6 +582,11 @@ class WirelessAssistant {
     this.mergeRun = merger.runMerge({ python: install.python, script: this.script(), pr: job.pr, candidate: job.candidate, logFile, spawnFn: this.deps.spawn, timeoutMs: MERGE_TIMEOUT_MS, onChild: c => { this.mergeChild = c; } })
       .then(async res => {
         const current = this.job(job.id) || job;
+        if (res.timedOut) {
+          this.saveJob({ ...current, state: 'detached', note: '合入超过 ' + Math.round(MERGE_TIMEOUT_MS / 60000) + ' 分钟还在跑：不强行结束（让闸门自己收尾），按协作台状态核对' });
+          this.notify(current, '合入还在跑', `PR #${job.pr} 的完整测试超过预计时间，助理不强行结束它，等它自己跑完或超时收尾；期间暂缓派新任务。`);
+          return;
+        }
         if (res.ok && res.result?.state === 'completed') this.finish(current, 'done', `已合入 develop（${String(res.result.merged || '').slice(0, 8)}），阿里云已读回`, true, '已合入');
         else {
           // 下一步找谁，看协作台此刻的真实状态（脚本的报错常常只有「python 未通过」，看不出原因）。
@@ -596,7 +624,7 @@ class WirelessAssistant {
       const p = this.proposals.get(job.proposalId);
       if (!p) throw new Error('提案已不在协作台');
       this.saveJob({ ...job, force: true });
-      void this.goAhead(this.job(id), p, { force: true }).then(() => this.changed());
+      void this.goAhead(this.job(id), p, { force: true }).then(() => this.changed());  // 名额满也放行：这是人的明确决定
       return this.status();
     }
     else if (action === 'dismiss') { if ([...ACTIVE, 'running', 'detached'].includes(job.state)) throw new Error('正在处理的任务请到会话里停下'); this.saveJob({ ...job, state: 'dismissed', note: '你选择不处理', finishedAt: this.now() }); }
@@ -625,6 +653,12 @@ class WirelessAssistant {
   notify(job, title, text) { try { this.deps.onNotify?.({ title: 'SuperRAN 助理 · ' + title, text, proposalId: job.proposalId, sessionId: job.sessionId || null }); } catch {} }
   changed() { try { this.deps.onChanged?.(); } catch {} }
   close() { clearInterval(this.timer); clearTimeout(this.firstTimer); this.timer = null; try { this.store.close(); } catch {} }
+}
+
+// 最近一次退回附的完整意见（协作台把完整审查意见写在讨论里，note 只是摘要）。
+function latestFindings(p) {
+  const list = (p.comments || []).filter(c => /^(换模型审查第|提出人决定|审批人|和主干)/.test(String(c.markdown || '')));
+  return list.length ? String(list[list.length - 1].markdown) : '';
 }
 
 // 计划里的「### 预计改动」：每行「- 文件路径: 函数1, 函数2」（新文件写「新文件」）。没有这一节返回 null。
@@ -658,4 +692,4 @@ function findConflict(mine, others, red) {
   return null;
 }
 
-module.exports = { WirelessAssistant, DEFAULT_SETTINGS, PURPOSE, jobKey, STALL_MS, IDLE_ATTENTION_MS, WAIT_REMIND_MS, parsePlan, findConflict };
+module.exports = { WirelessAssistant, DEFAULT_SETTINGS, PURPOSE, jobKey, STALL_MS, IDLE_ATTENTION_MS, WAIT_REMIND_MS, MERGE_TIMEOUT_MS, parsePlan, findConflict, latestFindings };
