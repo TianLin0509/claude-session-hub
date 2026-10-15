@@ -7,6 +7,8 @@
 // 公司页填代码位置；家里的 Agent 被要求用 ask_company 提问、收到回执后再追问一轮、最后总结；
 // 核对：公司为这个问题新开 1 个 CodeAgent 会话、追问进同一会话、回执不含成段源码、读到了代码里的真实数值，
 // 家里 Agent 被回执自动唤醒两次并写出总结。
+// 通用场景（2026-10-15 放开成通用助手）：和无线无关的会话里用户说「问一下公司的 CodeAgent」查公司电脑上的周报，
+// 核对公司默认权限能跑命令行、回执读到周报里的内容、公司会话没走 /model 菜单。BRIDGE_GENERAL_CHECK=0 跳过。
 //   HUB_E2E_TMP=D:/Temp node tests/e2e-company-bridge-real.js
 //   COMPANY_ENTRY=<公司版导出目录> 时公司一端跑导出的公司版（不再用角色覆盖）。
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), http = require('node:http'), assert = require('node:assert/strict');
@@ -77,6 +79,10 @@ async function main() {
     fs.writeFileSync(path.join(hdata, 'config.json'), j({ providers: { codex: { backend: 'subscription', subscription_profile: profile.id, subscription_profiles: [{ id: profile.id, label: profile.label, home: codexHome }] } } }));
     // ---- 公司 Hub：CodeAgent 替身用真 Claude，凭据复制进它的配置目录 ----
     const cdata = path.join(root, 'company-data'), cac = path.join(root, 'cac'), l2 = path.join(root, 'company-code', 'l2');
+    // 公司电脑上的一份非代码资料（不在代码位置里）：通用场景去查它。
+    const docs = path.join(root, 'company-docs', 'weekly'); fs.mkdirSync(docs, { recursive: true });
+    for (const [d, plan] of [['2026-10-01', '整理 HARQ 统计口径'], ['2026-10-08', '评审 MCS 表'], ['2026-10-15', '联调 PF-Z9 调度器']])
+      fs.writeFileSync(path.join(docs, 'weekly-' + d + '.md'), '# 周报 ' + d + '\n\n## 本周进展\n- 例行工作\n\n## 下周计划\n1. ' + plan + '\n2. 例会\n');
     fs.mkdirSync(cac, { recursive: true }); fs.cpSync(L2, l2, { recursive: true });
     const claudeAuth = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), '.credentials.json');
     fs.copyFileSync(claudeAuth, path.join(cac, '.credentials.json'));
@@ -230,6 +236,39 @@ async function main() {
       }, 15 * 60000, 5000);
       result.skillAnswer = answer.slice(0, 600);
       check('回执送回该会话，Agent 给出 16 个进程等结论');
+    }
+
+    // ---- 6c. 通用场景：和无线无关的会话，用户点名「问一下公司的 CodeAgent」查公司电脑上的资料 ----
+    if (process.env.BRIDGE_GENERAL_CHECK !== '0') {
+      const miscCwd = path.join(workspaces, 'notes-misc'); fs.mkdirSync(miscCwd, { recursive: true });
+      fs.appendFileSync(path.join(codexHome, 'config.toml'), "[projects.'" + miscCwd.toLowerCase() + "']\ntrust_level = \"trusted\"\n");
+      const misc = await hc.eval(`require("electron").ipcRenderer.invoke('create-session', ${j({ kind: 'codex', opts: { cwd: miscCwd, model: 'gpt-6-luna', effort: 'medium', title: '杂事' } })})`);
+      const before = (await status(hc)).threads.length;
+      await hc.eval(`require("electron").ipcRenderer.invoke('session:send-prompt', ${j({ sessionId: misc.id, text: '问一下公司的 CodeAgent：公司电脑上 ' + docs + ' 这个目录里有哪些周报？最新一份是哪天的？里面「下周计划」的第一条是什么？请它用命令行列一下目录。查到后告诉我结果。' })})`);
+      const t3 = await until('general thread', async () => (await status(hc)).threads.length > before && (await status(hc)).threads[0], 6 * 60000, 3000);
+      assert.equal(t3.sessionId, misc.id, '通用请求来自和无线无关的会话');
+      check(`通用请求：和无线无关的会话按技能发出 ${t3.id}`);
+      const reply3 = await until('general reply', async () => { const t = (await status(hc)).threads.find(x => x.id === t3.id); return t?.rounds[0]?.reply || (t?.rounds[0]?.error && 'ERROR ' + t.rounds[0].error); }, 15 * 60000, 5000);
+      result.generalReply = reply3.slice(0, 1500);
+      assert.match(reply3, /PF-Z9/, '回执读到了最新周报里的下周计划');
+      assert.match(reply3, /2026-10-15/, '回执认出最新一份是 10-15');
+      const cThread = (await status(cc)).threads.find(x => x.id === t3.id);
+      const cMeta = await cc.eval(`(async()=>(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(cThread.sessionId)}))()`);
+      const cTranscript = cMeta && cMeta.transcriptPath && fs.existsSync(cMeta.transcriptPath) ? fs.readFileSync(cMeta.transcriptPath, 'utf8') : '';
+      result.generalCompanyTools = [...new Set([...cTranscript.matchAll(/"type":"tool_use","id":"[^"]+","name":"([^"]+)"/g)].map(m => m[1]))];
+      assert.ok(result.generalCompanyTools.some(x => x === 'Bash' || x === 'PowerShell'), '公司默认权限下能跑命令行：' + j(result.generalCompanyTools));
+      const buffer = String(await cc.eval(`require("electron").ipcRenderer.invoke('debug:get-session-buffer', ${j(cThread.sessionId)})`) || '');
+      assert.doesNotMatch(buffer, /\/model\b/, '公司会话没走 /model 菜单');
+      check('公司会话默认可跑命令行（用了 ' + result.generalCompanyTools.join('/') + '）、没走 /model；回执读到最新周报 10-15 的「联调 PF-Z9 调度器」');
+      const told = await until('general delivered', async () => {
+        const t = (await status(hc)).threads.find(x => x.id === t3.id);
+        if (!t?.rounds[0]?.delivered) return false;
+        const text = await hc.eval(`(async()=>{const s=(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(misc.id)});const f=s&&s.transcriptPath;return f?require("fs").readFileSync(f,"utf8"):""})()`);
+        const from = text.lastIndexOf('第 1 轮'); const tail = from >= 0 ? text.slice(from + 200) : '';
+        return /PF-Z9/.test(tail) && /"role":"assistant"/.test(tail) && tail.slice(0, 3000);
+      }, 10 * 60000, 5000);
+      result.generalAnswer = told.slice(0, 600);
+      check('回执送回该会话，Agent 把结果告诉用户');
     }
 
     // ---- 7. 截图：两边的列表与会话 ----

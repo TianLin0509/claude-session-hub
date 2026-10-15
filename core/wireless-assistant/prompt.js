@@ -63,7 +63,7 @@ function buildExecutionPrompt(p, { install, slot, worktreeRoot = 'D:/AIWork', da
       '回传：progress ' + p.id + ' --action report --outcome modified --pr-number <PR> --file <报告.md>；不修改时 --outcome no_change，不带 PR。读回确认。',
       '会话最后一条回复用中文，第一行以「📌 **」开头写结论（已修改 / 不修改 / 已释放及原因），再给 PR 编号和报告要点。',
     ]),
-    block('公司代码（可选）', '- 结论确实取决于公司 AirView / L2 代码的实际写法时，可以用 ask_company 工具（技能 ask-company-codeagent）向公司电脑上的 CodeAgent 提问。它只读代码、回执不含源码，一个来回 10 分钟以上，回执到达后自动发回本会话；判断以你为主，回执当作证据核对。没有这个工具或公司没回执时按现有证据继续，并在报告里写明待核实的点。'),
+    block('公司代码（可选）', '- 结论确实取决于公司 AirView / L2 代码的实际写法时，可以用 ask_company 工具（技能 ask-company-codeagent）向公司电脑上的 CodeAgent 提问。它读公司代码、不改动公司电脑、回执不含源码，一个来回 10 分钟以上，回执到达后自动发回本会话；判断以你为主，回执当作证据核对。没有这个工具或公司没回执时按现有证据继续，并在报告里写明待核实的点。'),
     block('边界', '你只提交候选，不验收、不批准、不合入自己的代码。提出人及其 Agent 验收后，由队长或审批人批准，独立合并 Agent 合入。'),
   ]);
 }
