@@ -7,6 +7,7 @@ const Gate=require('./delivery-gate'),Overlap=require('./delivery-overlap');
 const GATE_LIMIT=3;
 const {getSessionRuntimeTruth}=require('../../core/session-runtime-truth');
 const {SessionOpenOwnership}=require('../../core/session-open-ownership');
+const {renameWithRetrySync}=require('../../core/claude-project-trust');
 const terminal=r=>['done','cancelled'].includes(r?.status);
 function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDispatcher,ensureMemberReady,getMembers=()=>[],getAttemptEvidence=()=>null,sendToRenderer=()=>{},onStatus=()=>{},logger=console}) {
   const owners=new Map(),busy=new Set(),watching=new Set(),actions=new Set(),retiring=new Map(),activeDispatches=new Set(),gates=new Map();let timer=null,events=null,suspended=false,ownership=null;
@@ -29,7 +30,8 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     if(ownership?.owner(D.hash(id))?.nonce!==owners.get(id)?.nonce || !owners.has(id))throw new Error('工作流归属已变化，停止写入');
     run.updatedAt=Date.now();const tmp=record(id)+'.'+crypto.randomUUID()+'.tmp';
     const fd=fs.openSync(tmp,'wx');try{fs.writeFileSync(fd,JSON.stringify(run,null,2),'utf8');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
-    fs.renameSync(tmp,record(id));emit(id);
+    // Windows：读 run.json 的一方还开着文件时，覆盖改名会短暂报 EPERM/EBUSY；按全局约定有界重试。
+    renameWithRetrySync(tmp,record(id));emit(id);
   }
   function status(id) {
     if(!D.enabled(meeting(id)))return null;
