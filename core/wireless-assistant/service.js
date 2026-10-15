@@ -415,7 +415,8 @@ class WirelessAssistant {
           } catch { /* 读不到就按脚本输出判断 */ }
           const why = (res.ok ? '合并脚本结束，但交付状态是「' + (TASK_LABELS[state] || state || '未知') + '」' : String(res.error || '').replace(/^合入未完成：/, '')).replace(/[。；;\s]+$/, '');
           const next = state === 'stale' || /主干已变化|候选或主干已经更新/.test(why) ? '主干已更新，协作台会把提案退回常驻助理重做'
-            : state === 'merge_failed' || state === 'returned' || /合并已停止/.test(why) ? '协作台已标「合入未完成」：请审批人在第 4 步看原因，代码问题点「退回修改」交常驻助理返工'
+            : state === 'returned' ? '审批人已在协作台退回，常驻助理会按意见返工'
+            : state === 'merge_failed' || /合并已停止/.test(why) ? '协作台已标「合入未完成」：请审批人在第 4 步看原因，代码问题点「退回修改」交常驻助理返工'
             : '网络或环境问题修好后点「重来」（脚本从中断处接着做，不会重复合并）';
           this.finish(current, 'failed', why + '。' + next + '。日志 ' + logFile, true, '合入未完成');
         }

@@ -31,7 +31,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     run.updatedAt=Date.now();const tmp=record(id)+'.'+crypto.randomUUID()+'.tmp';
     const fd=fs.openSync(tmp,'wx');try{fs.writeFileSync(fd,JSON.stringify(run,null,2),'utf8');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
     // Windows：读 run.json 的一方还开着文件时，覆盖改名会短暂报 EPERM/EBUSY；按全局约定有界重试。
-    renameWithRetrySync(tmp,record(id));emit(id);
+    renameWithRetrySync(tmp,record(id),{retries:20});emit(id);
   }
   function status(id) {
     if(!D.enabled(meeting(id)))return null;
