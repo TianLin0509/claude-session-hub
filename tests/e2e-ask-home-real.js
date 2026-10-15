@@ -72,7 +72,9 @@ async function main() {
     const hdata = path.join(root, 'home-data'), claudeHome = path.join(root, 'claude-home');
     for (const d of [hdata, claudeHome]) fs.mkdirSync(d, { recursive: true });
     if (!FALLBACK) fs.copyFileSync(claudeAuth, path.join(claudeHome, '.credentials.json'));
-    fs.writeFileSync(path.join(claudeHome, '.claude.json'), j({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, skipDangerousModePermissionPrompt: true, theme: 'dark', projects: {} }));
+    // 新配置目录要标记「自动模式提示已看过」，否则 Claude 2.1.300 起会停在自动模式说明上、收不到消息（2026-10-15 19:47 实测；真实 ~/.claude.json 已有这三项）。
+    fs.writeFileSync(path.join(claudeHome, '.claude.json'), j({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, skipDangerousModePermissionPrompt: true,
+      hasSeenAutoDefaultNudge: true, hasResetAutoModeOptInForDefaultOffer: true, hasSeenAutoModeEntryWarning: true, theme: 'dark', projects: {} }));
     fs.writeFileSync(path.join(claudeHome, 'settings.json'), j({ permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true }));
     require('../core/claude-hook-integration').ensureClaudeHookIntegration({ claudeDir: claudeHome, sourceScriptsDir: path.join(__dirname, '..', 'scripts'), logger: {} });
     const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude-session-hub/config.json'), 'utf8').replace(/^\uFEFF/, ''));
