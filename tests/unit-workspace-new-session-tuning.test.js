@@ -219,6 +219,9 @@ test('only flags the selected CLI understands are sent', () => {
     /const DEFAULT_MCP_BY_KIND = \{ claude: 'none', codex: 'none', deepseek: 'none', 'deepseek-claude': 'none', codeagent: 'full' \}/,
     '三家默认都必须是 None（不加载任何 MCP）',
   );
+  // 2026-10-16：CodeAgent 的 CLI 挡不住用户级 MCP，选档只会关掉 Hub 自己的工具 → 不给它 MCP 下拉。
+  assert.match(CONTROLLER_SRC, /const MCP_KINDS = new Set\(\['claude', 'codex', 'deepseek', 'deepseek-claude'\]\)/,
+    'CodeAgent 不显示 MCP 加载下拉（一律完整挂载）');
   // 2026-09-05：用户要求 Claude / Codex 两家的 fast 默认都关掉。
   // Codex 这一侧就是 service_tier=standard（显式关 Fast），不是 inherit ——
   // inherit 会跟着 ~/.codex/config.toml 走，那份配置里可能还开着 priority。

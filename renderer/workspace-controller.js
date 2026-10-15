@@ -41,7 +41,9 @@
   // Codex 与新版 DeepSeek（同一条 codex runtime）走 -c model_reasoning_effort。
   // 两边的合法枚举不一样：Claude 是固定表，Codex 按模型目录取值（部分模型有 ultra）。
   const EFFORT_KINDS = new Set(['claude', 'codex', 'deepseek', 'codeagent', 'deepseek-claude']);
-  const MCP_KINDS = new Set(['claude', 'codex', 'deepseek', 'codeagent', 'deepseek-claude']);
+  // CodeAgent 不在内：它的 CLI 挡不住用户级 MCP（2026-10-15 公司真机实测 --strict-mcp-config 无效），
+  // 选「精简 / 无」只会把 Hub 自己的工具关掉，用户级 MCP 照样全部加载；所以不给它这个下拉，一律按完整挂载。
+  const MCP_KINDS = new Set(['claude', 'codex', 'deepseek', 'deepseek-claude']);
   // 新建面板上只有一个「DeepSeek」按钮；历史上的 deepseek / deepseek-acp 入口都落到 Claude Code。
   const DEEPSEEK_PANEL_KINDS = new Set(['deepseek', 'deepseek-acp', 'deepseek-claude']);
   const deepseekProfile = require('../core/deepseek-claude-profile.js');
