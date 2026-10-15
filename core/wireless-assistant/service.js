@@ -285,7 +285,7 @@ class WirelessAssistant {
   // 会话写完计划（「### 预计改动」）就停下；这里用确定性比对决定「开始实现」还是「等」，不另开模型。
   async advancePrechecks() {
     const jobs = this.jobs().filter(j => typeOf(j) === 'implement' && j.state === 'working' && ['precheck', 'waiting'].includes(j.phase));
-    if (!jobs.length || !this.tasksLoaded) return;
+    if (!jobs.length) return;
     let inflight = null, inflightError = null;
     try {
       const install = this.install();
