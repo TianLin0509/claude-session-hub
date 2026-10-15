@@ -13,7 +13,7 @@ const { AssistantStore } = require('../hub-assistant/store');
 const { claimTimers, ownsTimers } = require('../hub-assistant/timer-owner');
 const { BridgeLink } = require('./link');
 
-const ACTIVE_POLL_MS = 30000;
+const ACTIVE_POLL_MS = 10000;
 const IDLE_POLL_MS = 3 * 60000;
 const DEFAULT_SETTINGS = Object.freeze({ attach: 'wireless' });
 const short = (s, n = 28) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
@@ -60,7 +60,7 @@ class HomeBridge {
     let master = this.store.get('localMaster');
     if (!master) { master = randomBytes(32).toString('hex'); this.store.set('localMaster', master); }
     this.master = master;
-    this.busy = null; this.timer = null; this.nextPullAt = 0; this.server = null;
+    this.busy = null; this.deliverBusy = null; this.timer = null; this.nextPullAt = 0; this.server = null;
     if (!deps.noTimer) claimTimers(this.store);
   }
   now() { return this.deps.now ? this.deps.now() : Date.now(); }
@@ -172,7 +172,7 @@ class HomeBridge {
     this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
     this.changed();
     return { thread: id, status: '已发出', ...this.peer(),
-      next: '公司一个来回通常 10 分钟以上。回执到了会作为一条新消息自动发到本会话，现在请结束本轮（或先做不依赖回执的工作），不要循环等待。' };
+      next: '等待回执时每 10 秒检查一次，处理时长取决于公司 Agent 的任务。回执到了会作为一条新消息自动发到本会话，现在请结束本轮（或先做不依赖回执的工作），不要循环等待。' };
   }
   async followup(sessionId, { thread, question }) {
     const t = this.thread(String(thread || ''));
@@ -220,7 +220,7 @@ class HomeBridge {
     const code = this.store.get('pairingCode');
     if (!code || this.link.config().state !== 'pending') throw new Error('先生成配对码');
     if (!this.deps.relayPush) throw new Error('本机没有公司收件箱的发送工具');
-    await this.deps.relayPush(code, '家里联动配对码（在公司 Hub「家里联动」里粘贴）');
+    await this.deps.relayPush(code, 'AI特战队专用功能配对码（在对应设置项里粘贴）');
     return { ok: true };
   }
   unpair() { this.cancelOpen('已解除配对'); this.link.unpair(); this.store.set('pairingCode', null); this.changed(); return this.status(); }
@@ -230,15 +230,21 @@ class HomeBridge {
   }
 
   // ---- 轮询与投递 ----
+  polling() {
+    const state = this.link.config().state;
+    if (!state || state === 'none') return { intervalSeconds: 0, active: false, activeUntil: null };
+    const active = state === 'pending' || this.openThreads().length > 0;
+    return { intervalSeconds: (active ? ACTIVE_POLL_MS : IDLE_POLL_MS) / 1000, active, activeUntil: null };
+  }
   async tick({ force = false } = {}) {
     if (!force && !this.deps.noTimer && !ownsTimers(this.store)) return;
-    if (this.busy) return this.busy;
-    this.busy = (async () => {
+    // 恢复/唤醒一个会话时，继续收其他任务的回执；每轮回执仍只有一个投递者。
+    if (!this.busy) this.busy = (async () => {
       const state = this.link.config().state;
       if (!state || state === 'none') return;
       if (this.link.pairingExpired()) { this.link.unpair(); this.store.set('pairingCode', null); this.notify('配对码已过期', '24 小时内公司没有粘贴，这个配对码作废了；需要时重新生成。'); this.changed(); return; }
       if (force || this.now() >= this.nextPullAt) {
-        this.nextPullAt = this.now() + (state === 'pending' || this.openThreads().length ? ACTIVE_POLL_MS : IDLE_POLL_MS);
+        this.nextPullAt = this.now() + this.polling().intervalSeconds * 1000;
         try { await this.link.pull(message => this.receive(message)); } catch {}
         try {
           if (await this.link.checkPairingConflict()) {
@@ -248,9 +254,12 @@ class HomeBridge {
         } catch {}
         this.changed();
       }
-      await this.deliver();
     })().finally(() => { this.busy = null; });
-    return this.busy;
+    await this.busy;
+    if (this.link.paired()) {
+      if (!this.deliverBusy) this.deliverBusy = this.deliver().finally(() => { this.deliverBusy = null; });
+      await this.deliverBusy;
+    }
   }
   checkNow() { this.nextPullAt = 0; return this.tick({ force: true }).then(() => this.status()); }
 
@@ -333,7 +342,7 @@ class HomeBridge {
       ok: true, role: 'home', settings: this.settings(), baseUrl,
       link: { state: c.state || 'none', pairedAt: c.pairedAt || null, pairingCode: c.state === 'pending' ? this.store.get('pairingCode') : null, outbox: this.link.pendingOutbox() },
       net: { lastOkAt: st.lastOkAt || null, lastError: st.lastError || null, gate: st.gate || null, peerSeen: st.peerSeen || null }, peer: this.peer(),
-      now: this.now(), nextPullAt: this.nextPullAt,
+      now: this.now(), nextPullAt: this.nextPullAt, polling: this.polling(),
       threads: this.threads(60).map(t => ({ ...t, session: { open: !!this.deps.getSession(t.sessionId), title: this.meta(t.sessionId).title || t.sessionTitle || null } })),
     };
   }

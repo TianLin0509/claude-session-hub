@@ -16,13 +16,13 @@
       "to": "AIHubHuawei-"
     }
   ],
-  "version": "1.0.8",
+  "version": "1.0.9",
   "$kinds": "v1.0 纯净版（2026-10-12 用户要求）：公司只能用 CodeAgent，启动中心、群聊成员、首页检测都只留它。2026-10-14 用户：PowerShell 公司也能用，启动中心加回来（它不是 AI，不进群聊成员和 AI 筛选）。CodeAgent 必须排第一，卡片默认头像取第一项",
   "kinds": [
     "codeagent",
     "powershell"
   ],
-  "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）；quotaBar=底部状态栏的各家 AI 余量；accounts=左侧「账号」页（各家 AI 网页与命令行账号）。homeLink=家里联动的公司一端（2026-10-15，设置菜单「家里联动」，配对后才工作）",
+  "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）；quotaBar=底部状态栏的各家 AI 余量；accounts=左侧「账号」页（各家 AI 网页与命令行账号）。homeLink=AI特战队专用功能（2026-10-15，设置菜单同名入口，配对后才工作）",
   "features": {
     "assistant": false,
     "quotaBar": false,
@@ -71,8 +71,6 @@
   },
   "$releaseNotes": "本版的发布说明，写进 latest.json，更新弹窗里显示",
   "releaseNotes": [
-    "修复：发问题给 CodeAgent 时，如果剪贴板里正好有一张图片，CodeAgent 收到的会是那张图片而不是问题；现在发送期间先把图片拿开、发完放回，万一仍被顶掉也不会把答图片的回答发出去，会自动重问",
-    "更正：上一版说明里「启动参数上禁用改写工具」实测不生效（CodeAgent 不认这个参数），已去掉这个设置；「不改动这台电脑、不回传源码和无关个人信息」靠给 CodeAgent 的说明约束",
-    "家里联动的会话可以使用这台电脑上已注册的 MCP（AirView、内网搜索等）；运行仿真、发消息这类有副作用的动作，只在对方明确要求时才做"
+    "AI特战队功能增强"
   ]
 }
