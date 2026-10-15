@@ -5,7 +5,7 @@
 // 改名会报 EPERM / EBUSY。2026-10-15 到 16 日的合并闸门里，助理入口文件、网页圆桌、重启恢复、编排账本等
 // 不同保存点轮流因此失败，一处一处补重试补不完。这里在进程启动时统一给 fs 的改名套上同一条规则：
 // 只重试 EPERM / EBUSY、仅 Windows、最多 20 次（每次约 15 毫秒）；其他错误和真正的权限错误照常抛出。
-// Hub 主进程（main.js）与单测运行器给每个测试进程（scripts/run_unit_tests.js）都在最开始安装，行为一致。
+// Hub 主进程（main.js）在最开始安装；自用版的单测运行器也给每个测试进程预先装上，行为一致。
 // 自带重试的 renameWithRetrySync（core/claude-project-trust.js）看到 renameRetried 标记就不再叠加重试。
 const fs = require('node:fs');
 
