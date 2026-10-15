@@ -18,15 +18,16 @@ const { buildSessionResumeMeta } = require('../core/session-capabilities');
 const { createResumeSessionHandler } = require('../main/ipc/resume-session-handlers');
 const config = { command: 'codeagent', configDir: path.join(root, 'cac'), stateFile: '.cac.json' };
 
-test('默认沿用不传 --model，也不触发菜单；明确选择与程序性模型参数保持可用', () => {
+test('模型名只是元数据，只有本次明确选型才能触发菜单', () => {
   for (const opts of [{ model: 'GLM-5.2-WX-Auto', codeagentModelPick: false },
+    { model: 'MiniMax-M2.7' }, {},
     { model: 'MiniMax-M2.7', purpose: 'company-bridge', codeagentModelPick: true }]) {
     const launch = buildCodeAgentPtyLaunch('inherit-test', 'codeagent', opts, root, {}, config);
     assert.doesNotMatch(launch.cmd, /--model/);
     assert.equal(launch.model, null);
     assert.equal(shouldPickCodeAgentModel(opts), false);
   }
-  for (const opts of [{ model: 'MiniMax-M2.7', codeagentModelPick: true }, { model: 'MiniMax-M2.7' }]) {
+  for (const opts of [{ model: 'MiniMax-M2.7', codeagentModelPick: true }]) {
     assert.equal(shouldPickCodeAgentModel(opts), true);
     assert.match(buildCodeAgentPtyLaunch('explicit-test', 'codeagent', opts, root, {}, config).cmd, /--model MiniMax-M2\.7/);
   }
@@ -71,14 +72,45 @@ function resumeHandler() {
   });
 }
 
-test('普通旧会话恢复不因保存了模型名就操作菜单，明确选择的会话仍保留意图', async () => {
+test('普通恢复不重复消费旧会话的选型意图，包括保存过 true 的旧版本记录', async () => {
   const resume = resumeHandler();
   for (const intent of [undefined, false, true]) {
     const result = await resume({ hubId: `intent-resume-${String(intent)}`, kind: 'codeagent', cwd: root,
       currentModel: { id: 'MiniMax-M2.7' }, ...(intent === undefined ? {} : { codeagentModelPick: intent }) });
     assert.equal(result.opts.model, 'MiniMax-M2.7');
-    assert.equal(result.opts.codeagentModelPick, intent === true);
+    assert.equal(result.opts.codeagentModelPick, false);
   }
+});
+
+test('分支继承原生会话和模型信息，不重新操作模型菜单', () => {
+  const { planSessionFork } = require('../core/session-fork-plan');
+  for (const intent of [undefined, false, true]) {
+    const source = { id: 'parent', kind: 'codeagent', cwd: root,
+      ccSessionId: '12345678-1234-1234-1234-123456789abc', currentModel: { id: 'MiniMax-M2.7' },
+      ...(intent === undefined ? {} : { codeagentModelPick: intent }) };
+    const plan = planSessionFork({ source });
+    assert.equal(plan.ok, true);
+    assert.equal(plan.kind, 'codeagent');
+    assert.equal(plan.opts.forkCCSessionId, source.ccSessionId);
+    assert.equal(plan.opts.model, 'MiniMax-M2.7');
+    assert.equal(shouldPickCodeAgentModel(plan.opts), false);
+    assert.doesNotMatch(buildCodeAgentPtyLaunch('fork-test', plan.kind, plan.opts, root, {}, config).cmd, /--model/);
+    const explicit = planSessionFork({ source, overrides: { model: 'GLM-5.2-WX-Auto', codeagentModelPick: true } });
+    assert.equal(shouldPickCodeAgentModel(explicit.opts), true);
+  }
+});
+
+test('原地重拉不会把已经选过的模型再次当作新请求', () => {
+  const writes = [], events = [];
+  const info = { id: 'relaunch-intent', kind: 'codeagent', cwd: root,
+    currentModel: { id: 'MiniMax-M2.7' }, codeagentModelPick: true };
+  const session = { info, pty: { write: text => writes.push(text), options: { env: {} } } };
+  const manager = { sessions: new Map([[info.id, session]]), hubRulesSystemPrompt: () => null,
+    emit: (...args) => events.push(args) };
+  assert.equal(SessionManager.prototype.relaunchCli.call(manager, info.id), true);
+  assert.equal(writes.length, 1);
+  assert.doesNotMatch(writes[0], /--model/);
+  assert.equal(events.some(([name]) => name === 'codeagent-model-pick'), false);
 });
 
 test('恢复时明确覆盖模型仍算选模型，显式选择沿用也可覆盖旧意图', async () => {
@@ -90,4 +122,23 @@ test('恢复时明确覆盖模型仍算选模型，显式选择沿用也可覆�
   const inherited = await resume({ ...base, hubId: 'intent-override-inherit', codeagentModelPick: true,
     launchOverrides: { model: 'MiniMax-M2.7', codeagentModelPick: false } });
   assert.equal(inherited.opts.codeagentModelPick, false);
+  const effortOnly = await resume({ ...base, hubId: 'intent-override-effort', codeagentModelPick: true,
+    launchOverrides: { effort: 'low' } });
+  assert.equal(effortOnly.opts.effort, 'low');
+  assert.equal(effortOnly.opts.codeagentModelPick, false);
+});
+
+test('磁盘旧覆盖不能冒充本轮请求，本轮覆盖仍优先于磁盘', async () => {
+  const store = require('../core/session-store');
+  const hubId = 'intent-saved-override';
+  store.saveSessionFile(hubId, { hubId, kind: 'codeagent', cwd: root,
+    currentModel: { id: 'MiniMax-M2.7' }, codeagentModelPick: true,
+    launchOverrides: { model: 'GLM-5.2-WX-Auto', codeagentModelPick: true } });
+  const resume = resumeHandler();
+  const plain = await resume({ hubId });
+  assert.equal(plain.opts.model, 'MiniMax-M2.7');
+  assert.equal(plain.opts.codeagentModelPick, false);
+  const explicit = await resume({ hubId, launchOverrides: { model: 'GLM-5.2-WX-Auto' } });
+  assert.equal(explicit.opts.model, 'GLM-5.2-WX-Auto');
+  assert.equal(explicit.opts.codeagentModelPick, true);
 });

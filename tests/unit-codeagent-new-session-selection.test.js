@@ -192,5 +192,21 @@ test('shared programmatic tuning retains the existing explicit-model contract', 
   const h = harness();
   const opts = h.controller.buildSessionTuningOpts('codeagent', 'MiniMax-M2.7');
   assert.equal(opts.model, 'MiniMax-M2.7');
-  assert.equal('codeagentModelPick' in opts, false);
+  assert.equal(opts.codeagentModelPick, true);
+});
+
+test('group slots distinguish inherited defaults from concrete model choices through main sanitization', () => {
+  const h = harness();
+  const { sessionOptionsForMeetingSlot } = require('../main/ipc/meeting-create-handlers');
+  for (const [model, selection, expected] of [
+    [undefined, {}, false],
+    ['MiniMax-M2.7', { followDefault: true }, false],
+    ['MiniMax-M2.7', { followDefault: false }, true],
+    ['MiniMax-M2.7', { codeagentModelPick: false }, false],
+  ]) {
+    const opts = h.controller.buildSessionTuningOpts('codeagent', model, selection);
+    const main = sessionOptionsForMeetingSlot({ kind: 'codeagent', ...opts }, 'D:/test');
+    assert.equal(main.codeagentModelPick, expected);
+    assert.equal(require('../core/session-manager')._private.shouldPickCodeAgentModel(main), expected);
+  }
 });
