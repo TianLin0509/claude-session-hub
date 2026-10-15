@@ -4,8 +4,8 @@
 // 验收两条新链路：
 //  A. B 档自动重审：已批准的 PR #41 合入时，假合并脚本按 B 档把任务退回审查（批准保留）→ 页面「最近结果」记「回到审查」
 //     → 再检查时自动开「审查」会话、提示词写明「自动重审」和 --trunk → 假协作台回到已批准 → 再检查按新一轮合入并标「已合入」。
-//  B. 开工前避撞：新提案派发时执行提示词带「在途改动」一段（PR #17 正在改的红档文件）；Agent 释放并写「等 PR #17 合入」后，
-//     页面在「排队」里显示「等别的 PR 合入」和「不等了，直接开工」；PR #17 合入后再检查，自动重新派发（新席位）。
+//  B. 初审（Agent 执行的第一个子步骤）：新提案派出的会话先只读出计划；计划要改的 native.py 正被在途 PR #17 修改
+//     （红档物理文件）→ 页面「正在处理」显示「等 PR #17」和「不等了，直接开始」；点按钮后在原会话开始实现。
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), assert = require('node:assert/strict');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
@@ -58,8 +58,9 @@ function fakePortal(root) {
     '    print(json.dumps(data, ensure_ascii=False)); sys.exit(0)',
     'if cmd == "inflight":',
     '    rows = [{"pr": t["pr"], "state": t["state"], "title": t["title"], "candidate": t["candidate"], "files": 3,',
+    '             "changed": ["src/superran/channel/native.py"] if t["pr"] == 17 else [], "functions": {},',
     '             "red_files": ["src/superran/channel/native.py"] if t["pr"] == 17 else []} for t in data["tasks"] if t["state"] != "completed"]',
-    '    print(json.dumps({"trunk": data["trunk"], "tasks": rows, "errors": []}, ensure_ascii=False)); sys.exit(0)',
+    '    print(json.dumps({"trunk": data["trunk"], "red": ["native.py"], "tasks": rows, "errors": []}, ensure_ascii=False)); sys.exit(0)',
     'if cmd == "merge":',
     '    pr = int(sys.argv[2]); t = next(x for x in data["tasks"] if x["pr"] == pr)',
     '    if t.get("reviewed_trunk") != data["trunk"]:',
@@ -117,15 +118,14 @@ async function main() {
     await click('.wp-settings [data-x="save"]'); await until('saved', async () => /主力 GPT-6 Luna · 低/.test(await text('.wp-strip')));
     result.checks.push('点「无线」：副标题写明「主干前进但没冲突时自动并入新主干」；状态条「审查与合入」写明「主干前进没冲突就并入新主干，有冲突才退回返工」');
 
-    // 1. 立即检查：PR #41 合入 → 假脚本按 B 档退回审查；新提案派发，提示词带「在途改动」PR #17。
+    // 1. 立即检查：PR #41 合入（合入期间暂缓派新任务）→ 假脚本按 B 档退回审查；合完后新提案派发，先做初审。
     await check();
-    const impl = await until('implement working', () => job(j => j.type === 'implement' && j.proposalId === NEW && j.state === 'working'), 120000);
-    assert.deepEqual(impl.collisions, [17], '执行提示词写进了 PR #17 的在途红档文件');
     const back = await until('merge back to review', async () => { const t = await text('[data-sec="recent"]'); return /自动回到审查/.test(t) && t; }, 60000);
     assert.match(back, /native\.py/);
-    assert.match(fs.readFileSync(fake.calls, 'utf8'), /^inflight$/m, 'Hub 派实现前读了在途改动');
-    await shot('01-b-tier-back-to-review-and-dispatch-with-collisions');
-    result.checks.push('点「立即检查」：已批准的 PR #41 合入时假脚本判 B 档，「最近结果」记「主干在审查后又改到 native.py，已自动回到审查：换模型重审合并结果，批准保留」；新提案派发前读了在途改动，执行提示词带 PR #17 的红档文件');
+    const impl = await until('implement working', () => job(j => j.type === 'implement' && j.proposalId === NEW && j.state === 'working'), 120000);
+    assert.equal(impl.phase, 'precheck', '新提案先初审');
+    await shot('01-b-tier-back-to-review-and-precheck-dispatch');
+    result.checks.push('点「立即检查」：已批准的 PR #41 合入时假脚本判 B 档，「最近结果」记「主干在审查后又改到 native.py，已自动回到审查：换模型重审合并结果，批准保留」（不弹通知）；合完后新提案派发，任务标「初审中」');
     await stop(impl.sessionId);
 
     // 2. 再检查：PR #41 自动开「审查」会话，提示词写明自动重审与 --trunk。
@@ -145,26 +145,24 @@ async function main() {
     await shot('02-rereview-then-merged');
     result.checks.push('假协作台回到「已批准」（审查记录写明审的是新主干）后点「立即检查」：按新一轮合入，标「已合入 develop」');
 
-    // 4. 避撞：Agent 接手后释放并写「等 PR #17 合入」→ 页面显示「等别的 PR 合入」，不算失败。
-    fake.proposals(p => Object.assign(p[NEW], { state: 'implementing', executor: impl.slot }));
+    // 4. 初审：会话写好计划（要改 native.py）后停下；PR #17 正在改 native.py（红档物理文件）→ 等待，可一键直接开始。
+    fake.proposals(p => Object.assign(p[NEW], { state: 'implementing', executor: impl.slot,
+      plan: '实施范围：演练\n\n### 预计改动\n- src/superran/channel/native.py: _small_scale_channel\n' }));
     await check();
-    fake.proposals(p => Object.assign(p[NEW], { state: 'accepted', executor: '', note: '等 PR #17 合入：要改同一段 SRS 端口映射' }));
-    await check();
-    const waiting = await until('waiting', () => job(j => j.id === impl.id && j.state === 'waiting'), 30000);
-    assert.equal(waiting.waitPr, 17);
-    const queued = await text('[data-sec="queued"]');
-    assert.match(queued, /等别的 PR 合入/); assert.match(queued, /不等了，直接开工/); assert.match(queued, /等 PR #17 合入后再开工/);
-    await shot('03-waiting-for-pr17');
-    result.checks.push('Agent 释放并写「等 PR #17 合入」：「排队」里显示「等别的 PR 合入」「等 PR #17 合入后再开工」和「不等了，直接开工」按钮，不算失败');
-
-    // 5. PR #17 合入 → 再检查：自动重新派发（新席位）。
-    fake.tasks(t => { t[17].state = 'completed'; });
-    await check();
-    const again = await until('redispatched', () => job(j => j.id === impl.id && j.state === 'working' && j.slot !== impl.slot), 120000);
-    assert.match(again.slot, /-2$/);
-    await shot('04-redispatched-after-pr17');
-    result.checks.push('PR #17 合入后点「立即检查」：这份提案自动重新派发（席位 ' + again.slot + '），不用人点');
-    await stop(again.sessionId);
+    const waiting = await until('waiting', () => job(j => j.id === impl.id && j.phase === 'waiting'), 60000);
+    assert.equal(waiting.waitFor.label, 'PR #17');
+    const active = await text('[data-sec="active"]');
+    assert.match(active, /等 PR #17/); assert.match(active, /不等了，直接开始/); assert.match(active, /初审：等 PR #17 合入或终止/);
+    assert.match(fs.readFileSync(fake.calls, 'utf8'), /^inflight$/m, 'Hub 初审读了在途改动');
+    await shot('03-precheck-waiting-for-pr17');
+    result.checks.push('会话写好计划后停下：计划要改的 native.py 正被 PR #17 修改 → 「正在处理」里显示「等 PR #17」「初审：等 PR #17 合入或终止」和「不等了，直接开始」按钮');
+    await click('[data-wp="force:' + impl.id + '"]');
+    const going = await until('forced', () => job(j => j.id === impl.id && j.phase === 'implementing'), 60000);
+    assert.match(going.note, /你选择不等 PR #17/);
+    assert.equal(going.sessionId, impl.sessionId, '在原会话继续');
+    await shot('04-forced-start');
+    result.checks.push('点「不等了，直接开始」：在原会话发出放行提示，任务标「实现中」（你选择不等 PR #17，直接开始实现）');
+    await stop(impl.sessionId);
     result.passed = true;
   } catch (e) { result.error = e.stack; process.exitCode = 1; if (cdp) await shot('failure').catch(() => {}); }
   finally {
