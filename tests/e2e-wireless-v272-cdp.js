@@ -42,7 +42,7 @@ function fakePortal(root) {
   const tasksFile = path.join(scripts, 'tasks.json');
   const tasks = [
     { pr: 41, title: 'PR 41', state: 'approved', revision: 2, candidate: CAND, base: BASE, reviews: [], reviewed_trunk: BASE, rereview: '' },
-    { pr: 17, title: 'PR 17', state: 'submitted', revision: 2, candidate: CAND17, base: BASE, reviews: [], reviewed_trunk: '', rereview: '' },
+    { pr: 17, title: 'PR 17', state: 'awaiting_approval', revision: 2, candidate: CAND17, base: BASE, reviews: [], reviewed_trunk: '', rereview: '' },  // 审查已过、等验收：在途但不再派审查
   ];
   fs.writeFileSync(tasksFile, j({ trunk: TRUNK, tasks }));
   const script = path.join(scripts, 'review_merge.py');

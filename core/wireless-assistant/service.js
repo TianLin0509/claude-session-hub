@@ -379,7 +379,11 @@ class WirelessAssistant {
     const text = buildGoAheadPrompt(p, { slot: job.slot, checked, waited: job.phase === 'waiting' ? job.waitFor : null, force, note });
     let sent = false;
     if (this.deps.getSession(job.sessionId)) {
-      try { const r = await this.deps.sendPrompt(job.sessionId, text, randomUUID()); sent = !!r && r.ok !== false && !r.notSent; } catch { sent = false; }
+      try {
+        const r = await this.deps.sendPrompt(job.sessionId, text, randomUUID());
+        sent = !!r && r.ok !== false && !r.notSent;
+        if (!sent) console.warn('[wireless] go-ahead not sent', JSON.stringify(r || null).slice(0, 300));
+      } catch (error) { sent = false; console.warn('[wireless] go-ahead send failed', error.message); }
     }
     if (!sent) {
       // 原会话不在了：新开一个会话接着做（接手凭据在本机接入包里，不重新 claim）。

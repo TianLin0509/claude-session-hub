@@ -116,7 +116,7 @@ async function main() {
     const tasks = JSON.parse(fs.readFileSync(fake.tasks, 'utf8')); tasks.tasks[0].state = 'approved'; fs.writeFileSync(fake.tasks, j(tasks));
     await click('[data-wp="check"]');
     const merged = await until('merged', async () => { const t = await text('[data-sec="recent"]'); return /已合入 develop（e2e00000）/.test(t) && t; }, 60000);
-    assert.match(merged, /审查通过，审批人已批准，开始合入/);
+    assert.match(merged, /审查通过，审批人已批准，开始合入|自动重审通过，批准保留，开始合入/);
     const sessions = await cdp.eval('(async()=>(await require("electron").ipcRenderer.invoke("get-sessions")).filter(x=>x.purpose==="wireless-proposal").length)()');
     assert.equal(sessions, 1, '合入不开会话');
     assert.ok(await cdp.eval('!!document.querySelector("[data-sec=recent] [data-wp^=\\"log:\\"]")'), '有「合入日志」按钮');

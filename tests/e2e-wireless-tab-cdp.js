@@ -81,7 +81,7 @@ async function main() {
     // 3. 立即检查：已推进提案新开会话并发出提示词；危险提案待放行；未推进的不出现。画面不被切走。
     const activeBefore = await cdp.eval('typeof activeSessionId!=="undefined"?activeSessionId:null');
     await click('[data-wp="check"]');
-    await until('working', async () => /处理中/.test(await text('[data-sec="active"]')), 60000);
+    await until('working', async () => /处理中|初审中/.test(await text('[data-sec="active"]')), 60000);
     await until('confirmed', async () => /已交给 Agent/.test(await text('[data-sec="active"]')), 120000);
     const held = await text('[data-sec="held"]');
     assert.match(held, /红灯测试里有删除目录的操作/); assert.match(held, /Python 删除文件/);
@@ -97,7 +97,7 @@ async function main() {
     result.checks.push('「待你放行」的提案点「不处理」后移到最近结果');
     // 5. 切到别的 Tab 再回来。
     await click('#btn-home'); await until('closed', async () => !(await visible()), 5000);
-    await click('#btn-wireless'); await until('reopen', async () => /处理中/.test(await text('[data-sec="active"]')), 10000);
+    await click('#btn-wireless'); await until('reopen', async () => /处理中|初审中/.test(await text('[data-sec="active"]')), 10000);
     result.checks.push('点「主页」无线页收起，再进状态仍在');
     // 6. 打开会话：进入该提案会话。
     await click('[data-sec="active"] [data-wp^="open:"]');
