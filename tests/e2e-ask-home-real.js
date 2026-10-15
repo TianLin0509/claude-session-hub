@@ -7,7 +7,9 @@
 // 核对：家里开了 1 个 Claude 求助会话（haiku）、家里回公司查证据（公司新开替家里办事的会话，不挂 ask_home）、
 // 家里等回执送进去再答完、回复送回发起的 CodeAgent 会话并把它唤醒；2 万字关口用 Hub 写好的 .cmd 启动文件实跑（Electron 以 Node 方式运行脚本）；
 // 两端界面列表可见，1440 宽截图留证。
+// ASK_HOME_SCENARIO=fallback：家里的 Claude 不给登录凭据（等同起不来 / 不能用），核对同一轮换 Codex 作答，Codex 也能回公司查证据。
 //   HUB_E2E_TMP=D:/Temp node tests/e2e-ask-home-real.js
+//   HUB_E2E_TMP=D:/Temp ASK_HOME_SCENARIO=fallback node tests/e2e-ask-home-real.js
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), http = require('node:http'), assert = require('node:assert/strict');
 const { spawn, execFile } = require('node:child_process');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
@@ -18,6 +20,17 @@ const PY = process.env.HUB_E2E_PYTHON || 'C:\\Users\\lintian\\AppData\\Local\\Pr
 const RELAY = process.env.HUB_E2E_RELAY || 'C:\\Users\\lintian\\company-drop\\server\\relay_server.py';
 const STANDIN = path.join(__dirname, 'fixtures', 'codeagent-standin', 'codeagent.cmd');
 const L2 = path.join(__dirname, 'fixtures', 'company-bridge', 'l2-code');
+const FALLBACK = process.env.ASK_HOME_SCENARIO === 'fallback';
+
+// 从原生记录里找：送进会话的那条用户消息（含 marker）之后，助手回答里有没有 expect。只认真实轮次，不认提示词回显。
+function answeredAfter(file, marker, expect) {
+  if (!file || !fs.existsSync(file)) return null;
+  const rows = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const text = c => typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => b.text).join('\n') : '';
+  const i = rows.findIndex(r => r.type === 'user' && text(r.message && r.message.content).includes(marker));
+  if (i < 0) return null;
+  return rows.slice(i + 1).filter(r => r.type === 'assistant').map(r => text(r.message.content)).find(t => t.includes(expect)) || null;
+}
 
 // 通道服务前面的一层转发：/api/* 去掉前缀（同线上 Caddy）。
 function startApiProxy(relayPort) {
@@ -42,7 +55,7 @@ async function main() {
   const out = path.resolve('artifacts/ask-home-real-flow', new Date().toISOString().replace(/[:.]/g, '-')); fs.mkdirSync(out, { recursive: true });
   const t0 = Date.now(), at = () => Math.round((Date.now() - t0) / 1000) + 's';
   const timeline = [], log = msg => { const line = '[' + at() + '] ' + msg; timeline.push(line); console.log(line); fs.writeFileSync(path.join(out, 'timeline.txt'), timeline.join('\n')); };
-  const result = { passed: false, scope: '两台隔离 Hub（家里自用版 + 公司一端·角色覆盖）+ 真实通道服务 + 家里真实 Claude（默认模型 haiku）+ CodeAgent 替身（真 Claude Haiku）', root, out, checks: [], timeline };
+  const result = { passed: false, scenario: FALLBACK ? 'fallback' : 'claude', scope: '两台隔离 Hub（家里自用版 + 公司一端·角色覆盖）+ 真实通道服务 + 家里真实 ' + (FALLBACK ? 'Claude（不给凭据）→ Codex' : 'Claude（默认模型 haiku）') + ' + CodeAgent 替身（真 Claude Haiku）', root, out, checks: [], timeline };
   const check = msg => { result.checks.push(msg); log('✔ ' + msg); };
   let relay, proxy, home, company, hc, cc;
   const claudeSource = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), claudeAuth = path.join(claudeSource, '.credentials.json');
@@ -58,7 +71,7 @@ async function main() {
     // ---- 家里 Hub：真实 Claude，凭据复制进隔离目录；默认模型设成 haiku；Codex 登录也带上（替补用） ----
     const hdata = path.join(root, 'home-data'), claudeHome = path.join(root, 'claude-home');
     for (const d of [hdata, claudeHome]) fs.mkdirSync(d, { recursive: true });
-    fs.copyFileSync(claudeAuth, path.join(claudeHome, '.credentials.json'));
+    if (!FALLBACK) fs.copyFileSync(claudeAuth, path.join(claudeHome, '.credentials.json'));
     fs.writeFileSync(path.join(claudeHome, '.claude.json'), j({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, skipDangerousModePermissionPrompt: true, theme: 'dark', projects: {} }));
     fs.writeFileSync(path.join(claudeHome, 'settings.json'), j({ permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true }));
     require('../core/claude-hook-integration').ensureClaudeHookIntegration({ claudeDir: claudeHome, sourceScriptsDir: path.join(__dirname, '..', 'scripts'), logger: {} });
@@ -66,7 +79,7 @@ async function main() {
     const prov = cfg.providers?.codex || {}, profile = (prov.subscription_profiles || []).find(p => p.id === prov.subscription_profile) || { id: 'default', label: '主账号', home: '' };
     const codexAuth = path.join(profile.home || path.join(os.homedir(), '.codex'), 'auth.json'), codexHome = path.join(root, 'codex');
     fs.mkdirSync(codexHome, { recursive: true }); fs.copyFileSync(codexAuth, path.join(codexHome, 'auth.json'));
-    fs.writeFileSync(path.join(hdata, 'config.json'), j({ models: { defaults: { claude: 'haiku' } },
+    fs.writeFileSync(path.join(hdata, 'config.json'), j({ models: { defaults: { claude: 'haiku', codex: 'gpt-6-luna' } },
       providers: { codex: { backend: 'subscription', subscription_profile: profile.id, subscription_profiles: [{ id: profile.id, label: profile.label, home: codexHome }] } } }));
     // ---- 公司 Hub：CodeAgent 替身用真 Claude Haiku，凭据复制进它的配置目录 ----
     const cdata = path.join(root, 'company-data'), cac = path.join(root, 'cac'), l2 = path.join(root, 'company-code', 'l2');
@@ -98,7 +111,6 @@ async function main() {
     };
     const status = c => c.eval('require("electron").ipcRenderer.invoke("bridge:status")');
     const sessionsOf = c => c.eval('require("electron").ipcRenderer.invoke("get-sessions")');
-    const transcript = async (c, id) => { const s = (await sessionsOf(c)).find(x => x.id === id); return s && s.transcriptPath && fs.existsSync(s.transcriptPath) ? fs.readFileSync(s.transcriptPath, 'utf8') : ''; };
     await until('renderers', async () => (await hc.eval('typeof window.__wirelessHide==="function"')) && (await cc.eval('typeof window.__hubOpenSession==="function"')), 60000, 300);
     log('两台隔离 Hub 已启动');
 
@@ -162,14 +174,28 @@ async function main() {
     const homeSessions = await sessionsOf(hc);
     const hsess = homeSessions.find(x => x.id === consult.sessionId);
     result.homeSession = { kind: hsess?.kind, model: hsess?.currentModel?.id || hsess?.model, purpose: hsess?.purpose };
-    assert.equal(hsess.kind, 'claude', '优先 Claude');
-    assert.match(String(hsess.model || hsess.currentModel?.id || ''), /haiku/i, '用 Hub 的默认模型（隔离配置里是 haiku）');
-    check(`家里收到求助，新开 Claude 会话 ${consult.sessionId.slice(0, 8)}（模型 ${result.homeSession.model}）`);
+    if (!FALLBACK) {
+      assert.equal(hsess.kind, 'claude', '优先 Claude');
+      assert.match(String(hsess.model || hsess.currentModel?.id || ''), /haiku/i, '用 Hub 的默认模型（隔离配置里是 haiku）');
+      check(`家里收到求助，新开 Claude 会话 ${consult.sessionId.slice(0, 8)}（模型 ${result.homeSession.model}）`);
+    } else {
+      check(`家里收到求助，先开 ${hsess.kind} 会话 ${consult.sessionId.slice(0, 8)}（Claude 没有登录凭据）`);
+    }
+    // 替补场景：Claude 起不来或停着不答，5 分钟内换 Codex（同一轮新会话）
+    const answering = FALLBACK
+      ? await until('codex takes over', async () => { const t = (await status(hc)).consults.find(x => x.id === askThread.id); return t?.agent === 'codex' && t.sessionId && t; }, 12 * 60000, 3000)
+      : consult;
+    if (FALLBACK) {
+      const cs = (await sessionsOf(hc)).find(x => x.id === answering.sessionId);
+      result.codexSession = { kind: cs?.kind, model: cs?.model || cs?.currentModel?.id };
+      assert.match(String(cs?.kind || ''), /codex/);
+      check(`Claude 不可用（${answering.rounds[0].fallbackReason}），同一轮换 Codex 会话 ${answering.sessionId.slice(0, 8)}（模型 ${result.codexSession.model}）`);
+    }
 
     // ---- 6. 家里回公司查证据：公司为它新开替家里办事的会话（不挂 ask_home） ----
-    const q = await until('home asks company', async () => (await status(hc)).threads.find(t => t.sessionId === consult.sessionId), 10 * 60000, 3000);
+    const q = await until('home asks company', async () => (await status(hc)).threads.find(t => t.sessionId === answering.sessionId), 10 * 60000, 3000);
     result.companyAsk = q.id;
-    check(`家里 Claude 用 ask_company 回公司查证据 ${q.id}`);
+    check(`家里 ${FALLBACK ? 'Codex' : 'Claude'} 用 ask_company 回公司查证据 ${q.id}`);
     const bridgeThread = await until('company bridge session', async () => (await status(cc)).threads.find(t => t.id === q.id && t.sessionId), 4 * 60000, 2000);
     assert.ok(!fs.existsSync(path.join(cdata, 'extra-mcp', `codeagent-${bridgeThread.sessionId}.json`)), '替家里办事的会话不挂 ask_home');
     const note = await until('company sees progress', async () => { const t = (await status(cc)).askHome.find(x => x.id === askThread.id); return /查证据/.test(t?.rounds[0]?.note || '') && t.rounds[0].note; }, 4 * 60000, 3000);
@@ -185,7 +211,8 @@ async function main() {
     const reply = done.rounds[0].reply;
     result.reply = reply.slice(0, 1500);
     result.replyMeta = done.rounds[0].meta;
-    assert.equal(done.rounds[0].meta.agent, 'claude');
+    assert.equal(done.rounds[0].meta.agent, FALLBACK ? 'codex' : 'claude');
+    if (FALLBACK) assert.equal(done.rounds[0].meta.fallbackFrom, 'claude');
     assert.ok(done.rounds[0].meta.companyAsks >= 1, '家里回公司查过证据');
     assert.match(reply, /HOME-VERDICT/);
     assert.match(reply, /0\.8|80\s*%/, '回复里有公司代码里的折扣 0.8');
@@ -193,12 +220,12 @@ async function main() {
     assert.doesNotMatch(reply, /已用 ask_company 发出|等(待)?公司回执/, '没有把「已发出」当答案');
     const homeQ = (await status(hc)).threads.find(t => t.id === q.id);
     assert.ok(homeQ.rounds.every(r => r.delivered), '公司回执已送进家里会话');
-    check(`家里 Claude 拿到公司回执后答完，回复公司（用时 ${Math.round(done.rounds[0].meta.elapsedSec / 60)} 分钟，含回公司查证据 ${done.rounds[0].meta.companyAsks} 次）`);
+    check(`家里 ${FALLBACK ? 'Codex' : 'Claude'} 拿到公司回执后答完，回复公司（用时 ${Math.round(done.rounds[0].meta.elapsedSec / 60)} 分钟，含回公司查证据 ${done.rounds[0].meta.companyAsks} 次）`);
     const summary = await until('codeagent woke up', async () => {
-      const text = await transcript(cc, csid);
-      const from = text.lastIndexOf('【家里回复'); const idx = from >= 0 ? text.indexOf('COMPANY-DONE', from + 20) : -1;
-      return idx > from && text.slice(idx, idx + 800);
+      const s = (await sessionsOf(cc)).find(x => x.id === csid);
+      return answeredAfter(s && s.transcriptPath, `【家里回复 ${askThread.id}`, 'COMPANY-DONE');
     }, 8 * 60000, 5000);
+    assert.match(summary, /0\.8|80\s*%/);
     result.companySummary = summary.slice(0, 600);
     check('回复送进发起求助的 CodeAgent 会话，它被唤醒并写出 COMPANY-DONE 复述');
 
