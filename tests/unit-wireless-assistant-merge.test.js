@@ -78,14 +78,14 @@ test('提出人验收后：另开会话、换一家模型审查（实现是 Code
   for (const part of ['审查 PR #21', 'prepare 21', 'record 21 --candidate ' + CAND, '常驻助理 wr-21-1', '不批准、不合并', '一次列全']) assert.ok(text.includes(part), part);
 });
 
-test('还没验收、或不是提案带来的 PR：不审查', async t => {
+test('v2.7.2：执行 Agent 交付后就审查（审查在提出人验收之前）；不是提案带来的 PR 不审查', async t => {
   const { service, state } = fixture(t, {
-    proposals: [accepted('a1', 21, { acceptance_view: { state: 'pending' } })],
+    proposals: [accepted('a1', 21, { acceptance_view: { state: 'reviewing' } })],
     tasks: [task(21, 'submitted'), task(30, 'submitted')],
   });
   await service.poll();
-  assert.equal(service.status().jobs.filter(j => j.type === 'review').length, 0);
-  assert.equal(state.created.length, 0);
+  assert.deepEqual(service.status().jobs.filter(j => j.type === 'review').map(j => j.pr), [21]);
+  assert.equal(state.created.length, 1);
 });
 
 test('审查回写后跟进：通过 → 等批准；没通过 → 已退回返工；都会通知', async t => {
@@ -95,7 +95,7 @@ test('审查回写后跟进：通过 → 等批准；没通过 → 已退回返�
   state.tasks = [task(21, 'awaiting_approval'), task(22, 'review_failed', { candidate: CAND2 })];
   await service.poll();
   const jobs = service.status().jobs.filter(j => j.type === 'review');
-  assert.match(jobs.find(j => j.pr === 21).note, /审查通过，等审批人批准/);
+  assert.match(jobs.find(j => j.pr === 21).note, /审查通过，交提出人验收/);
   assert.match(jobs.find(j => j.pr === 22).note, /审查没通过/);
   assert.ok(state.notices.some(n => /审查完成/.test(n.title)) && state.notices.some(n => /审查没通过/.test(n.title)));
 });
@@ -179,7 +179,7 @@ test('后台核对超过合入时限仍没完成：标失败，提示点重来',
   await first.service.poll();
   first.service.close();
   const second = fixture(t, { proposals: [accepted('a1', 21)], tasks: [task(21, 'merging')], dataDir: first.deps.dataDir });
-  second.state.now = first.state.now + 91 * 60000;
+  second.state.now = first.state.now + 4 * 3600000 + 60000;  // v2.7.2：闸门允许 3 小时，后台核对 4 小时后才算没合完
   await second.service.poll();
   const job = second.service.status().jobs.find(j => j.type === 'merge');
   assert.equal(job.state, 'failed');

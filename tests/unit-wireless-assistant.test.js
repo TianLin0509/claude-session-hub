@@ -118,8 +118,9 @@ test('跟进：交付后标已交付并通知；被别人接手的排队提案�
   await service.poll();
   const done = service.status().jobs.find(j => j.proposalId === 'a1');
   assert.equal(done.state, 'done');
-  assert.match(done.note, /PR #14/);
-  assert.ok(state.notices.some(n => /已交付/.test(n.title) && n.sessionId === a.sessionId));
+  assert.match(done.note, /PR #14.*换一家模型审查/);
+  // v2.7.2：交付只是「Agent 执行」里的一步，接着自动换模型审查，不打扰人。
+  assert.ok(!state.notices.some(n => /已交付/.test(n.title)));
 });
 
 test('接手后又释放（如测试异议）：标已释放，同一版本不再自动重派；提出人修订后按新版本重新排队', async t => {

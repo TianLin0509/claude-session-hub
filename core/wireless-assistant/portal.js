@@ -59,4 +59,21 @@ function listProposals(install, { timeoutMs = 60000, run = execFile } = {}) {
   });
 }
 
-module.exports = { registryPath, readInstallation, findKitConfig, listProposals };
+// v2.7.2：把「Agent 执行」的子状态写进协作台（progress renew --note），顺带续接手租约。
+// 用接入包里本机会话 claim 时留下的接手凭据；脚本出错如实抛出，调用方只记日志、不影响执行。
+function progress(install, id, action, note, { timeoutMs = 60000, run = execFile } = {}) {
+  if (!install?.executorConfig) return Promise.reject(new Error('本机没有 SuperRAN 接入包'));
+  if (!/^[0-9A-Za-z]{1,32}$/.test(String(id))) return Promise.reject(new Error('提案编号不合法'));
+  const script = path.join(install.kitDir, 'superran-proposals.py');
+  return new Promise((resolve, reject) => {
+    run(install.python, ['-I', script, '--config', install.executorConfig, 'progress', id, '--action', action, '--note', String(note).slice(0, 900)], {
+      cwd: install.kitDir, timeout: timeoutMs, windowsHide: true, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8',
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+    }, (error, stdout, stderr) => {
+      if (error) { reject(new Error('回写执行状态失败：' + (String(stderr || '').trim().split(/\r?\n/).pop() || error.message).slice(0, 200))); return; }
+      resolve(stdout);
+    });
+  });
+}
+
+module.exports = { progress, registryPath, readInstallation, findKitConfig, listProposals };
