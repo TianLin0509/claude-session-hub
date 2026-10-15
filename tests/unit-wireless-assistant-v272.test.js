@@ -427,3 +427,37 @@ test('返修提示带完整审查意见，提出人裁决只作附加说明（�
   assert.ok(text.includes('提出人决定按审查意见改'));
   assert.ok(!text.includes('第 2 轮'));
 });
+
+test('初审续作和正常派发守同一道闸：自动处理关着或合入在跑时不自动开始，恢复后再开始（独立审查 r6）', async t => {
+  const { service, state } = fixture(t, { proposals: [proposal('n1')], tasks: [] });
+  await service.poll();
+  const job = implJob(service);
+  state.list = [proposal('n1', { state: 'implementing', executor: job.slot, plan: PLAN(['docs/x.md']) })];
+  idle(state, job);
+  service.setSettings({ enabled: false });
+  const sent = state.sent.length;
+  await service.poll();
+  assert.equal(service.job(job.id).phase, 'precheck');
+  assert.match(service.job(job.id).note, /自动处理已关/);
+  assert.equal(state.sent.length, sent, '没有发「开始实现」');
+  service.setSettings({ enabled: true });
+  await service.poll(); await flush(6);
+  assert.equal(service.job(job.id).phase, 'implementing');
+});
+
+test('合入在跑时，初审解除等待也不自动开始', async t => {
+  const { service, state } = fixture(t, { proposals: [proposal('n1'), delivered('a1', 21)], tasks: [task(21, 'approved')] });
+  await service.poll();
+  assert.equal(state.children.length, 1, '合入在跑');
+  service.setSettings({ enabled: true });
+  // 构造一个已写好计划、空闲的初审任务
+  const id = 'pre:n1';
+  service.saveJob({ id, type: 'implement', proposalId: 'n1', title: '提案 n1', state: 'working', phase: 'precheck', slot: 'wx-n1-1', sessionId: 's-n1', createdAt: state.now, attempts: [] });
+  state.sessions.set('s-n1', { id: 's-n1', kind: 'codex', status: 'idle' });
+  state.list = [proposal('n1', { state: 'implementing', executor: 'wx-n1-1', plan: PLAN(['docs/x.md']) }), delivered('a1', 21)];
+  const sent = state.sent.length;
+  await service.poll();
+  assert.equal(service.job(id).phase, 'precheck');
+  assert.match(service.job(id).note, /合入进行中/);
+  assert.equal(state.sent.length, sent);
+});

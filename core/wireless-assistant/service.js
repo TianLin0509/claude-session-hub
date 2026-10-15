@@ -309,7 +309,7 @@ class WirelessAssistant {
       // 两种情况都停在「等待」里并写明缺什么，只有人点「不等了，直接开始」才放行。
       let missing = null;
       if (!mine) {
-        if (!job.planAsked && this.deps.getSession(job.sessionId)) {
+        if (!job.planAsked && this.deps.getSession(job.sessionId) && !this.dispatchPaused()) {
           await this.deps.sendPrompt(job.sessionId, buildPlanFixPrompt(p), randomUUID()).catch(() => null);
           this.saveJob({ ...job, planAsked: true, note: '初审：计划里没有「预计改动」清单，已请会话补写' });
           continue;
@@ -321,6 +321,9 @@ class WirelessAssistant {
       if (!hit) {
         // 解除等待要重新占一个会话名额；名额满就等下一轮（独立审查 r2 第 2 条）。
         if (job.phase === 'waiting' && this.busySlots() >= this.settings().maxParallel) { this.saveJob({ ...job, note: '初审已不冲突，等会话名额' }); continue; }
+        // 自动开始和正常派发守同一道闸：自动处理关着、不归本窗口、或合入在跑，就先不开始（独立审查 r6）。
+        const paused = this.dispatchPaused();
+        if (paused) { if (job.note !== paused) this.saveJob({ ...job, note: paused }); continue; }
         await this.goAhead(job, p, { checked: (inflight.tasks || []).length });
         continue;
       }
@@ -375,7 +378,16 @@ class WirelessAssistant {
     if (owner) return INFLIGHT_PROPOSAL.includes(owner.state);
     return INFLIGHT_TASK.includes(t.state);
   }
+  // 现在能不能自动派新活（开新会话或让会话开始实现）：不能就返回人话原因。
+  dispatchPaused() {
+    if (!this.settings().enabled) return '初审已不冲突，自动处理已关：打开后开始实现';
+    if (!this.ownsTimers()) return '初审已不冲突，由另一个 Hub 窗口负责开始';
+    if (this.mergeRun || this.mergeBusy()) return '初审已不冲突，合入进行中，暂缓开始';
+    return null;
+  }
   async goAhead(job, p, { note = '', checked, force = false } = {}) {
+    // 异步比对之后、真正发提示前再核对一次；人点的「不等了，直接开始」是明确决定，不受这道闸限制。
+    if (!force && this.dispatchPaused()) { this.saveJob({ ...(this.job(job.id) || job), note: this.dispatchPaused() }); return; }
     const text = buildGoAheadPrompt(p, { slot: job.slot, checked, waited: job.phase === 'waiting' ? job.waitFor : null, force, note });
     let sent = false;
     if (this.deps.getSession(job.sessionId)) {
