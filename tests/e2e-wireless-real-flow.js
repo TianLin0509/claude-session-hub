@@ -130,7 +130,7 @@ async function main() {
     log('助理下一轮自动发现 B、C：正在处理 ' + running.join('、') + '，排队 ' + queued.join('、'));
     assert.equal(running.length, 2, '同时最多 2 个'); assert.equal(queued.length, 1, '第 3 个排队');
     assert.deepEqual(queued, ['C'], '同一轮发现的 B、C 按协作台列表顺序：B 先做，C 排队');
-    const ui = await until('页面及时刷新', async () => { const t = await cdp.eval('document.querySelector(".wp-body")?.innerText||""'); return /正在处理（2\/2）/.test(t) && /排队（1）/.test(t) && t; }, 5000, 300);
+    const ui = await until('页面及时刷新', async () => { const t = await cdp.eval('document.querySelector(".wp-body")?.innerText||""'); return /正在处理（会话 2\/2/.test(t) && /排队（1）/.test(t) && t; }, 5000, 300);
     assert.match(ui, /MIMO/);
     result.afterBC = { running, queued, lastPoll: s2.last };
     await shot('03-two-running-one-queued');

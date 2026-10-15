@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { renameWithRetrySync } = require('./claude-project-trust');
 
 const FILE = 'web-risk.json';
 // Paused, not failed: a site that challenged automation is left alone this long.
@@ -101,7 +102,8 @@ function update(root, fn) {
     const state = read(root), result = fn(state);
     const tmp = file(root) + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(state), 'utf8');
-    fs.renameSync(tmp, file(root));
+    // Windows：读方（或杀毒扫描）开着 web-risk.json 时覆盖改名会短暂报 EPERM，按全局约定有界重试。
+    renameWithRetrySync(tmp, file(root), { retries: 20 });
     return result;
   } finally { fs.closeSync(fd); fs.rmSync(lock, { force: true }); }
 }
