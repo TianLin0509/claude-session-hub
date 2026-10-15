@@ -407,3 +407,23 @@ test('等公司回执的上限可在设置里改（10–480 分钟）', async t 
   assert.equal(service.settings().companyWaitMinutes, 60);
   assert.throws(() => service.setSettings({ companyWaitMinutes: 5 }), /10–480/);
 });
+
+test('初审：PR 已关闭或所属提案已撤回的候选不算在途，取不到它也不挡比对（独立审查 r3 第 4 条）', async t => {
+  const { service, state } = fixture(t, {
+    proposals: [proposal('n1'), delivered('y1', 17, { state: 'withdrawn' })], tasks: [task(17, 'submitted', { pr_state: 'open' }), task(18, 'submitted', { pr_state: 'closed' })],
+    inflight: [{ pr: 18, state: 'submitted', pr_state: 'closed', candidate: CAND, live: true, changed: ['src/superran/channel/native.py'], functions: {} }],
+  });
+  state.inflight = [{ pr: 18, state: 'submitted', pr_state: 'closed', candidate: CAND, live: true, changed: ['src/superran/channel/native.py'], functions: {} }];
+  const job = await planned(service, state, 'n1', ['src/superran/channel/native.py: f'], [delivered('y1', 17, { state: 'withdrawn' })]);
+  assert.equal(job.phase, 'implementing', '已关闭的 PR 不等');
+});
+
+test('返修提示带完整审查意见，提出人裁决只作附加说明（独立审查 r3 第 5 条）', () => {
+  const { latestFindings } = require('../core/wireless-assistant/service');
+  const full = '换模型审查第 3 轮没通过（完整意见，候选 cccc）：' + '甲'.repeat(900) + '最后一条阻断';
+  const p = { comments: [{ markdown: '换模型审查第 2 轮没通过（完整意见，候选 bbbb）：旧' }, { markdown: full }, { markdown: '需要提出人判断：审查连续 3 轮没通过。' }, { markdown: '提出人决定按审查意见改：先补回归' }] };
+  const text = latestFindings(p);
+  assert.ok(text.includes('最后一条阻断'));
+  assert.ok(text.includes('提出人决定按审查意见改'));
+  assert.ok(!text.includes('第 2 轮'));
+});

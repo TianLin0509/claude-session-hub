@@ -294,7 +294,9 @@ class WirelessAssistant {
     try {
       const install = this.install();
       inflight = await merger.inflight({ python: install.python, script: this.script(), run: this.deps.runTasks || this.deps.run });
-      if (inflight.errors?.length) inflightError = '取不到 ' + inflight.errors.map(e => 'PR #' + e.pr).join('、') + ' 的候选';
+      // 先排除已终止的对象（PR 已关闭 / 合入、提案已撤回或暂缓），只有仍在途的候选取不到才算材料不全。
+      const missing = (inflight.errors || []).filter(e => this.stillInFlight({ pr: e.pr, state: e.state, pr_state: e.pr_state }));
+      if (missing.length) inflightError = '取不到 ' + missing.map(e => 'PR #' + e.pr).join('、') + ' 的候选';
     } catch (error) { inflightError = '读不到在途改动（' + short(error.message, 60) + '）'; }
     const now = this.now();
     for (const job of jobs) {
@@ -352,9 +354,7 @@ class WirelessAssistant {
     for (const t of inflight.tasks || []) {
       const owner = this.proposalOfPr(t.pr);
       if (t.pr === p.pr_number || (owner && owner.id === p.id)) continue;
-      // 提案已撤回 / 暂缓 / 合入优先于代码记录的状态；分支删了或换了候选（live=false）就不算这个候选在途。
-      if (t.live === false || (owner && !INFLIGHT_PROPOSAL.includes(owner.state))) continue;
-      if (!(INFLIGHT_TASK.includes(t.state) || owner)) continue;
+      if (t.live === false || !this.stillInFlight(t)) continue;
       prs.add(t.pr);
       others.push({ key: 'pr:' + t.pr + ':' + String(t.candidate || '').slice(0, 12), label: 'PR #' + t.pr, title: owner?.title || t.title, files: new Set(t.changed || []), functions: t.functions || {} });
     }
@@ -367,6 +367,13 @@ class WirelessAssistant {
         functions: Object.fromEntries([...plan].map(([f, names]) => [f, [...names]])) });
     }
     return others;
+  }
+  // 在途的判定（初审只等仍在途的改动）：PR 在云端已关闭或合入、所属提案已撤回 / 暂缓 / 合入，都不算；其余看代码记录状态。
+  stillInFlight(t) {
+    if (['closed', 'merged'].includes(t.pr_state)) return false;
+    const owner = this.proposalOfPr(t.pr);
+    if (owner) return INFLIGHT_PROPOSAL.includes(owner.state);
+    return INFLIGHT_TASK.includes(t.state);
   }
   async goAhead(job, p, { note = '', checked, force = false } = {}) {
     const text = buildGoAheadPrompt(p, { slot: job.slot, checked, waited: job.phase === 'waiting' ? job.waitFor : null, force, note });
@@ -656,10 +663,15 @@ class WirelessAssistant {
   close() { clearInterval(this.timer); clearTimeout(this.firstTimer); this.timer = null; try { this.store.close(); } catch {} }
 }
 
-// 最近一次退回附的完整意见（协作台把完整审查意见写在讨论里，note 只是摘要）。
+// 最近一次退回附的完整意见：协作台把每轮 BLOCK 的完整审查意见写进讨论（note 只是摘要）；提出人对分歧的裁决
+// 是附加说明，跟在完整意见后面，不能替代它（独立审查 r3 第 5 条）。
 function latestFindings(p) {
-  const list = (p.comments || []).filter(c => /^(换模型审查第|提出人决定|审批人|和主干)/.test(String(c.markdown || '')));
-  return list.length ? String(list[list.length - 1].markdown) : '';
+  const comments = (p.comments || []).map(c => String(c.markdown || ''));
+  let at = -1;
+  for (let i = comments.length - 1; i >= 0; i -= 1) if (/^换模型审查第 \d+ 轮没通过（完整意见/.test(comments[i])) { at = i; break; }
+  const later = comments.slice(at + 1).filter(c => /^(提出人决定|提出人退回|审查方更新)/.test(c));
+  const findings = at >= 0 ? comments[at] : '';
+  return [findings, ...later].filter(Boolean).join('\n\n');
 }
 
 // 计划里的「### 预计改动」：每行「- 文件路径: 函数1, 函数2」（新文件写「新文件」）。没有这一节返回 null。
