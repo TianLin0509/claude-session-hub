@@ -251,7 +251,9 @@ const cardHistoryViews = require('./card-history-views').createCardHistoryViews(
 });
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
-const clipboardController = createClipboardController({ document, window, clipboard, expandText: pasteChips.expandPasteMarkers });
+const clipboardController = createClipboardController({ document, window, clipboard,
+  writeTextVerified: (text, formats) => ipcRenderer.invoke('clipboard:write-text', text, formats),
+  expandText: pasteChips.expandPasteMarkers });
 clipboardController.init();
 // xterms are created lazily, then live for exactly as long as their live Hub
 // sessions. Switching sessions must not dispose a still-running CLI: doing so
@@ -1824,10 +1826,10 @@ function getOrCreateTerminal(sessionId) {
     ipcRenderer.send('terminal-input', { sessionId, data: seq });
   });
 
-  // Right-click: show "Preview" option when text is selected
+  // Right-click: preserve the exact selection for copy; preview trims its own path.
   container.addEventListener('contextmenu', (e) => {
-    const sel = terminal.getSelection().trim();
-    if (!sel) return;
+    const sel = terminal.getSelection();
+    if (!sel.trim()) return;
     e.preventDefault();
     openTerminalContextMenu(sel, e.clientX, e.clientY);
   });
@@ -6386,6 +6388,7 @@ const previewPanel = createPreviewPanelController({
   ipcRenderer,
   shell,
   clipboard: previewClipboard,
+  copyText: previewClipboard === clipboard ? (text, options) => clipboardController.copyText(text, options) : null,
   fs,
   marked,
   DOMPurify,
@@ -6420,6 +6423,7 @@ const previewPanel = createPreviewPanelController({
     }
   },
   onCopyFeedback: feedback => clipboardController.showFeedback(feedback),
+  onSelectionContextMenu: (text, x, y) => cardSelectionContextMenu.open(text, x, y),
 });
 const {
   openPreviewPanel,
@@ -8538,6 +8542,7 @@ const terminalContextMenu = createTerminalContextMenuController({
   document,
   window,
   termCtxMenuEl,
+  copyText: (text, options) => clipboardController.copyText(text, options),
   openPreviewPanel: (target) => openPathInHub(target, {
     cwd: getSessionCwd(activeSessionId),
     requireExistsForRel: false,
@@ -8557,6 +8562,8 @@ const cardSelectionContextMenu = createCardSelectionContextMenuController({
   window,
   menuEl: document.getElementById('card-selection-context-menu'),
   clipboard,
+  copyText: (text, options) => clipboardController.copyText(text, options),
+  expandText: pasteChips.expandPasteMarkers,
   // @community-strip 公司中转
   pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
   // @community-end
@@ -8568,6 +8575,7 @@ const pathLinkContextMenu = createPathLinkContextMenuController({
   window,
   menuEl: document.getElementById('path-link-context-menu'),
   clipboard,
+  copyText: (text, options) => clipboardController.copyText(text, options),
   shell,
   ipcRenderer,
   normalizeLocalPathForOpen: _normalizeLocalPathForOpen,

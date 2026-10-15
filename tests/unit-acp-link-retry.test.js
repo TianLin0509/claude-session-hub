@@ -31,6 +31,20 @@ test('目录链接确实建成并指向目标', t => {
   assert.equal(fs.realpathSync(path.join(root, 'link')), fs.realpathSync(target));
 });
 
+test('连续占用达到 5 次后必须返回原错误', t => {
+  const busy = Object.assign(new Error('still busy'), { code: 'EBUSY' });
+  const waits = [];
+  const symlink = t.mock.method(fs, 'symlinkSync', () => {
+    if (symlink.mock.callCount() > 5) throw new Error('超过重试上限');
+    throw busy;
+  });
+  t.mock.method(fs, 'existsSync', () => false);
+  t.mock.method(Atomics, 'wait', (_array, _index, _value, timeout) => { waits.push(timeout); return 'timed-out'; });
+  assert.throws(() => linkWithRetry('C:/nonexistent-target', path.join(os.tmpdir(), 'hub-acp-link-exhausted')), error => error === busy);
+  assert.equal(symlink.mock.callCount(), 5);
+  assert.deepEqual(waits, [100, 200, 300, 400]);
+});
+
 test('其他错误不重试，直接抛出', t => {
   const error = Object.assign(new Error('nope'), { code: 'ENOENT' });
   const symlink = t.mock.method(fs, 'symlinkSync', () => { throw error; });

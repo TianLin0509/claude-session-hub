@@ -115,3 +115,70 @@ test('copy failure is explicit after bounded retries', async () => {
   assert.match(result.message, /复制失败/);
   assert.equal(feedback.length, 1);
 });
+
+test('a newer copy cancels an older retry and its success feedback', async () => {
+  let stored = 'before';
+  let resumeRetry;
+  let oldWrites = 0;
+  const feedback = [];
+  const controller = createClipboardController({
+    clipboard: {
+      writeText(text) { if (text !== 'old' || ++oldWrites > 1) stored = text; },
+      readText() { return stored; },
+    },
+    retryDelaysMs: [0, 1],
+    wait: () => new Promise(resolve => { resumeRetry = resolve; }),
+    renderFeedback: false,
+    onFeedback: value => feedback.push(value),
+  });
+  const old = controller.copyText('old');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await controller.copyText('new')).ok, true);
+  resumeRetry();
+  assert.equal((await old).ok, false);
+  assert.equal(stored, 'new', 'an old retry must never overwrite the latest user copy');
+  assert.equal(oldWrites, 1);
+  assert.equal(feedback.length, 1, 'stale work must not replace the latest feedback');
+});
+
+test('a writer without readback cannot claim verified success', async () => {
+  const controller = createClipboardController({
+    clipboard: { writeText() {} }, retryDelaysMs: [0], renderFeedback: false,
+  });
+  assert.equal((await controller.copyText('unverified')).ok, false);
+});
+
+test('renderer waits for the main-process acknowledgement and never trusts its own clipboard cache', async () => {
+  let resolveWrite;
+  const feedback = [];
+  const controller = createClipboardController({
+    clipboard: { writeText() { throw new Error('renderer writer must not run'); }, readText: () => 'false cached success' },
+    writeTextVerified: () => new Promise(resolve => { resolveWrite = resolve; }),
+    renderFeedback: false, onFeedback: value => feedback.push(value),
+  });
+  const pending = controller.copyText('wanted');
+  assert.equal(feedback.length, 0);
+  resolveWrite({ ok: false, reason: 'system clipboard busy', attempts: 5 });
+  assert.equal((await pending).ok, false);
+  assert.equal(feedback.at(-1).ok, false);
+});
+
+test('native copy snapshots immediately and uses the verified writer', async () => {
+  let copied = ''; let prevented = false;
+  const controller = createClipboardController({
+    window: { getSelection: () => ({ rangeCount: 1, isCollapsed: false, toString: () => 'native selection' }) },
+    writeTextVerified: async text => { copied = text; return { ok: true }; }, renderFeedback: false,
+  });
+  controller.handleNativeCopy({ target: { nodeType: 1, closest: () => null }, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(copied, 'native selection');
+});
+
+test('a superseded button copy cannot replace newer feedback with an error', () => {
+  const feedback = [];
+  const controller = createClipboardController({ renderFeedback:false, onFeedback: value => feedback.push(value) });
+  controller.showFeedback({ok:true,length:3});
+  controller.showFeedback({ok:false,reason:'superseded'});
+  assert.equal(feedback.length,1);
+  assert.equal(feedback[0].ok,true);
+});
