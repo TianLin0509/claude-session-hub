@@ -71,7 +71,8 @@ test('没有账号清单（老版本 CodeAgent）：沿用内置两个 + 配置�
   const dir = configDir({ tieredModelConfig: { large: 'GLM-5.2-WX' } });
   const ids = models.modelOptions(null, { configDir: dir }).map(o => o.id);
   assert.deepStrictEqual(ids.slice(0, 2), ['GLM-5.2-WX-Auto', 'MiniMax-M2.7']);
-  assert(ids.includes('GLM-5.2-WX'));
+  // 2026-10-16 公司真机：Auto 路由背后的 GLM-5.2-WX 直接选会 401，有 GLM-5.2-WX-Auto 时不单列。
+  assert(!ids.includes('GLM-5.2-WX'));
   assert.strictEqual(models.configuredModels(dir).authoritative, false);
 });
 
@@ -119,3 +120,11 @@ test('同一条回答两条路先后到达：第二次不再改会话、不再�
 
 if (failed) { console.error(`${failed} failed`); process.exit(1); }
 console.log('unit-codeagent-model-select: all passed');
+
+test('回答里观察到的 Auto 背后模型（GLM-5.2-WX）不进下拉：公司真机直接选它 401；观察到的其他模型照常附在后面', () => {
+  const dir = configDir({ enterpriseModelOptionsCache: [{ value: 'GLM-5.2-WX-Auto', label: 'GLM-5.2-WX-Auto' }, { value: 'MiniMax-M2.7', label: 'MiniMax-M2.7' }] });
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeagent-observed-'));
+  models.recordObserved(dataDir, 'GLM-5.2-WX');
+  models.recordObserved(dataDir, 'deepseek0731-wx-reasoner');
+  assert.deepStrictEqual(models.modelOptions(dataDir, { configDir: dir }).map(o => o.id), ['GLM-5.2-WX-Auto', 'MiniMax-M2.7', 'deepseek0731-wx-reasoner']);
+});

@@ -213,7 +213,7 @@ function observeModel(session, value) {
 function mismatchNotice(mismatch) {
   if (!mismatch) return '';
   return `选的是 ${mismatch.requestedLabel}，CodeAgent 实际用的是 ${mismatch.actual}（可能没有所选模型的权限）。`
-    + '界面已按实际模型显示，之后恢复这个会话也用它；新建会话时可以在模型下拉里选它并「设为默认」。';
+    + '界面已按实际模型显示，之后恢复这个会话也用它；新建会话时请在模型下拉里改选有权限的模型。';
 }
 
 // ---------------------------------------------------------------- 见过的模型（本机）
@@ -307,7 +307,11 @@ function modelOptions(dataDir, { configDir = null, fsModule = fs } = {}) {
     if (options.some(option => option.id.toLowerCase() === entry.id.toLowerCase())) continue;
     options.push({ id: entry.id, label: modelLabel(entry.id), source: 'observed', description: `${entry.id} · 本机 CodeAgent 实际用过` });
   }
-  return options;
+  // Auto 路由背后的具体模型不能直接选：2026-10-16 公司真机 `--model GLM-5.2-WX` 报 401「未识别到用户认证信息」，
+  // 只有 GLM-5.2-WX-Auto 能用。它出现在回答记录（实际模型）和分档配置里，列出来用户一选就失败，所以有「名字-Auto」时去掉它。
+  // 账号清单里明确列出的照留（那是 CodeAgent 自己说这个账号能选的）。
+  const ids = new Set(options.map(option => option.id.toLowerCase()));
+  return options.filter(option => option.source === 'account' || !ids.has(option.id.toLowerCase() + '-auto'));
 }
 
 module.exports = {
