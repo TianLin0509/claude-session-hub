@@ -30,6 +30,21 @@ function listTasks({ python = 'python', script, run = execFile, timeoutMs = 1200
   });
 }
 
+// 在途 PR 的候选各自改到的红档文件（v2.7.2 开工前避撞；只读，按候选缓存）。
+function inflight({ python = 'python', script, run = execFile, timeoutMs = 180000 }) {
+  if (!script || !fs.existsSync(script)) return Promise.reject(new Error('本机没有合并位脚本 review_merge.py'));
+  return new Promise((resolve, reject) => {
+    run(python, [script, 'inflight'], { cwd: path.dirname(script), timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8', env: ENV() }, (error, stdout, stderr) => {
+      if (error) { reject(new Error('读取在途改动失败：' + (lastLine(stderr) || error.message).slice(0, 300))); return; }
+      try {
+        const value = JSON.parse(stdout);
+        if (!Array.isArray(value?.tasks)) throw new Error('返回内容不是在途记录');
+        resolve(value);
+      } catch (parse) { reject(new Error('在途改动无法解析：' + parse.message)); }
+    });
+  });
+}
+
 // 合入一个已批准的 PR：完整测试闸门约 15–30 分钟。输出全部写进日志文件，结束后解析最后的 JSON 回执。
 // 连同完整测试闸门的子进程一起停（Windows 上只杀 python 会留下测试进程）。
 function killTree(child) {
@@ -65,4 +80,4 @@ function runMerge({ python = 'python', script, pr, candidate, logFile, spawnFn =
   });
 }
 
-module.exports = { defaultScript, listTasks, runMerge, killTree };
+module.exports = { defaultScript, listTasks, inflight, runMerge, killTree };

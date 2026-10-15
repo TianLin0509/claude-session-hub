@@ -18,7 +18,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke(channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
   const EFF = { low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', ultra: '极限' };
   const STATE = {
-    working: ['处理中', 'run'], dispatching: ['正在开会话', 'run'], queued: ['排队中', 'wait'], held: ['待你放行', 'hold'],
+    working: ['处理中', 'run'], dispatching: ['正在开会话', 'run'], queued: ['排队中', 'wait'], held: ['待你放行', 'hold'], waiting: ['等别的 PR 合入', 'wait'],
     running: ['合入中', 'run'], detached: ['后台核对中', 'run'], done: ['已完成', 'ok'], released: ['已释放', 'warn'], stalled: ['没跑起来', 'bad'], failed: ['没跑起来', 'bad'],
     skipped: ['不再处理', 'mute'], dismissed: ['你选择不处理', 'mute'],
   };
@@ -34,7 +34,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
     page = document.createElement('section'); page.className = 'wireless-page'; page.id = 'wireless-page'; page.hidden = true; page.setAttribute('aria-label', '无线');
     page.innerHTML = `<header class="wp-head">
         <div class="wp-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 12v9M9 21h6"/><circle cx="12" cy="10" r="1.6"/><path d="M8.5 6.5a5 5 0 0 0 0 7M15.5 6.5a5 5 0 0 1 0 7M5.6 3.8a9 9 0 0 0 0 12.4M18.4 3.8a9 9 0 0 1 0 12.4"/></svg></div>
-        <div class="wp-title"><h1>无线</h1><p>SuperRAN 助理 · 已推进的提案自动实现；提出人验收后换一家模型审查；审批人在协作台点「批准合入」后自动合入</p></div>
+        <div class="wp-title"><h1>无线</h1><p>SuperRAN 助理 · 已推进的提案自动实现；提出人验收后换一家模型审查；审批人在协作台点「批准合入」后自动合入（主干前进但没冲突时自动并入新主干）</p></div>
         <button type="button" class="wp-switch" data-wp="toggle" role="switch" aria-checked="false">自动处理</button>
         <button type="button" class="wp-btn" data-wp="settings">设置</button>
         <button type="button" class="wp-btn primary" data-wp="check">立即检查</button>
@@ -68,7 +68,7 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
       ['协作台', last.error ? `<span class="bad">上次检查 ${clock(last.at)} 失败：${esc(last.error)}</span>` : last.at ? `上次检查 ${clock(last.at)}：${last.total} 份提案，其中 ${last.candidates} 份已推进、待接手` : '还没检查过', d.polling ? '检查中…' : `下次 ${clock(d.nextPollAt)}（每 ${s.pollMinutes} 分钟）`],
       ['接手方式', s.enabled ? `自动：实现与审查同时最多 ${s.maxParallel} 个会话，每件事新开一个` : '<span class="warn">自动处理已关：只列出待办，不派发、不合入</span>', `会话 ${working}/${s.maxParallel}`],
       ['模型', `主力 ${esc(modelLabel(s.primary))}`, `替补 ${esc(modelLabel(s.fallback))}`],
-      ['审查与合入', !d.code?.script ? '<span class="warn">本机没有合并位脚本 review_merge.py：只做自动实现</span>' : last.taskError ? `<span class="bad">读取代码交付记录失败：${esc(last.taskError)}</span>` : last.at ? `待审查 ${last.reviews || 0} 个 PR，待合入 ${last.merges || 0} 个；审查换一家模型（实现用 Codex 就由 Claude 审）` : '还没检查过', merging ? `正在合入 PR #${esc(merging.pr)}` : '合入一次一个，不开会话'],
+      ['审查与合入', !d.code?.script ? '<span class="warn">本机没有合并位脚本 review_merge.py：只做自动实现</span>' : last.taskError ? `<span class="bad">读取代码交付记录失败：${esc(last.taskError)}</span>` : last.at ? `待审查 ${last.reviews || 0} 个 PR，待合入 ${last.merges || 0} 个；审查换一家模型（实现用 Codex 就由 Claude 审）` : '还没检查过', merging ? `正在合入 PR #${esc(merging.pr)}` : '合入一次一个，不开会话；主干前进没冲突就并入新主干，有冲突才退回返工'],
       ['接入包', inst.ready ? `${esc(inst.user || '')} · ${days == null ? '有效期未知' : days >= 0 ? '还剩 ' + days + ' 天' : '<span class="bad">已过期</span>'}` : '<span class="bad">本机没有接入包：在协作台复制任一提示词交给 Agent 领取一次</span>', inst.root ? '主仓 ' + esc(inst.root) : '<span class="warn">没找到本机 SuperRAN 主安装</span>'],
     ];
     if (!d.owner) lines.push(['提示', '<span class="warn">另一个 Hub 窗口负责定时检查，这里只显示状态</span>', '']);
@@ -80,8 +80,9 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
     if (j.sessionId && j.session) actions.push(`<button type="button" class="wp-link" data-wp="open:${esc(j.sessionId)}">${j.session.open ? '打开会话' : '找回会话'}</button>`);
     if (j.state === 'held') actions.push(`<button type="button" class="wp-btn primary" data-wp="approve:${esc(j.id)}">我看过了，放行</button>`);
     if (['failed', 'stalled', 'released', 'skipped', 'dismissed'].includes(j.state)) actions.push(`<button type="button" class="wp-btn" data-wp="retry:${esc(j.id)}">重来</button>`);
+    if (j.state === 'waiting') actions.push(`<button type="button" class="wp-btn" data-wp="retry:${esc(j.id)}">不等了，直接开工</button>`);
     if (j.logFile) actions.push(`<button type="button" class="wp-link" data-wp="log:${esc(j.id)}">合入日志</button>`);
-    if (['held', 'queued', 'failed', 'stalled', 'released'].includes(j.state)) actions.push(`<button type="button" class="wp-link" data-wp="dismiss:${esc(j.id)}">不处理</button>`);
+    if (['held', 'queued', 'waiting', 'failed', 'stalled', 'released'].includes(j.state)) actions.push(`<button type="button" class="wp-link" data-wp="dismiss:${esc(j.id)}">不处理</button>`);
     actions.push(`<button type="button" class="wp-link" data-wp="portal">协作台</button>`);
     const live = j.state === 'dispatching' ? '会话启动中' : j.state === 'running' ? '合并脚本在跑' : j.session && j.state === 'working' ? (j.session.busy ? 'Agent 正在干活' : j.session.open ? '会话已停下' : '会话没开着') : '';
     const kind = { implement: '实现', review: '审查', merge: '合入' }[j.type || 'implement'];
@@ -102,8 +103,8 @@ function createWirelessPage({ document, window, ipcRenderer, openSession, closeO
     const groups = {
       active: jobs.filter(j => ['working', 'dispatching', 'running', 'detached'].includes(j.state)),
       held: jobs.filter(j => j.state === 'held'),
-      queued: jobs.filter(j => j.state === 'queued').sort((a, b) => a.createdAt - b.createdAt || (a.order ?? 0) - (b.order ?? 0)),
-      recent: jobs.filter(j => !['working', 'dispatching', 'running', 'detached', 'held', 'queued'].includes(j.state)).slice(0, 20),
+      queued: jobs.filter(j => ['queued', 'waiting'].includes(j.state)).sort((a, b) => a.createdAt - b.createdAt || (a.order ?? 0) - (b.order ?? 0)),
+      recent: jobs.filter(j => !['working', 'dispatching', 'running', 'detached', 'held', 'queued', 'waiting'].includes(j.state)).slice(0, 20),
     };
     const empty = { active: '没有正在处理的事。', held: '', queued: '没有排队的事。', recent: '还没有结果。' };
     const sessions = groups.active.filter(j => !['running', 'detached'].includes(j.state)).length;
