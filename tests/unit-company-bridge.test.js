@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const bridgeCrypto = require('../core/company-bridge/crypto');
-const { CompanyBridge, sourceVerdict, stripCode, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS } = require('../core/company-bridge/company');
+const { CompanyBridge, sourceVerdict, stripCode, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS, V2_INSTRUCTIONS } = require('../core/company-bridge/company');
 const { HomeBridge } = require('../core/company-bridge/home');
 
 const BASE = 'https://relay.example.test/drop/tok/api';
@@ -477,44 +477,104 @@ test('会话管理器：Codex 固定挂载不受 none 档影响；Claude 并进 
   assert.deepEqual(sm._withExtraMcp('codex', { id: 'd' }), { id: 'd' });
 });
 
-test('公司 CodeAgent 会话（purpose=company-bridge）按页面选的权限禁用工具、不加载 MCP；默认可跑查询命令、禁改写工具', t => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-bridge-perm-'));
-  const old = process.env.CLAUDE_HUB_DATA_DIR; process.env.CLAUDE_HUB_DATA_DIR = dataDir;
-  t.after(() => { if (old === undefined) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = old; fs.rmSync(dataDir, { recursive: true, force: true }); });
-  const strict = require('../core/company-bridge/strict');
+test('公司 CodeAgent 会话（purpose=company-bridge）：不传不起作用的禁用参数，只是不挂 Hub 自己的 MCP', () => {
   const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
   const config = { command: 'codeagent', configDir: os.tmpdir(), configDirEnv: 'CODEAGENT3_CONFIG_DIR', stateFile: '.cac.json' };
-  const launch = () => buildCodeAgentPtyLaunch('x', 'codeagent', { purpose: 'company-bridge', mcpProfile: 'full', mcpConfigFile: 'C:/x.json' }, os.tmpdir(), {}, config).cmd;
-  assert.equal(strict.mode(), 'no-edit');
-  let ro = launch();
-  assert.match(ro, /--disallowedTools '?Edit,MultiEdit,Write,NotebookEdit'?/);
-  assert.doesNotMatch(ro, /Bash|PowerShell/);
-  assert.match(ro, /--strict-mcp-config/);
-  assert.doesNotMatch(ro, /x\.json/);
-  strict.setMode('read-only');
-  assert.match(launch(), /--disallowedTools '?Bash,BashOutput,KillShell,PowerShell,Edit,MultiEdit,Write,NotebookEdit'?/);
-  strict.setMode('prompt-only');
-  assert.doesNotMatch(launch(), /disallowedTools/);
-  assert.throws(() => strict.setMode('anything'), /权限只能是/);
-  // 旧版的标记文件（只靠说明）照样认；旧接口 setStrict(true) 回到默认权限
-  fs.rmSync(path.join(dataDir, 'company-bridge', 'permission-mode'));
-  fs.writeFileSync(path.join(dataDir, 'company-bridge', 'readonly-flags-off'), 'off\n');
-  assert.equal(strict.mode(), 'prompt-only');
-  strict.setStrict(true);
-  assert.equal(strict.mode(), 'no-edit');
-  assert.equal(fs.existsSync(path.join(dataDir, 'company-bridge', 'readonly-flags-off')), false);
+  const bridge = buildCodeAgentPtyLaunch('x', 'codeagent', { purpose: 'company-bridge', mcpProfile: 'full', mcpConfigFile: 'C:/x.json' }, os.tmpdir(), {}, config).cmd;
+  assert.doesNotMatch(bridge, /disallowedTools/);
+  assert.doesNotMatch(bridge, /x\.json/);
   const normal = buildCodeAgentPtyLaunch('y', 'codeagent', { mcpProfile: 'full' }, os.tmpdir(), {}, config).cmd;
   assert.doesNotMatch(normal, /disallowedTools/);
 });
 
-test('公司设置：旧版存的模型不再生效；没改过的第一版说明自动换成通用版，改过的保留', async t => {
+test('剪贴板里的图片顶掉问题：那条回答不发回家、自动重发；连着 2 次以上报错，重试后清零', async t => {
+  const r = rig(t);
+  await pair(r);
+  const turns = new Map();
+  r.company.deps.readUserTurns = file => turns.get(file) || [];
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle', title: 'SuperRAN' });
+  const asked = await ask(r, 'home-s1', '## 目的\n查文档\n## 问题\n1. 最新周报是哪天？');
+  await r.company.checkNow();
+  const sid = r.cs.created[0].opts.id;
+  const file = 'C:/t/' + sid + '.jsonl';
+  r.cs.map.get(sid).transcriptPath = file;
+  const hijack = () => { turns.set(file, [{ at: r.clock.now, text: '', images: 1 }]); r.cs.answer(sid, '收到一张图片，你想做什么？'); };
+  hijack();
+  await r.company.checkNow();
+  let round = r.company.thread(asked.thread).rounds[0];
+  assert.equal(round.reply, undefined, '答图片的那条不当回执');
+  assert.equal(round.hijacked, 1);
+  assert.ok(r.notices.some(n => /剪贴板图片/.test(n.title)));
+  await r.company.checkNow();
+  assert.equal(r.cs.sent.length, 2, '自动重发了一次');
+  assert.match(r.cs.sent[1].text, new RegExp('编号 ' + asked.thread));
+  r.clock.now += 1000; hijack(); await r.company.checkNow(); await r.company.checkNow();
+  r.clock.now += 1000; hijack(); await r.company.checkNow();
+  round = r.company.thread(asked.thread).rounds[0];
+  assert.match(round.error, /剪贴板/);
+  await r.home.checkNow();
+  assert.equal(r.home.thread(asked.thread).rounds[0].reply, undefined, '家里一条图片回答都没收到');
+  r.company.retry(asked.thread);
+  assert.equal(r.company.thread(asked.thread).rounds[0].hijacked, 0);
+  // 重发后正常收到：带编号的消息 + 回答，照常回执
+  await r.company.checkNow();
+  r.clock.now += 1000;
+  turns.set(file, [{ at: r.clock.now, text: '## 家里的问题（编号 ' + asked.thread + '）\n1. 最新周报是哪天？', images: 0 }]);
+  r.cs.answer(sid, '最新是 10-15。把握程度：高');
+  await r.company.checkNow();
+  assert.match(r.company.thread(asked.thread).rounds[0].reply, /10-15/);
+});
+
+test('原生记录解析：只取用户发出的消息（文字、图片），工具结果不算', t => {
+  const { userTurnsFromTranscript } = require('../core/company-bridge/company');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-bridge-turns-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'a.jsonl');
+  fs.writeFileSync(file, [
+    { type: 'user', timestamp: '2026-10-15T02:30:00Z', message: { role: 'user', content: '## 家里的问题（编号 Q-1015-03）' } },
+    { type: 'assistant', timestamp: '2026-10-15T02:30:05Z', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] } },
+    { type: 'user', timestamp: '2026-10-15T02:30:06Z', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] } },
+    { type: 'user', timestamp: '2026-10-15T02:31:00Z', message: { role: 'user', content: [{ type: 'image', source: {} }] } },
+  ].map(x => JSON.stringify(x)).join('\n') + '\nnot json\n');
+  const turns = userTurnsFromTranscript(file);
+  assert.equal(turns.length, 2);
+  assert.match(turns[0].text, /编号 Q-1015-03/);
+  assert.equal(turns[1].images, 1);
+  assert.deepEqual(userTurnsFromTranscript(path.join(dir, 'missing.jsonl')), []);
+});
+
+test('剪贴板暂存：有图片就先拿开、发完放回；发送期间另外复制了东西就不覆盖；没图片不动', async () => {
+  const { withImageAside } = require('../core/company-bridge/clipboard-guard');
+  const fake = (formats) => {
+    const c = { formats, writes: [], clears: 0, image: { isEmpty: () => false, tag: 'IMG' } };
+    Object.assign(c, { availableFormats: () => c.formats, readImage: () => c.image, clear: () => { c.clears += 1; c.formats = []; }, writeImage: img => { c.writes.push(img); c.formats = ['image/png']; } });
+    return c;
+  };
+  let c = fake(['image/png']);
+  let during = null;
+  assert.equal(await withImageAside(c, async () => { during = c.availableFormats().length; return 'sent'; }), 'sent');
+  assert.equal(during, 0, '发送期间剪贴板里没有图片');
+  assert.equal(c.writes[0].tag, 'IMG', '发完放回');
+  c = fake(['image/png']);
+  await withImageAside(c, async () => { c.formats = ['text/plain']; });
+  assert.equal(c.writes.length, 0, '期间复制了新内容就不覆盖');
+  c = fake(['text/plain']);
+  await withImageAside(c, async () => {});
+  assert.equal(c.clears, 0);
+  c = fake(['image/png']);
+  await assert.rejects(withImageAside(c, async () => { throw new Error('boom'); }), /boom/);
+  assert.equal(c.writes.length, 1, '发送出错也放回');
+});
+
+test('公司设置：旧版存的模型不再生效；没改过的历代默认说明自动换成当前版，改过的保留', async t => {
   const r = rig(t);
   r.company.store.set('settings', { enabled: true, codeRoots: ['C:/AirView'], instructions: V1_INSTRUCTIONS, model: 'GLM-5.2-WX-Auto', effort: 'high', maxParallel: 2, pollSeconds: 30 });
   const s = r.company.settings();
   assert.equal(s.model, undefined);
   assert.equal(s.instructions, DEFAULT_INSTRUCTIONS);
-  assert.equal(r.company.status().settings.permission, 'no-edit');
-  assert.ok(r.company.status().permissions['read-only']);
+  r.company.store.set('settings', { ...r.company.store.get('settings'), instructions: V2_INSTRUCTIONS });
+  assert.equal(r.company.settings().instructions, DEFAULT_INSTRUCTIONS);
+  assert.match(DEFAULT_INSTRUCTIONS, /MCP/);
+  assert.match(DEFAULT_INSTRUCTIONS, /明确要求时才做/);
   r.company.setSettings({ instructions: '我自己写的说明' });
   assert.equal(r.company.settings().instructions, '我自己写的说明');
   r.company.setSettings({ instructions: '' });
