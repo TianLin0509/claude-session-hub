@@ -239,7 +239,7 @@ function runOne(file, opts = {}) {
       HUB_UNIT_SUITE_LOCK_HELD: '1',
     });
     delete childEnv.CHUXIN_AGENT_LEAGUE_ALLOW_EXTERNAL_SCHEDULER;
-    const p = spawn(process.execPath, [path.join(TESTS, file)], {
+    const p = spawn(process.execPath, ['--require', path.join(__dirname, '..', 'core', 'fs-rename-retry-register.js'), path.join(TESTS, file)], {
       cwd: REPO,
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],

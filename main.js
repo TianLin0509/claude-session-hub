@@ -1,3 +1,5 @@
+// Windows 上改名替换遇到短暂占用（EPERM/EBUSY）稍等重试，必须在其他模块加载前装上（core/fs-rename-retry.js）。
+require('./core/fs-rename-retry').install();
 const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, screen, shell, Menu, crashReporter, protocol, net, powerMonitor } = require('electron');
 const path = require('path');
 const { fileURLToPath } = require('url');
