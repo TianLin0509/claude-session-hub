@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const bridgeCrypto = require('../core/company-bridge/crypto');
-const { CompanyBridge, sourceVerdict, stripCode } = require('../core/company-bridge/company');
+const { CompanyBridge, sourceVerdict, stripCode, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS } = require('../core/company-bridge/company');
 const { HomeBridge } = require('../core/company-bridge/home');
 
 const BASE = 'https://relay.example.test/drop/tok/api';
@@ -159,10 +159,11 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   assert.equal(created.kind, 'codeagent');
   assert.equal(created.opts.cwd, 'D:/code/l2');
   assert.deepEqual(created.opts.addDirs, ['D:/code/common']);
-  assert.equal(created.opts.model, 'GLM-5.2-WX-Auto');
+  assert.equal(created.opts.model, undefined, '模型用 CodeAgent 默认，不传给会话（否则会走 /model 菜单）');
   assert.equal(created.opts.purpose, 'company-bridge');
   const companySession = created.opts.id;
-  assert.match(r.cs.sent[0].text, /只读代码/);
+  assert.match(r.cs.sent[0].text, /保持公司电脑原样/);
+  assert.match(r.cs.sent[0].text, /不回传源码/);
   assert.match(r.cs.sent[0].text, /D:\/code\/l2/);
   assert.match(r.cs.sent[0].text, /遗忘因子/);
 
@@ -476,13 +477,51 @@ test('会话管理器：Codex 固定挂载不受 none 档影响；Claude 并进 
   assert.deepEqual(sm._withExtraMcp('codex', { id: 'd' }), { id: 'd' });
 });
 
-test('公司 CodeAgent 会话（purpose=company-bridge）启动参数上落实只读：禁用命令行与改写工具、不加载 MCP', () => {
+test('公司 CodeAgent 会话（purpose=company-bridge）按页面选的权限禁用工具、不加载 MCP；默认可跑查询命令、禁改写工具', t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-bridge-perm-'));
+  const old = process.env.CLAUDE_HUB_DATA_DIR; process.env.CLAUDE_HUB_DATA_DIR = dataDir;
+  t.after(() => { if (old === undefined) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = old; fs.rmSync(dataDir, { recursive: true, force: true }); });
+  const strict = require('../core/company-bridge/strict');
   const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
   const config = { command: 'codeagent', configDir: os.tmpdir(), configDirEnv: 'CODEAGENT3_CONFIG_DIR', stateFile: '.cac.json' };
-  const ro = buildCodeAgentPtyLaunch('x', 'codeagent', { purpose: 'company-bridge', mcpProfile: 'full', mcpConfigFile: 'C:/x.json' }, os.tmpdir(), {}, config).cmd;
-  assert.match(ro, /--disallowedTools '?Bash,BashOutput,KillShell,Edit,MultiEdit,Write,NotebookEdit'?/);
+  const launch = () => buildCodeAgentPtyLaunch('x', 'codeagent', { purpose: 'company-bridge', mcpProfile: 'full', mcpConfigFile: 'C:/x.json' }, os.tmpdir(), {}, config).cmd;
+  assert.equal(strict.mode(), 'no-edit');
+  let ro = launch();
+  assert.match(ro, /--disallowedTools '?Edit,MultiEdit,Write,NotebookEdit'?/);
+  assert.doesNotMatch(ro, /Bash/);
   assert.match(ro, /--strict-mcp-config/);
   assert.doesNotMatch(ro, /x\.json/);
+  strict.setMode('read-only');
+  assert.match(launch(), /--disallowedTools '?Bash,BashOutput,KillShell,Edit,MultiEdit,Write,NotebookEdit'?/);
+  strict.setMode('prompt-only');
+  assert.doesNotMatch(launch(), /disallowedTools/);
+  assert.throws(() => strict.setMode('anything'), /权限只能是/);
+  // 旧版的标记文件（只靠说明）照样认；旧接口 setStrict(true) 回到默认权限
+  fs.rmSync(path.join(dataDir, 'company-bridge', 'permission-mode'));
+  fs.writeFileSync(path.join(dataDir, 'company-bridge', 'readonly-flags-off'), 'off\n');
+  assert.equal(strict.mode(), 'prompt-only');
+  strict.setStrict(true);
+  assert.equal(strict.mode(), 'no-edit');
+  assert.equal(fs.existsSync(path.join(dataDir, 'company-bridge', 'readonly-flags-off')), false);
   const normal = buildCodeAgentPtyLaunch('y', 'codeagent', { mcpProfile: 'full' }, os.tmpdir(), {}, config).cmd;
   assert.doesNotMatch(normal, /disallowedTools/);
+});
+
+test('公司设置：旧版存的模型不再生效；没改过的第一版说明自动换成通用版，改过的保留', async t => {
+  const r = rig(t);
+  r.company.store.set('settings', { enabled: true, codeRoots: ['C:/AirView'], instructions: V1_INSTRUCTIONS, model: 'GLM-5.2-WX-Auto', effort: 'high', maxParallel: 2, pollSeconds: 30 });
+  const s = r.company.settings();
+  assert.equal(s.model, undefined);
+  assert.equal(s.instructions, DEFAULT_INSTRUCTIONS);
+  assert.equal(r.company.status().settings.permission, 'no-edit');
+  assert.ok(r.company.status().permissions['read-only']);
+  r.company.setSettings({ instructions: '我自己写的说明' });
+  assert.equal(r.company.settings().instructions, '我自己写的说明');
+  r.company.setSettings({ instructions: '' });
+  assert.equal(r.company.settings().instructions, DEFAULT_INSTRUCTIONS);
+});
+
+test('公司 CodeAgent 会话即使带了模型也不走 /model 菜单；普通 CodeAgent 会话照旧', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
+  assert.match(src, /if \(codeagentLaunch && opts\.model && !codeAgentReadOnly\(opts\)\) this\.emit\('codeagent-model-pick'/);
 });

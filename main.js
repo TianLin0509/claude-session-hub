@@ -2220,7 +2220,7 @@ try {
   });
 } catch (error) { console.error('[wireless] SuperRAN 助理未启动：', error.message); }
 // @community-end
-// 家里联动（2026-10-15）：家里 Hub 的 Agent 用「问公司」提问，公司 Hub 的 CodeAgent 只读代码作答，经加密任务通道往返。
+// 家里联动（2026-10-15）：家里 Hub 的 Agent 用「问公司」提问，公司 Hub 新开 CodeAgent 会话去办（查代码、查本机文件与环境，不改动公司电脑），经加密任务通道往返。
 // 自用版是家里一端，公司版是公司一端，其余发行版不启用（core/company-bridge/role.js）。
 let companyBridgeService = null;
 try {
@@ -2278,7 +2278,6 @@ try {
       isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
-      modelOptions: () => { try { return require('./core/codeagent-models').modelOptions(getHubDataDir(), { configDir: require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir }); } catch { return []; } },
     });
     companyBridgeService.start();
   }

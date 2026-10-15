@@ -1,6 +1,6 @@
 'use strict';
 // 家里 Hub 一端（2026-10-15 田哥拍板）：家里的 Agent 通过 MCP 工具「问公司」或 company-ask 命令把问题发到公司 Hub，
-// 公司的 CodeAgent 只读代码、写成 Markdown 回执（不含源码）。回执到了，Hub 把它作为一条新消息发回提问的会话：
+// 公司的 CodeAgent 新开会话去办（读代码、查本机文件与环境，不改动公司电脑），写成 Markdown 回执（不含源码）。回执到了，Hub 把它作为一条新消息发回提问的会话：
 // 会话停着就直接唤醒，开着在忙就等它停下，已关闭就先恢复再发。追问进同一个公司会话，次数不限，由 Agent 自己判断。
 //
 // 只在自用版里启用（社区版、公司版导出时删掉本文件）。通道地址取自公司收件箱的本机配置。
@@ -17,14 +17,14 @@ const ACTIVE_POLL_MS = 30000;
 const IDLE_POLL_MS = 3 * 60000;
 const DEFAULT_SETTINGS = Object.freeze({ attach: 'wireless' });
 const short = (s, n = 28) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
-const STATE_LABEL = { sent: '已发出', received: '公司已收到', running: '公司在读代码', replied: '已回执', error: '公司报错', cancelled: '已作废' };
+const STATE_LABEL = { sent: '已发出', received: '公司已收到', running: '公司在处理', replied: '已回执', error: '公司报错', cancelled: '已作废' };
 
 function replyMessage(t, r) {
   if (r.error) {
     return [`【公司回执 ${t.id} · 第 ${r.round} 轮 · 没答上】`, '', r.error, '', '——', '公司那边这一轮没有给出回答。可以用 followup_company 换个问法重问，或先按现有证据继续，并在汇报里写明待公司核实的点。'].join('\n');
   }
   return [`【公司回执 ${t.id} · 第 ${r.round} 轮】`, '', r.reply, '', '——',
-    '以上是公司 CodeAgent 读代码后的回执（不含源码）。请核对：可信就据此继续；把握程度低、没读到关键部分或与家里证据矛盾时，用 followup_company 追问（同一个公司会话，它记得上一轮读过的内容），次数不限。'].join('\n');
+    '以上是公司 CodeAgent 的回执（不含源码）。请核对：可信就据此继续；把握程度低、没读到关键部分或与家里证据矛盾时，用 followup_company 追问（同一个公司会话，它记得上一轮读过的内容），次数不限。'].join('\n');
 }
 // 线程状态由各轮推导：最后一轮决定结果。
 function deriveState(t) {
@@ -162,7 +162,7 @@ class HomeBridge {
   meta(sessionId) { const s = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId); return s || {}; }
   async ask(sessionId, { question, title }) {
     question = String(question || '').trim();
-    if (question.length < 10) throw new Error('问题太短：请写清目的、要问的点、家里现在的做法和建议去看的模块');
+    if (question.length < 10) throw new Error('问题太短：请写清目的、要它做的事或要问的点、已知的线索和回复要求');
     if (question.length > 50000) throw new Error('问题超过 5 万字，请精简');
     const id = this.nextThreadId(), m = this.meta(sessionId), gen = this.link.gen();
     const t = { id, sessionId, sessionTitle: m.title || null, title: short(title || question, 40), gen, createdAt: this.now(),
