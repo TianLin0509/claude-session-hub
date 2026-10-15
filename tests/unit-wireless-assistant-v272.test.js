@@ -498,3 +498,20 @@ test('暂停期间照常续接手租约；租约已过期时放行提示先请�
   assert.equal(service.job(job.id).phase, 'implementing');
   assert.match(state.sent.at(-1).text, /接手租约在等待期间过期了：先重新接手/);
 });
+
+test('新会话创建期间开始合入：新会话不发开始指令（独立审查 r8 建议）', async t => {
+  const f = fixture(t, { proposals: [proposal('n1')], tasks: [] });
+  const { service, state } = f;
+  await service.poll();
+  const job = implJob(service);
+  state.list = [proposal('n1', { state: 'implementing', executor: job.slot, plan: PLAN(['docs/x.md']) })];
+  idle(state, job);
+  state.sessions.delete(job.sessionId);  // 原会话不在了，走新开会话
+  const realCreate = service.deps.createSession;
+  service.deps.createSession = async (kind, opts) => { const s = await realCreate(kind, opts); service.mergeRun = Promise.resolve(); return s; };
+  const sent = state.sent.length;
+  await service.poll();
+  service.deps.createSession = realCreate; service.mergeRun = null;
+  assert.equal(state.sent.length, sent, '创建完成后核对到合入在跑，没有发开始指令');
+  assert.match(service.job(job.id).note, /合入进行中/);
+});

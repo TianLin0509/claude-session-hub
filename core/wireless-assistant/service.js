@@ -320,7 +320,13 @@ class WirelessAssistant {
       const hit = findConflict(mine, this.precheckOthers(p, inflight), new Set(inflight.red || []));
       if (!hit) {
         // 解除等待要重新占一个会话名额；名额满就等下一轮（独立审查 r2 第 2 条）。
-        if (job.phase === 'waiting' && this.busySlots() >= this.settings().maxParallel) { this.saveJob({ ...job, note: '初审已不冲突，等会话名额' }); continue; }
+        if (job.phase === 'waiting' && this.busySlots() >= this.settings().maxParallel) {
+          // 等名额也照常续接手租约（独立审查 r8 建议）。
+          const next = { ...job, note: '初审已不冲突，等会话名额' };
+          if (now - (job.renewedAt || 0) > RENEW_MS) { await this.writeStatus(p, '初审：已不冲突｜等会话名额｜预计：有空位后自动开始'); next.renewedAt = now; }
+          this.saveJob(next);
+          continue;
+        }
         // 自动开始和正常派发守同一道闸：自动处理关着、不归本窗口、或合入在跑，就先不开始（独立审查 r6）。
         const paused = this.dispatchPaused();
         if (paused) {
