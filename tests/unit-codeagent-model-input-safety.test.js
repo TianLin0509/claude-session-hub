@@ -12,6 +12,31 @@ const IDLE = [' │ > Anything I can assist you with? (Ctrl+J 换行 · esc×2 �
 const UNKNOWN_MENU = ['  Select model', '  搜索模型：', '  (unrecognized options)'];
 const KNOWN_MENU = ['  Select model', '  ❯ 1. GLM-5.2-WX-Auto', '    2. MiniMax-M2.7',
   '  Enter to set as default · s to use this session only · Esc to cancel'];
+// 2026-10-15 真 Claude Code 2.1.300 替身实录裁剪：ConPTY 留下横线前缀和 NBSP，
+// 实际已切换到 Haiku 并回到空输入框。来源 hub-codeagent-switch-wWgb7F/picker-last。
+const CLAUDE_CONPTY_INPUT = [
+  '❯ /model',
+  '  ⎿  Set model to Haiku 5.5 for this session only',
+  '      ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────',
+  '────────────❯\u00a0 ',
+  '────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────',
+  '──⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agentsmplex tasks      Fast mode is now available · /fast to tur',
+  'n on3. Fable                  Fable 5.1 · Most capable for your hardest and longest-running tasks',
+];
+
+test('ConPTY 实录：空输入行前残留水平分隔线，仍能确认普通输入框', () => {
+  assert.equal(picker.modelDialogVisible(CLAUDE_CONPTY_INPUT), false);
+  assert.equal(picker.promptInputReady(CLAUDE_CONPTY_INPUT), true);
+});
+
+test('ConPTY 残留横线不能让模型菜单、有正文的输入或没有状态栏的行冒充就绪', () => {
+  assert.equal(picker.promptInputReady([...UNKNOWN_MENU, ...CLAUDE_CONPTY_INPUT]), false);
+  assert.equal(picker.promptInputReady([...KNOWN_MENU, ...CLAUDE_CONPTY_INPUT]), false);
+  assert.equal(picker.promptInputReady(CLAUDE_CONPTY_INPUT.map(line => line.replace('❯\u00a0 ', '❯ 1. Haiku'))), false);
+  assert.equal(picker.promptInputReady(CLAUDE_CONPTY_INPUT.map(line => line.replace('❯\u00a0 ', '❯ 正文'))), false);
+  assert.equal(picker.promptInputReady(['────────────❯\u00a0 ']), false);
+  assert.equal(picker.promptInputReady(['任意旧正文❯ ', 'bypass permissions on (shift+tab to cycle)']), false);
+});
 
 function harness(sid, initial = IDLE, { escapeWorks = true } = {}) {
   const manager = new EventEmitter();
@@ -179,4 +204,22 @@ test('选择后变成不可解析的菜单不能伪装成成功，哪怕选项�
   assert.equal(result.ok, false);
   assert.equal(result.inputReady, false);
   assert.deepEqual(h.writes, ['\x1b[B', 's', '\x1b']);
+});
+
+test('ConPTY 实录：切换回显后出现带残留横线的空输入框，应成功且不补 Esc', async () => {
+  const sid = 'conpty-confirmed-picker', h = harness(sid);
+  let output = '';
+  h.manager.getSessionOutputMark = () => 0;
+  h.manager.getSessionOutputSince = () => output;
+  h.manager.writeToSession = (_sid, data) => {
+    h.writes.push(data);
+    if (data === 's') { output = 'Set model to Haiku 5.5 for this session only'; h.paint(CLAUDE_CONPTY_INPUT); }
+  };
+  const result = await picker.pickModel({ manager: h.manager, sid, kind: 'codeagent', modelId: 'MiniMax-M2.7',
+    screenTimeoutMs: 500, env: { AI_HUB_CODEAGENT_PICKER_LABELS: '{"MiniMax-M2.7":"Haiku"}' },
+    sendToPty: async () => { h.paint(KNOWN_MENU.map(line => line.replace('MiniMax-M2.7', 'Haiku'))); return { ok: true }; } });
+  assert.equal(result.ok, true);
+  assert.equal(result.confirmed, true);
+  assert.equal(result.inputReady, true);
+  assert.deepEqual(h.writes, ['\x1b[B', 's']);
 });

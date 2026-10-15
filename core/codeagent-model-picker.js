@@ -98,7 +98,9 @@ function promptInputReady(lines) {
   // 公司 2026-10-08 实录，见 unit-codeagent-launch / trust-screen。
   if (screen.some(line => /^\s*(?:[│┃]\s*)?>\s+Anything I can assist you with\?/i.test(line))) return true;
   // 真 Claude 测试替身：必须同时有空输入行和它下面的状态栏，菜单消失本身不算就绪。
-  const prompt = screen.findLastIndex(line => /^\s*[❯›]\s*(?:Try "[^"]*")?\s*$/.test(line));
+  // 2026-10-15 v2.1.300 实录的 ConPTY 重绘会留下「────────────❯ NBSP」；
+  // 仅容许水平分隔线残留，任意旧正文、模型编号和仍打开的菜单都不能算普通输入。
+  const prompt = screen.findLastIndex(line => /^[\s─]*[❯›]\s*(?:Try "[^"]*")?\s*$/.test(line));
   return prompt >= 0 && screen.slice(prompt + 1).some(line => /\? for shortcuts|bypass permissions|(?:manual|plan|accept edits) mode on|shift\+tab/i.test(line));
 }
 
@@ -126,12 +128,24 @@ async function openSessionScreen(manager, sid) {
   const queued = [];
   let terminal = null, replayed = false, disposed = false, chain = Promise.resolve();
   const write = text => new Promise(resolve => terminal.write(text, resolve));
-  const listener = event => {
+  const apply = event => event.type === 'resize' ? terminal.resize(event.cols, event.rows) : write(event.data);
+  const enqueue = event => {
     if (event.sessionId !== sid || disposed) return;
     if (!replayed) queued.push(event);
-    else chain = chain.then(() => write(event.data));
+    else {
+      chain = chain.then(() => apply(event));
+      // 监听回调不能 await；由 lines() 将错误传给调用方，这里只避免读取前的未处理拒绝。
+      chain.catch(() => {});
+    }
+  };
+  const listener = event => enqueue({ ...event, type: 'write' });
+  const resizeListener = event => enqueue({ ...event, type: 'resize' });
+  const unsubscribe = () => {
+    manager.removeListener('output', listener);
+    manager.removeListener('terminal-resized', resizeListener);
   };
   manager.on('output', listener);
+  manager.on('terminal-resized', resizeListener);
   try {
     const snapshot = await manager.getSessionBufferSnapshot(sid);
     // windowsPty 与会话自己的快照终端一致（core/terminal-snapshot.js）：不按 ConPTY 解释换行和光标移动，
@@ -143,10 +157,10 @@ async function openSessionScreen(manager, sid) {
       if (operation.type === 'resize') terminal.resize(operation.cols, operation.rows);
       else if (operation.type === 'write') await write(operation.data);
     }
-    for (const event of queued) if (!event.seq || event.seq > snapshot.seq) await write(event.data);
+    for (const event of queued) if (!event.seq || event.seq > snapshot.seq) await apply(event);
     replayed = true;
   } catch (error) {
-    disposed = true; manager.removeListener('output', listener); try { terminal && terminal.dispose(); } catch {}
+    disposed = true; unsubscribe(); try { terminal && terminal.dispose(); } catch {}
     throw error;
   }
   return {
@@ -156,7 +170,11 @@ async function openSessionScreen(manager, sid) {
       for (let i = buffer.baseY; i < buffer.baseY + terminal.rows; i += 1) out.push(buffer.getLine(i)?.translateToString(true) || '');
       return out;
     },
-    dispose() { disposed = true; manager.removeListener('output', listener); chain.finally(() => { try { terminal.dispose(); } catch {} }); },
+    dispose() {
+      disposed = true; unsubscribe();
+      const cleanup = () => { try { terminal.dispose(); } catch {} };
+      chain.then(cleanup, cleanup);
+    },
   };
 }
 

@@ -3138,8 +3138,12 @@ class SessionManager extends EventEmitter {
     if (s && s.pty) {
       const safeCols = Math.max(cols, 60);
       s.pty.resize(safeCols, rows);
-      if (s.terminalSnapshot) s.terminalSnapshot.resize(safeCols, rows);
+      // 与输出共用单调序号：观察者从快照接到实时事件时，resize 也不能漏放或重放。
+      const seq = ++this._outputSeq;
+      s.lastOutputSeq = seq;
+      if (s.terminalSnapshot) s.terminalSnapshot.resize(safeCols, rows, seq);
       if (s.terminalOutputRewriter) s.terminalOutputRewriter.resize(safeCols, rows);
+      this.emit('terminal-resized', { sessionId, seq, cols: safeCols, rows });
     }
   }
 
