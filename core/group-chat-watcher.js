@@ -468,6 +468,11 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
   if (options.submissionReceipt?.resolved) return alreadySubmitted();
   const requireReady = options.requireReady !== false;
   kind = resolveRuntimeKind(sessionManager, sid, kind);
+  // ready 缓存只证明 CLI 曾经启动，不能证明现在仍是聊天输入框。
+  // 检查放在提交队列内，避免另一条排队消息/模型失败在入队后改变输入目标。
+  if (isCodeAgentKind(kind) && !options.codeagentModelPick) {
+    await require('./codeagent-model-picker').beforePrompt(sessionManager, sid);
+  }
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
   const FAST_PATH_POLL_MS = 50;
