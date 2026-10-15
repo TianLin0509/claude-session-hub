@@ -95,11 +95,16 @@ function registerWorkspaceIpc(ipcMain, deps) {
 
   function toResumeMeta(session, cwd, workspaceLabel) {
     const isGemini = typeof session.kind === 'string' && session.kind.replace(/-resume$/, '') === 'gemini';
-    return buildSessionResumeMeta(session, {
+    const meta = buildSessionResumeMeta(session, {
       cwd,
       workspaceLabel,
       geminiProjectRoot: isGemini ? cwd : (session.geminiProjectRoot || null),
     });
+    // 恢复入口会先读磁盘上的权威会话记录再覆盖传入值（main/ipc/resume-session-handlers.js），
+    // 记录里还是归档前的旧目录：不把新目录作为本次启动覆盖传过去，CLI 会在已经搬走的目录里启动，
+    // 回落到用户主目录、--resume 也找不到记录（2026-10-16 CodeAgent 归档 e2e 发现）。
+    if (meta) meta.launchOverrides = { cwd, workspaceLabel, ...(isGemini ? { geminiProjectRoot: cwd } : {}) };
+    return meta;
   }
 
   function preciseResumeIssue(session) {

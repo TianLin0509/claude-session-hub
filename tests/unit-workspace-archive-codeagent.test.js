@@ -67,6 +67,8 @@ test('单聊 CodeAgent：可以归档，记录复制到新目录的桶里，带�
   assert.equal(r.resumeMetas.length, 1);
   assert.equal(r.resumeMetas[0].ccSessionId, r.sid);
   assert.equal(r.resumeMetas[0].cwd, result.workspace.path);
+  // 恢复入口会先读磁盘上的旧记录：新目录必须作为本次启动覆盖传过去，否则 CLI 在已搬走的旧目录启动。
+  assert.equal(r.resumeMetas[0].launchOverrides.cwd, result.workspace.path);
   assert.deepEqual(result.warnings, []);
 });
 
