@@ -270,7 +270,9 @@ test('合入超过外层时限不强杀：结果标 timedOut，进程继续、�
   assert.equal(killed, false, '不强杀');
   child.stdout.emit('data', '闸门继续跑完：回滚收尾\n');
   child.emit('close', 1);
-  await flush(6);
+  // 日志是写入流，落盘在线程池里异步完成：全量并发跑时几拍 setImmediate 不够（2026-10-16 合并闸门读到空文件）。
+  // 等到内容出现（最多 3 秒），断言的仍是「进程关闭前写的那行留在日志里」。
+  for (const end = Date.now() + 3000; Date.now() < end && !/闸门继续跑完/.test(fs.readFileSync(logFile, 'utf8'));) await new Promise(r => setTimeout(r, 20));
   assert.match(fs.readFileSync(logFile, 'utf8'), /闸门继续跑完/);
 });
 
