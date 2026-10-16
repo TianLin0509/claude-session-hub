@@ -16,6 +16,8 @@ const DATA_DIR = path.join(TEMP_ROOT, 'hub-data');
 const HOME_DIR = path.join(TEMP_ROOT, 'home');
 const FIXTURE_PATH = path.join(TEMP_ROOT, '_scratch', 'My Report', 'report.md');
 const FOLDER_PATH = path.join(TEMP_ROOT, 'folder-target');
+// 2026-10-16 田哥截图：路径后面紧跟「（v1.1，」时链接吞掉了版本号，点开打不开。
+const DESIGN_PATH = path.join(TEMP_ROOT, 'AI-Artifacts', '20261016-会话管理与AI特战队通道设计-claude1.html');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'card-local-path-links');
 const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `card-local-path-links-${RUN_ID}.png`);
 const FOLDER_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `card-folder-file-manager-${RUN_ID}.png`);
@@ -76,6 +78,8 @@ async function main() {
   fs.mkdirSync(HOME_DIR, { recursive: true });
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   fs.writeFileSync(FIXTURE_PATH, '# Local path E2E\n\nWindows path preview works.\n', 'utf8');
+  fs.mkdirSync(path.dirname(DESIGN_PATH), { recursive: true });
+  fs.writeFileSync(DESIGN_PATH, '<html><body>design</body></html>', 'utf8');
   fs.writeFileSync(path.join(FOLDER_PATH, 'inside.md'), '# Folder target\n', 'utf8');
 
   const port = await availablePort(Number(process.env.HUB_CARD_PATH_E2E_PORT || 19841));
@@ -121,6 +125,7 @@ async function main() {
       `本地 Markdown 文字链接：[报告文字](${doubledPath})`,
       `正斜杠路径：[forward](${forwardPath})`,
       `文件 URL：[file-url](${fileUrl})`,
+      `5. **设计稿**：${DESIGN_PATH}（v1.1，开着的话刷新一下）。`,
       '网页链接：[OpenAI](https://openai.com/)',
     ].join('\n\n');
     const meetingMarkdown = `群聊文字链接：[群聊报告](${doubledPath})`;
@@ -165,7 +170,9 @@ async function main() {
 
     const localOrdinary = result.render.ordinaryLinks.filter((link) => link.isLocal);
     const webOrdinary = result.render.ordinaryLinks.find((link) => !link.isLocal);
-    assert.equal(localOrdinary.length, 5);
+    assert.equal(localOrdinary.length, 6);
+    assert.equal(localOrdinary[5].text, DESIGN_PATH, 'link must stop at .html, not swallow 「（v1.1」');
+    assert.equal(localOrdinary[5].path, DESIGN_PATH);
     assert.equal(localOrdinary[0].text, FIXTURE_PATH);
     assert.equal(localOrdinary[0].path, FIXTURE_PATH);
     assert.equal(localOrdinary[1].text, FOLDER_PATH);
