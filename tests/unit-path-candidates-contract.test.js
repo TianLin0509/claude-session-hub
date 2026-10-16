@@ -136,3 +136,32 @@ test('hub image path regex strips clipboard image paths from previews', () => {
   const text = 'C:\\Users\\lintian\\.claude-session-hub\\images\\clip.png user prompt';
   assert.strictEqual(text.replace(HUB_IMG_PATH_RE, ' ').trim(), 'user prompt');
 });
+
+// 2026-10-16 田哥截图：「设计稿：D:\AI-Artifacts\…设计-claude1.html（v1.1，开着的话刷新一下）」整段带上「（v1.1」成了链接、点开打不开。
+// 文件名允许空格和中文，贪心匹配把「v1.1」的 .1 当成了扩展名。现在：整串存在就保留；否则收到「存在的那个常见扩展名」为止；
+// 都不存在时收到第一个后面跟中文、全角标点或空白的常见扩展名。
+test('path followed by Chinese prose with a version number stops at the real extension', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-path-ext-'));
+  const file = path.join(dir, '20261016-会话管理与AI特战队通道设计-claude1.html');
+  fs.writeFileSync(file, '<html></html>');
+  const text = `5. 设计稿：${file}（v1.1，开着的话刷新一下）。`;
+  const found = collectPathCandidates(text, null, { includeDirectories: false });
+  assert.strictEqual(found.length, 1);
+  assert.strictEqual(found[0].openPath, file);
+  assert.strictEqual(text.slice(found[0].start, found[0].end + 1), file);
+});
+
+test('a real file name that contains a space and a second extension is kept whole', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-path-ext-'));
+  const file = path.join(dir, 'notes.md backup v2.md');
+  fs.writeFileSync(file, '# x');
+  const found = collectPathCandidates(`打开 ${file} 看看`, null, { includeDirectories: false });
+  assert.strictEqual(found[0].openPath, file);
+});
+
+test('a path that does not exist yet is cut where prose begins, not at a later version number', () => {
+  const target = path.join('D:\\', 'AIWork', 'not-created-yet-20261016', 'a.md');
+  const text = `旧路径 ${target} v2.3 说明`;
+  const found = collectPathCandidates(text, null, { includeDirectories: false });
+  assert.strictEqual(text.slice(found[0].start, found[0].end + 1), target);
+});
