@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { WirelessAssistant, WAIT_REMIND_MS, parsePlan, findConflict } = require('../core/wireless-assistant/service');
+const { WirelessAssistant, WAIT_REMIND_MS, MERGE_TIMEOUT_MS, parsePlan, findConflict } = require('../core/wireless-assistant/service');
 
 const CAND = 'c'.repeat(40), CAND2 = 'd'.repeat(40), BASE = 'b'.repeat(40), TRUNK = 'e'.repeat(40);
 function proposal(id, extra = {}) {
@@ -335,6 +335,36 @@ test('合入在跑时暂缓派新的实现和审查会话（已有的继续）�
   await service.poll();
   assert.equal(service.status().code.paused, null);
   assert.equal(state.created.length, 2, '合完后实现和审查都派出去了');
+});
+
+test('会话里手动跑的合入（交付状态「合入中」、不是 Hub 发起的）也暂缓派新任务；状态停在合入中超过合入时限就不再等', async t => {
+  const { service, state } = fixture(t, { proposals: [proposal('n1'), delivered('b2', 22)], tasks: [task(26, 'merging', { updated: 1_800_000_000 - 600 }), task(22, 'submitted', { candidate: CAND2 })] });
+  await service.poll();
+  assert.equal(state.children.length, 0, 'Hub 不自己起合入');
+  assert.equal(state.created.length, 0, '别处的合入在跑，不开新会话');
+  assert.equal(service.status().code.paused, 'PR #26 正在合入（不是 Hub 发起的），暂缓派新任务');
+  assert.match(service.dispatchPaused(), /PR #26 正在合入/);
+  state.now += MERGE_TIMEOUT_MS;
+  await service.poll();
+  assert.equal(service.status().code.paused, null, '合入中途崩溃、状态没收尾时，最多等一个合入时限');
+  assert.equal(state.created.length, 2, '之后实现和审查照常派出');
+});
+
+test('别处合入期间，Hub 排队的合入也等着；Hub 自己刚合完、交付状态还没刷新时不误认为别处合入', async t => {
+  const { service, state } = fixture(t, { proposals: [delivered('a1', 21)], tasks: [task(26, 'merging', { updated: 1_800_000_000 - 60 }), task(21, 'approved')] });
+  await service.poll();
+  assert.equal(state.children.length, 0, '合并机被别处占着，不起脚本');
+  assert.match(service.status().jobs.find(j => j.type === 'merge').note, /PR #26 正在别处合入/);
+  state.tasks = [task(26, 'completed'), task(21, 'approved')];
+  await service.poll();
+  assert.equal(state.children.length, 1, '别处合完后开始合');
+  state.tasks = [task(21, 'merging', { updated: Math.floor(state.now / 1000) })];
+  state.now += 1000;
+  state.children[0].finish(0, '{\n  "pr": 21,\n  "state": "completed",\n  "merged": "' + 'f'.repeat(40) + '"\n}\n');
+  await flush(6);
+  assert.equal(service.externalMerge(), null, '读到的「合入中」是 Hub 自己这次合入的旧状态');
+  state.tasks = [task(27, 'merging', { updated: Math.floor(state.now / 1000) * 1000 })];
+  assert.equal(service.externalMerge(), null, 'updated 误写成毫秒（落在未来）不认，免得永久暂停');
 });
 
 test('B 档：合并脚本退回内部审查（批准保留）→ 不打扰人 → 自动换模型重审 → 审过后按新主干再合', async t => {

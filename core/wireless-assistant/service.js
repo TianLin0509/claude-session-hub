@@ -394,7 +394,7 @@ class WirelessAssistant {
   dispatchPaused() {
     if (!this.settings().enabled) return '初审已不冲突，自动处理已关：打开后开始实现';
     if (!this.ownsTimers()) return '初审已不冲突，由另一个 Hub 窗口负责开始';
-    if (this.mergeRun || this.mergeBusy()) return '初审已不冲突，合入进行中，暂缓开始';
+    if (this.mergeActive()) return '初审已不冲突，' + this.mergePausedText().replace('，暂缓派新任务', '') + '，暂缓开始';
     return null;
   }
   async goAhead(job, p, { note = '', checked, force = false } = {}) {
@@ -462,7 +462,7 @@ class WirelessAssistant {
       if (!settings.enabled || !this.ownsTimers()) return;
       // 2026-10-16：合入（完整测试闸门）在跑时暂缓派新的实现和审查会话，已在做的继续——
       // 并行的会话和测试会把闸门拖过时限（PR #22 第一次合入就是这样超时的）。
-      if (this.mergeRun || this.mergeBusy()) { this.paused = '合入进行中，暂缓派新任务'; return; }
+      if (this.mergeActive()) { this.paused = this.mergePausedText(); return; }
       this.paused = null;
       let free = settings.maxParallel - this.busySlots();
       // 先发现的先做；同一轮发现的按协作台列表顺序。实现与审查共用会话名额，合入不占（不开会话）。
@@ -473,7 +473,7 @@ class WirelessAssistant {
           const t = this.tasks.get(job.pr);
           if (!this.tasksLoaded || !t || !this.reviewable(t) || t.candidate !== job.candidate) continue;
           // 合入在跑时合并机主目录处于试合并中，prepare 会失败：审查等合入结束再派。
-          if (this.mergeRun || this.mergeBusy()) continue;
+          if (this.mergeActive()) continue;
           await this.dispatchReview(job, t);
         } else {
           const p = this.proposals.get(job.proposalId);
@@ -611,6 +611,28 @@ class WirelessAssistant {
 
   // 合入：一次只跑一个（完整测试闸门占整机），不开会话、不调用模型。
   mergeBusy() { return this.jobs().some(j => typeOf(j) === 'merge' && j.state === 'detached'); }
+  // 2026-10-16：会话里手动跑的合入（review_merge.py merge，例如 PR #26）不经过 Hub，Hub 看不到它的进程，
+  // 只能从交付状态「合入中」认出来。只认最近更新过的：合入中途崩溃、状态没收尾时，最多暂停一个合入时限，不会一直卡住。
+  // 只用于暂缓派新会话；runMerges 不看它，Hub 自己续跑中断的合入不受影响。
+  externalMerge() {
+    if (!this.tasksLoaded) return null;
+    const now = this.now();
+    const mine = this.jobs().filter(j => typeOf(j) === 'merge' && ['running', 'detached', 'done', 'failed'].includes(j.state));
+    for (const t of this.tasks.values()) {
+      const at = Number(t.updated) * 1000;
+      // updated 是秒；换算后落在未来（例如将来改成毫秒）就不认，免得永久暂停。
+      if (t.state !== 'merging' || !at || at > now + 60000 || now - at >= MERGE_TIMEOUT_MS) continue;
+      // Hub 自己合过这份、且在这次状态更新之后才收尾的，是读到的交付状态还没刷新，不算别处的合入。
+      if (mine.some(j => j.pr === t.pr && (j.finishedAt || j.updatedAt || 0) >= at)) continue;
+      return t;
+    }
+    return null;
+  }
+  mergeActive() { return !!(this.mergeRun || this.mergeBusy() || this.externalMerge()); }
+  mergePausedText() {
+    const t = !this.mergeRun && !this.mergeBusy() ? this.externalMerge() : null;
+    return t ? 'PR #' + t.pr + ' 正在合入（不是 Hub 发起的），暂缓派新任务' : '合入进行中，暂缓派新任务';
+  }
   runMerges() {
     if (this.mergeRun) return this.mergeRun;
     if (this.mergeBusy()) return null;
@@ -620,6 +642,14 @@ class WirelessAssistant {
     if (!job) return null;
     const t = this.tasks.get(job.pr);
     if (!t || !this.mergeable(t) || t.candidate !== job.candidate) { this.saveJob({ ...job, state: 'skipped', note: '交付状态已变化，不再合入', finishedAt: this.now() }); return null; }
+    // 别的 PR 正在别处合入（会话里手动跑的）：合并机一次只能合一份，排着等它结束，免得起脚本后被合并机锁拒掉再误报失败。
+    // 同一份 PR 停在「合入中」是 Hub 自己中断的合入，照常续跑。
+    const other = this.externalMerge();
+    if (other && other.pr !== job.pr) {
+      const note = 'PR #' + other.pr + ' 正在别处合入，排队等它结束';
+      if (job.note !== note) this.saveJob({ ...job, note });
+      return null;
+    }
     const install = this.install();
     const logFile = path.join(this.deps.dataDir, 'wireless', 'logs', `merge-pr${job.pr}-${job.candidate.slice(0, 8)}.log`);
     this.saveJob({ ...job, state: 'running', startedAt: this.now(), logFile, note: '正在跑完整测试并合入（约 15–30 分钟），完成后同步阿里云',
@@ -691,7 +721,7 @@ class WirelessAssistant {
     return {
       ok: true, settings: this.settings(), owner: this.ownsTimers(), last: this.last, nextPollAt: this.nextPollAt, polling: !!this.polling, now,
       install: { ready: !!install.executorConfig, user: install.user, kitDir: install.kitDir, kitExpires: install.kitExpires, root: install.root, site: install.site },
-      code: { script, loaded: this.tasksLoaded, merging: !!this.mergeRun, paused: this.mergeRun || this.mergeBusy() ? '合入进行中，暂缓派新任务' : null },
+      code: { script, loaded: this.tasksLoaded, merging: !!this.mergeRun, paused: this.mergeActive() ? this.mergePausedText() : null },
       jobs,
       catalog: profiles.phoneCatalog(KINDS),
     };
