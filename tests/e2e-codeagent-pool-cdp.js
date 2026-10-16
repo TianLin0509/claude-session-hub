@@ -142,8 +142,7 @@ async function main() {
     assert.ok(listed.accounts.some(a => a.note === '.cac-deepseek' && a.models.includes('deepseek-v4-flash-0731')));
     result.checks.push('two pool accounts added through the dialog and one imported from a local logged-in dir');
 
-    // 一键获取全部模型权限：后台读每个号自己的 /model 菜单（假 CodeAgent：z 开头的号只有 DeepSeek，其余只有 GLM）
-    await click(client, '[data-hl="pool-probe-all"]');
+    // v2.1.6：不点按钮——新登录、导入的号和个人账号自动获取模型权限（假 CodeAgent：z 开头的号只有 DeepSeek，其余只有 GLM）
     await waitFor('all models probed', () => client.eval(`(() => {
       const sec = document.querySelector('[data-hl-sec="pool"]');
       return sec && !sec.textContent.includes('获取中') && sec.querySelectorAll('tr[data-hl-account]').length === 4
@@ -156,7 +155,13 @@ async function main() {
     const listedAfterProbe = await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list')`);
     const deepseekAccount = listedAfterProbe.accounts.find(a => a.note === '.cac-deepseek');
     assert.deepEqual(deepseekAccount.models, ['deepseek-v4-flash-0731']);
-    result.checks.push('one click reads every account\'s own model menu (personal GLM only, imported account DeepSeek only)');
+    result.checks.push('model permissions are fetched automatically for new, imported and never-probed accounts (personal GLM only, imported DeepSeek only)');
+    // 手动「获取」仍可用：重新获取个人账号
+    const probedBefore = await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list').then(s => s.personal.modelsProbedAt)`);
+    await _waitMs(1100);
+    await click(client, '[data-hl="pool-probe:personal"]');
+    await waitFor('manual re-probe', async () => (await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list').then(s => s.personal.modelsProbedAt)`)) !== probedBefore, 60000);
+    result.checks.push('manual per-row fetch still refreshes model permissions');
     await click(client, '[data-hl="close"]');
 
     // 号池会话 1、2：各挑一个号，第二个挑没有会话的那个
