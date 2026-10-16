@@ -17,10 +17,10 @@ fs.mkdirSync(out,{recursive:true});
   const remote={...first,id:'remote-test',name:'在线下载验证'};
   const payload=Buffer.from(JSON.stringify(remote));
   const catalog={schema:1,version:'1.0.0',packs:[{id:remote.id,name:remote.name,version:remote.version,file:'remote-test-1.0.0.json',bytes:payload.length,sha256:crypto.createHash('sha256').update(payload).digest('hex')}]};
-  const requests=[];
+  const requests=[];let blockSources=false;
   const server=http.createServer((req,res)=>{
     requests.push(req.url);
-    if(req.url.startsWith('/bad')) {res.writeHead(200,{'content-type':'text/html'});res.end('<html>company proxy blocked</html>');return;}
+    if(blockSources || req.url.startsWith('/bad')) {res.writeHead(200,{'content-type':'text/html'});res.end('<html>company proxy blocked</html>');return;}
     res.writeHead(200,{'content-type':'application/json'});res.end(req.url.endsWith('catalog.json')?JSON.stringify(catalog):payload);
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
@@ -99,6 +99,15 @@ fs.mkdirSync(out,{recursive:true});
     })()`);
     assert.ok(contrast.heading>=4.5,'dark dialog heading must remain readable');assert.ok(contrast.button>=4.5,'dark primary button must remain readable');evidence.checks.push('dark theme title and primary button contrast at least 4.5:1');
     await shot('appearance-dark');
+    blockSources=true;await click('[data-tab="online"]');await click('[data-action="check"]');
+    await wait('!!document.querySelector("#appearance-dialog .appearance-status.bad")',30000);
+    const errorContrast=await cdp.eval(`(()=>{
+      const s=getComputedStyle(document.querySelector('#appearance-dialog .appearance-status.bad'));
+      const lum=v=>v.match(/[0-9.]+/g).slice(0,3).map(Number).map(n=>{n/=255;return n<=.04045?n/12.92:((n+.055)/1.055)**2.4}).reduce((a,n,i)=>a+n*[.2126,.7152,.0722][i],0);
+      const a=lum(s.backgroundColor),b=lum(s.color);return(Math.max(a,b)+.05)/(Math.min(a,b)+.05);
+    })()`);
+    assert.ok(errorContrast>=4.5,'dark download error must remain readable: '+errorContrast);
+    evidence.checks.push('both sources fail gracefully with readable dark error message');await shot('appearance-dark-error');
     evidence.ok=true;fs.writeFileSync(path.join(out,'20261017-appearance-e2e-codex1.json'),JSON.stringify(evidence,null,2));
     console.log(JSON.stringify(evidence));
   } catch(error) {if(cdp)try{await shot('appearance-failure');}catch(_){}throw error;
