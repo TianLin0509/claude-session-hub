@@ -212,3 +212,34 @@ test('旧版在途轮次无指纹时按本题轮次与基线恢复，不能误�
   x.row('assistant', MAIN); x.background(); await x.collect();
   assert.equal(x.replies()[0].text, MAIN + '\n\n' + BACKGROUND);
 });
+
+// 2026-10-16 公司真机 Q-1016-01：CodeAgent 粘贴时读到剪贴板里的图片，提问前多了「[Image #0]」，
+// 后面再追加一个「[已分析用户附件图片]」文字块；提问正文一字不差，回执却判成「未能唯一核对」。
+// 前两种是第 9 轮从公司原生记录里读到的原样结构（第 4、6 轮提问；第 2 轮的改写请求），后三种是可能的变体。
+const FAILED_ANALYSIS = '[已分析用户附件图片]\n[图片视觉分析失败：服务端异常(502)] 图片共 3 张，视觉模型服务暂时不可用。请稍后重试，或用文字描述图片内容。';
+const withImage = {
+  'R4/R6 实录': text => [{ type: 'text', text: '[Image #0]' + text },
+    { type: 'text', text: '[已分析用户附件图片]\n\n\n这是一张软件界面的截图，展示了一个任务详情页。' }],
+  'R2 改写请求实录': text => [{ type: 'text', text: '[Image #0][Image #1][Image #2]' + text },
+    { type: 'text', text: FAILED_ANALYSIS }, { type: 'text', text: FAILED_ANALYSIS }, { type: 'text', text: FAILED_ANALYSIS }],
+  inline: text => [{ type: 'text', text: '[Image #0] ' + text }],
+  newline: text => [{ type: 'text', text: '[Image #0]\n' + text }],
+  separateBlocks: text => [{ type: 'text', text: '[Image #0]' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }, { type: 'text', text }],
+};
+for (const [shape, wrap] of Object.entries(withImage)) test(`提问前被插了剪贴板图片占位符（${shape}）仍按本轮回执送回`, async t => {
+  const x = await rig(t), user = x.rows.at(-1);
+  user.message.content = wrap(user.message.content);
+  fs.writeFileSync(x.file, x.rows.map(JSON.stringify).join('\n') + '\n');
+  x.row('assistant', MAIN); await x.collect();
+  assert.equal(x.read().rounds[0].receiptIssue ?? null, null);
+  assert.equal(x.replies()[0].text, MAIN);
+});
+
+test('去掉占位符后正文仍不同的提问不算本轮', async t => {
+  const x = await rig(t), user = x.rows.at(-1);
+  user.message.content = [{ type: 'text', text: '[Image #0]' + user.message.content + '（另一个人补了一句）' },
+    { type: 'text', text: '[已分析用户附件图片]\n\n\n截图描述' }];
+  fs.writeFileSync(x.file, x.rows.map(JSON.stringify).join('\n') + '\n');
+  x.row('assistant', MAIN); await x.collect();
+  assert.equal(x.replies().length, 0); assert.match(x.read().rounds[0].receiptIssue, /未能唯一核对/);
+});

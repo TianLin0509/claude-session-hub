@@ -542,27 +542,47 @@ test('原生记录解析：只取用户发出的消息（文字、图片），�
   assert.deepEqual(userTurnsFromTranscript(path.join(dir, 'missing.jsonl')), []);
 });
 
-test('剪贴板暂存：有图片就先拿开、发完放回；发送期间另外复制了东西就不覆盖；没图片不动', async () => {
-  const { withImageAside } = require('../core/company-bridge/clipboard-guard');
-  const fake = (formats) => {
-    const c = { formats, writes: [], clears: 0, image: { isEmpty: () => false, tag: 'IMG' } };
-    Object.assign(c, { availableFormats: () => c.formats, readImage: () => c.image, clear: () => { c.clears += 1; c.formats = []; }, writeImage: img => { c.writes.push(img); c.formats = ['image/png']; } });
+test('粘贴前清剪贴板图片：只在有图片时清一次、不放回；同一次复制里的文字留着；纯文字不碰；出错不挡粘贴', () => {
+  const { dropImage } = require('../core/company-bridge/clipboard-guard');
+  const fake = (formats, text = '') => {
+    const c = { formats, text, ops: [] };
+    Object.assign(c, {
+      availableFormats: () => c.formats,
+      readText: () => c.text,
+      clear: () => { c.ops.push('clear'); c.formats = []; c.text = ''; },
+      writeText: t => { c.ops.push('writeText'); c.formats = ['text/plain']; c.text = t; },
+      writeImage: () => { c.ops.push('writeImage'); },
+    });
     return c;
   };
   let c = fake(['image/png']);
-  let during = null;
-  assert.equal(await withImageAside(c, async () => { during = c.availableFormats().length; return 'sent'; }), 'sent');
-  assert.equal(during, 0, '发送期间剪贴板里没有图片');
-  assert.equal(c.writes[0].tag, 'IMG', '发完放回');
-  c = fake(['image/png']);
-  await withImageAside(c, async () => { c.formats = ['text/plain']; });
-  assert.equal(c.writes.length, 0, '期间复制了新内容就不覆盖');
-  c = fake(['text/plain']);
-  await withImageAside(c, async () => {});
-  assert.equal(c.clears, 0);
-  c = fake(['image/png']);
-  await assert.rejects(withImageAside(c, async () => { throw new Error('boom'); }), /boom/);
-  assert.equal(c.writes.length, 1, '发送出错也放回');
+  assert.deepEqual(dropImage(c), { cleared: true, keptText: false });
+  assert.deepEqual(c.ops, ['clear'], '只清一次，不放回图片');
+  assert.deepEqual(c.formats, []);
+  // 从 Word 之类复制：图片和文字一起进剪贴板，文字当场写回
+  c = fake(['text/plain', 'text/html', 'image/png'], '会议纪要第一段');
+  assert.deepEqual(dropImage(c), { cleared: true, keptText: true });
+  assert.deepEqual(c.ops, ['clear', 'writeText']);
+  assert.equal(c.text, '会议纪要第一段');
+  // 纯文字：一概不碰
+  c = fake(['text/plain'], '要粘贴的命令');
+  assert.deepEqual(dropImage(c), { cleared: false, keptText: false });
+  assert.deepEqual(c.ops, []);
+  // 剪贴板被别的程序占着：不抛错，粘贴照常进行
+  c = fake(['image/png']); c.clear = () => { throw new Error('clipboard busy'); };
+  assert.deepEqual(dropImage(c), { cleared: false, keptText: false });
+  assert.deepEqual(dropImage(null), { cleared: false, keptText: false });
+});
+
+test('往 CodeAgent 粘贴（含公司桥接派的任务）前清剪贴板图片，紧挨着粘贴、只对 CodeAgent', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'group-chat-watcher.js'), 'utf8');
+  const at = src.indexOf("require('./company-bridge/clipboard-guard').dropImage(clipboard)");
+  const paste = src.indexOf('if (!usedCodexEditorInput) await writeBracketedPaste(sessionManager, sid, prompt');
+  assert.ok(at > 0 && paste > at, '清图片在粘贴之前');
+  assert.ok(!/await/.test(src.slice(at, paste)), '清完到粘贴之间没有等待');
+  assert.match(src.slice(at - 400, at), /if \(isCodeAgentKind\(kind\) && !usedCodexEditorInput\)/);
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.ok(!/withImageAside/.test(main), '不再「发完放回」：放回的图片会被 CodeAgent 后续读到');
 });
 
 test('公司设置：旧版存的模型不再生效；没改过的历代默认说明自动换成当前版，改过的保留', async t => {

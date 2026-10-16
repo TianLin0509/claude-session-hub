@@ -137,3 +137,22 @@ test('长正文分块与语义确认保留；已写payload后无回执仍为stuc
   assert.equal(payload, '\x1b[200~' + prompt + '\x1b[201~');
   assert.ok(h.writes.filter(w => w.data !== '\r').length > 1);
 });
+
+// 2026-10-16 田哥定：往 CodeAgent 粘贴前清掉剪贴板里的图片，只此一次、不放回（core/company-bridge/clipboard-guard.js）。
+test('真实发送路径：剪贴板有图片时先清掉再粘贴，发完不放回；纯文字剪贴板不碰', async () => {
+  for (const [formats, expectCleared] of [[['image/png'], true], [['text/plain'], false]]) {
+    const h = harness('clipboard-' + formats[0].replace('/', '-'));
+    const events = [];
+    const clipboard = { formats: [...formats],
+      availableFormats: () => clipboard.formats, readText: () => '',
+      clear: () => { events.push('clear'); clipboard.formats = []; },
+      writeText: () => events.push('writeText'), writeImage: () => events.push('writeImage') };
+    const write = h.manager.writeToSession;
+    h.manager.writeToSession = function (sid, data) { if (!events.includes('paste')) events.push('paste'); return write.call(this, sid, data); };
+    watcher.init({ sessionManager: h.manager, transcriptTap: new EventEmitter(), cliReadyDetector: readiness, clipboard,
+      bracketedPasteSettleMs: 1, agentTurnStartAckMs: 30, agentTurnStartRecoveryMs: 20 });
+    const result = await watcher.sendToPty(h.sid, '请回答本轮问题', 'codeagent', { requireReady: false });
+    assert.notEqual(result.notSent, true);
+    assert.deepEqual(events, expectCleared ? ['clear', 'paste'] : ['paste'], formats.join(','));
+  }
+});

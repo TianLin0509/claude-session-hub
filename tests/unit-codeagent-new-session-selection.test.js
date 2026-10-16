@@ -107,14 +107,14 @@ test('saved launch defaults do not count as a model choice in this dialog', asyn
   assert.equal(created.opts.codeagentModelPick, false);
 });
 
-test('effort and MCP changes do not authorize a model picker', async () => {
+// 2026-10-16：CodeAgent 不再有 MCP 下拉（CLI 挡不住用户级 MCP，选档只会关掉 Hub 自己的工具），创建时不带档位、按完整挂载。
+test('effort changes do not authorize a model picker; CodeAgent sends no MCP profile', async () => {
   const h = harness();
   await h.open();
   await h.change('new-session-effort', 'low');
-  await h.change('new-session-mcp', 'none');
   const created = await h.submit();
   assert.equal(created.opts.effort, 'low');
-  assert.equal(created.opts.mcpProfile, 'none');
+  assert.equal(created.opts.mcpProfile, undefined);
   assert.equal(created.opts.codeagentModelPick, false);
 });
 
