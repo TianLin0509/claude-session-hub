@@ -38,8 +38,16 @@ function withGlobalAccount(existing, config, id, env = process.env, scope) {
   if (config.codexBackend === 'api') throw new Error('当前使用 Codex API，不能切换订阅账号');
   resolveAccount({...config,codexSubscriptionProfile:id},env);
   if (scope !== undefined && !['launch','live'].includes(scope)) throw new Error('账号切换范围无效');
-  return {...existing,providers:{...existing.providers,codex:{...existing.providers?.codex,subscription_profile:id,
+  const next = {...existing,providers:{...existing.providers,codex:{...existing.providers?.codex,subscription_profile:id,
     ...(scope ? {switch_scope:scope} : {})}}};
+  // The account tab explicitly chooses the quota for future launches. A saved
+  // whole-group default must not silently pin them to the previous account.
+  const saved = existing.launch?.defaults?.codex;
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+    next.launch = {...existing.launch,defaults:{...existing.launch.defaults,
+      codex:{...saved,codexProfile:id}}};
+  }
+  return next;
 }
 
 function resolveRunningAccount(config, active, env = process.env) {
