@@ -32,6 +32,8 @@ const rowLabel = text => String(text || '').split(/\s{2,}|\s+·\s+/)[0].replace(
 // 账号只有一个可选模型时菜单只有一行：认出这个外框时一行也算菜单（以前至少要两行，11 次都判成菜单没出现）。
 const CODEAGENT_MENU_TITLE = /^\s*(?:[│┃]\s*)?Select model\s*(?:[✕×]\s*)?(?:[│┃]\s*)?$/;
 const CODEAGENT_MENU_FOOTER = /Navigate\s*↑\s*↓.*Select\s+enter.*Back\s+esc/i;
+// 模型菜单的标题：公司 CodeAgent 与 Claude 替身都是「Select model」，旧版/汉化界面可能是「选择模型」「切换模型」。
+const MENU_TITLE = /Select model|Switch model|选择模型|切换模型/i;
 function codeAgentMenuTitleLine(screen) {
   if (!screen.some(line => CODEAGENT_MENU_FOOTER.test(line))) return -1;
   return screen.findLastIndex(line => CODEAGENT_MENU_TITLE.test(line));
@@ -50,7 +52,7 @@ function pickerLabelFor(modelId, env = process.env) {
 
 // 解析屏幕上的模型菜单。认不出返回 null。
 // rows: [{ line, cursor, number|null, text, label }]，cursor 是光标所在行的下标。
-function parsePicker(lines) {
+function parsePicker(lines, { requireTitle = false } = {}) {
   const screen = Array.isArray(lines) ? lines : String(lines || '').split(/\r?\n/);
   const titleLine = codeAgentMenuTitleLine(screen);
   const minRows = titleLine >= 0 ? 1 : 2;
@@ -91,6 +93,10 @@ function parsePicker(lines) {
     }
   }
   if (rows.length < minRows || !rows.some(row => MODEL_WORDS.test(row.text))) return null;
+  // 判断「能不能发消息」时，菜单上方必须有菜单标题：回答正文里的「> 1. GLM… / 2. MiniMax…」这类编号列表
+  // 也有光标符号和模型名，以前会被当成菜单，之后每条消息都以「仍在模型选择界面」退回（2026-10-16 同事反馈
+  // 2.1.0 发送被弹回）。Hub 自己刚打开菜单、正在读它时不要求（替身的重绘可能把标题挤出屏幕）。
+  if (requireTitle && titleLine < 0 && !screen.slice(Math.max(0, rows[0].line - 12), rows[0].line).some(line => MENU_TITLE.test(line))) return null;
   const cursor = rows.findIndex(row => row.cursor);
   if (cursor < 0) return null;
   const footer = screen.slice(rows[rows.length - 1].line + 1).join('\n');
@@ -102,7 +108,7 @@ function parsePicker(lines) {
 // 2026-10-14 Claude 替身实录；不能把未知布局当成菜单已经关闭。
 function modelDialogVisible(lines) {
   const text = (Array.isArray(lines) ? lines : String(lines || '').split(/\r?\n/)).join('\n');
-  return !!parsePicker(lines) || /^\s*(?:[│┃]\s*)?Select model\s*(?:[✕×]\s*)?(?:[│┃])?\s*$/im.test(text)
+  return !!parsePicker(lines, { requireTitle: true }) || /^\s*(?:[│┃]\s*)?Select model\s*(?:[✕×]\s*)?(?:[│┃])?\s*$/im.test(text)
     || !!require('./cli-model-command').parseClaudeModelSwitchConfirmation(text);
 }
 
@@ -128,7 +134,9 @@ function promptInputAvailable(lines) {
   const companyPrompt = screen.findLastIndex(line => /^\s*(?:[│┃]\s*)?>\s*/.test(line));
   if (companyPrompt >= 0) {
     if (/^\s*(?:[│┃]\s*)?>\s+补充指令（Enter 排队等待发送）/.test(screen[companyPrompt])) return true;
-    if (screen.slice(companyPrompt + 1).some(line => /^\s*(?:[│┃]\s*)?[A-Za-z][A-Za-z ]{0,30}\(Cycle shift\+tab\)\s*\|/i.test(line))) return true;
+    // 底栏左边是权限模式名（公司实录「Bypass」）。别的模式名可能带连字符或是中文（如「Auto-Accept」），
+    // 以前只认纯字母，输入框里有草稿时整条消息被退回（2026-10-16 同事反馈 2.1.0 发送被弹回）。
+    if (screen.slice(companyPrompt + 1).some(line => /^\s*(?:[│┃]\s*)?[^\s|│┃][^|│┃]{0,40}\(Cycle shift\+tab\)\s*\|/i.test(line))) return true;
   }
   // Claude 替身的非空输入仍有同一底栏。排除只剩一个编号选项的残缺帧。
   const prompt = screen.findLastIndex(line => /^[\s─]*[❯›]\s*/.test(line)

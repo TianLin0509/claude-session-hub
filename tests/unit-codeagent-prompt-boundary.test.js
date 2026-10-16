@@ -156,3 +156,33 @@ test('真实发送路径：剪贴板有图片时先清掉再粘贴，发完不�
     assert.deepEqual(events, expectCleared ? ['clear', 'paste'] : ['paste'], formats.join(','));
   }
 });
+
+// 2026-10-16 同事反馈：2.1.0 在 Hub 输入框发消息被弹回、底部出提示，CLI 里直接发正常。复现出两种误拦：
+// ① 输入框里已有草稿、底栏权限模式名带连字符（只认纯字母）；② 上一条回答里有「> 1. GLM… / 2. MiniMax…」
+// 这类编号列表，被当成模型菜单。画面框架取自公司真机第 9 轮逐行原文。
+const READY_FRAME = [
+  '                       ╭──────────────────────────────────────────────────────────────────────╮',
+  '                       │ > Anything I can assist you with? (Ctrl+J 换行 · esc×2 清空 · ↑↓ 历史) │',
+  '                       │                                                                      │',
+  '                       │ Bypass (Cycle shift+tab) | GLM-5.2-WX-Auto              @  ✲  ↵  ▷   │',
+  '                       ╰──────────────────────────────────────────────────────────────────────╯'];
+const withDraftAndMode = READY_FRAME.map(l => l.replace('> Anything I can assist you with? (Ctrl+J 换行 · esc×2 清空 · ↑↓ 历史)', '> 帮我看一下这个函数                                          ')
+  .replace('Bypass (Cycle', 'Auto-Accept (Cycle'));
+const answerWithList = ['  模型对比结论：', '  > 1. GLM-5.2-WX-Auto 更快', '    2. MiniMax-M2.7 更稳', '', ...READY_FRAME];
+for (const [name, screen] of [['草稿 + 带连字符的权限模式', withDraftAndMode], ['回答里有带 > 的模型编号列表', answerWithList]]) {
+  test(`不误拦：${name}，消息照常发出`, async () => {
+    assert.equal(picker.modelDialogVisible(screen), false);
+    assert.equal(picker.promptInputAvailable(screen), true);
+    const h = harness('no-false-bounce-' + name.length, screen); h.initialize();
+    const result = await watcher.sendToPty(h.sid, '请继续', 'codeagent', { requireReady: false });
+    assert.notEqual(result.notSent, true, result.message);
+    assert.ok(h.writes.some(w => w.data === '\r'), '按了回车提交');
+  });
+}
+
+test('真的模型菜单开着（有标题）仍然拦下，正文不进搜索框', async () => {
+  const h = harness('real-menu-still-blocks', ['  Select model', '  ❯  1. GLM-5.2-WX-Auto default ✓   0x',
+    '  Navigate ↑ ↓ | Config ctrl+a | Default ctrl+b | Select enter | Back esc']); h.initialize();
+  await assert.rejects(watcher.sendToPty(h.sid, '不能填进搜索框', 'codeagent', { requireReady: false }), error => error.notSent === true);
+  assert.deepEqual(h.writes, []);
+});
