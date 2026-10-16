@@ -240,7 +240,8 @@ class HomeBridge {
       list = [t];
     } else list = this.store.db.prepare('SELECT payload FROM bridge_threads WHERE session=? ORDER BY updated DESC LIMIT 10').all(sessionId).map(r => JSON.parse(r.payload));
     return { ...this.peer(), threads: list.map(t => ({ thread: t.id, title: t.title, state: STATE_LABEL[t.state] || t.state,
-      rounds: t.rounds.map(r => ({ round: r.round, question: r.question, status: STATE_LABEL[r.status] || r.status, reply: r.reply || null, error: r.error || null })) })) };
+      rounds: t.rounds.map(r => ({ round: r.round, question: r.question, status: STATE_LABEL[r.status] || r.status,
+        ...(r.note && !r.reply && !r.error ? { note: r.note } : {}), reply: r.reply || null, error: r.error || null })) })) };
   }
   peer() {
     const st = this.link.status();

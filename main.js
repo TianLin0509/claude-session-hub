@@ -2335,6 +2335,12 @@ try {
       suspendSession: (id, opts) => sessionManager.suspendSession(id, opts),
       // 最后一次往这个会话终端输入的时间（人打字或 Hub 发送）；只看输入，CLI 界面自己的重绘不算活动。
       sessionInputAt: id => Number(sessionManager.sessions?.get(id)?.lastInputAt) || 0,
+      // 号池里能挑的号有几个（登录有效、不和个人账号或别的号重复）：通道按它放宽并行，并把新会话分散到不同的号（core/codeagent-pool.js）。
+      poolLanes: () => {
+        const pool = require('./core/codeagent-pool');
+        return pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {} })
+          .filter(a => a.state === 'ready' && !a.sameAsPersonal && !a.duplicateOf).length;
+      },
       fallbackCwd: os.homedir(),
       isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
