@@ -23,8 +23,19 @@ const MODEL_WORDS = /\b(?:GLM|MiniMax|DeepSeek|Qwen|Kimi|Default|Auto|Opus|Sonne
 const SESSION_ONLY_KEY = /(?:^|[\s·|])([a-z])\s+to\s+use\s+(?:this|for this)\s+session\s+only/i;
 
 const squash = value => String(value || '').toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '');
-// 行里第一段（两个以上空格或「·」之前）是模型名，后面是说明。
-const rowLabel = text => String(text || '').split(/\s{2,}|\s+·\s+/)[0].replace(/\s*[✔✓]\s*$/, '').trim();
+// 行里第一段（两个以上空格或「·」之前）是模型名，后面是说明。CodeAgent 在当前默认模型后面标「default ✓」。
+const rowLabel = text => String(text || '').split(/\s{2,}|\s+·\s+/)[0].replace(/\s*[✔✓]\s*$/, '').replace(/\s+default$/, '').trim();
+
+// 公司 CodeAgent 1.2615.02.01 的模型菜单（2026-10-16 公司真机 Q-1016-01 第 9 轮逐行原文，见单测）：
+//   「  Select model    …    ✕」、搜索框「⌕ Search…」、用量表、表头「模型名称  Credit消耗系数 …」、「  Built-in」、
+//   「  ❯  1. GLM-5.2-WX-Auto default ✓   0x  Day …」，底栏「Navigate ↑ ↓ | … | Select enter | Back esc」。
+// 账号只有一个可选模型时菜单只有一行：认出这个外框时一行也算菜单（以前至少要两行，11 次都判成菜单没出现）。
+const CODEAGENT_MENU_TITLE = /^\s*(?:[│┃]\s*)?Select model\s*(?:[✕×]\s*)?(?:[│┃]\s*)?$/;
+const CODEAGENT_MENU_FOOTER = /Navigate\s*↑\s*↓.*Select\s+enter.*Back\s+esc/i;
+function codeAgentMenuTitleLine(screen) {
+  if (!screen.some(line => CODEAGENT_MENU_FOOTER.test(line))) return -1;
+  return screen.findLastIndex(line => CODEAGENT_MENU_TITLE.test(line));
+}
 
 // 测试替身（真 Claude Code）的菜单里只有 Claude 的模型名：用 AI_HUB_CODEAGENT_PICKER_LABELS
 // （JSON：{ "MiniMax-M2.7": "Haiku" }）把 Hub 的模型名对到菜单里的名字。真 CodeAgent 不需要。
@@ -41,13 +52,16 @@ function pickerLabelFor(modelId, env = process.env) {
 // rows: [{ line, cursor, number|null, text, label }]，cursor 是光标所在行的下标。
 function parsePicker(lines) {
   const screen = Array.isArray(lines) ? lines : String(lines || '').split(/\r?\n/);
+  const titleLine = codeAgentMenuTitleLine(screen);
+  const minRows = titleLine >= 0 ? 1 : 2;
   let rows = [];
   screen.forEach((line, index) => {
+    if (index <= titleLine) return;
     const m = line.match(NUMBERED_ROW);
     if (m) rows.push({ line: index, cursor: !!m[1], number: Number(m[2]), text: m[3], label: rowLabel(m[3]) });
   });
   // 编号要连续，排除正文里碰巧以「1. 」开头的几行。
-  if (rows.length >= 2) {
+  if (rows.length >= minRows) {
     const runs = [];
     for (const row of rows) {
       const last = runs[runs.length - 1];
@@ -55,10 +69,10 @@ function parsePicker(lines) {
       else runs.push([row]);
     }
     // 屏幕镜像里可能还留着菜单的旧画面（TUI 重绘没擦干净）：取最靠下、也就是最新的那一份。
-    rows = runs.filter(run => run.length >= 2 && run.some(r => r.cursor)).pop() || [];
+    rows = runs.filter(run => run.length >= minRows && run.some(r => r.cursor)).pop() || [];
   } else rows = [];
   // 没有编号的菜单：以光标行为准，向上下收集同一缩进、光标列为空白的相邻行。
-  if (rows.length < 2) {
+  if (rows.length < minRows) {
     rows = [];
     const isCursorRow = line => BARE_CURSOR_ROW.test(line) && !/^\s*[❯›▶>]\s*\//.test(line) && MODEL_WORDS.test(line);
     let at = -1;
@@ -76,19 +90,19 @@ function parsePicker(lines) {
       }
     }
   }
-  if (rows.length < 2 || !rows.some(row => MODEL_WORDS.test(row.text))) return null;
+  if (rows.length < minRows || !rows.some(row => MODEL_WORDS.test(row.text))) return null;
   const cursor = rows.findIndex(row => row.cursor);
   if (cursor < 0) return null;
   const footer = screen.slice(rows[rows.length - 1].line + 1).join('\n');
   const sessionKey = (footer.match(SESSION_ONLY_KEY) || [])[1] || null;
-  return { rows, cursor, sessionKey };
+  return { rows, cursor, sessionKey, codeagentFrame: titleLine >= 0 };
 }
 
 // 菜单存在与“能解析选项”是两件事。Select model 来自公司用户报告及
 // 2026-10-14 Claude 替身实录；不能把未知布局当成菜单已经关闭。
 function modelDialogVisible(lines) {
   const text = (Array.isArray(lines) ? lines : String(lines || '').split(/\r?\n/)).join('\n');
-  return !!parsePicker(lines) || /^\s*(?:[│┃]\s*)?Select model\s*(?:[│┃])?\s*$/im.test(text)
+  return !!parsePicker(lines) || /^\s*(?:[│┃]\s*)?Select model\s*(?:[✕×]\s*)?(?:[│┃])?\s*$/im.test(text)
     || !!require('./cli-model-command').parseClaudeModelSwitchConfirmation(text);
 }
 
@@ -286,7 +300,7 @@ async function waitForEcho(manager, sid, mark, timeoutMs, screen) {
 async function pickModel({ manager, sid, kind, modelId, configDir, sendToPty, screenTimeoutMs = 8000, env = process.env }) {
   const label = pickerLabelFor(modelId, env);
   const screen = await openSessionScreen(manager, sid);
-  let attempted = false, result;
+  let attempted = false, result, menu = null;
   // 失败时把当时的画面带回去，写进数据目录方便排查（公司电脑上的菜单长相我们看不到）。
   const fail = async message => ({ ok: false, message, screen: await screen.lines().catch(() => []) });
   async function choose() {
@@ -303,6 +317,8 @@ async function pickModel({ manager, sid, kind, modelId, configDir, sendToPty, sc
     const first = await waitFor(screen, parsePicker, screenTimeoutMs);
     if (!first.value) return fail('当前 CodeAgent 模型菜单的布局无法自动识别，未完成模型切换');
     let picker = first.value;
+    // 只有认出 CodeAgent 自己的菜单外框、且从第 1 项列起时才当完整清单（替身菜单、滚动过的菜单不算）。
+    if (picker.codeagentFrame && (picker.rows[0].number ?? 1) === 1) menu = picker.rows.map(row => row.label);
     const target = findTarget(picker, label);
     if (target < 0) return fail(`模型菜单里没有 ${modelId}（菜单里有：${picker.rows.map(row => row.label).join('、')}）` );
     // 方向键按第一帧算好的格数逐个按。这类界面只重画变化的几行，镜像和真实终端稍有出入，后面几帧就会读乱
@@ -354,7 +370,8 @@ async function pickModel({ manager, sid, kind, modelId, configDir, sendToPty, sc
       screen.dispose();
     }
   }
-  return result;
+  // 菜单里实际列出的模型：调用方记下来，新建会话的模型下拉以它为准（core/codeagent-models.js 的 recordMenu）。
+  return menu ? { ...result, menu } : result;
 }
 
 // ---------------------------------------------------------------- 排队与第一条消息的闸门

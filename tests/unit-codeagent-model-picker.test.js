@@ -152,3 +152,102 @@ test('菜单里没有要选的模型：按 Esc 后等菜单关掉再返回，排
   assert.deepEqual(writes.map(w => w.data), ['\x1b'], '只按一次 Esc 关自己打开的菜单');
   assert.ok(closedAt > 0 && returnedAt - closedAt >= 300, `菜单关掉之后还要留一拍再返回（关后 ${returnedAt - closedAt}ms 返回）`);
 });
+
+// 2026-10-16 公司真机 Q-1016-01 第 9 轮：CodeAgent 1.2615.02.01 按 Alt+P / 输入 /model 回车后的菜单逐行原文
+// （行号与高亮标记已去掉；右半边是 Stats / SESSION 面板）。账号只有一个可选模型，菜单只有一行；
+// 以前要求至少两行编号，11 次都判成「菜单没出现」，再按 Esc 把菜单关了。
+const CODEAGENT_MENU = [
+  ' ≡ opentui: C:\\Us… │ C:\\Users\\L00807~1\\AppData\\Local\\Temp\\ca-menu-work-JldESo 9 mcp · 24 hooks │ ? help       Overview      Messages   ⚙',
+  '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   ────────────────────────────────',
+  '                                                                                                             ▾ Stats',
+  ' 发送第一条消息开始对话                                                                                      Context                   --',
+  '                                                                                                             Credit       2,477.1 (99.1%)',
+  '                                                                                                             Runtime             00:00:00',
+  '                                                                                                          »',
+  '  Select model                                                                                       ✕',
+  '  ╭────────────────────────────────────────────────────────────────────────────────────────────────────╮',
+  '  │ ⌕ Search…                                                                                          │',
+  '  ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯',
+  '  Credit用量                                                                         shift + ↓ to detail',
+  '  月度: 2836.51/20000,已用每天(忙时): 22.93/2500,已 每天(平时,闲时): 258.03/2500,   距离闲时2折还有1小时',
+  '  14.18%                  0.91%                     已用10.32%                     56分钟',
+  '        模型名称                          Credit消耗系数  Token用量/配额           ● 负载      模型描述',
+  '  Built-in',
+  '  ❯  1. GLM-5.2-WX-Auto default ✓         0x              Day 29.16M/400M (7.29%)  ● 低负载    为主模型，',
+  '                                                          Hour 2.15M/200M (1.07%)',
+  '                                                          Min 89.66K/1M (8.97%)                              ──────────────────────────',
+  '                                                                                                             SESSION 6472e0ab-dd31-4693-b',
+  '  ────────────────────────────────────────────────────────────────────────────────────────────────────               655-d36a77aa973c',
+  '                                                                                                             VERSION         1.2615.02.01',
+  '  Navigate ↑ ↓ | Config ctrl+a | Default ctrl+b | Select enter | Back esc',
+];
+
+test('公司真机菜单：只有一行也认得出，模型名去掉「default ✓」，菜单回执成立', () => {
+  const parsed = picker.parsePicker(CODEAGENT_MENU);
+  assert.ok(parsed, '真机菜单必须认得出');
+  assert.deepEqual(parsed.rows.map(r => r.label), ['GLM-5.2-WX-Auto']);
+  assert.equal(parsed.cursor, 0);
+  assert.equal(parsed.codeagentFrame, true);
+  assert.equal(picker.findTarget(parsed, 'GLM-5.2-WX-Auto'), 0);
+  assert.equal(picker.findTarget(parsed, 'MiniMax-M2.7'), -1);
+  assert.equal(picker.modelDialogVisible(CODEAGENT_MENU), true);
+  assert.equal(picker.promptInputReady(CODEAGENT_MENU), false);
+  assert.equal(modelCommandAcknowledged('codeagent-picker', CODEAGENT_MENU.join('\n'), ''), true);
+});
+
+test('公司真机菜单：搜不到时只剩标题和「Clear esc」，仍算菜单开着（不会把正文打进搜索框）', () => {
+  const noResults = [...CODEAGENT_MENU.slice(0, 8),
+    '  │ ⌕ MiniMax-M2.7│                                                                                    │',
+    '  No results found', '  Clear esc'];
+  assert.equal(picker.parsePicker(noResults), null);
+  assert.equal(picker.modelDialogVisible(noResults), true);
+});
+
+test('没有 CodeAgent 外框时，单独一行「❯ 1. 模型」仍不算菜单（正文里的编号列表不误认）', () => {
+  assert.equal(picker.parsePicker(['回答正文', '  ❯ 1. GLM-5.2-WX-Auto 是默认模型', '以上']), null);
+  // 有底栏没有标题，也不算
+  assert.equal(picker.parsePicker(['  ❯  1. GLM-5.2-WX-Auto default ✓   0x', '  Navigate ↑ ↓ | Config ctrl+a | Default ctrl+b | Select enter | Back esc']), null);
+});
+
+test('选的模型不在真机菜单里：失败并带回菜单清单，只按一次 Esc 关菜单', async () => {
+  const { EventEmitter } = require('node:events');
+  const manager = new EventEmitter();
+  const writes = [];
+  manager.getSessionBufferSnapshot = async () => ({ text: CODEAGENT_MENU.join('\r\n'), seq: 0, cols: 140, rows: 40 });
+  manager.writeToSession = (sid, data) => {
+    writes.push(data);
+    if (data === '\x1b') setTimeout(() => manager.emit('output', { sessionId: sid, seq: 9, data: '\x1b[2J\x1b[H'
+      + '  │ > Anything I can assist you with? (Ctrl+J 换行 · esc×2 清空 · ↑↓ 历史) │\r\n'
+      + '  │ Bypass (Cycle shift+tab) | GLM-5.2-WX-Auto                       @  ✲  ↵  ▷   │\r\n'
+      + '  Alt+P switch model | Ctrl+G editor' }), 200);
+  };
+  const result = await picker.pickModel({ manager, sid: 's1', kind: 'codeagent', modelId: 'MiniMax-M2.7',
+    sendToPty: async () => ({ ok: true }), screenTimeoutMs: 1000, env: {} });
+  assert.equal(result.ok, false);
+  assert.equal(result.inputReady, true);
+  assert.match(result.message, /菜单里没有 MiniMax-M2\.7（菜单里有：GLM-5\.2-WX-Auto）/);
+  assert.deepEqual(result.menu, ['GLM-5.2-WX-Auto']);
+  assert.deepEqual(writes, ['\x1b'], '只按一次 Esc 关自己打开的菜单');
+});
+
+test('选的模型就在真机菜单里：回车选中、菜单关掉即成功，并带回菜单清单', async () => {
+  const { EventEmitter } = require('node:events');
+  const manager = new EventEmitter();
+  const writes = [];
+  manager.getSessionBufferSnapshot = async () => ({ text: CODEAGENT_MENU.join('\r\n'), seq: 0, cols: 140, rows: 40 });
+  manager.getSessionOutputMark = () => 0;
+  manager.getSessionOutputSince = () => '';
+  manager.writeToSession = (sid, data) => {
+    writes.push(data);
+    if (data === '\r') setTimeout(() => manager.emit('output', { sessionId: sid, seq: 9, data: '\x1b[2J\x1b[H'
+      + '  │ > Anything I can assist you with? (Ctrl+J 换行 · esc×2 清空 · ↑↓ 历史) │\r\n'
+      + '  │ Bypass (Cycle shift+tab) | GLM-5.2-WX-Auto                       @  ✲  ↵  ▷   │\r\n'
+      + '  Alt+P switch model | Ctrl+G editor' }), 200);
+  };
+  const result = await picker.pickModel({ manager, sid: 's1', kind: 'codeagent', modelId: 'GLM-5.2-WX-Auto',
+    sendToPty: async () => ({ ok: true }), screenTimeoutMs: 1000, env: {} });
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.inputReady, true);
+  assert.deepEqual(result.menu, ['GLM-5.2-WX-Auto']);
+  assert.deepEqual(writes, ['\r'], '目标就在光标行：不按方向键，只按一次回车');
+});
