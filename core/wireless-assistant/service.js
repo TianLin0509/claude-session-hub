@@ -617,9 +617,14 @@ class WirelessAssistant {
   externalMerge() {
     if (!this.tasksLoaded) return null;
     const now = this.now();
+    const mine = this.jobs().filter(j => typeOf(j) === 'merge' && ['running', 'detached', 'done', 'failed'].includes(j.state));
     for (const t of this.tasks.values()) {
       const at = Number(t.updated) * 1000;
-      if (t.state === 'merging' && at && now - at < MERGE_TIMEOUT_MS) return t;
+      // updated 是秒；换算后落在未来（例如将来改成毫秒）就不认，免得永久暂停。
+      if (t.state !== 'merging' || !at || at > now + 60000 || now - at >= MERGE_TIMEOUT_MS) continue;
+      // Hub 自己合过这份、且在这次状态更新之后才收尾的，是读到的交付状态还没刷新，不算别处的合入。
+      if (mine.some(j => j.pr === t.pr && (j.finishedAt || j.updatedAt || 0) >= at)) continue;
+      return t;
     }
     return null;
   }
@@ -637,6 +642,14 @@ class WirelessAssistant {
     if (!job) return null;
     const t = this.tasks.get(job.pr);
     if (!t || !this.mergeable(t) || t.candidate !== job.candidate) { this.saveJob({ ...job, state: 'skipped', note: '交付状态已变化，不再合入', finishedAt: this.now() }); return null; }
+    // 别的 PR 正在别处合入（会话里手动跑的）：合并机一次只能合一份，排着等它结束，免得起脚本后被合并机锁拒掉再误报失败。
+    // 同一份 PR 停在「合入中」是 Hub 自己中断的合入，照常续跑。
+    const other = this.externalMerge();
+    if (other && other.pr !== job.pr) {
+      const note = 'PR #' + other.pr + ' 正在别处合入，排队等它结束';
+      if (job.note !== note) this.saveJob({ ...job, note });
+      return null;
+    }
     const install = this.install();
     const logFile = path.join(this.deps.dataDir, 'wireless', 'logs', `merge-pr${job.pr}-${job.candidate.slice(0, 8)}.log`);
     this.saveJob({ ...job, state: 'running', startedAt: this.now(), logFile, note: '正在跑完整测试并合入（约 15–30 分钟），完成后同步阿里云',
