@@ -172,6 +172,27 @@ test('解码失败会回执错误，伪造校验值的 ACK 不能改变发送状
   assert.match(r.company.images.get(sent.id).error, /解码失败/);
 });
 
+test('会话通知未确认时两端都如实显示，重复图片不会丢失不确定状态或重复通知', async t => {
+  for (const receipt of [{ ok: false, unconfirmed: true }, { ok: true, unconfirmed: true }, { ok: true, sendStatus: 'stuck' }]) {
+    const r = await imageRig(t); r.hs.receipt = receipt;
+    const sent = await r.company.images.send(r.sid, { thread: r.thread, path: r.file });
+    await r.home.checkNow(); await r.company.checkNow();
+    const check = () => {
+      for (const images of [r.home.images, r.company.images]) {
+        const item = images.status().items.find(x => x.id === sent.id);
+        assert.equal(item.deliveryUncertain, true);
+        assert.equal(item.status, '通知已提交，确认待核实');
+      }
+      assert.equal(r.hs.sentTo('h1').filter(x => x.text.startsWith('【通道图片')).length, 1);
+    };
+    check();
+    const row = [...r.relay.channels.values()].flatMap(x => x.rows).find(x => x.mid === sent.id);
+    const decoded = bridgeCrypto.open(bridgeCrypto.derive(r.company.link.activeSecret()), 'home', row.blob);
+    await r.home.receive(decoded); await r.home.images.tick(); await r.company.checkNow();
+    check();
+  }
+});
+
 test('快速到达的接收确认不会被发送完成覆盖', async t => {
   const r = await imageRig(t), flush = r.company.link.flush.bind(r.company.link);
   r.company.link.flush = async () => {

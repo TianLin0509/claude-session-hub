@@ -95,7 +95,8 @@ class BridgeImages {
     return file;
   }
   async ack(message, state, error) {
-    await this.link.send('image-ack', { gen: message.gen, imageId: message.mid || message.id, thread: message.thread, round: message.round, sha256: message.sha256, state, ...(error ? { error: String(error).slice(0, 200) } : {}) });
+    await this.link.send('image-ack', { gen: message.gen, imageId: message.mid || message.id, thread: message.thread, round: message.round, sha256: message.sha256, state,
+      ...(state === 'delivered' ? { deliveryUncertain: message.deliveryUncertain === true } : {}), ...(error ? { error: String(error).slice(0, 200) } : {}) });
   }
   async receive(message) {
     if (!['image-capabilities', 'image', 'image-ack'].includes(message.type)) return false;
@@ -107,7 +108,7 @@ class BridgeImages {
     if (message.type === 'image-ack') {
       const old = this.get(message.imageId);
       if (old?.direction === 'out' && old.gen === message.gen && old.thread === message.thread && old.round === message.round && old.sha256 === message.sha256 && ['received', 'delivered', 'error'].includes(message.state)) {
-        if (old.state !== 'delivered' || message.state === 'delivered') this.save({ ...old, state: message.state, error: message.error || null, acknowledgedAt: this.bridge.now() });
+        if (old.state !== 'delivered' || message.state === 'delivered') this.save({ ...old, state: message.state, deliveryUncertain: message.state === 'delivered' && message.deliveryUncertain === true, error: message.error || null, acknowledgedAt: this.bridge.now() });
       }
       return true;
     }
@@ -117,7 +118,7 @@ class BridgeImages {
       const old = this.get(message.mid);
       if (old) {
         if (old.direction !== 'in' || old.gen !== message.gen || old.sha256 !== message.sha256) throw new Error('重复图片编号内容不一致');
-        await this.ack(message, old.state === 'delivered' ? 'delivered' : 'received'); return true;
+        await this.ack(old, old.state === 'delivered' ? 'delivered' : 'received'); return true;
       }
       const info = probeImage(message.data);
       if (info.format !== message.format || info.width !== message.width || info.height !== message.height) throw new Error('图片尺寸或格式与说明不一致');
@@ -163,14 +164,15 @@ class BridgeImages {
         const text = [`【通道图片 ${item.thread} · 第 ${item.round} 轮】`, `图片已在本机还原并通过完整性校验：${item.path}`, `尺寸 ${item.width} × ${item.height}；${item.lossy ? '有损压缩' : 'PNG 编码'}${item.resized ? '，已缩小分辨率' : '，保留分辨率'}。`, item.caption ? `对端说明：${item.caption}` : '', '需要分析时请用本机看图工具读取以上文件；尚未读取图片时不要声称已看过。'].filter(Boolean).join('\n');
         const receipt = await this.deps.sendPrompt(sid, text, item.id);
         if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) throw new Error(receipt?.error || '图片通知未送进会话');
-        this.save({ ...item, sessionId: sid, state: 'delivered', deliveredAt: this.bridge.now(), deliveryUncertain: receipt.ok === false, error: null });
-        await this.ack(item, 'delivered');
+        const delivered = this.save({ ...item, sessionId: sid, state: 'delivered', deliveredAt: this.bridge.now(),
+          deliveryUncertain: receipt.ok === false || receipt.unconfirmed === true || receipt.sendStatus === 'stuck', error: null });
+        await this.ack(delivered, 'delivered');
       } catch (error) { this.save({ ...item, error: error.message, nextTryAt: this.bridge.now() + 60000 }); }
     }
   }
   publicItem(item) {
     const state = item.gen !== this.link.gen() && ['queued', 'sent', 'received'].includes(item.state) ? 'cancelled' : item.state;
-    return { ...item, state, status: stateNames[state] || state };
+    return { ...item, state, status: state === 'delivered' && item.deliveryUncertain ? '通知已提交，确认待核实' : stateNames[state] || state };
   }
   view(sessionId, thread) {
     if (thread) this.requireContext(thread, sessionId);
