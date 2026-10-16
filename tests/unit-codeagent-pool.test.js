@@ -141,3 +141,32 @@ test('openLoginWindow writes fixture credentials only in an isolated test Hub an
   assert.equal(calls[0].options.cwd, pool.accountDir(data, id));
   assert.equal('CODEAGENT_HUB_PORT' in calls[0].options.env, false);
 });
+
+test('localCandidates lists logged-in .cac* dirs under the scan root and importLocal copies them into the pool', () => {
+  const data = tmp(), home = tmp();
+  const env = { CLAUDE_HUB_DATA_DIR: data, AI_HUB_CODEAGENT_POOL_SCAN_ROOT: home };
+  const personalDir = path.join(home, '.cac');
+  writeCreds(personalDir, 'devUCOAuth', { accountId: 'y00000002', expiresAt: Date.now() + 3600e3 });
+  const second = path.join(home, '.cac-deepseek');
+  writeCreds(second, 'idaasOAuth', { accountId: 'x00000001', expiresAt: Date.now() + 3600e3 });
+  fs.writeFileSync(path.join(second, 'settings.json'), JSON.stringify({ model: 'deepseek-v4-flash-0731', hooks: { Stop: [] } }));
+  fs.writeFileSync(path.join(second, '.cac.json'), JSON.stringify({ enterpriseModelOptionsCache: [{ value: 'deepseek-v4-flash-0731' }] }));
+  fs.mkdirSync(path.join(home, '.cac-empty'));
+  fs.mkdirSync(path.join(home, 'Documents'));
+  const list = pool.localCandidates(data, { personalDir, env });
+  assert.deepEqual(list.map(c => c.name), ['.cac', '.cac-deepseek'], 'only .cac* dirs with credentials');
+  assert.equal(list[0].isPersonal, true);
+  assert.equal(list[1].accountLabel, 'x000****01');
+  assert.throws(() => pool.importLocal(data, personalDir, { personalDir, env }), /个人账号/);
+  assert.throws(() => pool.importLocal(data, path.join(home, 'Documents'), { personalDir, env }), /不在本机已登录/);
+  const id = pool.importLocal(data, second, { personalDir, env });
+  const imported = pool.listAccounts(data, { personalAccountId: 'y00000002' }).find(a => a.id === id);
+  assert.equal(imported.state, 'ready');
+  assert.equal(imported.accountLabel, 'x000****01');
+  assert.equal(imported.note, '.cac-deepseek');
+  assert.deepEqual(imported.models, ['deepseek-v4-flash-0731'], 'account model list comes along');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pool.accountDir(data, id), 'settings.json'), 'utf8')), { model: 'deepseek-v4-flash-0731' });
+  assert.equal(fs.existsSync(path.join(second, '.credentials.json')), true, 'source dir is left untouched');
+  assert.equal(pool.localCandidates(data, { personalDir, env })[1].alreadyInPool, true);
+  assert.throws(() => pool.importLocal(data, second, { personalDir, env }), /已经在号池里/);
+});
