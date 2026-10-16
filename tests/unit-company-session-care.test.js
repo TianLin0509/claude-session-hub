@@ -211,7 +211,7 @@ test('有人在答完的通道会话里直接打过字：从最后一次输入�
 // 2026-10-16 田哥：白天算力紧、晚上和周末几乎不受限；通道也要用上号池，加速往返。
 test('并行上限：工作日忙时用设定值；晚上、周末放宽；再按可用账号数与内存收', () => {
   // 按本机时区构造（忙时按公司电脑本地时间算）
-  const at = (iso) => { const m = iso.match(/^(d+)-(d+)-(d+)T(d+):(d+)/); return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]); };
+  const at = (iso) => { const [d, t] = iso.split('T'); const [y, mo, day] = d.split('-').map(Number); const [h, mi] = t.split(':').map(Number); return new Date(y, mo - 1, day, h, mi); };
   const mem = free => ({ total: 32 * GB, free: free * GB, ratio: free / 32 });
   // 周五 10:00 忙时：设定 2、只有个人账号 → 2
   assert.equal(care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(16) }).cap, 2);
