@@ -22,6 +22,7 @@ const HOME_DIR = path.join(TEMP_ROOT, 'home');
 const WORKSPACE_ROOT = path.join(TEMP_ROOT, 'workspaces');
 const PERSONAL_DIR = path.join(TEMP_ROOT, 'personal-cac');
 const FAKE_LOG = path.join(TEMP_ROOT, 'codeagent-fake.jsonl');
+const SCAN_HOME = path.join(TEMP_ROOT, 'scan-home');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'codeagent-pool');
 
 function reservePort() {
@@ -82,6 +83,10 @@ async function main() {
   fs.writeFileSync(path.join(PERSONAL_DIR, 'settings.json'), JSON.stringify({ model: 'GLM-5.2-WX-Auto', permissions: { allow: ['Read'] } }));
   fs.writeFileSync(path.join(PERSONAL_DIR, 'AGENTS.md'), '# 个人账号的全局规则\n');
   fs.writeFileSync(path.join(PERSONAL_DIR, '.credentials.json'), JSON.stringify({ devUCOAuth: { accessToken: 'x', accountId: 'y00000002', expiresAt: Date.now() + 3600e3 } }));
+  // 本机另一个已登录的目录（用户手动登过的 .cac-deepseek），用来测「导入本机已登录的号」
+  fs.mkdirSync(path.join(SCAN_HOME, '.cac-deepseek'), { recursive: true });
+  fs.writeFileSync(path.join(SCAN_HOME, '.cac-deepseek', '.credentials.json'), JSON.stringify({ idaasOAuth: { xAuthToken: 'x', accountId: 'z00000003', expiresAt: Date.now() + 3600e3 } }));
+  fs.writeFileSync(path.join(SCAN_HOME, '.cac-deepseek', 'settings.json'), JSON.stringify({ model: 'deepseek-v4-flash-0731' }));
   // 解锁「AI特战队专用功能」入口（等同于本机解锁过一次）
   const { AssistantStore } = require('../core/hub-assistant/store.js');
   const store = new AssistantStore(path.join(DATA_DIR, 'company-bridge'));
@@ -99,6 +104,7 @@ async function main() {
       AI_HUB_CODEAGENT_CONFIG_DIR: PERSONAL_DIR,
       AI_HUB_CODEAGENT_POOL_LOGIN_FIXTURE: 'w00123',
       CODEAGENT_POOL_FAKE_LOG: FAKE_LOG,
+      AI_HUB_CODEAGENT_POOL_SCAN_ROOT: SCAN_HOME,
     } });
     const client = await connectFirstPage(hub, t => t.type === 'page' && /renderer[\\/]index\.html/i.test(t.url || ''));
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -121,10 +127,15 @@ async function main() {
       await click(client, '[data-hl="pool-add"]');
       await waitFor(`pool account ${note} ready`, () => client.eval(`[...document.querySelectorAll('[data-hl-sec="pool"] .hl-item')].some(i => i.textContent.includes(${JSON.stringify(note)}) && i.textContent.includes('可用'))`));
     }
+    // 导入本机已登录的目录：不用重新登录
+    await click(client, '[data-hl^="pool-import:"]');
+    await waitFor('imported account ready', () => client.eval(`[...document.querySelectorAll('[data-hl-sec="pool"] .hl-item')].some(i => i.textContent.includes('.cac-deepseek') && i.textContent.includes('可用') && i.textContent.includes('z000****03'))`));
+    await waitFor('import button gone', () => client.eval(`!document.querySelector('[data-hl^="pool-import:"]') && document.querySelector('[data-hl-sec="pool"]').textContent.includes('已在号池里')`));
     await shot(client, '01-pool-dialog-1440.png'); result.screenshots.push('01-pool-dialog-1440.png');
     const listed = await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list')`);
-    assert.equal(listed.usable, 2);
-    result.checks.push('two pool accounts added through the dialog');
+    assert.equal(listed.usable, 3);
+    assert.ok(listed.accounts.some(a => a.note === '.cac-deepseek' && a.models.includes('deepseek-v4-flash-0731')));
+    result.checks.push('two pool accounts added through the dialog and one imported from a local logged-in dir');
     await click(client, '[data-hl="close"]');
 
     // 号池会话 1、2：各挑一个号，第二个挑没有会话的那个
