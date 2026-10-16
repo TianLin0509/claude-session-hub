@@ -212,3 +212,18 @@ test('execute re-scans, verifies pid + start time and only acts on still-eligibl
     assert.deepEqual(suspended, ['s-a']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// 2026-10-16 公司真机：CodeAgent 会话是 codeagentcli.exe（另带一个 serve 子进程，约 1.3 GB）。Hub 退出后留下的这类进程以前认不出，
+// 只列在「其他程序」里；现在和 claude / codex 一样按会话编号认成无主 CLI，连同 serve 子进程一起计内存。
+test('an orphan CodeAgent CLI (with its serve child) is recognized like claude/codex', () => {
+  const base = fixture().processes.filter(p => p.pid !== 500);
+  const snap = snapshotOf([...base,
+    proc(510, 998, 'codeagentcli.exe', 'codeagentcli.exe --resume c0418947-0646-4ec8-985b-fa42a0590cdb --disable-update', 667),
+    proc(511, 510, 'codeagentcli.exe', 'codeagentcli.exe serve --config-dir C:/Users/x/.cac', 771)]);
+  const plan = buildMemoryReleasePlan({ snapshot: snap, selfPid: 100, manifests: new Map([[100, manifest]]), reclaimReport });
+  const orphan = plan.items.find(i => i.key.startsWith('orphan:510'));
+  assert.ok(orphan, 'orphan CodeAgent listed');
+  assert.match(orphan.title, /CodeAgent/);
+  assert.equal(orphan.processCount, 2);
+  assert.equal(orphan.wsBytes, (667 + 771) * MB);
+});

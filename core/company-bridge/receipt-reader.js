@@ -139,4 +139,32 @@ function readCompanyReceipt(meta, request) {
     text: records.map(record => record.text).join('\n\n') };
 }
 
-module.exports = { readCompanyReceipt, receiptPromptFingerprint };
+// 提问有没有真的写进 CodeAgent 的记录（2026-10-16 公司真机 Q-1016-02 第 5 轮：发给了一个已经退出的 CodeAgent，
+// 提问根本没写进去，以前只在「记录文件不存在」时才重发，干等 30 分钟判失败）。
+// 搜同一项目目录里发送之后改过的全部 .jsonl：CLI 恢复后可能换了记录文件，不能只看绑定的那一个。
+// 返回 true（找到）/ false（目录在、没找到）/ null（不知道记录在哪，不下结论）。
+function transcriptHasRequest(meta, request, fsModule = fs) {
+  const bound = meta?.transcriptPath;
+  if (!bound || !request?.sentAt) return null;
+  const dir = require('node:path').dirname(bound);
+  let names;
+  try { names = fsModule.readdirSync(dir).filter(name => name.endsWith('.jsonl')); } catch { return null; }
+  const since = request.sentAt - 5000;
+  for (const name of names) {
+    const file = require('node:path').join(dir, name);
+    try { if (fsModule.statSync(file).mtimeMs < since) continue; } catch { continue; }
+    let raw;
+    try { raw = fsModule.readFileSync(file, 'utf8'); } catch { continue; }
+    for (const line of raw.split('\n')) {
+      if (!line.includes('"user"')) continue;
+      let row; try { row = JSON.parse(line); } catch { continue; }
+      if (row?.type !== 'user' || isToolResultEntry(row)) continue;
+      const at = Date.parse(row.timestamp) || 0;
+      if (at && at < since) continue;
+      if (matchesRequest({ text: bodyText(row), at }, request)) return true;
+    }
+  }
+  return false;
+}
+
+module.exports = { readCompanyReceipt, receiptPromptFingerprint, transcriptHasRequest };

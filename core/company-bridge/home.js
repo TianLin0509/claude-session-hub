@@ -119,7 +119,7 @@ class HomeBridge {
   getMcpEntry(sessionId) {
     return { name: 'company_bridge', command: this.deps.nodeExecutable || 'node', args: [this.deps.mcpScript || path.resolve(__dirname, '../../scripts/company-bridge-mcp.js')],
       env: { HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile, HUB_BRIDGE_SESSION_ID: sessionId || '', HUB_BRIDGE_SESSION_PASS: this.passFor(sessionId || '') },
-      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve' } };
+      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve' } };
   }
   wantsMcp({ kind, opts = {} }) {
     if (!this.link.paired()) return false;
@@ -161,6 +161,7 @@ class HomeBridge {
     if (request.name === 'ask_company') return this.ask(sessionId, args);
     if (request.name === 'followup_company') return this.followup(sessionId, args);
     if (request.name === 'company_thread') return this.view(sessionId, args);
+    if (request.name === 'recollect_company') return this.recollect(sessionId, args);
     throw new Error('未知工具');
   }
   meta(sessionId) { const s = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId); return s || {}; }
@@ -193,6 +194,43 @@ class HomeBridge {
     this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
     this.changed();
     return { thread: t.id, round, status: '已发出', ...this.peer(), next: '回执到了会作为新消息自动发到本会话，现在请结束本轮。' };
+  }
+  // 补收（2026-10-16）：上一轮报「没答上」或迟迟没有回执，但公司会话里其实写了回答——请公司直接把它取回，不重答。
+  // 今天 Q-1016-02 第 4 轮就是答完了却没送回，只能人去公司电脑上抄。
+  async recollect(sessionId, { thread }) {
+    const t = this.thread(String(thread || ''));
+    if (!t || t.sessionId !== sessionId) throw new Error(t ? '这个编号属于另一个会话' : '找不到编号 ' + thread);
+    if (t.state === 'cancelled' || t.gen !== this.link.gen()) throw new Error('这个编号属于上一次配对，已作废');
+    const r = t.rounds[t.rounds.length - 1];
+    if (!r) throw new Error('这个编号还没有任何一轮');
+    const waiting = !r.reply && !r.error && this.now() - (r.sentAt || 0) > 20 * 60000;
+    if (!r.error && !waiting && !(r.reply && !r.delivered)) throw new Error('最后一轮正常回执了，或发出还不到 20 分钟；补收只用于「没答上」或迟迟没有回执的轮次');
+    await this.link.send('recollect', { thread: t.id, gen: t.gen, round: r.round });
+    this.saveThread({ ...t, rounds: t.rounds.map(x => x.round === r.round ? { ...x, recollectAt: this.now() } : x) });
+    this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
+    this.changed();
+    return { thread: t.id, round: r.round, status: '已请公司补收', ...this.peer(),
+      next: '公司取回最新回答后会作为新消息自动发到本会话（开头注明是补收）；取不到会回一条说明。现在请结束本轮。' };
+  }
+  // 告诉公司哪些问题的发问会话还在活动（2026-10-16，设计第 1 块）：答完的公司会话据此多保温一会儿。
+  // 只报最近 3 小时内有回执的线索；集合变了立刻报，没变每 10 分钟报一次，没有就不报。
+  async reportAskers() {
+    const now = this.now(), gen = this.link.gen();
+    const active = [];
+    for (const row of this.store.db.prepare('SELECT payload FROM bridge_threads WHERE updated > ? ORDER BY updated DESC LIMIT 100').all(now - 3 * 3600000)) {
+      let t; try { t = JSON.parse(row.payload); } catch { continue; }
+      if (!t || t.gen !== gen || t.state === 'cancelled' || !t.sessionId) continue;
+      const s = this.deps.getSession(t.sessionId);
+      if (!s) continue;
+      const lastActive = Math.max(Number(s.lastMessageTime) || 0, Number(s.lastCompletedAt) || 0, Number(s.lastRunStartedAt) || 0);
+      if (this.sessionBusy(t.sessionId) || now - lastActive < 15 * 60000) active.push(t.id);
+    }
+    const key = active.sort().join(',');
+    const last = this.store.get('askerReport') || {};
+    if (!active.length && !last.key) return;
+    if (key === last.key && now - (last.at || 0) < 10 * 60000) return;
+    await this.link.send('asker', { gen, threads: active });
+    this.store.set('askerReport', { key, at: now });
   }
   view(sessionId, { thread }) {
     let list;
@@ -267,6 +305,7 @@ class HomeBridge {
       // 公司的求助：先把公司回执送进家里会话（上面），再看家里会话答完没有、派发新的求助。
       if (!this.consultBusy) this.consultBusy = this.consult.advance().finally(() => { this.consultBusy = null; });
       await this.consultBusy;
+      try { await this.reportAskers(); } catch { /* 下一轮再报 */ }
     }
   }
   checkNow() { this.nextPullAt = 0; return this.tick({ force: true }).then(() => this.status()); }

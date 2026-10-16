@@ -25,6 +25,14 @@ const tools = [
     inputSchema: schema({ thread: { type: 'string', description: '编号，如 Q-1015-01' }, question: string }, ['thread', 'question']),
   },
   {
+    name: 'recollect_company',
+    description: '补收：上一轮回执报「没答上」（例如「会话停下了，但一直没读到回答」「未能唯一核对……」），或发出 20 分钟以上还没有回执时，'
+      + '请公司 Hub 把那个公司会话在这一轮之后写下的最新回答直接取回来，不让 CodeAgent 重答一遍。取回的文字开头会注明是补收、没有逐条核对归属，请据内容判断是否对题；'
+      + '取不到会回一条说明，那时再用 followup_company 重问。',
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    inputSchema: schema({ thread: { type: 'string', description: '编号，如 Q-1016-02' } }, ['thread']),
+  },
+  {
     name: 'company_thread',
     description: '查看本会话向公司提过的问题和全部回执（不传 thread 时列出本会话最近 10 个），以及公司电脑是否在线。回执会自动送达，一般不需要调用。',
     annotations: { readOnlyHint: true, openWorldHint: false },
