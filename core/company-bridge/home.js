@@ -65,6 +65,7 @@ class HomeBridge {
     this.master = master;
     this.busy = null; this.deliverBusy = null; this.consultBusy = null; this.timer = null; this.nextPullAt = 0; this.server = null;
     this.consult = new HomeConsult({ bridge: this, deps });
+    this.images = new (require('./images').BridgeImages)(this);
     if (!deps.noTimer) claimTimers(this.store);
   }
   now() { return this.deps.now ? this.deps.now() : Date.now(); }
@@ -119,7 +120,7 @@ class HomeBridge {
   getMcpEntry(sessionId) {
     return { name: 'company_bridge', command: this.deps.nodeExecutable || 'node', args: [this.deps.mcpScript || path.resolve(__dirname, '../../scripts/company-bridge-mcp.js')],
       env: { HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile, HUB_BRIDGE_SESSION_ID: sessionId || '', HUB_BRIDGE_SESSION_PASS: this.passFor(sessionId || '') },
-      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve' } };
+      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve', send_image_company: 'approve', company_images: 'approve' } };
   }
   wantsMcp({ kind, opts = {} }) {
     if (!this.link.paired()) return false;
@@ -162,6 +163,8 @@ class HomeBridge {
     if (request.name === 'followup_company') return this.followup(sessionId, args);
     if (request.name === 'company_thread') return this.view(sessionId, args);
     if (request.name === 'recollect_company') return this.recollect(sessionId, args);
+    if (request.name === 'send_image_company') return this.images.send(sessionId, args);
+    if (request.name === 'company_images') return { images: this.images.view(sessionId, args.thread) };
     throw new Error('未知工具');
   }
   meta(sessionId) { const s = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId); return s || {}; }
@@ -306,12 +309,14 @@ class HomeBridge {
       // 公司的求助：先把公司回执送进家里会话（上面），再看家里会话答完没有、派发新的求助。
       if (!this.consultBusy) this.consultBusy = this.consult.advance().finally(() => { this.consultBusy = null; });
       await this.consultBusy;
+      await this.images.tick();
       try { await this.reportAskers(); } catch { /* 下一轮再报 */ }
     }
   }
   checkNow() { this.nextPullAt = 0; return this.tick({ force: true }).then(() => this.status()); }
 
   async receive(message) {
+    if (await this.images.receive(message)) return;
     if (message.type === 'hello') {
       if (this.link.completeAsHome(message)) {
         this.store.set('pairingCode', null);
@@ -394,6 +399,7 @@ class HomeBridge {
       now: this.now(), nextPullAt: this.nextPullAt, polling: this.polling(),
       threads: this.threads(60).map(t => ({ ...t, session: { open: !!this.deps.getSession(t.sessionId), title: this.meta(t.sessionId).title || t.sessionTitle || null } })),
       consults: this.consult.view(),
+      images: this.images.status(),
     };
   }
   notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: '公司联动 · ' + title, text, sessionId }); } catch {} }

@@ -177,6 +177,7 @@ class CompanyBridge {
     this.link = new BridgeLink({ side: 'company', store: this.store, fetchImpl: deps.fetchImpl, now: () => this.now() });
     this.busy = null; this.advanceBusy = null; this.deliverBusy = null; this.timer = null; this.nextPullAt = 0; this.lastPullAt = 0;
     this.askHome = new AskHome({ bridge: this, deps });
+    this.images = new (require('./images').BridgeImages)(this);
     this.gatePass = new GatePasser({ open: url => deps.openHiddenGate(url), logDir: path.join(deps.dataDir, 'logs'), now: () => this.now(),
       notify: (title, text) => this.notify(title, text) });
     // 升级前就配对过的电脑（入口还没隐藏时用过）直接算已解锁，不让成员升级后找不到入口。
@@ -281,6 +282,7 @@ class CompanyBridge {
     if (this.link.paired()) {
       if (!this.deliverBusy) this.deliverBusy = this.askHome.deliver().finally(() => { this.deliverBusy = null; });
       await this.deliverBusy;
+      await this.images.tick();
     }
   }
   // 通道被放行页拦着、且开了自动放行：在看不见的窗口里点一次放行，点到了立即重试连接。
@@ -306,6 +308,7 @@ class CompanyBridge {
   cancelOpen(why) { this.askHome.cancelOpen(why); for (const t of this.openThreads()) this.saveThread({ ...t, state: 'cancelled', cancelNote: why }); }
 
   receive(message) {
+    if (['image-capabilities', 'image', 'image-ack'].includes(message.type)) return this.images.receive(message);
     if (message.type === 'welcome') {
       if (this.link.completeAsCompany(message)) this.notify('配对已完成', 'AI特战队专用功能已接通。');
       return;
@@ -660,6 +663,7 @@ class CompanyBridge {
       nextPullAt: this.nextPullAt, now: this.now(), polling: this.polling(),
       threads: this.threads().map(t => ({ ...t, session: t.sessionId ? { open: !!this.deps.getSession(t.sessionId), busy: this.sessionBusy(t.sessionId) } : null })),
       askHome: this.askHome.status(),
+      images: this.images.status(),
       care: this.careState || null,
     };
   }
