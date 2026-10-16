@@ -112,6 +112,12 @@ function getSidebarSearchEntries(doc) {
   return sidebarSources.get(doc)?.() || [];
 }
 
+function isWirelessSession(item) {
+  // Stable purpose survives renaming. The title prefix also covers older
+  // workbench records without purpose; unrelated wireless discussions stay.
+  return item?.purpose === 'wireless-proposal' || /^无线\s*[·・]/.test(String(item?.title || '').trim());
+}
+
 function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
@@ -125,6 +131,7 @@ function createSessionListRenderer(options = {}) {
   let recentDays = 1;
   let pinnedOnly = false;
   let modelFilter = 'all';
+  let showWireless = false;
   try {
     const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
     if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
@@ -133,6 +140,7 @@ function createSessionListRenderer(options = {}) {
     pinnedOnly = storage.getItem('hubSidebarRange') === 'pinned';
     const model = storage.getItem('hubSidebarModelFilter');
     if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
+    showWireless = storage.getItem('hubSidebarShowWireless') === 'true';
   } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
   function savePreference(key, value) {
     try { storage.setItem(key, value); }
@@ -143,6 +151,17 @@ function createSessionListRenderer(options = {}) {
     for (const button of rangeControls) button.setAttribute('aria-pressed', String(pinnedOnly ? button.dataset.sessionDays === 'pinned' : Number(button.dataset.sessionDays) === recentDays));
   }
   syncRangeControls();
+  const wirelessControl = doc.getElementById?.('btn-sidebar-wireless');
+  function syncWirelessControl() {
+    wirelessControl?.setAttribute('aria-pressed', String(showWireless));
+    wirelessControl?.setAttribute('title', showWireless ? '隐藏无线协作会话' : '显示无线协作会话');
+  }
+  syncWirelessControl();
+  wirelessControl?.addEventListener('click', () => {
+    showWireless = !showWireless;
+    savePreference('hubSidebarShowWireless', String(showWireless));
+    syncWirelessControl(); renderSessionList();
+  });
   for (const button of rangeControls) button.addEventListener('click', () => {
     pinnedOnly = button.dataset.sessionDays === 'pinned';
     if (!pinnedOnly) recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
@@ -630,11 +649,15 @@ sessionListEl.addEventListener('keydown', event => {
     doc.dispatchEvent(new doc.defaultView.CustomEvent('sidebar:open-search', { detail }));
   }
   function filteredSidebarItems(sessionMap = getSessions()) {
-    return collectSidebarItems(sessionMap).filter(item => projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
+    return collectSidebarItems(sessionMap).filter(item => (showWireless || !isWirelessSession(item)) && projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
   }
   function revealSearchItem(id, memberId = null) {
     const item = collectSidebarItems().find(entry => entry.id === id);
     if (!item) return;
+    if (isWirelessSession(item) && !showWireless) {
+      showWireless = true;
+      savePreference('hubSidebarShowWireless', 'true'); syncWirelessControl();
+    }
     if (pinnedOnly !== !!item.pinned) {
       pinnedOnly = !!item.pinned;
       savePreference('hubSidebarRange',pinnedOnly ? 'pinned' : String(recentDays)); syncRangeControls();
@@ -1091,6 +1114,7 @@ sessionListEl.addEventListener('mousedown', (e) => {
 }
 
 module.exports = {
+  isWirelessSession,
   createSessionListRenderer,
   showDomesticRoute,
   compareLatestActivityDesc,

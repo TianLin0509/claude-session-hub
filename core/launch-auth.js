@@ -40,6 +40,14 @@ class LaunchAuth {
     if (age < 0) return false;
     return age < (seen.state === 'signed_in' ? SIGNED_IN_REUSE_MS : INCONCLUSIVE_REUSE_MS);
   }
+  // Start the same read-only check while the user chooses launch options.
+  // AccountCenter deduplicates pending checks by identity and stores freshness.
+  // Login windows and task recovery remain exclusive to explicit launch/login.
+  async precheck(kind, opts = {}) {
+    const id = this.connection(kind, opts);
+    if (!id || this.reusable(id)) return;
+    try { await this.accounts.check(id, {quiet:true, resume:false}); } catch {}
+  }
   async ensure(kind, opts = {}) {
     const id = this.connection(kind, opts);
     if (!id) return;

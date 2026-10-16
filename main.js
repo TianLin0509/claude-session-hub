@@ -2110,6 +2110,7 @@ const resumeSession = createResumeSessionHandler({
 
 const sessionOperations = registerSessionIpc(ipcMain, {
   ensureLaunchAuth:(kind,opts)=>launchAuth.ensure(kind,opts),
+  prepareLaunchAuth:(kind,opts)=>launchAuth.precheck(kind,opts),
   getPersistedSessions: () => lastPersistedSessions,
   getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
   meetingManager,
