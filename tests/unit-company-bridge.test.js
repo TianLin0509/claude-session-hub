@@ -841,3 +841,49 @@ test('首问响应晚到时按本次检查的起点收紧到 10 秒，不错过�
   await r.company.tick();
   assert.ok(r.company.thread(second.thread));
 });
+
+// 2026-10-16 设计第一步：家里补收（recollect_company）和「发问方还在活动」报告，走真实的两端通道（假中转）。
+test('补收：一轮报没答上后，家里请公司取回最新回答，作为新回执送回提问会话；正常回执的轮次不能补收', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle', title: '场景配置' });
+  r.hs.map.set('other', { id: 'other', kind: 'codex', status: 'idle' });
+  const asked = await ask(r, 'home-s1', '## 目的\n查 7 站场景配置\n## 问题\n1. 站间距多少？', '场景配置');
+  await r.company.checkNow();
+  const companySession = r.cs.created[0].opts.id;
+  // 公司那边判没答上（例如回执核对不上），但会话里其实写好了回答
+  const ct = r.company.thread(asked.thread);
+  r.company.failRound(ct, ct.rounds[0], '会话停下了，但一直没读到回答');
+  r.cs.finals.set(companySession, [{ id: 'f1', text: '站间距 500 m，下倾 6°。把握程度：高', timestamp: r.clock.now }]);
+  await r.company.checkNow();
+  await r.home.checkNow();
+  assert.match(r.hs.sent.at(-1).text, /没答上/);
+  await assert.rejects(r.home.invoke({ name: 'recollect_company', callerSessionId: 'other', arguments: { thread: asked.thread } }), /另一个会话|找不到/);
+  const res = await r.home.invoke({ name: 'recollect_company', callerSessionId: 'home-s1', arguments: { thread: asked.thread } });
+  assert.equal(res.status, '已请公司补收');
+  await r.company.checkNow();
+  await r.home.checkNow();
+  assert.match(r.hs.sent.at(-1).text, new RegExp(`【公司回执 ${asked.thread} · 第 1 轮】`));
+  assert.match(r.hs.sent.at(-1).text, /补收/);
+  assert.match(r.hs.sent.at(-1).text, /站间距 500 m/);
+  await assert.rejects(r.home.invoke({ name: 'recollect_company', callerSessionId: 'home-s1', arguments: { thread: asked.thread } }), /正常回执/);
+});
+
+test('家里报「发问方还在活动」：集合变了才立刻报，没变 10 分钟内不重复；公司据此记下', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('home-s1', { id: 'home-s1', kind: 'codex', status: 'idle', title: 'x', lastMessageTime: r.clock.now });
+  const asked = await ask(r, 'home-s1', '## 目的\n问一件事\n## 问题\n1. 是什么？', '问一件事');
+  const posts = () => r.relay.posts;
+  await r.home.checkNow();
+  await r.company.checkNow();
+  assert.deepEqual(r.company.store.get('askerActive').threads, [asked.thread]);
+  const before = posts();
+  await r.home.reportAskers();
+  assert.equal(posts(), before, '集合没变、10 分钟内不重复报');
+  r.hs.map.get('home-s1').lastMessageTime = r.clock.now - 60 * 60000;
+  await r.home.reportAskers();
+  assert.equal(posts(), before + 1, '发问方不活跃了：集合变了立刻报');
+  await r.company.checkNow();
+  assert.deepEqual(r.company.store.get('askerActive').threads, []);
+});

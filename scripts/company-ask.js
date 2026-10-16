@@ -6,6 +6,7 @@
 //   node company-ask.js ask --file 问题.md [--title 标题]
 //   node company-ask.js followup --thread Q-1015-01 --file 追问.md
 //   node company-ask.js show [--thread Q-1015-01]
+//   node company-ask.js recollect --thread Q-1015-01   （补收：上一轮没答上时，取回公司会话里已经写好的回答）
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -19,8 +20,8 @@ function text() {
 }
 async function main() {
   const command = process.argv[2];
-  const tool = { ask: 'ask_company', followup: 'followup_company', show: 'company_thread' }[command];
-  if (!tool) throw new Error('用法：ask --file q.md [--title t] | followup --thread Q-xxxx --file f.md | show [--thread Q-xxxx]');
+  const tool = { ask: 'ask_company', followup: 'followup_company', show: 'company_thread', recollect: 'recollect_company' }[command];
+  if (!tool) throw new Error('用法：ask --file q.md [--title t] | followup --thread Q-xxxx --file f.md | show [--thread Q-xxxx] | recollect --thread Q-xxxx');
   // 会话身份与通行证由 Hub 在开会话时注入；只能代表本会话提问。
   const session = process.env.HUB_BRIDGE_SESSION_ID, pass = process.env.HUB_BRIDGE_SESSION_PASS;
   if (!session || !pass) throw new Error('这个会话没有家里联动的通行证：请在家里和公司配对之后、由 AI Hub 新开（或重开）的 Codex / Claude 会话里使用');
