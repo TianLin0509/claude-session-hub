@@ -24,8 +24,8 @@ const port=()=>new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1'
     await wait('!!document.getElementById("options-appearance") && typeof window._mountSessionTurnCard==="function"');
     await click('#btn-theme');await click('#options-appearance');await wait('document.getElementById("appearance-dialog")?.open');
     assert.equal(requests.length,0);
-    assert.equal(await cdp.eval("document.querySelectorAll('.ap-pack').length"),1);
-    const names=await cdp.eval("Array.from(document.querySelectorAll('.ap-preview-faces figcaption'),e=>e.textContent)");
+    assert.equal(await cdp.eval("document.querySelectorAll('.appearance-pack').length"),1);
+    const names=await cdp.eval("Array.from(document.querySelectorAll('.appearance-preview-faces figcaption'),e=>e.textContent)");
     assert.deepEqual(names,['DeepSeek','千问','智谱','MiniMax']);
     await click('[data-tab="online"]');await click('[data-action="check"]');await wait("!!document.querySelector('[data-download=company-test]')");
     await click('[data-download="company-test"]');await wait("document.querySelector('[data-download=company-test]')?.textContent==='已安装'");
