@@ -40,5 +40,5 @@ test('多处出现时取最靠下的一处；支持 m、千分位和小数百分
 test('界面在每轮结束时对 CodeAgent 会话读一次面板', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   assert.match(src, /if \(\/\^codeagent\/\.test\(String\(session\.kind \|\| ''\)\)\) applyCodeAgentScreenContext\(session, sessionId\);/);
-  assert.match(src, /require\('\.\.\/core\/codeagent-screen-stats'\)\.parseCodeAgentContext\(lines\)/);
+  assert.match(src, /const stats = require\('\.\.\/core\/codeagent-screen-stats'\);\s*context = stats\.parseCodeAgentContext\(lines\)/);
 });
