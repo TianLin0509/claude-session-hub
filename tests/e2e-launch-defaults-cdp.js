@@ -102,10 +102,10 @@ async function openCodex() {
     await until('document.querySelector("#new-session-model-default").textContent==="整组默认 ✓"', 'saved');
     const saved = JSON.parse(fs.readFileSync(configFile, 'utf8'));
     assert.equal(saved.models.defaults.codex, expected.model);
-    assert.deepEqual(saved.launch.defaults.codex, { effort: 'max', mcpProfile: 'browser', codexSpeedTier: 'fast', codexProfile: 'second' });
-    assert.equal(saved.providers.codex.subscription_profile, 'default');
+    assert.deepEqual(saved.launch.defaults.codex, { effort: 'max', mcpProfile: 'browser', codexSpeedTier: 'fast' });
+    assert.equal(saved.providers.codex.subscription_profile, 'second');
     assert.equal(saved.custom, 'preserve-me');
-    report.checks.push('五项一起保存到磁盘；全局账号与无关配置保留');
+    report.checks.push('账号立即保存到全局；其余四项保存为默认，无关配置保留');
     await click('#new-session-close'); await openCodex();
     assert.deepEqual(await selection(), expected);
     await shot('saved-five-options');
