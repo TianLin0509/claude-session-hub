@@ -186,3 +186,38 @@ test('真的模型菜单开着（有标题）仍然拦下，正文不进搜索�
   await assert.rejects(watcher.sendToPty(h.sid, '不能填进搜索框', 'codeagent', { requireReady: false }), error => error.notSent === true);
   assert.deepEqual(h.writes, []);
 });
+
+// 2026-10-16 同事反馈：CodeAgent 1.2605.05.01（旧版）在 2.1.0 里每条消息都以「尚未确认 CodeAgent 的普通输入框」退回，
+// 1.0.6 可用、CLI 里直接打字也能发。田哥：「输入框不一样就不敢发了，很蠢……没法保证所有用户都是最新版本」。
+// 现在只在明确看到菜单或选择框时才拦；认不出的输入框照常发。下面的画面是「和规则对不上」的假设样式，不是旧版实录。
+const UNKNOWN_FRAMES = {
+  '中文提示语、没有 shift+tab 底栏': ['  ┌────────────────────────────────────┐', '  │ › 请输入你的问题…                  │', '  └────────────────────────────────────┘', '  默认模式 · GLM-5.2-WX-Auto'],
+  '没有任何框线和提示符': ['CodeAgent 1.2605.05.01', '', '已就绪，等待输入', ''],
+};
+for (const [name, screen] of Object.entries(UNKNOWN_FRAMES)) test(`认不出的输入框照常发：${name}`, async () => {
+  const h = harness('unknown-frame-' + name.length, screen); h.initialize();
+  const result = await watcher.sendToPty(h.sid, '请继续', 'codeagent', { requireReady: false });
+  assert.notEqual(result.notSent, true, result.message);
+  assert.ok(h.writes.some(w => w.data === '\r'), '按了回车提交');
+});
+
+test('当前屏幕上有选择框（升级提醒等）仍然拦下；历史里出现过、现在已关掉的框不拦', async () => {
+  const dialog = harness('choice-dialog-on-screen', ['  版本更新提醒', '  发现新版本 1.2615.02.01，是否更新？', '  ❯ 1. 立即更新', '    2. 稍后', '  Select ↑ ↓ | Confirm Enter | 退出 Esc']);
+  dialog.initialize();
+  await assert.rejects(watcher.sendToPty(dialog.sid, '不能替人选', 'codeagent', { requireReady: false }), error => error.notSent === true);
+  assert.deepEqual(dialog.writes, []);
+  const closed = harness('choice-dialog-closed', ['  已跳过更新', '  › 请输入你的问题…']);
+  closed.manager.getSessionBuffer = () => '版本更新提醒 Select ↑ ↓ | Confirm Enter | 退出 Esc\r\n' + '\x1b[2J\x1b[H  已跳过更新\r\n  › 请输入你的问题…';
+  closed.initialize();
+  const result = await watcher.sendToPty(closed.sid, '请继续', 'codeagent', { requireReady: false });
+  assert.notEqual(result.notSent, true, result.message);
+});
+
+test('选模型失败只退回一次：提示过、菜单也关了以后，认不出的输入框照常发', async () => {
+  const h = harness('pick-failed-then-unknown', UNKNOWN_FRAMES['中文提示语、没有 shift+tab 底栏']); h.initialize();
+  picker.resetFailure(h.sid);
+  await picker.schedulePick(h.sid, async () => ({ ok: false, inputReady: false, message: '当前 CodeAgent 模型菜单的布局无法自动识别' }));
+  await assert.rejects(watcher.sendToPty(h.sid, '第一条', 'codeagent', { requireReady: false }), error => error.notSent === true);
+  const result = await watcher.sendToPty(h.sid, '第二条', 'codeagent', { requireReady: false });
+  assert.notEqual(result.notSent, true, result.message);
+});
