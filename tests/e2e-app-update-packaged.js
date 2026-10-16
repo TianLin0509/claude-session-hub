@@ -126,7 +126,7 @@ async function main() {
     await click('#hub-update-pill');
     await until(`!!document.querySelector('.app-update-dialog [data-au="download"]')`, 'dialog');
     const intro = await c.eval(`document.querySelector('.app-update-dialog').innerText`);
-    check(/v1\.0\.0/.test(intro) && /v1\.0\.1/.test(intro) && /增量更新 · 7\.\d MB/.test(intro) && /CodeAgent 回答卡片显示智谱头像/.test(intro), `${tag}：弹窗显示 v1.0.0 → v1.0.1、增量包大小和发布说明`);
+    check(/v1\.0\.0/.test(intro) && /v1\.0\.1/.test(intro) && /程序更新（不含运行库） · 7\.\d MB/.test(intro) && /CodeAgent 回答卡片显示智谱头像/.test(intro), `${tag}：弹窗显示 v1.0.0 → v1.0.1、增量包大小和发布说明`);
     await shot(`${tag}-02-dialog`);
     await click('.app-update-dialog [data-au="download"]');
     await until(`!!document.querySelector('.app-update-dialog .au-progress') && /阿里云/.test(document.querySelector('.app-update-dialog .au-section')?.textContent||'')`, 'downloading from aliyun', 30000);

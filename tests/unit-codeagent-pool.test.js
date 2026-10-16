@@ -170,3 +170,43 @@ test('localCandidates lists logged-in .cac* dirs under the scan root and importL
   assert.equal(pool.localCandidates(data, { personalDir, env })[1].alreadyInPool, true);
   assert.throws(() => pool.importLocal(data, second, { personalDir, env }), /已经在号池里/);
 });
+
+test('model probe parses the CodeAgent model menu and probed lists win over config caches', () => {
+  const probe = require('../core/codeagent-model-probe');
+  const picker = require('../core/codeagent-model-picker');
+  // 公司 CodeAgent 1.2615 菜单的形状（core/codeagent-model-picker.js 注释里的逐行原文）
+  const lines = ['  Select model    ✕', '  ⌕ Search…', '  模型名称  Credit消耗系数', '  Built-in',
+    '  ❯  1. GLM-5.2-WX-Auto default ✓   0x  Day', '     2. MiniMax-M2.7   1x', '', '  Navigate ↑ ↓ | Select enter | Back esc'];
+  const parsed = probe.modelsFromPicker(picker.parsePicker(lines));
+  assert.deepEqual(parsed, { models: ['GLM-5.2-WX-Auto', 'MiniMax-M2.7'], defaultModel: 'GLM-5.2-WX-Auto' });
+  assert.equal(probe.cleanModelId('deepseek-v4 default ✓'), 'deepseek-v4');
+  assert.equal(probe.cleanModelId('rm -rf /'), '');
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, '.cac.json'), JSON.stringify({ enterpriseModelOptionsCache: [{ value: 'GLM-5.2-WX-Auto' }] }));
+  assert.deepEqual(pool.accountModels(dir).models, ['GLM-5.2-WX-Auto']);
+  probe.writeProbed(path.join(dir, probe.MODELS_FILE), { models: ['deepseek-v4-flash-0731'], defaultModel: 'deepseek-v4-flash-0731' });
+  const probed = pool.accountModels(dir);
+  assert.deepEqual(probed.models, ['deepseek-v4-flash-0731']);
+  assert.equal(probed.authoritative, true);
+  assert.ok(probed.probedAt);
+});
+
+test('model probe drives a CLI through its own /model menu and reports login prompts', async () => {
+  const probe = require('../core/codeagent-model-probe');
+  const { EventEmitter } = require('node:events');
+  const makePty = script => ({ spawn: () => {
+    const ee = new EventEmitter(); let killed = false;
+    const p = { onData: f => ee.on('data', f), onExit: f => ee.on('exit', f), write: data => script.onInput(data, d => ee.emit('data', d)), kill: () => { killed = true; ee.emit('exit'); } };
+    setTimeout(() => script.onStart(d => ee.emit('data', d)), 10);
+    p.killed = () => killed; return p;
+  } });
+  const ready = { onStart: emit => emit('> Anything I can assist you with?\r\n'), onInput: (data, emit) => {
+    if (data === '\r') emit('\x1b[2J\x1b[H  Select model    ✕\r\n  ❯  1. deepseek-v4-flash-0731 default ✓\r\n\r\n  Navigate ↑ ↓ | Select enter | Back esc\r\n');
+  } };
+  const ok = await probe.probeModels({ command: 'codeagent', configDirEnv: 'CODEAGENT3_CONFIG_DIR', configDir: tmp(), cwd: path.join(tmp(), 'cwd'), ptyModule: makePty(ready), readyTimeoutMs: 3000, menuTimeoutMs: 3000 });
+  assert.deepEqual(ok, { ok: true, models: ['deepseek-v4-flash-0731'], defaultModel: 'deepseek-v4-flash-0731' });
+  const login = { onStart: emit => emit('Starting IDaaS login...\r\nW3 用户名: '), onInput: () => {} };
+  const needs = await probe.probeModels({ command: 'codeagent', configDirEnv: 'CODEAGENT3_CONFIG_DIR', configDir: tmp(), cwd: path.join(tmp(), 'cwd'), ptyModule: makePty(login), readyTimeoutMs: 3000 });
+  assert.equal(needs.ok, false);
+  assert.match(needs.error, /重新登录/);
+});
