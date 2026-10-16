@@ -243,3 +243,33 @@ test('去掉占位符后正文仍不同的提问不算本轮', async t => {
   x.row('assistant', MAIN); await x.collect();
   assert.equal(x.replies().length, 0); assert.match(x.read().rounds[0].receiptIssue, /未能唯一核对/);
 });
+
+// 2026-10-16 公司真机 Q-1016-05 第 2 轮（第 14 轮逐行原样结构）：提问 → 工具调用 → 公司 Hub 重启 → CodeAgent 自己补一句
+// 「继续」（isUserPrompt、autoModeUserIntent，无合成标记）→ 又一串工具调用 → 自动压缩（compact_boundary + isCompactSummary 摘要
+// + 附件）→ 最终回答。以前「继续」被当成新提问，本轮报「其他用户输入的答案不会作为本轮回执」。
+test('答到一半 CLI 被重启、自己补了一句「继续」又压缩过：回答仍算本轮', async t => {
+  const x = await rig(t);
+  x.row('assistant', '先查一下调度入口', { message: { id: 'tool-1', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'tu-1', name: 'Grep', input: {} }] } });
+  x.row('user', [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'GDlScheduler.cc:120' }]);
+  x.row('user', '继续', { isUserPrompt: true, autoModeUserIntent: true, permissionMode: 'bypassPermissions' });
+  x.row('assistant', '继续搜索参数默认值', { message: { id: 'tool-2', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'tu-2', name: 'Read', input: {} }] } });
+  x.row('user', [{ type: 'tool_result', tool_use_id: 'tu-2', content: '...' }]);
+  const boundary = x.append({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', parentUuid: null, logicalParentUuid: x.rows.at(-1).uuid,
+    uuid: 'compact-boundary', sessionId: x.meta.ccSessionId, timestamp: new Date().toISOString(), compactMetadata: { trigger: 'auto', preTokens: 154140 } });
+  x.row('user', 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\nSummary:\n1. 主要请求和意图：',
+    { parentUuid: boundary.uuid, isCompactSummary: true, isVisibleInTranscriptOnly: true });
+  x.row('attachment', '', { attachment: { type: 'file', filename: 'C:\AirView\src\GDlScheduler.cc' } });
+  x.row('assistant', MAIN);
+  await x.collect();
+  assert.equal(x.read().rounds[0].receiptIssue ?? null, null);
+  assert.equal(x.replies()[0].text, MAIN);
+});
+
+test('带了其他内容的插话仍按新提问处理，不串进本轮回执', async t => {
+  const x = await rig(t);
+  x.row('user', '继续，另外帮我看看别的文件', { isUserPrompt: true });
+  x.row('assistant', '这是插话的回答');
+  await x.collect();
+  assert.equal(x.replies().length, 0);
+  assert.match(x.read().rounds[0].receiptIssue, /其他用户输入/);
+});
