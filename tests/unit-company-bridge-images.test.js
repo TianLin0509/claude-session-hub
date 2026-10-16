@@ -204,6 +204,33 @@ test('快速到达的接收确认不会被发送完成覆盖', async t => {
   assert.equal(sent.state, 'received');
 });
 
+test('通知后的 ACK 入队失败只重试回执，重启恢复也不重复通知会话', async t => {
+  for (const receipt of [{ ok: true }, { ok: false, unconfirmed: true }]) {
+    const r = await imageRig(t); r.hs.busy.add('h1'); r.hs.receipt = receipt;
+    const sent = await r.company.images.send(r.sid, { thread: r.thread, path: r.file });
+    await r.home.checkNow(); await r.company.checkNow();
+    assert.equal(r.home.images.get(sent.id).state, 'received');
+    const enqueue = r.home.link.enqueue.bind(r.home.link);
+    let full = true;
+    r.home.link.enqueue = frame => { if (full && frame.type === 'image-ack') throw new Error('发件箱已满'); return enqueue(frame); };
+    r.hs.busy.delete('h1');
+    await r.home.images.tick();
+    assert.equal(r.home.images.get(sent.id).state, 'delivered');
+    assert.equal(r.home.images.get(sent.id).ackPending, true);
+    r.home.images = new (require('../core/company-bridge/images').BridgeImages)(r.home);
+    r.clock.now += 60001; await r.home.images.tick();
+    assert.equal(r.hs.sentTo('h1').filter(x => x.text.startsWith('【通道图片')).length, 1);
+    full = false; r.clock.now += 60001;
+    await r.home.images.tick(); await r.company.checkNow();
+    assert.equal(r.home.images.get(sent.id).ackPending, false);
+    const receivedAck = r.company.images.get(sent.id);
+    assert.equal(receivedAck.state, 'delivered');
+    assert.equal(receivedAck.deliveryUncertain, receipt.ok === false);
+    await r.home.images.tick();
+    assert.equal(r.hs.sentTo('h1').filter(x => x.text.startsWith('【通道图片')).length, 1);
+  }
+});
+
 test('实际 MCP 子进程通过图片专用凭证发送图片，工具列表与权限一致', async t => {
   const r = await imageRig(t); await r.company.askHome.start();
   const plan = r.company.sessionPlan({ kind: 'codeagent', opts: { purpose: 'company-bridge' }, id: r.sid });

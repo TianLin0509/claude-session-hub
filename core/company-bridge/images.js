@@ -140,16 +140,31 @@ class BridgeImages {
     this.busy = this.advance().finally(() => { this.busy = null; });
     return this.busy;
   }
+  async deliveryAck(item) {
+    if (!this.link.paired() || item.gen !== this.link.gen()) return;
+    try {
+      await this.ack(item, 'delivered');
+      this.save({ ...this.get(item.id), ackPending: false, ackError: null, nextAckAt: 0 });
+    } catch (error) {
+      // Notification is already submitted. An outbox failure must only retry its ACK.
+      this.save({ ...this.get(item.id), ackPending: true, ackError: '确认回执暂未入队，将重试：' + error.message, nextAckAt: this.bridge.now() + 60000 });
+    }
+  }
   async advance() {
     if (!this.link.paired()) return;
     await this.advertise();
     const outbox = new Set((this.store.get('outbox') || []).map(x => x.mid));
     // Pending work must not disappear behind a UI history limit.
-    const pending = this.store.db.prepare("SELECT payload FROM bridge_images WHERE json_extract(payload, '$.state') NOT IN ('delivered','cancelled','error') ORDER BY updated").all().map(x => JSON.parse(x.payload));
+    const pending = this.store.db.prepare("SELECT payload FROM bridge_images WHERE json_extract(payload, '$.state') NOT IN ('delivered','cancelled','error') OR json_extract(payload, '$.ackPending') = 1 ORDER BY updated").all().map(x => JSON.parse(x.payload));
     for (const item of pending) {
-      if (item.gen !== this.link.gen()) { if (!['delivered', 'cancelled', 'error'].includes(item.state)) this.save({ ...item, state: 'cancelled' }); continue; }
+      if (item.gen !== this.link.gen()) {
+        const state = ['delivered', 'cancelled', 'error'].includes(item.state) ? item.state : 'cancelled';
+        this.save({ ...item, state, ackPending: false, ackError: null }); continue;
+      }
       if (item.direction === 'out') { if (item.state === 'queued' && !outbox.has(item.id)) this.save({ ...item, state: 'sent' }); continue; }
+      if (item.state === 'delivered' && item.ackPending) { if (!(item.nextAckAt > this.bridge.now())) await this.deliveryAck(item); continue; }
       if (item.state !== 'received' || item.nextTryAt > this.bridge.now()) continue;
+      let delivered;
       try {
         const { t } = this.requireContext(item.thread, null, item.round);
         const sid = t.sessionId;
@@ -164,15 +179,15 @@ class BridgeImages {
         const text = [`【通道图片 ${item.thread} · 第 ${item.round} 轮】`, `图片已在本机还原并通过完整性校验：${item.path}`, `尺寸 ${item.width} × ${item.height}；${item.lossy ? '有损压缩' : 'PNG 编码'}${item.resized ? '，已缩小分辨率' : '，保留分辨率'}。`, item.caption ? `对端说明：${item.caption}` : '', '需要分析时请用本机看图工具读取以上文件；尚未读取图片时不要声称已看过。'].filter(Boolean).join('\n');
         const receipt = await this.deps.sendPrompt(sid, text, item.id);
         if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) throw new Error(receipt?.error || '图片通知未送进会话');
-        const delivered = this.save({ ...item, sessionId: sid, state: 'delivered', deliveredAt: this.bridge.now(),
+        delivered = this.save({ ...item, sessionId: sid, state: 'delivered', deliveredAt: this.bridge.now(), ackPending: true,
           deliveryUncertain: receipt.ok === false || receipt.unconfirmed === true || receipt.sendStatus === 'stuck', error: null });
-        await this.ack(delivered, 'delivered');
       } catch (error) { this.save({ ...item, error: error.message, nextTryAt: this.bridge.now() + 60000 }); }
+      if (delivered) await this.deliveryAck(delivered);
     }
   }
   publicItem(item) {
     const state = item.gen !== this.link.gen() && ['queued', 'sent', 'received'].includes(item.state) ? 'cancelled' : item.state;
-    return { ...item, state, status: state === 'delivered' && item.deliveryUncertain ? '通知已提交，确认待核实' : stateNames[state] || state };
+    return { ...item, state, error: item.error || item.ackError || null, status: state === 'delivered' && item.deliveryUncertain ? '通知已提交，确认待核实' : stateNames[state] || state };
   }
   view(sessionId, thread) {
     if (thread) this.requireContext(thread, sessionId);
