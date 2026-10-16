@@ -63,11 +63,15 @@ async function shot(client, name) {
 const fakeLaunches = () => (fs.existsSync(FAKE_LOG) ? fs.readFileSync(FAKE_LOG, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
 const sessions = client => client.eval(`require('electron').ipcRenderer.invoke('get-sessions')`);
 
-async function createCodeAgent(client, account) {
+async function createCodeAgent(client, account, poolPick = null) {
   await click(client, '#btn-new');
   await click(client, '.new-session-option[data-kind="codeagent"]');
   await waitFor('account field', () => client.eval(`!document.getElementById('new-session-codeagent-account-field').hidden`));
   await choose(client, '#new-session-codeagent-account', account);
+  if (poolPick) {
+    await waitFor('manual pool picker', () => client.eval(`!document.getElementById('new-session-codeagent-pool-field').hidden`));
+    await choose(client, '#new-session-codeagent-pool', poolPick);
+  }
   const before = (await sessions(client)).map(s => s.id);
   const launchesBefore = fakeLaunches().length;
   await click(client, '#new-session-submit');
@@ -121,21 +125,38 @@ async function main() {
     // 特战队弹窗里添加两个号池账号
     await click(client, '#btn-options');
     await click(client, '#options-home-link');
+    await click(client, '[data-hl="tab:pool"]');
     await waitFor('pool section', () => client.eval(`!!document.querySelector('[data-hl-sec="pool"] [data-hl="pool-add"]')`));
     for (const note of ['同事甲', '同事乙']) {
       await typeInto(client, '[data-hl-f="pool-note"]', note);
       await click(client, '[data-hl="pool-add"]');
-      await waitFor(`pool account ${note} ready`, () => client.eval(`[...document.querySelectorAll('[data-hl-sec="pool"] .hl-item')].some(i => i.textContent.includes(${JSON.stringify(note)}) && i.textContent.includes('可用'))`));
+      await waitFor(`pool account ${note} ready`, () => client.eval(`[...document.querySelectorAll('[data-hl-sec="pool"] tr[data-hl-account]')].some(i => i.textContent.includes(${JSON.stringify(note)}) && i.textContent.includes('可用'))`));
     }
     // 导入本机已登录的目录：不用重新登录
     await click(client, '[data-hl^="pool-import:"]');
-    await waitFor('imported account ready', () => client.eval(`[...document.querySelectorAll('[data-hl-sec="pool"] .hl-item')].some(i => i.textContent.includes('.cac-deepseek') && i.textContent.includes('可用') && i.textContent.includes('z000****03'))`));
+    await waitFor('imported account ready', () => client.eval(`[...document.querySelectorAll('[data-hl-sec="pool"] tr[data-hl-account]')].some(i => i.textContent.includes('.cac-deepseek') && i.textContent.includes('可用') && i.textContent.includes('z000****03'))`));
     await waitFor('import button gone', () => client.eval(`!document.querySelector('[data-hl^="pool-import:"]') && document.querySelector('[data-hl-sec="pool"]').textContent.includes('已在号池里')`));
     await shot(client, '01-pool-dialog-1440.png'); result.screenshots.push('01-pool-dialog-1440.png');
     const listed = await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list')`);
     assert.equal(listed.usable, 3);
     assert.ok(listed.accounts.some(a => a.note === '.cac-deepseek' && a.models.includes('deepseek-v4-flash-0731')));
     result.checks.push('two pool accounts added through the dialog and one imported from a local logged-in dir');
+
+    // 一键获取全部模型权限：后台读每个号自己的 /model 菜单（假 CodeAgent：z 开头的号只有 DeepSeek，其余只有 GLM）
+    await click(client, '[data-hl="pool-probe-all"]');
+    await waitFor('all models probed', () => client.eval(`(() => {
+      const sec = document.querySelector('[data-hl-sec="pool"]');
+      return sec && !sec.textContent.includes('获取中') && sec.querySelectorAll('tr[data-hl-account]').length === 4
+        && [...sec.querySelectorAll('tr[data-hl-account]')].every(tr => !tr.textContent.includes('未获取'));
+    })()`), 120000);
+    const probedRows = await client.eval(`[...document.querySelectorAll('[data-hl-sec="pool"] tr[data-hl-account]')].map(tr => tr.textContent)`);
+    assert.ok(probedRows[0].includes('个人账号') && probedRows[0].includes('GLM-5.2-WX-Auto') && !probedRows[0].includes('deepseek'), probedRows[0]);
+    assert.ok(probedRows.some(t => t.includes('.cac-deepseek') && t.includes('deepseek-v4-flash-0731') && !t.includes('GLM')), JSON.stringify(probedRows));
+    await shot(client, '00-accounts-tab-1440.png'); result.screenshots.push('00-accounts-tab-1440.png');
+    const listedAfterProbe = await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list')`);
+    const deepseekAccount = listedAfterProbe.accounts.find(a => a.note === '.cac-deepseek');
+    assert.deepEqual(deepseekAccount.models, ['deepseek-v4-flash-0731']);
+    result.checks.push('one click reads every account\'s own model menu (personal GLM only, imported account DeepSeek only)');
     await click(client, '[data-hl="close"]');
 
     // 号池会话 1、2：各挑一个号，第二个挑没有会话的那个
@@ -184,6 +205,39 @@ async function main() {
     const afterWake = (await sessions(client)).find(s => s.id === first.created.id);
     assert.equal(afterWake.codeagentPoolAccount, first.created.codeagentPoolAccount);
     result.checks.push('dormant pool session wakes in the same pool account dir');
+
+    // 号池 · 手动选择：点名 DeepSeek 那个号，模型菜单只剩它的模型
+    await click(client, '#btn-new');
+    await click(client, '.new-session-option[data-kind="codeagent"]');
+    await choose(client, '#new-session-codeagent-account', 'pool-manual');
+    await waitFor('manual picker shown', () => client.eval(`!document.getElementById('new-session-codeagent-pool-field').hidden`));
+    await choose(client, '#new-session-codeagent-pool', deepseekAccount.id);
+    const manualModels = await waitFor('manual account models', () => client.eval(`(() => { const o = [...document.querySelectorAll('#new-session-model option')].map(x => x.value).filter(Boolean); return o.length === 1 && o[0] === 'deepseek-v4-flash-0731' ? o : null; })()`));
+    assert.deepEqual(manualModels, ['deepseek-v4-flash-0731']);
+    await shot(client, '02b-launch-center-manual-1440.png'); result.screenshots.push('02b-launch-center-manual-1440.png');
+    await click(client, '#new-session-close');
+    const manual = await createCodeAgent(client, 'pool-manual', deepseekAccount.id);
+    assert.equal(manual.created.codeagentPoolAccount, deepseekAccount.id);
+    assert.equal(path.resolve(manual.launch.configDir), path.resolve(path.join(DATA_DIR, 'codeagent-pool', 'accounts', deepseekAccount.id)));
+    result.checks.push('manual pool pick launches on the chosen account and shows only its models');
+
+    // 刷新会话数：表里每个号的进行中会话和主进程一致
+    await click(client, '#btn-options');
+    await click(client, '#options-home-link');
+    await waitFor('pool tab remembered', () => client.eval(`!!document.querySelector('[data-hl="pool-refresh"]')`));
+    await click(client, '[data-hl="pool-refresh"]');
+    const counts = await waitFor('session counts', async () => {
+      const live = await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list')`);
+      const shown = await client.eval(`Object.fromEntries([...document.querySelectorAll('[data-hl-sec="pool"] tr[data-hl-account]')].map(tr => [tr.dataset.hlAccount, Number(tr.querySelector('.hl-num').textContent)]))`);
+      const expected = Object.fromEntries([['personal', live.personal.activeSessions], ...live.accounts.map(a => [a.id, a.activeSessions])]);
+      return JSON.stringify(shown) === JSON.stringify(expected) ? { shown, live } : null;
+    });
+    assert.equal(counts.live.personal.activeSessions, 1);
+    assert.equal(counts.live.accounts.find(a => a.id === deepseekAccount.id).activeSessions >= 1, true);
+    assert.equal(Object.values(counts.shown).reduce((a, b) => a + b, 0), 4, 'personal 1 + pool sessions 3 (first, second, manual)');
+    await shot(client, '04-accounts-counts-1440.png'); result.screenshots.push('04-accounts-counts-1440.png');
+    await click(client, '[data-hl="close"]');
+    result.checks.push('refresh shows live session counts per account');
 
     // 再开启动中心看「用量账号」的样子并截图
     await click(client, '#btn-new');
