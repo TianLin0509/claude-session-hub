@@ -207,3 +207,48 @@ test('有人在答完的通道会话里直接打过字：从最后一次输入�
   x.company.careSessions();
   assert.equal(x.s.suspended.length, 0);
 });
+
+// 2026-10-16 田哥：白天算力紧、晚上和周末几乎不受限；通道也要用上号池，加速往返。
+test('并行上限：工作日忙时用设定值；晚上、周末放宽；再按可用账号数与内存收', () => {
+  // 按本机时区构造（忙时按公司电脑本地时间算）
+  const at = (iso) => { const [d, t] = iso.split('T'); const [y, mo, day] = d.split('-').map(Number); const [h, mi] = t.split(':').map(Number); return new Date(y, mo - 1, day, h, mi); };
+  const mem = free => ({ total: 32 * GB, free: free * GB, ratio: free / 32 });
+  // 周五 10:00 忙时：设定 2、只有个人账号 → 2
+  assert.equal(care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(16) }).cap, 2);
+  // 周五 21:50 闲时、只有个人账号：每号闲时 3 个 → 3
+  const night = care.parallelCap({ date: at('2026-10-16T21:50:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(16) });
+  assert.equal(night.cap, 3); assert.equal(night.peak, false); assert.match(night.limitedBy, /可用账号数/);
+  // 周六白天：号池 2 个号 + 个人 = 3 条道 → 闲时上限 6
+  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, memory: mem(20) }).cap, 6);
+  // 内存只剩 8 GB（25%）：再开一个就低于 20% → 只能维持现有的 2 个
+  const tight = care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, working: 2, memory: mem(7.5) });
+  assert.equal(tight.cap, 2); assert.equal(tight.limitedBy, '内存余量');
+  // 午休 12:30 不算忙时
+  assert.equal(care.isPeak(at('2026-10-16T12:30:00+08:00')), false);
+});
+
+test('通道：晚上排队的问题按放宽后的上限开工；新会话走号池，号池挑不出号时退回个人账号；排队的报回第几个、为什么等', async t => {
+  const x = rig(t);
+  x.clock.now = new Date(2026, 9, 16, 21, 50).getTime();
+  const created = [];
+  let poolFails = false;
+  x.company.deps.poolLanes = () => 2;
+  x.company.deps.createSession = async (kind, opts) => {
+    if (opts.codeagentAccount === 'pool' && poolFails) throw new Error('号池里暂时没有可用的号');
+    created.push(opts); const s = { id: opts.id, kind, status: 'idle' }; x.s.map.set(opts.id, s); return s;
+  };
+  for (const id of ['Q-1', 'Q-2', 'Q-3', 'Q-4', 'Q-5', 'Q-6', 'Q-7']) x.add(id, [{ round: 1, question: id + ' 的问题', receivedAt: x.clock.now }], { createdAt: x.clock.now + Number(id.slice(2)) });
+  const sent = [];
+  x.company.link.send = async (type, body) => { sent.push({ type, body }); };
+  await x.company.advance();
+  assert.equal(created.length, 6, '闲时上限 6（3 条道 × 3 = 9，取 6）');
+  assert.ok(created.every(o => o.codeagentAccount === 'pool'));
+  assert.equal(x.company.thread('Q-7').state, 'queued');
+  assert.ok(sent.some(m => m.body.thread === 'Q-7' && /排队第 1 个：.*上限 6（受闲时上限限制）/.test(m.body.note)));
+  // 号池挑不出号：退回个人账号，照常开工
+  poolFails = true;
+  x.add('Q-8', [{ round: 1, question: 'Q-8 的问题', receivedAt: x.clock.now }]);
+  x.company.setSettings({ maxParallelIdle: 8 });
+  await x.company.advance();
+  assert.ok(created.some(o => o.codeagentAccount === undefined), '退回个人账号');
+});
