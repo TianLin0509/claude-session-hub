@@ -76,6 +76,7 @@ function rig(t, { memory = { total: 32 * GB, free: 16 * GB, ratio: 0.5 } } = {})
     readFinals: meta => s.finals.get(meta.id) || [],
     transcriptHasRequest: (meta, r) => s.landed.has(`${meta?.id}#${r.round}`) ? s.landed.get(`${meta.id}#${r.round}`) : null,
     suspendSession: (id, opts) => { s.suspended.push({ id, opts }); s.stored.set(id, s.map.get(id)); s.map.delete(id); return { ok: true }; },
+    sessionInputAt: id => s.inputAt?.get(id) || 0,
   });
   company.link.saveConfig({ state: 'paired', gen: 'g1', secret: require('../core/company-bridge/crypto').newSecret(), baseUrl: 'https://fixture.invalid/api' });
   company.link.flush = async () => {};
@@ -196,4 +197,13 @@ test('提问是否写进记录：同一项目目录里发送后改过的任何�
   fs.writeFileSync(other, JSON.stringify({ type: 'user', timestamp: new Date(sentAt + 500).toISOString(), message: { role: 'user', content: [{ type: 'text', text: '[Image #0]' + prompt }] } }) + '\n');
   assert.equal(transcriptHasRequest({ transcriptPath: bound }, request), true);
   assert.equal(transcriptHasRequest({}, request), null, '不知道记录在哪就不下结论');
+});
+
+test('有人在答完的通道会话里直接打过字：从最后一次输入算起，不按回执时间收', t => {
+  const x = rig(t);
+  x.s.map.set('s-a', { id: 's-a', status: 'idle' });
+  x.add('Q-A', [{ round: 1, question: 'a', reply: 'b', replyAt: x.clock.now - 120 * MIN }], { sessionId: 's-a' });
+  x.s.inputAt = new Map([['s-a', x.clock.now - 10 * MIN]]);
+  x.company.careSessions();
+  assert.equal(x.s.suspended.length, 0);
 });

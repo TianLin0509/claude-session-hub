@@ -394,7 +394,9 @@ class CompanyBridge {
       const prev = bySession.get(t.sessionId);
       if (!prev || idleSince > prev.idleSince) bySession.set(t.sessionId, { sessionId: t.sessionId, threadId: t.id, idleSince, askerActive: askerFresh.has(t.id) });
     }
-    const candidates = [...bySession.values()].filter(c => c && this.deps.getSession(c.sessionId) && !this.sessionBusy(c.sessionId));
+    // 有人在这个会话的终端里直接打过字（田哥自己接着用），从那时算起：看实际活动，不只看回执时间。
+    const candidates = [...bySession.values()].filter(c => c && this.deps.getSession(c.sessionId) && !this.sessionBusy(c.sessionId))
+      .map(c => ({ ...c, idleSince: Math.max(c.idleSince, Number(this.deps.sessionInputAt?.(c.sessionId)) || 0) }));
     const memory = this.deps.memory ? this.deps.memory() : care.memoryNow();
     this.careState = { keepWarmMinutes: Math.round(keep.ms / 60000), samples: keep.samples, learned: keep.learned,
       freePercent: Math.round(memory.ratio * 100), warm: candidates.length, at: this.now() };
