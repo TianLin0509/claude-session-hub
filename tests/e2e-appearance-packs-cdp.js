@@ -101,6 +101,7 @@ fs.mkdirSync(out,{recursive:true});
     await shot('appearance-dark');
     blockSources=true;await click('[data-tab="online"]');await click('[data-action="check"]');
     await wait('!!document.querySelector("#appearance-dialog .appearance-status.bad")',30000);
+    assert.equal(await cdp.eval("document.querySelector('#appearance-dialog .appearance-source-list').textContent.includes('连接正常')"),false,'failed recheck must not show stale download success');
     const errorContrast=await cdp.eval(`(()=>{
       const s=getComputedStyle(document.querySelector('#appearance-dialog .appearance-status.bad'));
       const lum=v=>v.match(/[0-9.]+/g).slice(0,3).map(Number).map(n=>{n/=255;return n<=.04045?n/12.92:((n+.055)/1.055)**2.4}).reduce((a,n,i)=>a+n*[.2126,.7152,.0722][i],0);

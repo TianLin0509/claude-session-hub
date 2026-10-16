@@ -148,7 +148,7 @@ function createAppearanceStore({ dataDir, bundledDir = path.join(__dirname, '../
     if (checking) return checking;
     if (downloading) return state;
     checking = (async () => {
-      notify({ phase: 'checking', error: null, checks: [] });
+      notify({ phase: 'checking', error: null, checks: [], attempts: [], progress: null });
       const results = await checkManifests({ sources, fetchImpl: boundedCatalogFetch(fetchImpl, catalogBodyTimeoutMs), validate: validateCatalog });
       const best = results.filter(r => r.ok).sort((a, b) => compareVersion(b.manifest.version, a.manifest.version))[0];
       const checks = results.map(({ id, name, ok, reason, blocked, url }) => ({ id, name, ok, reason, blocked, url }));

@@ -51,10 +51,11 @@ const isolated = id => ({ dataDir: path.join(tmp, id), bundledDir: path.join(tmp
   const catalog = { schema: 1, version: '1.0.0', packs: [entry] };
   assert.throws(() => validateCatalog({ ...catalog, packs: [{ ...entry, file: '../payload' }] }));
   assert.throws(() => validateCatalog({ ...catalog, packs: [entry, entry] }));
-  const events = [], requests = [];
+  const events = [], requests = [];let failCatalog=false;
   const sources = ['broken', 'working'].map(id => ({ id, name: id, manifest: `https://${id}.test/catalog.json`, files: `https://${id}.test/` }));
   const fetchImpl = async url => {
     requests.push(url);
+    if(failCatalog && url.endsWith('catalog.json')) return new Response('unavailable',{status:503});
     if (url.includes('broken')) return new Response('<html>blocked</html>', { headers: { 'content-type': 'text/html' } });
     return new Response(url.endsWith('catalog.json') ? JSON.stringify(catalog) : bytes, { headers: { 'content-type': 'application/json' } });
   };
@@ -68,6 +69,12 @@ const isolated = id => ({ dataDir: path.join(tmp, id), bundledDir: path.join(tmp
   assert.equal(download.snapshot().state.attempts.length, 2);
   assert.equal(download.snapshot().preferences.pack, 'default', 'download never silently applies a pack');
   assert.ok(events.some(e => e.phase === 'downloading'));
+  failCatalog=true;await download.check();
+  assert.equal(download.snapshot().state.phase,'error');
+  assert.ok(download.snapshot().state.checks.every(c=>!c.ok));
+  assert.deepEqual(download.snapshot().state.attempts,[],'a new catalog check must discard earlier download success');
+  assert.equal(download.snapshot().state.progress,null);
+  assert.equal(download.snapshot().packs[0].id,'downloaded','failed check retains installed packs');
   const corrupt = createAppearanceStore({ ...isolated('corrupt'), sources: [sources[1]], fetchImpl: async url => new Response(url.endsWith('catalog.json') ? JSON.stringify(catalog) : 'bad', { headers: { 'content-type': 'application/json' } }) });
   await corrupt.check(); await corrupt.download('downloaded');
   assert.equal(corrupt.snapshot().state.phase, 'error');
