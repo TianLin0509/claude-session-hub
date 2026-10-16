@@ -88,13 +88,16 @@ fs.mkdirSync(out,{recursive:true});
     await wait('document.documentElement.dataset.theme==="dark"');
     if(!(await cdp.eval('document.getElementById("theme-menu").getBoundingClientRect().height>0')))await click('#btn-theme');
     await click('#options-appearance');await wait('document.getElementById("appearance-dialog")?.open');
-    const headingContrast=await cdp.eval(`(()=>{
+    const contrast=await cdp.eval(`(()=>{
       const heading=document.querySelector('#appearance-dialog > div:first-child');let e=heading,bg;
       do{bg=getComputedStyle(e).backgroundColor;e=e.parentElement;}while(bg==='rgba(0, 0, 0, 0)'&&e);
       const luminance=s=>s.match(/[0-9.]+/g).slice(0,3).map(Number).map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4}).reduce((a,v,i)=>a+v*[.2126,.7152,.0722][i],0);
-      const a=luminance(bg),b=luminance(getComputedStyle(heading).color);return(Math.max(a,b)+.05)/(Math.min(a,b)+.05);
+      const ratio=(a,b)=>(Math.max(a,b)+.05)/(Math.min(a,b)+.05);
+      const a=luminance(bg),b=luminance(getComputedStyle(heading).color);
+      const button=getComputedStyle(document.querySelector('#appearance-dialog .appearance-btn.primary'));
+      return{heading:ratio(a,b),button:ratio(luminance(button.backgroundColor),luminance(button.color))};
     })()`);
-    assert.ok(headingContrast>=4.5,'dark dialog heading must remain readable');evidence.checks.push('dark theme title contrast at least 4.5:1');
+    assert.ok(contrast.heading>=4.5,'dark dialog heading must remain readable');assert.ok(contrast.button>=4.5,'dark primary button must remain readable');evidence.checks.push('dark theme title and primary button contrast at least 4.5:1');
     await shot('appearance-dark');
     evidence.ok=true;fs.writeFileSync(path.join(out,'20261017-appearance-e2e-codex1.json'),JSON.stringify(evidence,null,2));
     console.log(JSON.stringify(evidence));
