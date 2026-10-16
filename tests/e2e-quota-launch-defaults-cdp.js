@@ -1,5 +1,5 @@
 'use strict';
-// Account-tab choice must win over an older saved launch account. Real Hub UI,
+// Both selectors share one persisted account, ignoring legacy snapshots. Real Hub UI,
 // isolated homes and explicit local provider fixtures; no paid model requests.
 const fs = require('fs');
 const path = require('path');
@@ -47,13 +47,13 @@ async function click(selector) {
 async function key(key, code, virtual) {
   for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: virtual, nativeVirtualKeyCode: virtual });
 }
-async function select(selector, value) {
+async function select(selector, value, waitForValue = true) {
   const index = await cdp.eval(`Array.from(document.querySelector(${JSON.stringify(selector)}).options).findIndex(o=>o.value===${JSON.stringify(value)})`);
   assert(index >= 0, 'option missing: ' + value);
   await click(selector); await key('Home', 'Home', 36);
   for (let i = 0; i < index; i++) await key('ArrowDown', 'ArrowDown', 40);
   await key('Enter', 'Enter', 13);
-  await until(`document.querySelector(${JSON.stringify(selector)}).value===${JSON.stringify(value)}`, selector + '=' + value);
+  if (waitForValue) await until(`document.querySelector(${JSON.stringify(selector)}).value===${JSON.stringify(value)}`, selector + '=' + value);
 }
 async function shot(name) {
   const image = await cdp.send('Page.captureScreenshot', { format: 'png' });
@@ -103,10 +103,12 @@ async function launchCurrentSelection() {
     await click('#new-session-model-default');
     await until('document.querySelector("#new-session-model-default").textContent==="整组默认 ✓"', 'save defaults');
     const before = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-    assert.equal(before.launch.defaults.codex.codexProfile, 'default');
-    report.checks.push('通过启动中心保存包含副账号的整组默认');
+    assert.equal(before.launch.defaults.codex.codexProfile, baseline ? 'default' : undefined);
+    report.checks.push('启动中心保存模型等默认配置，账号只保留全局一份');
     const oldSession = await launchCurrentSelection();
     assert.equal(oldSession.profile, 'default');
+    assert.equal((await cdp.eval(`ipcRenderer.invoke('session:send-prompt',{sessionId:${JSON.stringify(oldSession.id)},text:'preserve history across quota selection',clientSubmissionId:'quota-history-once'})`)).ok, true);
+    await until(`sessions.get(${JSON.stringify(oldSession.id)})?.nativeRuntime?.state==='completed'`, 'old account history saved');
     await click('#btn-rail-accounts');
     await click('[data-ac="codex-quota"][data-profile="second"]');
     await until('document.querySelector("[data-ac=codex-quota][data-profile=second]").textContent==="当前用量账号"', 'select main quota');
@@ -134,20 +136,74 @@ async function launchCurrentSelection() {
       assert.notEqual(report.saved.accountTab, report.launched.profile);
       report.checks.push('已复现：账号页选主账号，启动中心仍预选副账号，实际子进程仍从副账号 home 启动');
     } else {
-      assert.equal(afterProfile, 'second');
-      report.checks.push('账号页选主账号后，保存的默认、启动中心选择与实际子进程账号一致；其他四项配置保留');
+      assert.equal(afterProfile, undefined);
+      report.checks.push('账号页选主账号后，启动中心与实际子进程账号一致；其他四项配置保留');
       await openCodex(); await select('#new-session-account', 'default');
-      await until('!document.querySelector("#new-session-account").disabled', 'temporary account ready');
-      const temporary = await launchCurrentSelection();
-      assert.equal(temporary.profile, 'default');
+      await until('!document.querySelector("#new-session-account").disabled', 'shared account saved');
       const persisted = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-      assert.equal(persisted.providers.codex.subscription_profile, 'second');
-      assert.equal(persisted.launch.defaults.codex.codexProfile, 'second');
-      await openCodex(); assert.equal((await selection()).account, 'second'); await click('#new-session-close');
-      report.checks.push('本次手动选副账号仍只作用于该会话，下次新建回到主账号');
-      await stop(); await start(); await openCodex();
+      assert.equal(persisted.providers.codex.subscription_profile, 'default');
+      assert.equal(persisted.launch.defaults.codex.codexProfile, undefined);
+      assert.deepEqual(persisted.launch.defaults.codex, afterTuning);
+      await click('#new-session-close'); await click('#btn-rail-accounts');
+      await until('document.querySelector("[data-ac=codex-quota][data-profile=default]").textContent==="当前用量账号"', 'launch selection reflected in account tab');
+      await shot('reverse-account-tab'); await click('#account-page [data-ac="close"]');
+      await openCodex(); assert.equal((await selection()).account, 'default');
+      const reversed = await launchCurrentSelection();
+      assert.equal(reversed.profile, 'default');
+      report.reversed = reversed;
+      report.checks.push('启动中心选副账号立即落盘，不必保存整组或创建会话；账号页、下次打开及实际新进程同步为副账号');
+
+      // Simulate a second window's account-tab write while this dialog contains
+      // edited tuning. The IPC and notification are real, not a renderer stub.
+      await openCodex(); await select('#new-session-effort', 'low');
+      const switched = await cdp.eval('ipcRenderer.invoke("codex:set-global-account",{profileId:"second",scope:"launch"})');
+      assert.equal(switched.ok, true);
+      await until('document.querySelector("#new-session-account").value==="second"', 'open dialog receives account broadcast');
+      assert.equal((await selection()).effort, 'low');
+      await click('.new-session-option[data-kind="claude"]'); await click('.new-session-option[data-kind="codex"]');
+      assert.equal((await selection()).account, 'second'); assert.equal((await selection()).effort, 'low');
+      await click('#new-session-model-default');
+      await until('document.querySelector("#new-session-model-default").textContent==="整组默认 ✓"', 'tuning save after account change');
+      assert.equal(JSON.parse(fs.readFileSync(configFile, 'utf8')).providers.codex.subscription_profile, 'second');
+      report.checks.push('打开中的启动中心收到账号变更后立即同步，保留手改强度；切换 AI 与保存整组均不恢复旧账号');
+
+      await cdp.eval(`window.__quotaInvoke=ipcRenderer.invoke;window.__quotaDelay=true;ipcRenderer.invoke=function(channel,...args){const result=window.__quotaInvoke.call(this,channel,...args);if(channel==='codex:tuning-catalog'&&window.__quotaDelay){window.__quotaDelay=false;return result.then(value=>new Promise(resolve=>{window.__quotaRelease=()=>resolve(value);}));}return result;}`);
+      await select('#new-session-account', 'default');
+      await until('typeof window.__quotaRelease==="function"', 'model refresh held');
+      assert.equal((await cdp.eval('ipcRenderer.invoke("codex:set-global-account",{profileId:"second",scope:"launch"})')).ok, true);
+      await until('window.WorkspaceController.resolveSessionTuning("codex","").codexProfile==="second"', 'newer account event during save');
+      await cdp.eval('ipcRenderer.invoke=window.__quotaInvoke;window.__quotaRelease();delete window.__quotaInvoke;delete window.__quotaRelease;delete window.__quotaDelay');
+      await until('!document.querySelector("#new-session-account").disabled && document.querySelector("#new-session-account").value==="second"', 'latest account survives delayed refresh');
+      report.checks.push('切换账号的模型加载尚未结束时，另一个入口的更新仍同步，旧异步结果不会覆盖新账号');
+
+      const goodConfig = fs.readFileSync(configFile, 'utf8');
+      fs.writeFileSync(configFile, '{broken config');
+      await select('#new-session-account', 'default', false);
+      await until('!document.querySelector("#new-session-error").hidden && document.querySelector("#new-session-account").value==="second"', 'failed switch rolls back');
+      assert.equal(fs.readFileSync(configFile, 'utf8'), '{broken config');
+      assert.equal(await cdp.eval('document.querySelector("#new-session-submit").disabled'), true);
+      assert(!await cdp.eval('document.querySelector("#new-session-account-note").textContent.includes("已与账号页同步")'));
+      fs.writeFileSync(configFile, goodConfig);
+      await click('#new-session-close'); await openCodex();
+      assert.equal((await selection()).account, 'second');
+      await shot('unified-account'); await click('#new-session-close');
+      report.checks.push('切换失败时回到原账号并显示错误，阻止不确定账号启动，不出现假成功；修复后可继续');
+      const restarted = await cdp.eval(`ipcRenderer.invoke('restart-session',${JSON.stringify(oldSession.id)})`);
+      assert.equal(restarted.codexProfile, 'second'); assert.equal(restarted.codexSid, oldSession.sid);
+      await until(`sessions.get(${JSON.stringify(oldSession.id)})?.nativeRuntime?.connection==='connected'`, 'restart current quota');
+      assert.equal((await cdp.eval(`ipcRenderer.invoke('close-session',${JSON.stringify(oldSession.id)})`)).ok, true);
+      await until(`!sessions.has(${JSON.stringify(oldSession.id)}) || sessions.get(${JSON.stringify(oldSession.id)}).status==='dormant'`, 'old writer closed');
+      const resumed = await cdp.eval(`ipcRenderer.invoke('resume-session',{hubId:${JSON.stringify(oldSession.id)},kind:'codex'})`);
+      assert.equal(resumed.codexProfile, 'second'); assert.equal(resumed.codexSid, oldSession.sid);
+      await until(`sessions.get(${JSON.stringify(oldSession.id)})?.nativeRuntime?.connection==='connected'`, 'resume current quota');
+      report.checks.push('显式重启和恢复使用当前主账号，并保留副账号创建的原线程与历史');
+      await stop();
+      const legacy = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+      legacy.launch.defaults.codex.codexProfile = 'default';
+      fs.writeFileSync(configFile, JSON.stringify(legacy));
+      await start(); await openCodex();
       assert.equal((await selection()).account, 'second'); await click('#new-session-close');
-      report.checks.push('完整重启隔离 Hub 后，主账号默认保持');
+      report.checks.push('完整重启隔离 Hub 后仍使用主账号，旧版本遗留的冲突账号副本不会覆盖它');
     }
     report.passed = true;
   } catch (error) { report.error = error.stack; process.exitCode = 1; if (cdp) try { await shot('failure'); } catch {} }

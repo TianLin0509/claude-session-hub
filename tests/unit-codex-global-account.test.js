@@ -60,12 +60,12 @@ test('global selection preserves unrelated config, rejects unknown IDs and envir
  assert.equal(prepareLaunch({codexProfile:'default'},next,env).account.home,b);
  assert.equal(prepareLaunch({codexProfile:'default'},next,env).opts.codexHistoryHome,b);
  const local=prepareLaunch({codexProfile:'default',codexAccountScope:'session'},next,env);
- assert.equal(local.account.id,'default');
- assert.equal(next.codexSubscriptionProfile,'second','a one-session choice must not change the global account');
+ assert.equal(local.account.id,'second','obsolete session overrides must not bypass the selected quota');
+ assert.equal(next.codexSubscriptionProfile,'second');
  assert.throws(()=>prepareLaunch({codexProfile:'default',codexSid:'missing'},next,env),/原始历史/);
 });
 
-test('account-tab selection supersedes the saved launch account without changing other tuning',()=>{
+test('either account selector writes one canonical account and removes the legacy copy without changing tuning',()=>{
  const {config,env}=setup();
  const existing={custom:42,providers:{codex:{subscription_profile:'default'}},
   models:{defaults:{codex:'gpt-6-astra'}},launch:{extra:'keep',defaults:{
@@ -77,15 +77,15 @@ test('account-tab selection supersedes the saved launch account without changing
    launchDefaults:selected.launch.defaults};
   const opts=require('../core/session-creation-defaults').creationDefaults('codex',effective);
   assert.equal(prepareLaunch(opts,effective,env).account.id,id);
-  assert.deepEqual(selected.launch.defaults.codex,{...existing.launch.defaults.codex,codexProfile:id});
+  assert.deepEqual(selected.launch.defaults.codex,{effort:'max',mcpProfile:'browser',codexSpeedTier:'fast'});
   assert.deepEqual(selected.launch.defaults.claude,existing.launch.defaults.claude);
   assert.equal(selected.launch.extra,'keep');assert.equal(selected.custom,42);
   assert.deepEqual(selected.models,existing.models);
  }
  assert.equal(existing.launch.defaults.codex.codexProfile,'default','original config must not mutate');
  const temporary={...config,codexSubscriptionProfile:'second'};
- assert.equal(prepareLaunch({codexProfile:'default',codexAccountScope:'session'},temporary,env).account.id,'default',
-  'an explicit one-session choice remains available');
+ assert.equal(prepareLaunch({codexProfile:'default',codexAccountScope:'session'},temporary,env).account.id,'second',
+  'a stale dialog or saved session override cannot select another quota');
 });
 test('global account migration retires old writer, retains thread/history/policy and sends once on new home',async()=>{
  const {s,config,a,b}=setup();
