@@ -221,3 +221,34 @@ test('选模型失败只退回一次：提示过、菜单也关了以后，认�
   const result = await watcher.sendToPty(h.sid, '第二条', 'codeagent', { requireReady: false });
   assert.notEqual(result.notSent, true, result.message);
 });
+
+// 2026-10-16 公司真机 Q-1016-01 第 10 轮，CodeAgent 1.2615.02.01 逐行原文（行号与高亮标记已去掉，取输入框附近）：
+// 有草稿、运行中的「补充指令」输入框、带「系统可用内存不足」警告条，三种都必须当作可发送。
+const REAL_DRAFT = [
+  '                        ● 系统可用内存不足（剩余 1897 MB，占比 6%），CodeAgent 可能响应卡顿，请关闭其他     Ctrl+Q ✕',
+  '                          CodeAgent 进程或高内存占用程序后继续使用',
+  '                       ╭────────────────────────────────────────────────────────────────────────────────────────────╮',
+  '                       │ > 测试草稿 draft                                                                           │',
+  '                       │                                                                                            │',
+  '                       │                                                                                            │',
+  '                       │ Bypass (Cycle shift+tab) | GLM-5.2-WX-Auto                                    @  ✲  ↵  ▷   │',
+  '                       ╰────────────────────────────────────────────────────────────────────────────────────────────╯'];
+const REAL_RUNNING = [
+  ' ┃  只回复两个字：好的                                                                                        ━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+  '  ⠇ Running…',
+  '  ● 系统可用内存不足（剩余 2351 MB，占比 7%），CodeAgent 可能响应卡顿，请关闭其他 CodeAgent     Ctrl+Q ✕',
+  '    进程或高内存占用程序后继续使用',
+  ' ╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮',
+  ' │ > 补充指令（Enter 排队等待发送）...                                                                  │     ──────────────────────────',
+  ' │                                                                                                      │     SESSION 8d3cd8d3-1082-4299-9',
+  ' │                                                                                                      │             403-112931f67810',
+  ' │ Bypass (Cycle shift+tab) | GLM-5.2-WX-Auto                                              @  ✲  ↵  ▷   │     VERSION         1.2615.02.01',
+  ' ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯',
+  '  Interrupt esc                                                       Alt+P switch model │ Ctrl+G editor'];
+const REAL_RUNNING_DRAFT = REAL_RUNNING.map(l => l.replace('> 补充指令（Enter 排队等待发送）...                                  ', '> 第二条草稿                                                         '));
+test('公司真机输入框实录（有草稿 / 运行中 / 运行中有草稿，带内存警告条）：直接认作可发送，不靠兜底', () => {
+  for (const [name, screen] of [['有草稿', REAL_DRAFT], ['运行中', REAL_RUNNING], ['运行中有草稿', REAL_RUNNING_DRAFT]]) {
+    assert.equal(picker.modelDialogVisible(screen), false, name);
+    assert.equal(picker.promptInputAvailable(screen), true, name);
+  }
+});
