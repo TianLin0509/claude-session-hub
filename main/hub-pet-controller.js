@@ -7,6 +7,7 @@ const path = require('path');
 const { ASSISTANT_ACTIONS, MODES, ROLES, SpeechQueue, chatterFor, decidePose, localDateKey, speakGate } = require('../core/hub-pet/state');
 const { allowedRange, clampTo, cubicOut, dockOf, releasePlan } = require('../core/hub-pet/motion');
 const { createSettingsStore } = require('../core/hub-pet/settings');
+const { DEFAULT_ROLE, createRolePackStore } = require('../core/hub-pet/role-packs');
 const { createFullscreenWatch } = require('../core/hub-pet/fullscreen-watch');
 
 const WIN_W = 280;
@@ -30,14 +31,18 @@ function createHubPetController({
   noticeBus, isAssistantBusy = () => false,
   canShow = () => true, debug = false, watchFullscreen = true,
   logger = console, now = () => Date.now(),
+  fetchImpl = globalThis.fetch, roleSources = null,
 } = {}) {
   // now 是「现在几点」（可在单测里固定）；窗口移动的动画计时一律用真实时钟 Date.now()。
   if (typeof BrowserWindow !== 'function') throw new Error('BrowserWindow is required');
-  const settings = createSettingsStore({ dataDir, company, logger });
+  // 形象：程序自带的（公司版只带小猫、企鹅）+ 在线下载到数据目录的（core/hub-pet/role-packs.js）。
+  const roles = createRolePackStore({ assetsDir, dataDir, logger, fetchImpl, ...(roleSources ? { sources: roleSources } : {}),
+    emit: (channel, payload) => { try { sendToRenderer?.(channel, payload); } catch (_) {} } });
+  const settings = createSettingsStore({ dataDir, company, logger, roleOk: id => roles.installed(id) });
   const speech = new SpeechQueue({ now });
   const chatterTrack = {};
-  let manifest = {};
-  try { manifest = JSON.parse(fs.readFileSync(path.join(assetsDir, 'manifest.json'), 'utf8')); } catch (error) { logger.warn?.('[hub-pet] manifest missing:', error.message); }
+  // 存的形象被删掉（或换到没带这只的版本）时用小猫顶上。
+  const currentRole = () => { const r = settings.get().role; return roles.installed(r) ? r : DEFAULT_ROLE; };
 
   let win = null;
   let started = false;
@@ -48,7 +53,8 @@ function createHubPetController({
   let drag = null;
   let lastSent = '';
   let pose = 'idle';
-  let fullscreen = false;
+  let fullscreen = false;        // 正在躲边（全屏且设置里开着「全屏时躲边」）
+  let screenFull = false;        // 前台程序是不是全屏（关了躲边也照样不说话）
   let peekFrom = null;           // 躲边前的位置，全屏结束后回去
   let dock = null;
   let pettedAt = 0;
@@ -56,7 +62,7 @@ function createHubPetController({
   let signals = { quotaLow: false };
   const overrides = {};          // 隔离测试注入（idleSec / busy / fullscreen / cursor）
 
-  const fsWatch = createFullscreenWatch({ logger, onChange: (value) => { if (overrides.fullscreen == null) setFullscreen(value); } });
+  const fsWatch = createFullscreenWatch({ logger, onChange: (value) => { if (overrides.fullscreen == null) setScreenFull(value); } });
 
   const enabled = () => available && !disposed && settings.get().enabled;
   const alive = () => !!(win && !win.isDestroyed());
@@ -140,7 +146,7 @@ function createHubPetController({
     try { return !!isAssistantBusy(); } catch (_) { return false; }
   }
   function gate(spokenAt) {
-    return speakGate(settings.get(), { now: clock(), pose, fullscreen }, spokenAt);
+    return speakGate(settings.get(), { now: clock(), pose, fullscreen: fullscreen || screenFull }, spokenAt);
   }
 
   function evaluate() {
@@ -156,10 +162,11 @@ function createHubPetController({
     const snap = speech.snapshot();
     pose = decidePose({ ...ctxBase, speaking: !!snap.bubble });
     const s = settings.get();
+    const role = currentRole();
     const state = {
-      pose, role: s.role, mode: s.mode, dock: fullscreen ? 'right' : dock, peeking: fullscreen,
+      pose, role, assetBase: roles.assetBase(role), mode: s.mode, dock: fullscreen ? 'right' : dock, peeking: fullscreen,
       bubble: snap.bubble ? { id: snap.bubble.id, title: snap.bubble.title, kind: snap.bubble.kind } : null,
-      dots: snap.dots, quiet: !gate([]).ok, sequences: (manifest[s.role] && manifest[s.role].sequences) || [],
+      dots: snap.dots, quiet: !gate([]).ok, sequences: (roles.meta(role) && roles.meta(role).sequences) || [],
       night: pose === 'sleep',
     };
     const key = JSON.stringify(state);
@@ -181,6 +188,11 @@ function createHubPetController({
   }
 
   // ---------- 全屏躲边 ----------
+  function setScreenFull(value) {
+    screenFull = !!value;
+    setFullscreen(screenFull && settings.get().peekOnFullscreen !== false);
+    evaluate();
+  }
   function setFullscreen(value) {
     if (value === fullscreen) return;
     fullscreen = value;
@@ -332,16 +344,32 @@ function createHubPetController({
   };
   for (const [channel, fn] of Object.entries(handlers)) ipcMain.on(channel, fn);
 
-  function publicSettings() { return { available, settings: settings.get(), roles: ROLES, modes: MODES.map(id => ({ id, label: MODE_LABELS[id] })) }; }
+  // roles：[{ id, name, bundled, installed, available, update, bytes, preview, previewMain }]，「换形象」只列 installed 的。
+  function roleList() { return roles.listRoles(); }
+  function publicSettings() {
+    const s = settings.get(), t = clock();
+    return { available, settings: { ...s, role: currentRole() }, roles: roleList(), modes: MODES.map(id => ({ id, label: MODE_LABELS[id] })),
+      quietHour: s.quietUntil > t, silentToday: s.silentDate === localDateKey(t), running: alive() };
+  }
   ipcMain.handle('hub-pet:get-settings', (event) => (fromMain(event) ? publicSettings() : null));
   ipcMain.handle('hub-pet:set-settings', (event, patch) => (fromMain(event) ? (setSettings(patch), publicSettings()) : null));
+  // 形象下载：只在用户点「下载 / 检查新形象」时联网；进度经 hub-pet:roles-state 推给主窗口。
+  ipcMain.handle('hub-pet:roles', (event) => (fromMain(event) ? roles.snapshot() : null));
+  ipcMain.handle('hub-pet:roles-check', (event) => (fromMain(event) ? roles.check() : null));
+  ipcMain.handle('hub-pet:role-download', async (event, id) => {
+    if (!fromMain(event)) return null;
+    const snap = await roles.download(String(id || ''));
+    lastSent = '';
+    evaluate();
+    return snap;
+  });
   if (debug) {
     ipcMain.handle('hub-pet:debug', (event, req = {}) => {
       if (!fromMain(event)) return null;
       if (req.op === 'notice') return noticeBus?.publish(req.notice) || false;
       if (req.op === 'override') {
         for (const k of ['idleSec', 'busy', 'fullscreen', 'nowShift']) if (k in req) overrides[k] = req[k];
-        if ('fullscreen' in req) setFullscreen(req.fullscreen === true);
+        if ('fullscreen' in req) setScreenFull(req.fullscreen === true);
         evaluate();
         return true;
       }
@@ -368,9 +396,23 @@ function createHubPetController({
   function setSettings(patch = {}) {
     const clean = {};
     if (typeof patch.enabled === 'boolean') clean.enabled = patch.enabled;
-    if (ROLES.some(r => r.id === patch.role)) clean.role = patch.role;
+    if (typeof patch.role === 'string' && roles.installed(patch.role)) clean.role = patch.role;
     if (MODE_SET.has(patch.mode)) clean.mode = patch.mode;
+    if (typeof patch.peekOnFullscreen === 'boolean') clean.peekOnFullscreen = patch.peekOnFullscreen;
+    const t = clock();
+    if (typeof patch.quietHour === 'boolean') clean.quietUntil = patch.quietHour ? t + 3600000 : 0;
+    if (typeof patch.silentToday === 'boolean') clean.silentDate = patch.silentToday ? localDateKey(t) : '';
+    if (patch.resetPosition === true) clean.position = null;
     settings.update(clean);
+    if ('peekOnFullscreen' in clean) setFullscreen(screenFull && clean.peekOnFullscreen);
+    if (clean.position === null && alive() && !drag) {
+      // 「回到右下角」：滑回默认位置。
+      const to = initialPosition();
+      animateTo([{ from: currentPos(), to, durationMs: 420 }], () => {
+        dock = dockOf({ position: to, area: areaAt(to), size: { width: WIN_W, height: WIN_H }, inset: INSET });
+        send('hub-pet:motion', { phase: 'land', impact: 0.3 }); lastSent = ''; evaluate();
+      });
+    }
     if ('enabled' in clean) { if (clean.enabled) start(); else stop(); }
     else evaluate();
   }
@@ -397,6 +439,7 @@ function createHubPetController({
     drag = null;
     fsWatch.stop();
     fullscreen = false;
+    screenFull = false;
     peekFrom = null;
     if (alive()) win.destroy();
     win = null;
@@ -407,14 +450,16 @@ function createHubPetController({
   function dispose() {
     if (disposed) return;
     stop();
+    roles.cancel();
     disposed = true;
     for (const [channel, fn] of Object.entries(handlers)) ipcMain.removeListener?.(channel, fn);
     ipcMain.removeHandler?.('hub-pet:get-settings');
     ipcMain.removeHandler?.('hub-pet:set-settings');
+    for (const ch of ['hub-pet:roles', 'hub-pet:roles-check', 'hub-pet:role-download']) ipcMain.removeHandler?.(ch);
     if (debug) ipcMain.removeHandler?.('hub-pet:debug');
   }
 
-  return { start, stop, dispose, setSignal, setSettings, getWindow: () => win, getSettings: () => settings.get(), _evaluate: evaluate, _speech: speech };
+  return { start, stop, dispose, setSignal, setSettings, roleList, getWindow: () => win, getSettings: () => settings.get(), _evaluate: evaluate, _speech: speech, _roles: roles };
 }
 
 module.exports = { BODY, INSET, WIN_H, WIN_W, createHubPetController };

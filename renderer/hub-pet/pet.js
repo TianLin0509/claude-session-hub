@@ -49,7 +49,7 @@
   const now = () => performance.now();
   const rand = (lo, hi) => lo + Math.random() * (hi - lo);
   const has = name => state.sequences.indexOf(name) >= 0;
-  const asset = name => '../assets/hub-pet/' + state.role + '/' + name + '.webp';
+  const asset = name => (state.assetBase || ('../assets/hub-pet/' + state.role + '/')) + name + '.webp';
   const sheetAsset = name => asset('seq-' + name);
 
   // ---------- 图层：交叉淡入 + 序列插值 ----------
