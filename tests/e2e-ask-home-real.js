@@ -11,7 +11,7 @@
 //   HUB_E2E_TMP=D:/Temp node tests/e2e-ask-home-real.js
 //   HUB_E2E_TMP=D:/Temp ASK_HOME_SCENARIO=fallback node tests/e2e-ask-home-real.js
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), http = require('node:http'), assert = require('node:assert/strict');
-const { spawn, execFile } = require('node:child_process');
+const { spawn, execFile, spawnSync } = require('node:child_process');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
 const j = JSON.stringify, wait = ms => new Promise(r => setTimeout(r, ms));
@@ -202,7 +202,23 @@ async function main() {
     result.companyAsk = q.id;
     check(`家里 ${FALLBACK ? 'Codex' : 'Claude'} 用 ask_company 回公司查证据 ${q.id}`);
     const bridgeThread = await until('company bridge session', async () => (await status(cc)).threads.find(t => t.id === q.id && t.sessionId), 4 * 60000, 2000);
-    assert.ok(!fs.existsSync(path.join(cdata, 'extra-mcp', `codeagent-${bridgeThread.sessionId}.json`)), '替家里办事的会话不挂 ask_home');
+    // 原意：替家里办事的会话不能再向家里求助（不挂 ask_home）。c57b4015 起它挂一个「只开放图片工具」的 home_bridge
+    // （HUB_HOME_LINK_IMAGES_ONLY=1，只有 send_image_home / home_images，服务端也拒 ask_home）：没有 MCP 文件，
+    // 或文件里每个服务都是图片模式、实际启动后工具清单里没有 ask_home，都算符合原意。
+    {
+      const mcpFile = path.join(cdata, 'extra-mcp', `codeagent-${bridgeThread.sessionId}.json`);
+      const servers = fs.existsSync(mcpFile) ? Object.entries(JSON.parse(fs.readFileSync(mcpFile, 'utf8')).mcpServers || {}) : [];
+      result.bridgeSessionMcp = servers.map(([name, x]) => ({ name, args: x.args, imagesOnly: x.env?.HUB_HOME_LINK_IMAGES_ONLY || null }));
+      assert.ok(servers.every(([, x]) => x.env?.HUB_HOME_LINK_IMAGES_ONLY === '1'), '替家里办事的会话不挂 ask_home（只允许图片模式）：' + JSON.stringify(result.bridgeSessionMcp));
+      for (const [name, x] of servers) {
+        const input = [{ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, { jsonrpc: '2.0', id: 2, method: 'tools/list' }].map(m => JSON.stringify(m)).join('\n') + '\n';
+        const run = spawnSync(x.command, x.args || [], { input, env: { ...process.env, ...(x.env || {}) }, encoding: 'utf8', timeout: 30000, windowsHide: true });
+        const listed = String(run.stdout || '').split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).find(m => m?.id === 2);
+        const tools = (listed?.result?.tools || []).map(tool => tool.name);
+        result.bridgeSessionMcp.find(m => m.name === name).tools = tools;
+        assert.ok(tools.length && tools.every(tool => ['send_image_home', 'home_images'].includes(tool)), `替家里办事的会话的 ${name} 实际只开放图片工具（没有 ask_home / followup_home）：${JSON.stringify(tools)}`);
+      }
+    }
     const note = await until('company sees progress', async () => { const t = (await status(cc)).askHome.find(x => x.id === askThread.id); return /查证据/.test(t?.rounds[0]?.note || '') && t.rounds[0].note; }, 4 * 60000, 3000);
     check('公司看到进度：' + note);
     await click(cc, '#btn-options'); await click(cc, '#options-home-link');
