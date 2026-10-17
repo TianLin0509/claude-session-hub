@@ -4,7 +4,10 @@
 // 解包时逐个核对 sha256，任何一个不对就整包作废。
 //
 // 内容：app.asar 本身，加上 app.asar.unpacked 里不属于 node_modules 的文件（打包时被标记成
-// 「解包」的少量程序文件，它们跟着程序一起变）。依赖（node_modules）不进增量包：依赖一变就走完整安装包。
+// 「解包」的少量程序文件，它们跟着程序一起变），再加 resources/scripts（打包时作为 extraResources 放在 asar 外，
+// 桌面图标排列、hook 部署都从这里取）。依赖（node_modules）不进增量包：依赖一变就走完整安装包。
+// 2026-10-17：之前增量包不带 scripts/，基线安装包之后新增或改过的脚本永远到不了用户电脑——
+// 公司版「排齐图标」因此报「缺少排列脚本 desktop-icon-layout.ps1」。
 // Electron 会把名为 *.asar 的文件当成压缩包拦截（写 app.asar 会报 Invalid package），用它提供的原始文件接口。
 const fs = (() => { try { return require('original-fs'); } catch (_) { return require('fs'); } })();
 const path = require('path');
@@ -25,13 +28,22 @@ function listPayloadFiles(resourcesDir) {
     }
   };
   if (fs.existsSync(unpacked)) walk(unpacked, '');
+  const scripts = path.join(resourcesDir, 'scripts');
+  const walkScripts = (dir, rel) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const r = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walkScripts(path.join(dir, entry.name), r);
+      else if (entry.isFile()) files.push(r);
+    }
+  };
+  if (fs.existsSync(scripts)) walkScripts(scripts, 'scripts');
   return files;
 }
 
 function safeRel(rel) {
   const s = String(rel || '');
   if (!s || s.length > 400 || /\\|^\/|(^|\/)\.\.(\/|$)|:/.test(s)) return false;
-  return s === 'app.asar' || s.startsWith('app.asar.unpacked/') && !s.startsWith('app.asar.unpacked/node_modules/');
+  return s === 'app.asar' || s.startsWith('scripts/') || s.startsWith('app.asar.unpacked/') && !s.startsWith('app.asar.unpacked/node_modules/');
 }
 
 function packPayload(resourcesDir, outFile) {
