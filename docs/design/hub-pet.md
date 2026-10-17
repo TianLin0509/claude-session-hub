@@ -29,6 +29,12 @@
 - 说话：提醒一次一句，8 秒后收成小圆点（显示条数），点气泡或小圆点展开正文，「在助理里打开 ›」带上提醒的 id 与会话 id。每小时最多开口 3 次；安静档、安静一小时、今天别说话、全屏、打盹时只亮小圆点。温和档只说提醒，活泼档再加早上问候、离开半小时回来打招呼、连续坐 90 分钟提醒。
 - 右键：今天的会、下午会前准备、谁在等我回、汇总某个群、未读邮件分拣、起草周报（发 `hub-pet:open-assistant`，带 action 和默认问题）；安静一小时、今天别说话、说话频率、换角色、收起桌宠。
 
+## 在线形象与升级（2026-10-17 / 10-18）
+
+- 公司版只带小猫、企鹅；兔子、柴犬、仓鼠、玄凤在「助理 → 设置 → 桌宠」里在线下载（`core/hub-pet/role-packs.js`：catalog + 形象包，逐个核对字节数与 SHA-256，GitHub `hub-pet-v1` 与阿里云 `/hub-update/hub-pet/` 依次试）。平时只在用户点「下载 / 检查新形象」时联网。
+- 例外（2026-10-18 用户批准）：设置里记着的形象是可下载的已知形象但这台电脑上没装（2.1.8 选了兔子等、升级到 2.1.9 的用户），桌宠启动后在后台用同一条校验下载路径补装，装好当场换上、不打扰；下载失败只说一次温和提示（白天是气泡，夜里/安静档是小圆点），点开「在助理里打开」直接到「助理 → 设置 → 桌宠」。每次启动最多试一次；用户期间自己换了形象就不提示。
+- 记着的形象没装时显示先用小猫，但设置文件里一直保留原来的选择（不再因为任何一次别的设置写盘被改成小猫）。
+
 ## 给助理页的入口
 
 渲染端 `window` 上会收到 `hub-pet:open-assistant` 事件，`detail` 为 `{ source: 'pet', action?, prompt?, noticeId?, sessionId? }`。助理页自己决定是切页、打开某条提醒还是把 prompt 填进输入框。
@@ -41,7 +47,7 @@
 - `core/hub-pet/fullscreen-watch.js` 全屏检测（隐藏的 PowerShell 常驻进程，只在桌宠开着时运行，父进程没了自己退出）
 - `main/hub-pet-controller.js` 窗口、拖动、菜单、IPC
 - `renderer/hub-pet/` 桌宠页面与动画；`hub-settings.js` 配置页开关与入口事件
-- 测试：`tests/unit-hub-pet-*.test.js`，隔离端到端 `tests/e2e-hub-pet-cdp.js`（产物写 `output/e2e-hub-pet/`）
+- 测试：`tests/unit-hub-pet-*.test.js`，隔离端到端 `tests/e2e-hub-pet-cdp.js`（产物写 `output/e2e-hub-pet/`）；升级后自动补下载 `tests/e2e-hub-pet-auto-role-cdp.js <公司版导出目录>`；桌宠开着反复启动、关闭看退出码 `tests/e2e-hub-quit-loop-cdp.js`
 
 ## 已知限制
 
