@@ -1331,7 +1331,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (terminalPanelEl) terminalPanelEl.classList.remove('home-active');
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -1505,7 +1505,6 @@ function disposeCachedTerminal(sessionId) {
   if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (cached._ro) cached._ro.disconnect();
   if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
-  if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
   if (cached._fitRaf) cancelAnimationFrame(cached._fitRaf);
   if (cached._surfaceRecoveryRaf) cancelAnimationFrame(cached._surfaceRecoveryRaf);
   if (cached._codexBottomPinRaf) cancelAnimationFrame(cached._codexBottomPinRaf);
@@ -1864,6 +1863,10 @@ function getOrCreateTerminal(sessionId) {
 // 所以这里只认一件事实：现在屏幕上哪块主面板是可见的。
 const toolbarCrumbEl = document.getElementById('toolbar-crumb');
 const toolbarActionsEl = document.getElementById('toolbar-actions');
+require('./toolbar-more').initToolbarMore({
+  document,
+  zoom: delta => applyZoom(delta === 0 ? 0 : currentZoom + delta),
+});
 const backstageButton = document.getElementById('btn-backstage');
 const turnSpeedDisplay = require('./turn-speed-display').createTurnSpeedDisplay(document,
   id => sessions.get(id), () => sessionSplit?.focusedId() || activeSessionId);
@@ -1893,7 +1896,7 @@ const APP_TOOLBAR_VIEWS = [
 function getReadingSurface() {
   // Detached full-page tabs are above the session stage. Keep their mounted
   // controls and content instead of copying them into a fullscreen shell.
-  for (const id of ['assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel', ...APP_TOOLBAR_VIEWS.map(v => v.id)]) {
+  for (const id of ['cloud-page', 'assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel', ...APP_TOOLBAR_VIEWS.map(v => v.id)]) {
     const panel = document.getElementById(id);
     if (panelIsVisible(panel)) return panel;
   }
@@ -1918,6 +1921,7 @@ function panelIsVisible(el) {
 function paintAppToolbarForView(label) {
   if (label !== '助理') window.__assistantHide?.();
   if (label !== '无线') window.__wirelessHide?.();
+  if (label !== '云端') window.__cloudHide?.();
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
   toolbarCrumbEl.dataset.mode = 'view';
   toolbarCrumbEl.title = '';
@@ -1991,73 +1995,6 @@ function paintAppToolbarForSession(sessionId, session, cached) {
 
   crumb.append(workspaceBtn, crumbSep, titleSpan, statusDot);
 
-  // 2026-07-19 道雪 · 方案C：A−/A+ 低频缩放折叠进 ⋯ 溢出菜单（顶栏 8 控件 → 5 个）
-  const overflowWrap = document.createElement('div');
-  overflowWrap.className = 'header-overflow-wrap';
-  const overflowBtn = document.createElement('button');
-  overflowBtn.className = 'btn-zoom';
-  overflowBtn.textContent = '⋯';
-  overflowBtn.title = '更多（界面缩放）';
-  overflowBtn.setAttribute('aria-label', '更多操作');
-  const overflowMenu = document.createElement('div');
-  overflowMenu.className = 'header-overflow-menu';
-  overflowMenu.style.display = 'none';
-  const mkOverflowItem = (label, key, fn) => {
-    const b = document.createElement('button');
-    const lbl = document.createElement('span');
-    lbl.textContent = label;
-    const kbd = document.createElement('span');
-    kbd.className = 'ho-key';
-    kbd.textContent = key;
-    b.append(lbl, kbd);
-    b._hoKey = kbd;
-    b.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      overflowMenu.style.display = 'none';
-      fn();
-    });
-    return b;
-  };
-  // 完成通知：开关逻辑仍然只有 completion-notification-toggle 一个作者，
-  // 菜单项只镜像它的 data-state 并转发点击；浮层节点本身由 CSS 隐藏。
-  // 复制一份 IPC 判据 = 两处迟早说出互相矛盾的开关状态。
-  const notificationToggleEl = document.getElementById('completion-notification-toggle');
-  const notifyItem = mkOverflowItem('完成通知', '', () => {
-    if (notificationToggleEl) notificationToggleEl.click();
-  });
-  notifyItem.className = 'ho-notify';
-  notifyItem.setAttribute('role', 'menuitemcheckbox');
-  const syncNotifyItem = () => {
-    const state = notificationToggleEl
-      ? String(notificationToggleEl.dataset.state || 'unconfigured')
-      : 'unavailable';
-    notifyItem.dataset.state = state;
-    notifyItem.setAttribute('aria-checked', String(state === 'enabled'));
-    notifyItem._hoKey.textContent = state === 'enabled'
-      ? '开'
-      : (state === 'disabled' ? '关' : (state === 'unavailable' ? '不可用' : '未配'));
-    notifyItem.title = (notificationToggleEl && notificationToggleEl.title) || '';
-  };
-  syncNotifyItem();
-  overflowMenu.append(
-    mkOverflowItem('放大界面', 'A+', () => applyZoom(currentZoom + 1)),
-    mkOverflowItem('缩小界面', 'A−', () => applyZoom(currentZoom - 1)),
-    mkOverflowItem('重置缩放', '1:1', () => applyZoom(0)),
-    notifyItem,
-  );
-  overflowBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const opening = overflowMenu.style.display === 'none';
-    // 开菜单那一刻才读开关状态：通知配置随时可能被设置页改掉，
-    // 菜单常年挂在 DOM 上，不重读就会展示一个过期的「开」。
-    if (opening) syncNotifyItem();
-    overflowMenu.style.display = opening ? 'block' : 'none';
-  });
-  if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
-  cached._overflowDocHandler = () => { overflowMenu.style.display = 'none'; };
-  document.addEventListener('click', cached._overflowDocHandler);
-  overflowWrap.append(overflowBtn, overflowMenu);
-
   const closeBtn = document.createElement('button');
   closeBtn.className = 'btn-close-session';
   const closeLabel = supportsRecoverableSessionKind(session) ? '关闭并休眠' : '关闭';
@@ -2081,12 +2018,12 @@ function paintAppToolbarForSession(sessionId, session, cached) {
   filesBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg>';
   filesBtn.addEventListener('click', () => openSessionFilePanel(session));
 
-  headerActions.append(filesBtn, overflowWrap, closeBtn);
+  headerActions.append(filesBtn, closeBtn);
   window.__assistantSync?.(session);
 }
 
 function currentAppToolbarView() {
-  for (const [id, label] of [['assistant-page', '助理'], ['wireless-page', '无线'], ['account-page', '账号'], ['hub-workspace', '资源与回顾'], ['memo-panel', '速记']]) {
+  for (const [id, label] of [['cloud-page', '云端'], ['assistant-page', '助理'], ['wireless-page', '无线'], ['account-page', '账号'], ['hub-workspace', '资源与回顾'], ['memo-panel', '速记']]) {
     if (panelIsVisible(document.getElementById(id))) return label;
   }
   for (const view of APP_TOOLBAR_VIEWS) {
@@ -2132,7 +2069,7 @@ if (typeof MutationObserver === 'function') {
   // These tabs mount outside app-body. Watch only their own visibility, never
   // streamed text or every descendant mutation.
   const watchReadingTabs = () => {
-    for (const id of ['assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel']) {
+    for (const id of ['cloud-page', 'assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel']) {
       const el = document.getElementById(id);
       if (el) _appToolbarObserver.observe(el, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
     }
@@ -5808,7 +5745,7 @@ async function selectSession(id, opts = {}) {
   }
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -8680,7 +8617,7 @@ function escapeToHome() {
   window.hubWorkspaces?.close();
   if (window.__chuxinHide) window.__chuxinHide();
   if (window.__studyHide) window.__studyHide();
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -8716,16 +8653,16 @@ const configModal = createConfigModalController({
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
 const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
-  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); },
+  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { window.hubWorkspaces?.close(); window.__cloudHide?.(); memoryPanel.close(); capabilityPanel.close(); },
 });
 window.hubWorkspaces = require('./hub-workspaces').createHubWorkspaces({
   document, window, memory: memoryPanel, capabilities: capabilityPanel, memo: memoPanel,
-  beforeOpen: () => { accountCenterPanel.close(); window.__assistantHide?.(); },
+  beforeOpen: () => { accountCenterPanel.close(); window.__assistantHide?.(); window.__cloudHide?.(); },
   search: { open: pastSessionModals.openSearchModal, close: pastSessionModals.closeSearchModal },
 });
 const assistantPanel = require('./assistant-panel').createAssistantPanel({
   document, ipcRenderer,
-  closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+  closeOtherPanels: () => { window.hubWorkspaces?.close(); window.__cloudHide?.(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
   getSession: sessionId => sessions.get(sessionId),
   getActiveSessionId: () => activeSessionId,
   showMessage: message => showToast(message),
@@ -8780,6 +8717,16 @@ try {
   });
   window.__wirelessHide = () => wirelessPage.close();
 } catch (error) { console.warn('[wireless] 无线页未启动：', error.message); }
+// @community-end
+// @community-strip 本地云端页，发行版同时剥离接线与整个模块。
+if (require('../core/distribution').personalModules) {
+  const cloudPage = require('./cloud-page').createCloudPage({
+    document, window, ipcRenderer,
+    closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+    showMessage: message => showToast(message),
+  });
+  window.__cloudHide = () => cloudPage.close();
+} else document.getElementById('btn-cloud')?.remove();
 // @community-end
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
@@ -9013,7 +8960,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // 2026-09-02：session-created 会直接亮出终端面板，但此前只隐藏了群聊面板。
   // 主区是 flex 容器，学习面板若还开着就会和终端并排各占一半。
   if (window.__studyHide) window.__studyHide();
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -10329,7 +10276,7 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
           currentView = 'card';
           _cardHistoryHydratedSid = sessionId;
           if (window.__studyHide) window.__studyHide();   // 同上：别和学习面板并排
-          if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+          if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
           if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
           window.__rulesHide?.(); // 2026-10-12 规则面板互斥
           if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥

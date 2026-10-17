@@ -24,6 +24,7 @@ const path = require('node:path');
 
 const read = relative => fs.readFileSync(path.join(__dirname, '..', relative), 'utf8');
 const renderer = read('renderer/renderer.js');
+const more = read('renderer/toolbar-more.js');
 const modelUi = read('renderer/model-ui.js');
 const summary = read('core/session-status-summary.js');
 const toolbarCss = read('renderer/styles/toolbar.css');
@@ -117,13 +118,13 @@ assert.doesNotMatch(preserveBody, /view-toggle/,
   '视图切换已搬出舞台，不该再出现在 preserve 名单里');
 
 // ── ⋯ 菜单收纳缩放与完成通知 ──────────────────────────────────────────
-assert.match(renderer, /mkOverflowItem\('放大界面'/);
-assert.match(renderer, /mkOverflowItem\('缩小界面'/);
-assert.match(renderer, /mkOverflowItem\('重置缩放'/);
-assert.match(renderer, /mkOverflowItem\('完成通知'/, '完成通知收进 ⋯ 菜单');
-assert.match(renderer, /notificationToggleEl\.click\(\)/,
+assert.match(more, /item\('放大界面'/);
+assert.match(more, /item\('缩小界面'/);
+assert.match(more, /item\('重置缩放'/);
+assert.match(more, /item\('完成通知'/, '完成通知收进 ⋯ 菜单');
+assert.match(more, /notification\(\)\?\.click\(\)/,
   '菜单项只转发点击，开关逻辑仍由 completion-notification-toggle.js 独占');
-assert.match(renderer, /if \(opening\) syncNotifyItem\(\);/,
+assert.match(more, /if \(!menu.hidden\) syncNotification\(\);/,
   '开菜单那一刻才读开关状态，否则展示的是过期的开/关');
 assert.match(toolbarCss, /\.terminal-panel:not\(\.home-active\) > \.completion-notification-toggle \{ display: none; \}/,
   '浮层节点隐藏，但只在舞台上隐藏 —— 主页用的是同一个节点（会被搬进 #home-notification-slot），'
@@ -131,8 +132,9 @@ assert.match(toolbarCss, /\.terminal-panel:not\(\.home-active\) > \.completion-n
   + '不加 :not(.home-active) 就会在主页上凭空消失一段时间');
 
 // ── 动作区：文件 / 记忆 · ⋯ / × 四个 ──────────────────────────────────
-assert.match(renderer, /headerActions\.append\(filesBtn, overflowWrap, closeBtn\)/,
-  '记忆统一进入左侧栏，动作区只剩三个按钮');
+assert.match(renderer, /headerActions\.append\(filesBtn, closeBtn\)/,
+  '会话动作保留文件和关闭，更多菜单常驻所有视图');
+assert.match(renderer, /initToolbarMore/);
 assert.doesNotMatch(renderer, /<span>文件<\/span>/, '文件按钮改成纯图标');
 assert.match(toolbarCss, /\.header-overflow-wrap \{\s*\n\s*margin-left: 8px;/,
   '两组动作之间留 8px：文件/记忆 是对会话做事，⋯/× 是对窗口做事');

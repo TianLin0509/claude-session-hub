@@ -2,7 +2,13 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
 const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
 const {connectFirstPage}=require('./helpers/cdp-client');
-const {getFreePort,click,key,waitFor}=require('./helpers/usage-refresh-fixture');
+const {getFreePort,click:rawClick,key,waitFor}=require('./helpers/usage-refresh-fixture');
+async function click(client,selector) {
+  if(selector.startsWith('[data-display-mode='))selector='button'+selector;
+  if((selector.startsWith('button[data-display-mode=')||selector==='#btn-display-settings')
+      &&await client.eval('document.querySelector("#toolbar-more-menu").hidden'))await rawClick(client,'#btn-toolbar-more');
+  return rawClick(client,selector);
+}
 const {STORAGE_KEY}=require('../renderer/display-presets');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-display-A-')),home=path.join(root,'codex'),cwd=path.join(root,'work');
 for(const dir of [home,cwd])fs.mkdirSync(dir);
