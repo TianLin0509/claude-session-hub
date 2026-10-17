@@ -19,7 +19,15 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
     const peer = data.peer || {};
     return `<div class="wp-row"><span class="k">状态</span><span class="v">已接通 · 公司 Hub ${esc(peer.companyLastSeen || '')}${net.lastError ? ` · <span class="bad">上次连通道失败：${esc(net.lastError.message)}</span>` : ''}${data.link.outbox ? ` · 待发 ${data.link.outbox} 条` : ''}</span><span class="r"><button type="button" class="wp-link" data-cl="check">立即检查</button><button type="button" class="wp-link" data-cl="unpair">解除配对</button></span></div>
       ${data.polling ? `<div class="wp-row"><span class="k">检查频率</span><span class="v">${data.polling.active ? '联动中' : '空闲中'} · 本机每 ${esc(data.polling.intervalSeconds)} 秒检查回执</span><span class="r"></span></div>` : ''}
+      ${hubRow()}
       <div class="wp-row"><span class="k">挂给谁</span><span class="v"><select data-cl="attach"><option value="wireless"${data.settings.attach === 'wireless' ? ' selected' : ''}>SuperRAN 相关会话（无线助理开的、目录在 SuperRAN 下的）</option><option value="all"${data.settings.attach === 'all' ? ' selected' : ''}>所有 Codex / Claude 会话</option></select></span><span class="r">新开的会话生效；其余会话可用 company-ask 命令</span></div>`;
+  }
+  // 公司 Hub 的版本与远程更新（2026-10-17）：和会话里的 company_hub_update 工具同一个动作，进度以通知送达。
+  function hubRow() {
+    const h = data.companyHub || {}, last = (h.recent || [])[0];
+    const ver = h.version ? 'v' + esc(h.version) : '版本未知（公司 Hub 升到 2.1.8 后会自动报）';
+    return `<div class="wp-row cl-hub"><span class="k">公司 Hub</span><span class="v">${ver} · 上次在线 ${esc((data.peer || {}).companyLastSeen || '')}${last && last.phase !== 'online' ? ` · 最近：${esc(last.note)}（${clock(last.at)}）` : ''}${h.pending?.length ? ' · 指令执行中' : ''}</span>
+      <span class="r"><button type="button" class="wp-btn" data-cl="hub-update">让公司 Hub 更新</button><button type="button" class="wp-link" data-cl="hub-status">查状态</button></span></div>`;
   }
   function threads() {
     const list = (data.threads || []).slice(0, 30);
@@ -74,6 +82,11 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
       if (verb === 'create') { await call('bridge:create-pairing'); }
       else if (verb === 'send') { await call('bridge:send-pairing'); showMessage?.('配对码已发到公司收件箱：到公司电脑打开收件箱网页复制'); }
       else if (verb === 'check') { await call('bridge:check-now'); }
+      else if (verb === 'hub-update') {
+        if (!window.confirm('让公司 Hub 更新到发行源上的最新版本？它会等手上的任务答完（最长 30 分钟）再重启，失败自动回滚。')) return;
+        await call('bridge:hub-admin', { op: 'update' }); showMessage?.('已发出更新指令：进度会以通知送达');
+      }
+      else if (verb === 'hub-status') { await call('bridge:hub-admin', { op: 'status' }); showMessage?.('已请公司 Hub 回报状态'); }
       else if (verb === 'unpair') { if (!window.confirm(data.link.state === 'paired' ? '解除和公司 Hub 的配对？之后要重新生成配对码。' : '取消这次配对？')) return; await call('bridge:unpair'); }
       await load();
     } catch (error) { showMessage?.(error.message); }

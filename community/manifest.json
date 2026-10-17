@@ -96,6 +96,8 @@
     "tests/unit-company-bridge.test.js",
     "tests/unit-ask-home.test.js",
     "tests/helpers/company-bridge-rig.js",
+    "tests/unit-company-hub-admin.test.js",
+    "tests/e2e-company-hub-remote-update.js",
     "tests/unit-writing-tab.test.js",
     "tests/e2e-writing-tab-cdp.js",
     "renderer/assets/ai-avatars/v1/**",

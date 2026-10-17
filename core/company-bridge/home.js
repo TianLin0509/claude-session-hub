@@ -119,7 +119,7 @@ class HomeBridge {
   getMcpEntry(sessionId) {
     return { name: 'company_bridge', command: this.deps.nodeExecutable || 'node', args: [this.deps.mcpScript || path.resolve(__dirname, '../../scripts/company-bridge-mcp.js')],
       env: { HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile, HUB_BRIDGE_SESSION_ID: sessionId || '', HUB_BRIDGE_SESSION_PASS: this.passFor(sessionId || '') },
-      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve' } };
+      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve', company_hub_update: 'approve' } };
   }
   wantsMcp({ kind, opts = {} }) {
     if (!this.link.paired()) return false;
@@ -162,6 +162,7 @@ class HomeBridge {
     if (request.name === 'followup_company') return this.followup(sessionId, args);
     if (request.name === 'company_thread') return this.view(sessionId, args);
     if (request.name === 'recollect_company') return this.recollect(sessionId, args);
+    if (request.name === 'company_hub_update') return this.hubAdmin(args);
     throw new Error('未知工具');
   }
   meta(sessionId) { const s = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId); return s || {}; }
@@ -211,6 +212,44 @@ class HomeBridge {
     this.changed();
     return { thread: t.id, round: r.round, status: '已请公司补收', ...this.peer(),
       next: '公司取回最新回答后会作为新消息自动发到本会话（开头注明是补收）；取不到会回一条说明。现在请结束本轮。' };
+  }
+  // ---- 远程更新 / 重启公司 Hub（2026-10-17，公司一端见 hub-admin.js）----
+  // 只发指令编号和动作；更新到哪个版本由公司 Hub 从发行源自己查（清单校验 + sha256），通道里不带文件或网址。
+  adminState() { return this.store.get('hubAdmin') || {}; }
+  async hubAdmin({ op = 'update', force = false } = {}) {
+    if (!this.link.paired()) throw new Error('家里和公司还没配对');
+    if (!['update', 'restart', 'status'].includes(op)) throw new Error('op 只能是 update / restart / status');
+    const d = new Date(this.now() + 8 * 3600000);
+    const id = 'HA-' + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0') + '-' + randomBytes(3).toString('hex');
+    await this.link.send('hub-admin', { id, gen: this.link.gen(), op, force: force === true });
+    const st = this.adminState();
+    this.store.set('hubAdmin', { ...st, commands: [{ id, op, force: force === true, sentAt: this.now() }, ...(st.commands || [])].slice(0, 20) });
+    this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
+    this.changed();
+    const label = { update: '更新', restart: '重启', status: '查状态' }[op];
+    return { id, op, status: '已发出', ...this.peer(), company: this.companyHub(),
+      next: `公司 Hub 收到后会${op === 'status' ? '回报版本与更新状态' : label === '更新' ? '查版本、下载、等手上的任务答完再重启更新' : '等手上的任务答完再重启'}${force ? '（force：不等任务）' : ''}；`
+        + '进度和结果会以 Hub 通知送达，也可以稍后用 op:"status" 查（返回里的 company.recent 是公司最近的回报）。不要循环等待。' };
+  }
+  // 公司 Hub 的版本与最近回报（最近 20 条）。
+  companyHub() {
+    const st = this.adminState();
+    const recent = (st.statuses || []).slice(0, 5).map(x => ({ id: x.id, phase: x.phase, note: x.note, at: x.at }));
+    return { version: st.company?.current || null, latest: st.company?.latest || null, reportedAt: st.company?.at || null, recent,
+      pending: (st.commands || []).filter(c => c.op !== 'status' && !this.adminDone(c.id)).map(c => c.id) };
+  }
+  adminDone(id) { return (this.adminState().statuses || []).some(x => x.id === id && ['up-to-date', 'failed', 'refused', 'busy', 'unsupported', 'updated', 'rolled-back', 'restarted'].includes(x.phase)); }
+  receiveAdmin(message) {
+    if (message.gen && message.gen !== this.link.gen()) return;
+    const st = this.adminState();
+    if ((st.statuses || []).some(x => x.mid && x.mid === message.mid)) return;
+    const entry = { mid: message.mid || null, id: message.id || null, phase: String(message.phase || ''), note: String(message.note || '').slice(0, 600),
+      current: message.current || null, latest: message.latest || null, at: this.now(), companyAt: message.at || null, lastResult: message.lastResult || null };
+    this.store.set('hubAdmin', { ...st, statuses: [entry, ...(st.statuses || [])].slice(0, 20),
+      company: { current: entry.current || st.company?.current || null, latest: entry.latest || st.company?.latest || null, at: this.now() } });
+    // 「在线」只更新版本，不打扰；其余都发通知。
+    if (entry.phase !== 'online') this.notify('公司 Hub', entry.note || entry.phase);
+    this.changed();
   }
   // 告诉公司哪些问题的发问会话还在活动（2026-10-16，设计第 1 块）：答完的公司会话据此多保温一会儿。
   // 只报最近 3 小时内有回执的线索；集合变了立刻报，没变每 10 分钟报一次，没有就不报。
@@ -277,7 +316,9 @@ class HomeBridge {
   polling() {
     const state = this.link.config().state;
     if (!state || state === 'none') return { intervalSeconds: 0, active: false, activeUntil: null };
-    const active = state === 'pending' || this.openThreads().length > 0 || this.consult.openThreads().length > 0;
+    // 远程更新指令发出 2 小时内还没有结果：加快检查，及时收到进度。
+    const adminWaiting = (this.adminState().commands || []).some(c => c.op !== 'status' && this.now() - c.sentAt < 2 * 3600000 && !this.adminDone(c.id));
+    const active = state === 'pending' || adminWaiting || this.openThreads().length > 0 || this.consult.openThreads().length > 0;
     return { intervalSeconds: (active ? ACTIVE_POLL_MS : IDLE_POLL_MS) / 1000, active, activeUntil: null };
   }
   async tick({ force = false } = {}) {
@@ -321,6 +362,7 @@ class HomeBridge {
       return;
     }
     if (this.consult.receive(message)) return;
+    if (message.type === 'hub-admin-status') { this.receiveAdmin(message); return; }
     const t = this.thread(String(message.thread || ''));
     if (!t || t.state === 'cancelled' || (message.gen && t.gen && message.gen !== t.gen)) return;
     const round = Number(message.round) || 0;
@@ -397,6 +439,7 @@ class HomeBridge {
       now: this.now(), nextPullAt: this.nextPullAt, polling: this.polling(),
       threads: this.threads(60).map(t => ({ ...t, session: { open: !!this.deps.getSession(t.sessionId), title: this.meta(t.sessionId).title || t.sessionTitle || null } })),
       consults: this.consult.view(),
+      companyHub: this.companyHub(),
     };
   }
   notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: '公司联动 · ' + title, text, sessionId }); } catch {} }
