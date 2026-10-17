@@ -558,8 +558,11 @@ if (process.env.CLAUDE_HUB_E2E === '1' && process.env.CLAUDE_HUB_EGRESS_FIXTURE)
     console.warn('[network-egress] invalid E2E fixture:', error && error.message);
   }
 }
+const windowsNetworkContext = require('./core/windows-network-context').createWindowsNetworkContext();
 const networkEgressMonitor = createNetworkEgressMonitor({
   getProxy: () => getHubConfig().proxy,
+  getSystemProxy: () => windowsNetworkContext.systemProxy(),
+  getTunnel: () => windowsNetworkContext.tunnel(),
   statePath: path.join(getHubDataDir(), 'network-egress-state.json'),
   ...(networkEgressProbe ? { probe: networkEgressProbe } : {}),
   logger: console,
