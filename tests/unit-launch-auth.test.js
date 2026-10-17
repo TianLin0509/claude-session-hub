@@ -107,3 +107,29 @@ test('a reused login belongs to one account identity and its local login files',
   credential.value='c2';await service.ensure('codex');assert.equal(calls.length,3);
   await service.ensure('codex');assert.equal(calls.length,3);
 });
+
+test('opening the launch form prechecks without opening login windows or resuming tasks',async()=>{
+  const {service,calls,notifications,accounts}=setup('login_required');
+  const original=accounts.check;
+  accounts.check=async(id,options)=>{assert.deepEqual(options,{quiet:true,resume:false});return original(id);};
+  await service.precheck('codex',{launchProfile:'default'});
+  assert.deepEqual(calls,[['check','codex-default']]);
+  assert.equal(notifications.length,0);
+  await assert.rejects(service.ensure('codex',{launchProfile:'default'}),{code:'auth_required'});
+  assert.deepEqual(calls.at(-1),['login','codex-default']);
+});
+
+test('submission reuses a form precheck only while account and credential remain current',async()=>{
+  const {service,calls,credential}=setup();
+  await service.precheck('codex');await service.ensure('codex');
+  assert.deepEqual(calls,[['check','codex-second']]);
+  credential.value='new-credential';await service.ensure('codex');assert.equal(calls.length,2);
+  await service.ensure('codex',{launchProfile:'default'});assert.deepEqual(calls.at(-1),['check','codex-default']);
+});
+
+test('form prechecks preserve normal launch behavior when a tool fails',async()=>{
+  const {service,calls}=setup(()=>{throw Error('controlled timeout');});
+  await service.precheck('claude');await service.ensure('claude');
+  assert.deepEqual(calls,[['check','claude']]);
+  await service.precheck('powershell');assert.equal(calls.length,1);
+});

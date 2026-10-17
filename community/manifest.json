@@ -52,6 +52,12 @@
     "tests/fixtures/codeagent-env-echo.cmd"
   ],
   "drop": [
+    "core/cloud/**",
+    "main/ipc/cloud-handlers.js",
+    "renderer/cloud-page.js",
+    "renderer/styles/cloud-page.css",
+    "tests/unit-cloud-*.test.js",
+    "tests/e2e-cloud-page-cdp.js",
     "renderer/assets/navigation/sticker-v2/research.png",
     "renderer/assets/navigation/sticker-v2/study.png",
     "renderer/assets/navigation/sticker-v2/writing.png",
