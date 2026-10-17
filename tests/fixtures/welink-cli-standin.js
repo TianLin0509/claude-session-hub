@@ -2,6 +2,8 @@
 // 假 welink-cli（测试用，占位数据，不含真实人名）：按公司真机 1.0.14 的回执形状输出今天的会议、会话、消息、邮件。
 // 每次调用把参数追加到 WELINK_STANDIN_LOG（验证 Hub 只调了查询命令）。
 // WELINK_STANDIN_STATE 指向一个文件：内容为 expired 时 auth status 报过期；auth login 打印二维码，2 秒后写成 ok。
+// 邮件和日历：同目录下没有 welink-exchange（mail autodiscover 写的本地配置）时，和真机一样报 Exchange 未配置；
+// onebox user-info 返回本人邮箱（WELINK_STANDIN_NO_EMAIL=1 时不带邮箱）。
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (process.env.WELINK_STANDIN_LOG) fs.appendFileSync(process.env.WELINK_STANDIN_LOG, JSON.stringify(args) + '\n');
@@ -12,6 +14,9 @@ const today = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d
 const out = v => process.stdout.write(typeof v === 'string' ? v : JSON.stringify(v));
 const [group, sub] = args;
 const arg = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+const exchangeFile = stateFile ? require('node:path').join(require('node:path').dirname(stateFile), 'welink-exchange') : null;
+const exchangeReady = () => !!exchangeFile && fs.existsSync(exchangeFile);
+const needExchange = () => { process.stderr.write('Error: Exchange server domain not found. Please run first: welink-cli mail autodiscover --email <your-email>\n'); process.exitCode = 1; };
 
 if (group === 'auth' && sub === 'status') {
   out(loggedIn() ? 'UID: user001\nUser Token: VALID\n' : 'UID: user001\nUser Token: EXPIRED\n');
@@ -34,8 +39,10 @@ if (group === 'auth' && sub === 'status') {
     { enMeetingId: 'e4', meetingId: 'm-c', subject: '一对一（占位）', location: '线上', meetingStartTime: today(15, 30), meetingEndTime: today(16, 30), meetingUsers: [{}] },
   ], totalSize: 4 });
 } else if (group === 'calendar' && sub === 'list') {
-  process.stderr.write('Exchange server domain not found. Please run first: welink-cli mail autodiscover --email\n');
-  process.exitCode = 1;
+  if (!exchangeReady()) needExchange();
+  else out({ items: [{ id: 'cal-1', subject: '晨会（日历占位）', start: { dateTime: new Date(today(6, 0)).toISOString() }, end: { dateTime: new Date(today(6, 30)).toISOString() }, location: '线上' }] });
+} else if (group === 'onebox' && sub === 'user-info') {
+  out({ accountId: 1, name: '用户甲', loginName: 'user001', email: process.env.WELINK_STANDIN_NO_EMAIL === '1' ? '' : 'user001@example.com', status: 'normal' });
 } else if (group === 'im' && sub === 'query-recent-conversation') {
   out({ conversation_info: [
     { group_id: '', group_name: '', group_type: 0, native_name: '同事甲', recent_conversation_type: 'CHAT_TYPE_P2P_MSG', staff_name: '同事甲', target_account: 'colleague_a' },
@@ -53,12 +60,15 @@ if (group === 'auth' && sub === 'status') {
       { msg_id: 'g2', sender_account: 'colleague_c', sender_name: '同事丙', send_time: now - 20 * M, content: '版本转测时间定在下周一' },
     ] });
   }
+} else if (group === 'mail' && sub === 'list' && exchangeFile && !exchangeReady()) {
+  needExchange();
 } else if (group === 'mail' && sub === 'list') {
   out({ mails: [
     { id: 'mail-1', subject: '例会材料征集（今天 17:00 截止）', from: { name: '部门秘书' }, receivedTime: now - 3 * H, importance: 'High' },
     { id: 'mail-2', subject: '周报汇总', from: '同事乙', receivedTime: now - 6 * H },
   ] });
 } else if (group === 'mail' && sub === 'autodiscover') {
+  if (exchangeFile) fs.writeFileSync(exchangeFile, String(arg('--email') || ''));
   out('Autodiscover OK\n');
 } else {
   process.stderr.write('unknown command: ' + args.join(' ') + '\n');

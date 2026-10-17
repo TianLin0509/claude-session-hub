@@ -66,9 +66,18 @@ async function main() {
     await until(`!!document.querySelector('.ca-brief-sum')`, 'list brief', 90000);
     result.checks.push('扫码面板显示二维码；登录后状态变为已登录并生成简报');
     const s1 = await status();
-    assert.equal(s1.calendarNeedsSetup, true);
-    assert.ok(/初始化日历/.test(await c.eval(`document.querySelector('.ca-status').innerText`)));
-    result.checks.push('日历未初始化：顶部出「初始化日历」按钮');
+    // 2026-10-17：邮箱从 WeLink 账号自动读到并配好邮件和日历，不再要用户点「初始化日历」、也不让助理在对话里问。
+    assert.equal(s1.calendarNeedsSetup, false);
+    assert.equal(s1.mailSetup && s1.mailSetup.from, 'welink');
+    assert.ok(/邮件和日历已接入/.test(await c.eval(`document.querySelector('.ca-status').innerText`)));
+    await c.eval(`document.querySelector('[data-ca="settings"]').click()`);
+    await until(`!!document.querySelector('.ca-tab')`, 'settings tabs', 10000);
+    await c.eval(`document.querySelector('[data-ca="settings-tab:welink"]').click()`);
+    await until(`/从 WeLink 账号自动读到/.test(document.querySelector('.ca-tab-body')?.innerText || '')`, 'welink tab email', 10000);
+    assert.equal(await c.eval(`document.querySelector('[data-f="email"]').value`), 'user001@example.com');
+    await shot('02b-settings-welink');
+    await c.eval(`document.querySelector('[data-ca="close-panel"]').click()`);
+    result.checks.push('邮件和日历：登录后自动从 WeLink 读邮箱配好；设置「WeLink 与邮箱」页显示邮箱来源和各项取数结果');
 
     // ③ AI 版简报（真 CodeAgent 替身作答）
     await until(`ipcRenderer.invoke('company-assistant:status').then(s => s.brief && s.brief.by === 'ai' && !s.brief.organizing)`, 'ai brief', 300000);
