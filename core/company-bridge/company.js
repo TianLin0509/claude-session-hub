@@ -479,7 +479,7 @@ class CompanyBridge {
       if (!known) {
         sessionId = randomUUID();
         const cwd = s.codeRoots.find(p => this.deps.isDirectory ? this.deps.isDirectory(p) : true) || this.deps.fallbackCwd;
-        const opts = { id: sessionId, cwd, title: 'AI特战队 · ' + short(t.title, 22), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
+        const opts = { id: sessionId, cwd, title: '特战 · ' + short(t.title, 26), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
           effort: s.effort, addDirs: s.codeRoots.filter(p => p !== cwd) };
         // 号池里有可用的号就走号池（自动挑进行中会话最少的号），并行的问题分散到不同账号；挑不出号时退回个人账号，问题不卡住。
         let created = null;

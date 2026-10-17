@@ -118,6 +118,15 @@ function isWirelessSession(item) {
   return item?.purpose === 'wireless-proposal' || /^无线\s*[·・]/.test(String(item?.title || '').trim());
 }
 
+// 公司版（2026-10-17 田哥）：侧栏几乎全是 AI特战队通道替家里开的会话，挤掉了自己的会话。
+// 「今天 / 3 天」旁边的「无线」在公司版换成「特战」：平时隐藏这些会话，点亮后只看它们。
+function isTezhanSession(item) {
+  return item?.purpose === 'company-bridge' || /^(?:AI特战队|特战)\s*[·・]/.test(String(item?.title || '').trim());
+}
+function isCompanyEdition() {
+  try { return require('../core/distribution').target === 'company'; } catch { return false; }
+}
+
 function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
@@ -135,6 +144,8 @@ function createSessionListRenderer(options = {}) {
   let pinnedOnly = false;
   let modelFilter = 'all';
   let showWireless = false;
+  const tezhanMode = typeof options.companyEdition === 'boolean' ? options.companyEdition : isCompanyEdition();
+  let tezhanOnly = false;
   try {
     const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
     if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
@@ -144,6 +155,7 @@ function createSessionListRenderer(options = {}) {
     const model = storage.getItem('hubSidebarModelFilter');
     if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
     showWireless = storage.getItem('hubSidebarShowWireless') === 'true';
+    tezhanOnly = storage.getItem('hubSidebarTezhanOnly') === 'true';
   } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
   function savePreference(key, value) {
     try { storage.setItem(key, value); }
@@ -155,16 +167,28 @@ function createSessionListRenderer(options = {}) {
   }
   syncRangeControls();
   const wirelessControl = doc.getElementById?.('btn-sidebar-wireless');
+  if (tezhanMode && wirelessControl) { wirelessControl.textContent = '特战'; wirelessControl.dataset.mode = 'tezhan'; }
   function syncWirelessControl() {
+    if (tezhanMode) {
+      wirelessControl?.setAttribute('aria-pressed', String(tezhanOnly));
+      wirelessControl?.setAttribute('title', tezhanOnly ? '只看 AI特战队会话中；再点一下回到自己的会话' : '只看 AI特战队会话（平时不在列表里占位置）');
+      return;
+    }
     wirelessControl?.setAttribute('aria-pressed', String(showWireless));
     wirelessControl?.setAttribute('title', showWireless ? '隐藏无线协作会话' : '显示无线协作会话');
   }
   syncWirelessControl();
   wirelessControl?.addEventListener('click', () => {
-    showWireless = !showWireless;
-    savePreference('hubSidebarShowWireless', String(showWireless));
+    if (tezhanMode) {
+      tezhanOnly = !tezhanOnly;
+      savePreference('hubSidebarTezhanOnly', String(tezhanOnly));
+    } else {
+      showWireless = !showWireless;
+      savePreference('hubSidebarShowWireless', String(showWireless));
+    }
     syncWirelessControl(); renderSessionList();
   });
+  const sideFilterPasses = item => tezhanMode ? isTezhanSession(item) === tezhanOnly : (showWireless || !isWirelessSession(item));
   for (const button of rangeControls) button.addEventListener('click', () => {
     pinnedOnly = button.dataset.sessionDays === 'pinned';
     if (!pinnedOnly) recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
@@ -652,12 +676,15 @@ sessionListEl.addEventListener('keydown', event => {
     doc.dispatchEvent(new doc.defaultView.CustomEvent('sidebar:open-search', { detail }));
   }
   function filteredSidebarItems(sessionMap = getSessions()) {
-    return collectSidebarItems(sessionMap).filter(item => (showWireless || !isWirelessSession(item)) && projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
+    return collectSidebarItems(sessionMap).filter(item => sideFilterPasses(item) && projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
   }
   function revealSearchItem(id, memberId = null) {
     const item = collectSidebarItems().find(entry => entry.id === id);
     if (!item) return;
-    if (isWirelessSession(item) && !showWireless) {
+    if (tezhanMode && isTezhanSession(item) !== tezhanOnly) {
+      tezhanOnly = isTezhanSession(item);
+      savePreference('hubSidebarTezhanOnly', String(tezhanOnly)); syncWirelessControl();
+    } else if (!tezhanMode && isWirelessSession(item) && !showWireless) {
       showWireless = true;
       savePreference('hubSidebarShowWireless', 'true'); syncWirelessControl();
     }
@@ -1123,6 +1150,7 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 module.exports = {
   isWirelessSession,
+  isTezhanSession,
   createSessionListRenderer,
   showDomesticRoute,
   compareLatestActivityDesc,
