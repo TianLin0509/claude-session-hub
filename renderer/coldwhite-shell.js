@@ -17,6 +17,8 @@ function installColdwhiteShell(doc = globalThis.document) {
   if (strip) footer.append(strip);
   const usage = doc.getElementById('rail-usage');
   if (usage) footer.append(usage);
+  const codeagentQuota = doc.getElementById('rail-codeagent-quota');
+  if (codeagentQuota) footer.append(codeagentQuota);
   app.append(footer);
   require('./status-footer-layout').installStatusFooterLayout(doc);
   const panelIds = ['cloud-page', 'hub-workspace', 'rules-panel', 'writing-panel', 'account-page', 'chuxin-panel', 'study-panel', 'ran-panel'];

@@ -7333,6 +7333,10 @@ const accountUsageController = createAccountUsageController({
   isMemoOpen: () => memoPanel.isOpen(),
 });
 const renderAccountUsage = accountUsageController.render;
+// CodeAgent 额度条：每轮回答结束读屏幕 Stats 面板的 Credit（applyCodeAgentScreenContext），每个账号一行。
+const codeagentQuotaBar = require('./codeagent-quota-bar.js').createCodeAgentQuotaBar({ document, storage: window.localStorage, escapeHtml });
+codeagentQuotaBar.render();
+window.codeagentQuotaBar = codeagentQuotaBar;
 // 欢迎页只提供创建入口；项目数据按需由现有创建面板加载。
 homeWorkbench = createHomeWorkbench({
   document,
@@ -8184,7 +8188,11 @@ function applyCodeAgentScreenContext(session, sessionId) {
   let context = null;
   try {
     const lines = terminalActivityMonitor ? terminalActivityMonitor.extractLiveScreenLines(sessionId) : [];
-    context = require('../core/codeagent-screen-stats').parseCodeAgentContext(lines);
+    const stats = require('../core/codeagent-screen-stats');
+    context = stats.parseCodeAgentContext(lines);
+    // 同一面板里的额度：按会话用的账号（号池账号或个人账号）记一行（renderer/codeagent-quota-bar.js）。
+    const credit = stats.parseCodeAgentCredit(lines);
+    if (credit && typeof codeagentQuotaBar !== 'undefined') codeagentQuotaBar.update(credit, { account: session.codeagentPoolLabel || '个人账号' });
   } catch { context = null; }
   if (!context) return;
   session.contextUsed = context.contextUsed;
