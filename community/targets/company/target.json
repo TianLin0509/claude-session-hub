@@ -22,13 +22,14 @@
     "codeagent",
     "powershell"
   ],
-  "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）；quotaBar=底部状态栏的各家 AI 余量；accounts=左侧「账号」页（各家 AI 网页与命令行账号）。homeLink=AI特战队专用功能（2026-10-15，设置菜单同名入口，配对后才工作；2.1.0 起入口默认隐藏，本机解锁一次后出现，见 core/company-bridge/unlock.js）。companyAssistant=公司版「助理」页（2026-10-16：每日简报 + 对话 + 6 条提醒，只读 WeLink，数据只留本机；见 core/company-assistant/）",
+  "$features": "关掉的功能：assistant=助理（公司电脑没有 Claude，助理会话会一直显示运行异常）；quotaBar=底部状态栏的各家 AI 余量；accounts=左侧「账号」页（各家 AI 网页与命令行账号）。homeLink=AI特战队专用功能（2026-10-15，设置菜单同名入口，配对后才工作；2.1.0 起入口默认隐藏，本机解锁一次后出现，见 core/company-bridge/unlock.js）。companyAssistant=公司版「助理」页（2026-10-16：每日简报 + 对话 + 6 条提醒，只读 WeLink，数据只留本机；见 core/company-assistant/）。companyForum=公司版「论坛」页（2026-10-18：稼先社区、心声社区今天的热帖 + AI 摘要，Hub 自己的浏览器窗口取数，数据只留本机；见 core/company-forum/）",
   "features": {
     "assistant": false,
     "quotaBar": false,
     "accounts": false,
     "homeLink": true,
-    "companyAssistant": true
+    "companyAssistant": true,
+    "companyForum": true
   },
   "$rulesChannel": "「规则」页的通用规则从服务器的 company 频道拉（2026-10-12）",
   "rulesChannel": "company",

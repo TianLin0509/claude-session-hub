@@ -2455,6 +2455,38 @@ try {
     require('./main/ipc/company-assistant-handlers').registerCompanyAssistantIpc(ipcMain, companyAssistantService);
   }
 } catch (error) { console.error('[company-assistant] 公司助理未启动：', error.message); }
+// 公司版「论坛」（2026-10-18）：每天同步稼先社区、心声社区的热门帖子并附 AI 摘要，数据只留在本机 Hub 数据目录。
+// 只在公司版启用（core/company-forum/gate.js）。取数用 Hub 自己的隐藏浏览器窗口（main/company-forum-browser.js）。
+let companyForumService = null, companyForumBrowser = null;
+try {
+  if (require('./core/company-forum/gate').companyForumEnabled()) {
+    const { CompanyForum } = require('./core/company-forum/service');
+    const live = new (require('./core/hub-assistant/live-history').LiveHistory)();
+    const loadMeta = id => {
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return null;
+      const saved = require('./core/session-store').loadSessionFile(id, { strict: true });
+      return saved ? { ...saved, id: saved.hubId || id } : null;
+    };
+    companyForumBrowser = require('./main/company-forum-browser').createForumBrowser({ BrowserWindow, BaseWindow, session: require('electron').session });
+    companyForumService = new CompanyForum({
+      dataDir: getHubDataDir(),
+      noTimer: process.env.CLAUDE_HUB_FORUM_TIMER === '0',
+      browser: companyForumBrowser,
+      // 站点域名默认取本人公司邮箱的域名：助理页已从 WeLink 账号读到并存在它的设置里。
+      accountEmail: () => { try { return JSON.parse(require('fs').readFileSync(require('path').join(getHubDataDir(), 'company-assistant', 'settings.json'), 'utf8')).email || ''; } catch { return ''; } },
+      createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
+      sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+      getSession: id => sessionManager.getSession(id),
+      getSessionMetadata: loadMeta,
+      resumeSession: async id => { const meta = require('./core/session-store').loadSessionFile(id, { strict: true }); return meta ? resumeSession({ ...meta, hubId: id }) : null; },
+      isAgentTurnActive: id => sessionManager.isAgentTurnActive(id),
+      readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
+      onChanged: () => sendToRenderer('company-forum:changed', {}),
+    });
+    companyForumService.start();
+    require('./main/ipc/company-forum-handlers').registerCompanyForumIpc(ipcMain, companyForumService, { shell, browser: companyForumBrowser });
+  }
+} catch (error) { console.error('[company-forum] 论坛未启动：', error.message); }
 // AI 编排模式（2026-10-04）：编排员通过 hub_orchestrator 工具驱动群聊与交付工作流。
 try {
   global.__orchestrationService = require('./main/orchestration/service').createOrchestrationService({
@@ -4266,6 +4298,7 @@ async function runFinalShutdownCleanup() {
   capture('wireless-assistant', () => wirelessService?.close());
   capture('company-bridge', () => companyBridgeService?.close());
   capture('company-assistant', () => companyAssistantService?.close());
+  capture('company-forum', () => { companyForumService?.close(); companyForumBrowser?.close(); });
   capture('hub-orchestration', () => global.__orchestrationService?.stop());
   capture('hub-phone', () => phoneService?.close());
   clearTimeout(sessionSearchPrewarmTimer);
