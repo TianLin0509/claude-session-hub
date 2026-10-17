@@ -23,7 +23,10 @@ if (group === 'auth' && sub === 'status') {
   process.stderr.write('Token expired, please run: welink-cli auth login\n');
   process.exitCode = 1;
 } else if (group === 'meeting' && sub === 'query-list') {
-  const soon = now + 10 * M;
+  // 「马上要开的会」定在第一次查询后 12 分钟，之后每次查询返回同一时间（Hub 取数和助理会话自己查，时间要一致）。
+  const anchorFile = stateFile ? require('node:path').join(require('node:path').dirname(stateFile), 'welink-anchor') : null;
+  if (anchorFile && !fs.existsSync(anchorFile)) fs.writeFileSync(anchorFile, String(now + 12 * M));
+  const soon = anchorFile ? Number(fs.readFileSync(anchorFile, 'utf8')) : now + 10 * M;
   out({ meetings: [
     { enMeetingId: 'e1', meetingId: 'm-soon', subject: '方案评审（占位）', location: '会议室A', meetingStartTime: soon, meetingEndTime: soon + H, meetingUsers: [{}, {}, {}], files: [{}] },
     { enMeetingId: 'e2', meetingId: 'm-a', subject: '周例会（占位）', location: '会议室B', meetingStartTime: today(13, 0), meetingEndTime: today(14, 30), meetingUsers: [{}, {}] },

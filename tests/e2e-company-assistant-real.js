@@ -47,7 +47,9 @@ async function main() {
     await c.eval(`ipcRenderer.invoke('company-assistant:set-settings', { workdays: [0,1,2,3,4,5,6] })`);
     const order = await c.eval(`[...document.querySelectorAll('#scene-rail .rail-navigation > button')].filter(b => !b.hidden && getComputedStyle(b).display !== 'none').map(b => b.id)`);
     assert.equal(order[order.indexOf('btn-rules') + 1], 'btn-company-assistant', order.join(','));
-    result.checks.push('左侧「助理」按钮在「规则」下面');
+    const assistantNavs = await c.eval(`[...document.querySelectorAll('#scene-rail button')].filter(b => b.offsetParent !== null && /助理/.test(b.querySelector('.btn-label')?.textContent || '')).map(b => b.id)`);
+    assert.deepEqual(assistantNavs, ['btn-company-assistant'], '公司版左侧只有一个「助理」，打开的是公司助理页');
+    result.checks.push('左侧只有一个「助理」按钮（公司助理页），在「规则」下面');
 
     // ① 打开：登录过期
     await c.eval(`document.getElementById('btn-company-assistant').click()`);
@@ -86,6 +88,11 @@ async function main() {
     const answer = (await status()).chat.slice(-1)[0];
     result.answer = String(answer.a).slice(0, 300);
     assert.ok(answer.a.length > 0);
+    // 回答里的会议时间要和 Hub 取到的数据一致（假 welink-cli 每次查询返回同一时间）
+    const day = s2.day, raw = JSON.parse(fs.readFileSync(path.join(dataDir, 'company-assistant', `raw-${day}.json`), 'utf8'));
+    const soon = raw.meetings.find(m => m.id === 'm-soon'), hhmm = new Date(soon.start).toTimeString().slice(0, 5);
+    result.soonMeeting = hhmm;
+    assert.ok(answer.a.includes(hhmm), `回答里方案评审的时间应为 ${hhmm}`);
     await shot('04-chat');
     result.checks.push('点「今天的会」小标签：助理会话作答，页面显示回答');
 
@@ -119,4 +126,27 @@ async function main() {
     console.log(JSON.stringify(result, null, 2));
   }
 }
-main().then(() => setTimeout(() => process.exit(0), 300), error => { console.error(error); setTimeout(() => process.exit(1), 300); });
+// 自用版不变：不开公司助理时，没有公司助理按钮和页面，旧的「助理」照常显示、点开是原来的助理页。
+async function personalEditionUnchanged() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-personal-assistant-'));
+  const hub = await launchIsolatedHub({ dataDir: path.join(root, 'data'), port: await freePort(), windowMode: 'hidden', label: 'personal-assistant',
+    extraEnv: { CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '', CLAUDE_HUB_COMPANY_ASSISTANT: '0' } });
+  const c = await connectFirstPage(hub);
+  try {
+    const end = Date.now() + 60000;
+    while (Date.now() < end && !(await c.eval('typeof sessions !== "undefined" && !!document.getElementById("btn-assistant")').catch(() => false))) await sleep(400);
+    const navs = await c.eval(`[...document.querySelectorAll('#scene-rail button')].filter(b => b.offsetParent !== null && /助理/.test(b.querySelector('.btn-label')?.textContent || '')).map(b => b.id)`);
+    assert.deepEqual(navs, ['btn-assistant'], '自用版只有原来的「助理」');
+    assert.equal(await c.eval(`!!document.getElementById('btn-company-assistant') || !!document.getElementById('company-assistant-page')`), false);
+    const registered = await c.eval(`ipcRenderer.invoke('company-assistant:status').then(() => 'registered', e => 'absent')`);
+    assert.equal(registered, 'absent', '自用版主进程不启动公司助理');
+    await c.eval(`document.getElementById('btn-assistant').click()`);
+    const end2 = Date.now() + 20000;
+    let opened = false;
+    while (Date.now() < end2 && !(opened = await c.eval(`document.body.classList.contains('assistant-page-open') || document.body.classList.contains('assistant-session-active')`))) await sleep(300);
+    assert.equal(opened, true, '点原来的「助理」打开原来的助理页');
+    return ['自用版：左侧只有原来的「助理」，没有公司助理页和服务，点开是原来的助理页'];
+  } finally { try { c.close(); } catch {} await gracefulQuit(hub).catch(() => {}); }
+}
+
+main().then(personalEditionUnchanged).then(checks => { console.log(JSON.stringify({ personal: checks })); }).then(() => setTimeout(() => process.exit(0), 300), error => { console.error(error); setTimeout(() => process.exit(1), 300); });
