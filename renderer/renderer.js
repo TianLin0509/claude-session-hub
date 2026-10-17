@@ -1331,7 +1331,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (terminalPanelEl) terminalPanelEl.classList.remove('home-active');
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -1896,7 +1896,7 @@ const APP_TOOLBAR_VIEWS = [
 function getReadingSurface() {
   // Detached full-page tabs are above the session stage. Keep their mounted
   // controls and content instead of copying them into a fullscreen shell.
-  for (const id of ['assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel', ...APP_TOOLBAR_VIEWS.map(v => v.id)]) {
+  for (const id of ['cloud-page', 'assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel', ...APP_TOOLBAR_VIEWS.map(v => v.id)]) {
     const panel = document.getElementById(id);
     if (panelIsVisible(panel)) return panel;
   }
@@ -1921,6 +1921,7 @@ function panelIsVisible(el) {
 function paintAppToolbarForView(label) {
   if (label !== '助理') window.__assistantHide?.();
   if (label !== '无线') window.__wirelessHide?.();
+  if (label !== '云端') window.__cloudHide?.();
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
   toolbarCrumbEl.dataset.mode = 'view';
   toolbarCrumbEl.title = '';
@@ -2022,7 +2023,7 @@ function paintAppToolbarForSession(sessionId, session, cached) {
 }
 
 function currentAppToolbarView() {
-  for (const [id, label] of [['assistant-page', '助理'], ['wireless-page', '无线'], ['account-page', '账号'], ['hub-workspace', '资源与回顾'], ['memo-panel', '速记']]) {
+  for (const [id, label] of [['cloud-page', '云端'], ['assistant-page', '助理'], ['wireless-page', '无线'], ['account-page', '账号'], ['hub-workspace', '资源与回顾'], ['memo-panel', '速记']]) {
     if (panelIsVisible(document.getElementById(id))) return label;
   }
   for (const view of APP_TOOLBAR_VIEWS) {
@@ -2068,7 +2069,7 @@ if (typeof MutationObserver === 'function') {
   // These tabs mount outside app-body. Watch only their own visibility, never
   // streamed text or every descendant mutation.
   const watchReadingTabs = () => {
-    for (const id of ['assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel']) {
+    for (const id of ['cloud-page', 'assistant-page', 'wireless-page', 'account-page', 'hub-workspace', 'memo-panel']) {
       const el = document.getElementById(id);
       if (el) _appToolbarObserver.observe(el, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
     }
@@ -5744,7 +5745,7 @@ async function selectSession(id, opts = {}) {
   }
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -8616,7 +8617,7 @@ function escapeToHome() {
   window.hubWorkspaces?.close();
   if (window.__chuxinHide) window.__chuxinHide();
   if (window.__studyHide) window.__studyHide();
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -8652,16 +8653,16 @@ const configModal = createConfigModalController({
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
 const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
-  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); },
+  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { window.hubWorkspaces?.close(); window.__cloudHide?.(); memoryPanel.close(); capabilityPanel.close(); },
 });
 window.hubWorkspaces = require('./hub-workspaces').createHubWorkspaces({
   document, window, memory: memoryPanel, capabilities: capabilityPanel, memo: memoPanel,
-  beforeOpen: () => { accountCenterPanel.close(); window.__assistantHide?.(); },
+  beforeOpen: () => { accountCenterPanel.close(); window.__assistantHide?.(); window.__cloudHide?.(); },
   search: { open: pastSessionModals.openSearchModal, close: pastSessionModals.closeSearchModal },
 });
 const assistantPanel = require('./assistant-panel').createAssistantPanel({
   document, ipcRenderer,
-  closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+  closeOtherPanels: () => { window.hubWorkspaces?.close(); window.__cloudHide?.(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
   getSession: sessionId => sessions.get(sessionId),
   getActiveSessionId: () => activeSessionId,
   showMessage: message => showToast(message),
@@ -8716,6 +8717,16 @@ try {
   });
   window.__wirelessHide = () => wirelessPage.close();
 } catch (error) { console.warn('[wireless] 无线页未启动：', error.message); }
+// @community-end
+// @community-strip 本地云端页，发行版同时剥离接线与整个模块。
+if (require('../core/distribution').personalModules) {
+  const cloudPage = require('./cloud-page').createCloudPage({
+    document, window, ipcRenderer,
+    closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+    showMessage: message => showToast(message),
+  });
+  window.__cloudHide = () => cloudPage.close();
+} else document.getElementById('btn-cloud')?.remove();
 // @community-end
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
@@ -8949,7 +8960,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // 2026-09-02：session-created 会直接亮出终端面板，但此前只隐藏了群聊面板。
   // 主区是 flex 容器，学习面板若还开着就会和终端并排各占一半。
   if (window.__studyHide) window.__studyHide();
-  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+  if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   window.__rulesHide?.(); // 2026-10-12 规则面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
@@ -10265,7 +10276,7 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
           currentView = 'card';
           _cardHistoryHydratedSid = sessionId;
           if (window.__studyHide) window.__studyHide();   // 同上：别和学习面板并排
-          if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.();
+          if (window.__assistantHide) window.__assistantHide(); window.__wirelessHide?.(); window.__cloudHide?.();
           if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
           window.__rulesHide?.(); // 2026-10-12 规则面板互斥
           if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
