@@ -168,14 +168,34 @@ test('发行版开关：只有公司版（或隔离测试显式打开）启用�
   assert.equal(target.features.companyAssistant, true);
 });
 
+test('服务：WeLink 账号里读不到邮箱时标出要配置，同一天不反复自动试；用户在设置里填邮箱后邮件和日历都通', async () => {
+  const dir = tmp(), log = path.join(dir, 'calls.log');
+  const f = fakeDeps(dir, log, { WELINK_STANDIN_NO_EMAIL: '1' });
+  const svc = new CompanyAssistant({ ...f.deps, bus: new NoticeBus() });
+  svc.start();
+  let snap = await svc.refresh({ force: true });
+  assert.equal(snap.calendarNeedsSetup, true);
+  assert.equal(snap.mailSetup.reason, 'no-email');
+  assert.equal(snap.mails.length, 0);
+  assert.equal(svc.status().mailSetup.reason, 'no-email', '界面能据此请用户填一次邮箱');
+  const r = await svc.setupCalendar('someone@example.com');
+  assert.equal(r.ok, true);
+  snap = svc.snapshot();
+  assert.equal(snap.calendarNeedsSetup, false);
+  assert.equal(snap.mails.length, 2);
+  assert.equal(svc.settings().email, 'someone@example.com');
+  assert.equal(svc.settings().emailFrom, 'settings');
+  svc.close();
+});
+
 // 假会话：记下发出的提示词，回答由测试塞进 finals。
-function fakeDeps(dataDir, log) {
+function fakeDeps(dataDir, log, extraEnv = {}) {
   const sessions = new Map(), finals = new Map(), sent = [];
   return {
     sessions, finals, sent,
     deps: {
       dataDir, noTimer: true,
-      welinkRun: (args, opts) => W.run(args, { ...opts, cli: STANDIN, env: { ...process.env, WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: path.join(dataDir, 'welink-state') } }),
+      welinkRun: (args, opts) => W.run(args, { ...opts, cli: STANDIN, env: { ...process.env, ...extraEnv, WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: path.join(dataDir, 'welink-state') } }),
       createSession: async (kind, opts) => { sessions.set(opts.id, { id: opts.id, kind, ...opts, status: 'idle' }); finals.set(opts.id, []); return { id: opts.id }; },
       sendPrompt: async (id, text) => { sent.push({ id, text }); return { ok: true }; },
       getSession: id => sessions.get(id) || null,
@@ -202,7 +222,13 @@ test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核�
   assert.equal(first.organizing, true);
   assert.ok(first.sections.find(x => x.key === 'meetings').items.length >= 1);
   const snap = svc.snapshot();
-  assert.equal(snap.calendarNeedsSetup, true, '日历报 Exchange 未初始化要识别出来');
+  // 2026-10-17：邮件、日历报 Exchange 未配置时，Hub 从 WeLink 账号读出本人邮箱自动配好，不先问用户。
+  assert.equal(snap.calendarNeedsSetup, false, '自动配置后日历能用');
+  assert.equal(snap.mailSetup.ok, true);
+  assert.equal(snap.mailSetup.email, 'user001@example.com');
+  assert.equal(snap.mailSetup.from, 'welink');
+  assert.equal(svc.settings().email, 'user001@example.com', '读到的邮箱存进设置');
+  assert.ok(snap.calendar.length === 1 && snap.mails.length === 2, '配好后重查到了日程，邮件也取到了');
   assert.ok(fs.existsSync(path.join(svc.workspace, 'data', 'today.json')));
   assert.ok(fs.existsSync(path.join(svc.workspace, 'welink-ro.cmd')));
   await new Promise(r => setTimeout(r, 20));
@@ -238,7 +264,9 @@ test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核�
   assert.equal(svc.brief().sections.some(x => x.items.some(i => i.source === 'meeting:m-soon')), false);
   // 只调用了查询命令
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  for (const c of calls) W.checkArgs(c);
+  for (const c of calls) W.checkArgs(c, { allowSetup: c[0] === 'mail' && c[1] === 'autodiscover' });
+  assert.ok(!calls.some(c => c[0] === 'auth' && c[1] === 'login'), '没有自己去扫码登录');
+  assert.equal(calls.filter(c => c[1] === 'autodiscover').length, 1, '自动配置只跑一次');
   assert.ok(calls.some(c => c[0] === 'im' && c[1] === 'query-history-message' && c.includes('g-100')), '关注的群取了历史消息');
   svc.close();
 });
