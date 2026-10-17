@@ -8715,6 +8715,8 @@ const configModal = createConfigModalController({
   applyCardDisplaySettings: applyHubCardDisplaySettings,
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
+// 助理桌宠：配置里的开关与角色，以及「点桌宠打开助理」的入口事件（hub-pet:open-assistant）。
+try { require('./hub-pet/hub-settings.js').mountHubPetSettings({ document, window, ipcRenderer }); } catch (error) { console.warn('[hub-pet] settings mount failed:', error && error.message); }
 const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
   document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); },
 });

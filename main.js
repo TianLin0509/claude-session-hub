@@ -103,6 +103,7 @@ const { registerPromptInspectIpc } = require('./main/ipc/prompt-inspect-handlers
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { createDesktopNotificationController } = require('./main/desktop-notification-controller.js');
+const { createHubPetController } = require('./main/hub-pet-controller.js');
 const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handlers.js');
 const { registerMemoryReleaseIpc } = require('./main/ipc/memory-release-handlers.js');
 const { registerDiskReleaseIpc } = require('./main/ipc/disk-release-handlers.js');
@@ -483,6 +484,9 @@ let windowsShellWatchdog = null;
 
 let mainWindow;
 let desktopNotificationController = null;
+let hubPetController = null;
+// 桌宠「敲键盘」看的是助理会话本轮是否还在跑（CLI hook 报告的状态）。
+const HUB_PET_ASSISTANT_PURPOSES = new Set(['company-assistant', 'hub-assistant']);
 const sessionManager = new SessionManager();
 const { SessionTokenUsageService } = require('./main/usage/session-token-usage-service.js');
 const { isSessionViewer } = require('./core/session-observer-policy');
@@ -1305,6 +1309,40 @@ function createWindow() {
         || process.env.CLAUDE_HUB_E2E_SHOW_NOTIFICATION === '1',
       logger: console,
     });
+  }
+  // 助理桌宠（2026-10-16）：Hub 开着时出现在桌面角落，设置里可关；家里自用版默认关。设计见 docs/design/hub-pet.md。
+  if (!hubPetController) {
+    try {
+      const petDistribution = require('./core/distribution');
+      hubPetController = createHubPetController({
+        BrowserWindow, screen, ipcMain, Menu, powerMonitor, app,
+        htmlPath: path.join(__dirname, 'renderer', 'hub-pet', 'pet.html'),
+        preloadPath: path.join(__dirname, 'renderer', 'hub-pet', 'pet-preload.js'),
+        assetsDir: path.join(__dirname, 'renderer', 'assets', 'hub-pet'),
+        dataDir: getHubDataDir(),
+        company: petDistribution.target === 'company',
+        available: petDistribution.featureEnabled('hubPet'),
+        getMainWindow: () => mainWindow,
+        focusPrimaryWindow,
+        sendToRenderer,
+        noticeBus: require('./core/company-assistant/notice-bus').noticeBus(),
+        isAssistantBusy: () => {
+          for (const s of sessionManager.sessions.values()) {
+            if (s && s.agentTurnActive && HUB_PET_ASSISTANT_PURPOSES.has(s.info && s.info.purpose)) return true;
+          }
+          return false;
+        },
+        canShow: () => !keepIsolatedE2EWindowHidden() || process.env.CLAUDE_HUB_E2E_SHOW_PET === '1',
+        debug: isIsolatedHub(),
+        logger: console,
+      });
+    } catch (error) { console.warn('[hub-pet] setup failed:', error && error.message); }
+  }
+  if (hubPetController) {
+    // 桌宠跟着主窗口走：主窗口加载完才出现；主窗口关掉时先收起桌宠，
+    // 否则这个小窗会让 Electron 等不到 window-all-closed、Hub 退不干净。
+    mainWindow.webContents.once('did-finish-load', () => { try { hubPetController?.start(); } catch (error) { console.warn('[hub-pet] start failed:', error && error.message); } });
+    mainWindow.once('closed', () => { try { hubPetController?.stop(); } catch (_) {} });
   }
   // index.html 的 <title>AI 群聊 Hub</title> 在页面加载完成后会触发 page-title-updated 覆盖
   // BrowserWindow.title — preventDefault 阻止覆盖，保留带 PID 的标题
@@ -4147,6 +4185,8 @@ async function runFinalShutdownCleanup() {
   };
   capture('desktop-notification', () => desktopNotificationController?.dispose());
   desktopNotificationController = null;
+  capture('hub-pet', () => hubPetController?.dispose());
+  hubPetController = null;
   capture('completion-notifier', () => completionNotifier.dispose());
   capture('session-auto-suspend', () => sessionAutoSuspendScheduler?.stop());
   capture('claude-hook-watchdog', () => claudeHookWatchdog?.stop());
