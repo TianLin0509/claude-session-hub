@@ -122,6 +122,9 @@ function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
+  const bridgeBadge = typeof options.bridgeBadge === 'function' ? options.bridgeBadge
+    : id => { try { return (typeof window !== 'undefined' && window._bridgeThreads?.badge(id)) || null; } catch { return null; } };
+  doc.addEventListener?.('bridge-threads-updated', () => { try { renderSessionList(); } catch (error) { console.warn('[session-list] bridge refresh failed:', error && error.message); } });
   const publishSessionViews=createSessionViewPublisher(packet=>{
     const ipc=options.ipcRenderer || (typeof process!=='undefined'&&process.type==='renderer'?require('electron').ipcRenderer:null);
     ipc?.send?.('assistant:session-view',packet);
@@ -978,14 +981,19 @@ sessionListEl.addEventListener('keydown', event => {
     // 号池会话：标题前一个「池」字（放在标题格里，不占卡片的列），悬停看用的是哪个号（core/codeagent-pool.js）。
     const poolHtml = s.codeagentPoolAccount
       ? `<span class="sl-pool" title="${escapeHtml('号池账号 · ' + (s.codeagentPoolLabel || s.codeagentPoolAccount))}">池</span>` : '';
+    // 家里 ⇄ 公司通道（2026-10-16）：标题前一枚「⇄」标签（行高固定一行，放标题前才不会被省略号截掉）；
+    // 在途时标签里就是当前那一步和耗时，悬停看编号与全程。
+    const bridge = bridgeBadge(s.id);
+    const bridgeHtml = bridge ? `<span class="bt-badge" data-state="${escapeHtml(bridge.state)}" data-role="${escapeHtml(bridge.role || '')}" title="${escapeHtml(bridge.sub)}">${escapeHtml(bridge.chip)}</span>` : '';
     div.innerHTML = _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), s.currentModel?.id || '')
-      + '<span class="sl-title">' + _warningHtml(anyWarning) + poolHtml + escapeHtml(displayTitle) + '</span>'
+      + '<span class="sl-title">' + _warningHtml(anyWarning) + poolHtml + bridgeHtml + escapeHtml(displayTitle) + '</span>'
       + timeHtml(s, showUnread ? Math.max(1, unreadCount) : 0);
     if (child) div.className += ' child';
     if (detailsEnabled) {
       div.className += ' has-details';
       div.innerHTML = '<div class="sl-line1">' + div.innerHTML + '</div>'
-        + detailsHtml(s, { escapeHtml, modelShort });
+        + detailsHtml(s, { escapeHtml, modelShort })
+        + (bridge ? `<div class="bt-badge-sub" data-state="${escapeHtml(bridge.state)}">⇄ ${escapeHtml(bridge.sub)}${bridge.pin ? ' · ' + escapeHtml(bridge.pin) : ''}</div>` : '');
       detailSessionIds.add(s.id);
     }
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
