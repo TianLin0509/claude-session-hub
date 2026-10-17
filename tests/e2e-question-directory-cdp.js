@@ -171,7 +171,11 @@ async function main(){
  await clickPoint(client,'.floating-input-box');await client.send('Input.insertText',{text:'fixture:card-details 普通问题 '+(i+1)+' https://example.com/docs'});await clickPoint(client,'.floating-input-send');
  await waitFor('ordinary final '+i,()=>client.eval(`document.querySelectorAll('#msg-overlay .turn-delivery-summary').length>=${i+1} && sessions.get(${JSON.stringify(ordinary.id)}).nativeRuntime.state!=='running'`));
  }
+ // 2026-10-16：家里 ⇄ 公司通道送进来的回执是「用户消息」但不是问题，不进目录。
+ await clickPoint(client,'.floating-input-box');await client.send('Input.insertText',{text:'【公司回执 Q-1016-05 · 第 2 轮】 📌 回执正文（fixture:card-details）'});await clickPoint(client,'.floating-input-send');
+ await waitFor('receipt card',()=>client.eval(`[...document.querySelectorAll('#msg-overlay > .turn-card.user')].some(c=>c.innerText.includes('公司回执 Q-1016-05')) && sessions.get(${JSON.stringify(ordinary.id)}).nativeRuntime.state!=='running'`));
  await waitFor('ordinary questions',()=>client.eval("document.querySelectorAll('#card-question-nav .card-question-nav-item').length===3"));
+ result.checks.push('a company receipt delivered into the session is not listed as a question');
  await verifyAnswerNavigation('#card-question-nav','#msg-overlay',':scope > .turn-card.assistant[data-phase="commentary"]:not(.conversation-response-continuation)');
  assert(!await client.eval("document.querySelector('#card-question-nav').classList.contains('directory-collapsed')"));
  result.ordinaryWide=await client.eval("(()=>{const e=document.querySelector('#msg-overlay');return {...e._cardFollowController.capture(),gap:e.scrollHeight-e.clientHeight-e.scrollTop}})()");
