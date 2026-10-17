@@ -71,6 +71,8 @@ const MAX_CODE_RUN = 12;
 const MAX_CODE_TOTAL = 30;
 // 发出后会话停下、却一直没读到回答：判定没答上，告诉家里。
 const NO_ANSWER_MS = 10 * 60000;
+// 记录还在写时最多等多久（长仿真、全量编译）；过了照旧按「没答上」处理，避免永远挂着。
+const LONG_RUN_MS = 3 * 60 * 60000;
 // 发出后多久核实「提问真的写进了 CodeAgent 的记录」；刚发出这段时间里 hook 可能还没到，也按「在干活」占名额。
 const VERIFY_MS = 3 * 60000;
 const STARTUP_GRACE_MS = 3 * 60000;
@@ -366,6 +368,15 @@ class CompanyBridge {
     if (!s) return false;
     return !!this.deps.isAgentTurnActive?.(id) || require('../session-runtime-truth').sessionRuntimeIsActive(s) || s.status === 'running' || !!this.deps.hasPendingPrompt?.(id);
   }
+  // 原生记录最近 NO_ANSWER_MS 内有写入：CodeAgent 还在干活。拿不到路径或读不到时间按「不新鲜」处理（沿用原判定）。
+  transcriptFresh(sessionId) {
+    const meta = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId);
+    const file = meta && meta.transcriptPath;
+    if (!file) return false;
+    let ms = null;
+    try { ms = this.deps.transcriptMtime ? this.deps.transcriptMtime(file) : require('node:fs').statSync(file).mtimeMs; } catch { return false; }
+    return Number.isFinite(ms) && this.now() - ms < NO_ANSWER_MS;
+  }
   lastFinal(sessionId) {
     const meta = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId);
     if (!meta) return null;
@@ -563,6 +574,9 @@ class CompanyBridge {
           return this.failRound(t, r, '提问没能送进公司的 CodeAgent（重发一次后它的记录里仍没有这条提问）；可在「AI特战队专用功能」里点重试，或追问重发');
         }
       }
+      // CodeAgent 的原生记录还在写就是还在干活（长时间的编译、仿真）：会话表里查不到、或停摆超过 30 分钟都先别判失败，
+      // 最多等 LONG_RUN_MS（2026-10-17 Q-1017-17/21：跑 AirView 的会话还在运行，10 分钟就被判成「会话已关闭」）。
+      if (this.now() - r.sentAt < LONG_RUN_MS && this.transcriptFresh(t.sessionId)) return;
       if (this.now() - r.sentAt > NO_ANSWER_MS && !this.deps.getSession(t.sessionId)) return this.failRound(t, r, '会话已关闭，没有读到回答');
       if (this.now() - r.sentAt > NO_ANSWER_MS * 3) return this.failRound(t, r, '会话停下了，但一直没读到回答');
       return;
