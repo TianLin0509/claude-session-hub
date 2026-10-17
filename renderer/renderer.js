@@ -8707,6 +8707,21 @@ async function openSessionById(sessionId) {
 }
 window.__hubOpenSession = openSessionById;
 window.__hubToast = message => showToast(message);
+// 公司版「助理」页（2026-10-16）：每日简报 + 对话 + 提醒；只在公司版启用（core/company-assistant/gate.js）。
+if (require('../core/company-assistant/gate').companyAssistantEnabled()) {
+  // 左侧只留一个「助理」：公司版本来就关着旧助理（features.assistant=false）；隔离测试用开关打开公司助理时也一并藏起旧入口。
+  const oldAssistantNav = document.getElementById('btn-assistant');
+  if (oldAssistantNav) oldAssistantNav.style.display = 'none';
+  try {
+    const companyAssistantPage = require('./company-assistant-page').createCompanyAssistantPage({
+      document, window, ipcRenderer,
+      closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+      showMessage: message => showToast(message),
+      openSession: openSessionById,
+    });
+    window.__companyAssistantHide = () => companyAssistantPage.close();
+  } catch (error) { console.warn('[company-assistant] 助理页未启动：', error.message); }
+}
 // @community-strip 无线 Tab · SuperRAN 助理（2026-10-14）：写法同助理页，点左侧其他按钮自动关闭。
 try {
   const wirelessPage = require('./wireless-page').createWirelessPage({

@@ -2366,6 +2366,41 @@ try {
     });
   }
 } catch (error) { console.error('[company-bridge] 家里联动未启动：', error.message); }
+// 公司版「助理」（2026-10-16）：每日简报 + 对话 + 6 条提醒，只读 WeLink，数据只留在本机 Hub 数据目录。
+// 只在公司版启用（core/company-assistant/gate.js），不依赖家里联动的配对。提醒经提醒总线发布：这里转成桌面通知并告诉页面。
+let companyAssistantService = null;
+try {
+  if (require('./core/company-assistant/gate').companyAssistantEnabled()) {
+    const { CompanyAssistant } = require('./core/company-assistant/service');
+    const live = new (require('./core/hub-assistant/live-history').LiveHistory)();
+    const loadMeta = id => {
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return null;
+      const saved = require('./core/session-store').loadSessionFile(id, { strict: true });
+      return saved ? { ...saved, id: saved.hubId || id } : null;
+    };
+    companyAssistantService = new CompanyAssistant({
+      dataDir: getHubDataDir(),
+      noTimer: process.env.CLAUDE_HUB_ASSISTANT_TIMER === '0',
+      createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
+      sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+      getSession: id => sessionManager.getSession(id),
+      getSessionMetadata: loadMeta,
+      resumeSession: async id => { const meta = require('./core/session-store').loadSessionFile(id, { strict: true }); return meta ? resumeSession({ ...meta, hubId: id }) : null; },
+      isAgentTurnActive: id => sessionManager.isAgentTurnActive(id),
+      // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
+      readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
+      nodeExecutable: process.execPath,
+      onChanged: () => sendToRenderer('company-assistant:changed', {}),
+    });
+    require('./core/company-assistant/notice-bus').noticeBus().on('notice', notice => {
+      sendToRenderer('company-assistant:notice', notice);
+      // 点通知打开助理页（页面认这个固定编号），不直接跳进会话。
+      try { void desktopNotificationController?.show({ sessionId: 'company-assistant', title: notice.title, body: notice.text, kind: 'assistant' }); } catch (error) { console.warn('[company-assistant] notification', error.message); }
+    });
+    companyAssistantService.start();
+    require('./main/ipc/company-assistant-handlers').registerCompanyAssistantIpc(ipcMain, companyAssistantService);
+  }
+} catch (error) { console.error('[company-assistant] 公司助理未启动：', error.message); }
 // AI 编排模式（2026-10-04）：编排员通过 hub_orchestrator 工具驱动群聊与交付工作流。
 try {
   global.__orchestrationService = require('./main/orchestration/service').createOrchestrationService({
@@ -4173,6 +4208,7 @@ async function runFinalShutdownCleanup() {
   capture('hub-assistant', () => assistantService?.close());
   capture('wireless-assistant', () => wirelessService?.close());
   capture('company-bridge', () => companyBridgeService?.close());
+  capture('company-assistant', () => companyAssistantService?.close());
   capture('hub-orchestration', () => global.__orchestrationService?.stop());
   capture('hub-phone', () => phoneService?.close());
   clearTimeout(sessionSearchPrewarmTimer);
