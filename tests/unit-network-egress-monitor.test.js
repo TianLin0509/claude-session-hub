@@ -206,3 +206,10 @@ test('解析 Windows 系统代理与 xGate 进程', () => {
   assert.equal(parseXgateRunning('"SPES5.exe","15268","Console","1","182,340 K"\r\n'), true);
   assert.equal(parseXgateRunning('信息: 没有运行的任务匹配指定标准。'), false);
 });
+
+test('公司 VPN 网卡：只认 Up 且拿到真实 IPv4 的（169.254 自动地址不算连上）', () => {
+  const { parseVpnAdapters } = require('../core/windows-network-context.js');
+  assert.deepEqual(parseVpnAdapters('TAP-Windows Adapter V9|10.20.30.40\r\nArray Networks SSL VPN Adapter|169.254.3.4\r\n'), [{ name: 'TAP-Windows Adapter V9', address: '10.20.30.40' }]);
+  assert.deepEqual(parseVpnAdapters(''), []);
+  assert.deepEqual(parseVpnAdapters('乱码一行'), []);
+});

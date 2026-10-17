@@ -385,7 +385,8 @@ function _sessionWarningText(session) {
     const systemProxy = egress && egress.proxySource === 'system' ? egress.proxyEndpoint : '';
     const proxyShort = _shortProxy(proxy && proxy.proxy) || _shortProxy(systemProxy);
     const xgate = !!(egress && egress.tunnel && egress.tunnel.xgate);
-    const routeLabel = xgate ? 'xGate' : systemProxy ? '代理' : proxyShort ? 'VPN' : '直连';
+    const vpnNic = egress && egress.tunnel && egress.tunnel.vpn;
+    const routeLabel = vpnNic ? 'VPN' : xgate ? 'xGate' : systemProxy ? '代理' : proxyShort ? 'VPN' : '直连';
     const foreign = egress && egress.foreign;
     const domestic = egress && egress.domestic;
     const displayRoute = proxyShort ? foreign : domestic;
@@ -394,6 +395,7 @@ function _sessionWarningText(session) {
 
     const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
     const foreignTitle = [
+      vpnNic ? `VPN 已连上：${vpnNic.name}（${vpnNic.address}）` : '',
       xgate ? 'xGate（公司安全终端 SPES5）正在运行；它选的节点读不到，下面是实测出口' : '',
       systemProxy ? '公网经 Windows 系统代理' : proxyShort ? 'Claude / Codex 订阅、Gemini：经 VPN 代理' : '未配置 VPN，显示直连出口',
       systemProxy ? `系统代理：${proxyShort}` : proxyShort ? `本地代理：${proxyShort}` : '本地代理：未配置',

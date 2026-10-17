@@ -119,6 +119,11 @@ proxyInfo.egress.tunnel = { xgate: true };
 renderer.renderSidebarStrip();
 assert.match(stripEl.innerHTML, /<span>xGate<\/span>/);
 assert.match(stripEl.innerHTML, /xGate（公司安全终端 SPES5）正在运行/);
+// 公司 VPN 网卡连上（Up 且有真实 IPv4）时显示 VPN，悬停写明网卡和地址
+proxyInfo.egress.tunnel = { xgate: true, vpn: { name: 'TAP-Windows Adapter V9', address: '10.20.30.40' } };
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /<span>VPN<\/span>/);
+assert.match(stripEl.innerHTML, /VPN 已连上：TAP-Windows Adapter V9（10\.20\.30\.40）/);
 // 本机 IP：网速右边显示首选那个，悬停列出全部
 resourceUsage = { network: { status: 'ok', downloadBps: 2048, uploadBps: 1024, windowMs: 2000, adapters: ['以太网'], ips: [{ name: '以太网', address: '10.12.34.56' }, { name: 'WLAN', address: '192.168.1.5' }] } };
 renderer.renderSidebarStrip();
