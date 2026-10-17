@@ -2110,6 +2110,7 @@ const resumeSession = createResumeSessionHandler({
 
 const sessionOperations = registerSessionIpc(ipcMain, {
   ensureLaunchAuth:(kind,opts)=>launchAuth.ensure(kind,opts),
+  prepareLaunchAuth:(kind,opts)=>launchAuth.precheck(kind,opts),
   getPersistedSessions: () => lastPersistedSessions,
   getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
   meetingManager,
@@ -2743,6 +2744,18 @@ registerWorkbenchOperationsIpc(ipcMain, {
   logger: console,
 });
 
+// @community-strip 本地云端管理：公司版与公开版不注册入口或采集能力。
+if (require('./core/distribution').personalModules) {
+  const { CloudService } = require('./core/cloud/service');
+  const cloudService = new CloudService({
+    dataDir: getHubDataDir(),
+    home: process.env.CLAUDE_HUB_CLOUD_SSH_HOME || undefined,
+    readOnly: process.env.CLAUDE_HUB_CLOUD_READ_ONLY === '1',
+    onChange: () => { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send('cloud:changed'); },
+  });
+  require('./main/ipc/cloud-handlers').registerCloudIpc(ipcMain, { service: cloudService, shell });
+}
+// @community-end
 registerPathIpc(ipcMain);
 // @community-strip 社区版首页的安装检测
 // @community-else
@@ -3571,6 +3584,8 @@ try {
 }
 // 会话场景（2026-10-13）：「规则 → 场景」页与输入框的「场景」按钮。
 require('./main/ipc/session-scenes-handlers').registerSessionScenesIpc(ipcMain,{dataDir:getHubDataDir(),shell});
+// 主题资源只在用户点击时联网；加载和切换不影响任何 CLI 会话。
+require('./main/ipc/appearance-handlers').registerAppearanceIpc(ipcMain, { dataDir: getHubDataDir(), sendToRenderer });
 // 一键更新（2026-10-13，公司版）：只有发行目标写了下载源才开启；主仓库没有这个入口。
 {
   const distribution = require('./core/distribution');

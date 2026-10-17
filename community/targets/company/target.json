@@ -34,6 +34,7 @@
   "rulesChannel": "company",
   "$drop": "只有 CodeAgent，其他 AI 的卡片头像不带。CodeAgent 按模型用 glm / deepseek / minimax / qwen 四张（2026-10-13），这四张保留",
   "drop": [
+    "renderer/assets/appearance-packs/**",
     "renderer/assets/ai-avatars/cel-v2/claude.png",
     "renderer/assets/ai-avatars/cel-v2/codex.png",
     "renderer/assets/ai-avatars/cel-v2/gemini.png",
