@@ -66,6 +66,8 @@ test('optimization uses a main-owned expiring plan, never renderer paths, and re
   assert.equal(s.getState().optimization.releasedBytes,10);
   logFails=false;await s.runOptimization({planId:id,groups:['temp','logs']});
   assert.equal(s.getState().optimization.releasedBytes,15);
+  assert.deepEqual(s.getState().history.map(entry=>entry.releasedBytes),[10,5]);
+  assert.deepEqual(s.getState().history[1].groups.map(group=>group.id),['logs']);
   assert.equal(seen.filter(x=>x.op==='execute'&&x.payload.items.some(i=>i.group==='temp')).length,1);
   assert.ok(!JSON.stringify(seen).includes('business.db'));
   clock+=600001;await assert.rejects(s.runOptimization({planId:id,groups:['temp']}),/stale_plan/);

@@ -63,6 +63,7 @@ class CloudService {
     if(opt.groups.some(g=>p.groups.includes(g.id)&&g.status==='unknown'))throw new Error('stale_plan');
     const groups=opt.groups.filter(g=>p.groups.includes(g.id)&&g.fileCount&&g.status!=='done');
     if(!groups.length)return this.getState();
+    const alreadyReleased=opt.releasedBytes;
     this.operation=Promise.resolve().then(async()=>{opt.phase='running';this.emit();
       for(const group of groups){
         group.status='running';this.emit();
@@ -79,7 +80,7 @@ class CloudService {
         }catch(e){group.status='unknown';group.message=MESSAGES[e.message]||'未收到完整结果，请重新扫描确认。';}
         opt.releasedBytes=opt.groups.flatMap(g=>g.results||[]).reduce((n,r)=>n+r.releasedBytes,0);this.emit();
       }
-      opt.phase='done';this.history.push({at:new Date(this.now()).toISOString(),releasedBytes:opt.releasedBytes,groups:opt.groups.filter(g=>g.status!=='pending').map(g=>({id:g.id,label:g.label,status:g.status,message:g.message}))});this.history=this.history.slice(-20);this.save();
+      opt.phase='done';this.history.push({at:new Date(this.now()).toISOString(),releasedBytes:Math.max(0,opt.releasedBytes-alreadyReleased),groups:groups.map(g=>({id:g.id,label:g.label,status:g.status,message:g.message}))});this.history=this.history.slice(-20);this.save();
       this.emit();await this.refresh();return this.getState();
     }).finally(()=>{this.operation=null;this.emit();});return this.operation;
   }
