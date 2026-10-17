@@ -1335,6 +1335,9 @@ function createWindow() {
         canShow: () => !keepIsolatedE2EWindowHidden() || process.env.CLAUDE_HUB_E2E_SHOW_PET === '1',
         debug: isIsolatedHub(),
         logger: console,
+        // 在线下载形象走 Electron 的网络栈（跟系统代理）；隔离测试用 AI_HUB_PET_SOURCES 指向本地源。
+        fetchImpl: (...args) => net.fetch(...args),
+        roleSources: process.env.AI_HUB_PET_SOURCES ? JSON.parse(process.env.AI_HUB_PET_SOURCES) : null,
       });
     } catch (error) { console.warn('[hub-pet] setup failed:', error && error.message); }
   }
