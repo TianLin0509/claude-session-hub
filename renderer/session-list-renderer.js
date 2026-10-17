@@ -392,7 +392,11 @@ function _sessionWarningText(session) {
     const networkTitle = network?.status === 'ok'
       ? `本机物理网卡合计：${(network.adapters || []).join('、')}\n下行 ${(network.downloadBps / 1024).toFixed(1)} KB/s · 上行 ${(network.uploadBps / 1024).toFixed(1)} KB/s\n最近 ${(network.windowMs / 1000).toFixed(1)} 秒均值；含所有应用，非 VPN 专属流量；K/M/G 表示 KB/s、MB/s、GB/s，按 1024 换算`
       : network?.status === 'unavailable' ? '网速暂不可用' : network?.status === 'disconnected' ? '没有已连接的物理网卡' : '网速采样中';
-    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download"><span class="strip-transfer-label">↓</span><b>${rate(network?.downloadBps)}</b></span><span class="strip-upload"><span class="strip-transfer-label">↑</span><b>${rate(network?.uploadBps)}</b></span></span>`;
+    // 本机 IP（2026-10-17）：网速右边显示首选的一个（公司电脑通常是 10 段），悬停列出所有网卡的地址。
+    const ips = Array.isArray(network?.ips) ? network.ips : [];
+    const ipTitle = ips.length ? '本机 IP：\n' + ips.map(x => `${x.name}：${x.address}`).join('\n') : '';
+    const ipChip = ips.length ? `<span class="strip-ip" title="${escapeHtml(ipTitle)}" aria-label="${escapeHtml('本机 IP ' + ips[0].address)}">${escapeHtml(ips[0].address)}</span>` : '';
+    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download"><span class="strip-transfer-label">↓</span><b>${rate(network?.downloadBps)}</b></span><span class="strip-upload"><span class="strip-transfer-label">↑</span><b>${rate(network?.uploadBps)}</b></span>${ipChip}</span>`;
     const location = displayRoute?.ok
       ? [displayRoute.countryZh || displayRoute.country || '国家未知', displayRoute.cityZh || displayRoute.city || '城市未知'].join(' ')
       : '出口未知';
