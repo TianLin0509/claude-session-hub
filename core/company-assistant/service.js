@@ -20,12 +20,12 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 // 输入框上方的常用问题（设计稿 B）。fill=true 的只填进输入框，等补全再发。
 const BUILTIN_CHIPS = Object.freeze([
-  { label: '今天的会', text: '今天有哪些会？按时间列出，每场写一句我需要准备什么。' },
-  { label: '下午会前准备', text: '下午的会逐场做会前准备：相关的消息、邮件和材料要点，以及我可能被问到的问题。' },
-  { label: '谁在等我回', text: '现在谁在等我回复？按等待时间排序，每条给一句建议怎么回（写成草稿，我自己发）。' },
-  { label: '汇总某个群…', text: '汇总群「」今天的讨论要点，以及和我相关的事。', fill: true },
-  { label: '未读邮件分拣', text: '把未读邮件分成三类：要我处理、知会即可、可忽略；各列标题和一句理由。' },
-  { label: '起草周报', text: '根据本周的会议、消息和邮件，起草一份周报（本周进展、问题与风险、下周计划），我来改。' },
+  { action: 'meetings-today', label: '今天的会', text: '今天有哪些会？按时间列出，每场写一句我需要准备什么。' },
+  { action: 'meeting-prep', label: '下午会前准备', text: '下午的会逐场做会前准备：相关的消息、邮件和材料要点，以及我可能被问到的问题。' },
+  { action: 'awaiting-reply', label: '谁在等我回', text: '现在谁在等我回复？按等待时间排序，每条给一句建议怎么回（写成草稿，我自己发）。' },
+  { action: 'group-summary', label: '汇总某个群…', text: '汇总群「」今天的讨论要点，以及和我相关的事。', fill: true },
+  { action: 'mail-triage', label: '未读邮件分拣', text: '把未读邮件分成三类：要我处理、知会即可、可忽略；各列标题和一句理由。' },
+  { action: 'weekly-report', label: '起草周报', text: '根据本周的会议、消息和邮件，起草一份周报（本周进展、问题与风险、下周计划），我来改。' },
 ]);
 const INSTRUCTIONS = [
   '你是我在公司电脑上的工作助理，帮我整理 WeLink 里的会议、日程、消息和邮件。请遵守：',

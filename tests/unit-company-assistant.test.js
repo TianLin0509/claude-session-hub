@@ -150,6 +150,14 @@ test('提醒：会前准备、会议太满、等你回复、关注词、答应�
   assert.equal(R.quota([NOW - 10 * 60000, NOW - 20 * 60000, NOW - 2 * 3600000], NOW, 3), 1);
 });
 
+test('小标签的动作名和桌宠右键菜单一致（hub-pet:open-assistant 的 action）', () => {
+  const { BUILTIN_CHIPS } = require('../core/company-assistant/service');
+  assert.deepEqual(BUILTIN_CHIPS.map(c => c.action), ['meetings-today', 'meeting-prep', 'awaiting-reply', 'group-summary', 'mail-triage', 'weekly-report']);
+  assert.equal(BUILTIN_CHIPS.find(c => c.action === 'group-summary').fill, true);
+  const page = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'company-assistant-page.js'), 'utf8');
+  assert.match(page, /window\.addEventListener\('hub-pet:open-assistant'/);
+});
+
 test('发行版开关：只有公司版（或隔离测试显式打开）启用助理页', () => {
   assert.equal(companyAssistantEnabled({}, { target: 'company', featureEnabled: () => true }), true);
   assert.equal(companyAssistantEnabled({}, { target: 'company', featureEnabled: n => n !== 'companyAssistant' }), false);

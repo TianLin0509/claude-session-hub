@@ -135,7 +135,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     if (!list.length) return '';
     const NAMES = { brief: '简报', 'meeting-prep': '会前准备', 'awaiting-reply': '等你回复', 'commitment-due': '答应的事', overbooked: '会议太满', 'day-summary': '下班小结', keyword: '关注词' };
     return `<details class="ca-notices"><summary>今天的提醒 ${list.length} 条 · 最新：${esc(list[0].title)}</summary>
-      ${list.map(n => `<div class="ca-notice"><span class="ca-chip">${NAMES[n.kind] || n.kind}</span><b>${esc(n.title)}</b><span class="ca-time">${when(n.at)}</span><div class="ca-notice-text">${esc(n.text).replace(/\n/g, '<br>')}</div></div>`).join('')}</details>`;
+      ${list.map(n => `<div class="ca-notice" data-notice-id="${esc(n.id)}"><span class="ca-chip">${NAMES[n.kind] || n.kind}</span><b>${esc(n.title)}</b><span class="ca-time">${when(n.at)}</span><div class="ca-notice-text">${esc(n.text).replace(/\n/g, '<br>')}</div></div>`).join('')}</details>`;
   }
 
   function chatList() {
@@ -186,15 +186,35 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     } catch (error) { showMessage?.('没发出去：' + error.message); } finally { sending = false; }
   }
 
+  // 点小标签：要补内容的（汇总某个群…）只填进输入框，其余直接发出。
+  function useChip(c) {
+    if (!c) return;
+    const input = page.querySelector('[data-slot="form"] textarea');
+    if (c.fill) { input.value = c.text; input.focus(); const at = c.text.indexOf('「」'); if (at >= 0) input.setSelectionRange(at + 1, at + 1); return; }
+    return send(c.text);
+  }
+  // 桌宠（hub-pet，2026-10-16）：点桌宠或右键里的事项，在 window 上发 hub-pet:open-assistant，
+  // detail = { source, action?, prompt?, noticeId?, sessionId? }。打开助理页；action 对上小标签就等于点那个标签，
+  // 否则把 prompt 填进输入框（输入框里已有内容不覆盖）；noticeId 对应的提醒展开并滚到眼前。
+  async function fromPet(detail = {}) {
+    await open();
+    const input = page.querySelector('[data-slot="form"] textarea');
+    const chip = detail.action ? (data?.chips || []).find(c => c.action === detail.action) : null;
+    if (chip && !(chip.fill && input.value.trim())) await useChip(chip);
+    else if (detail.prompt && !input.value.trim()) { input.value = String(detail.prompt); input.focus(); }
+    if (detail.noticeId) {
+      const box = page.querySelector('.ca-notices');
+      const row = [...page.querySelectorAll('.ca-notice')].find(n => n.dataset.noticeId === String(detail.noticeId));
+      if (box) box.open = true;
+      if (row) { row.classList.add('focus'); row.scrollIntoView({ block: 'center' }); setTimeout(() => row.classList.remove('focus'), 3000); }
+    }
+  }
+
   async function action(name, button) {
     const input = page.querySelector('[data-slot="form"] textarea');
     const [verb, arg] = name.split(/:(.*)/s);
     if (verb === 'toggle-brief') { briefOpen = !briefOpen; render(); return; }
-    if (verb === 'chip') {
-      const c = data.chips[Number(arg)]; if (!c) return;
-      if (c.fill) { input.value = c.text; input.focus(); const at = c.text.indexOf('「」'); if (at >= 0) input.setSelectionRange(at + 1, at + 1); return; }
-      return send(c.text);
-    }
+    if (verb === 'chip') return useChip(data.chips[Number(arg)]);
     if (verb === 'save-chip') {
       const text = input.value.trim(); if (!text) { showMessage?.('先在输入框里写好要存的问题'); return; }
       const label = text.replace(/\s+/g, ' ').slice(0, 10);
@@ -289,6 +309,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   });
   // 点桌面通知：打开助理页（主进程用固定编号 company-assistant）。
   ipcRenderer.on('desktop-notification:open-session', (_e, payload) => { if (payload?.sessionId === 'company-assistant') void open(); });
+  window.addEventListener('hub-pet:open-assistant', e => { void fromPet(e.detail || {}).catch(error => showMessage?.(error.message)); });
   return { open, close, isOpen: () => !!page && !page.hidden };
 }
 module.exports = { createCompanyAssistantPage };

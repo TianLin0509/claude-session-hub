@@ -109,6 +109,25 @@ async function main() {
     await shot('05-notices');
     result.checks.push('会前准备提醒按时发出；提醒总数不超过每小时 3 条');
 
+    // ⑤b 桌宠入口（hub-pet:open-assistant，合成事件）：先切回主页，再按桌宠的三种 detail 打开助理页
+    const pet = detail => c.eval(`window.dispatchEvent(new CustomEvent('hub-pet:open-assistant', { detail: ${j(detail)} })); true`);
+    const prepId = s3.notices.find(n => n.kind === 'meeting-prep').id;
+    await c.eval(`document.getElementById('btn-home').click()`);
+    await until(`document.getElementById('company-assistant-page').hidden`, 'page closed', 10000);
+    await pet({ source: 'pet', noticeId: prepId });
+    await until(`!document.getElementById('company-assistant-page').hidden && document.querySelector('.ca-notices')?.open && document.querySelector('.ca-notice.focus')?.dataset.noticeId === ${j(prepId)}`, 'pet notice focus', 15000);
+    await c.eval(`document.querySelector('[data-slot="form"] textarea').value = ''`);
+    await pet({ source: 'pet', prompt: '桌宠带来的问题' });
+    await until(`document.querySelector('[data-slot="form"] textarea').value === '桌宠带来的问题'`, 'pet prompt filled', 10000);
+    await pet({ source: 'pet', prompt: '第二个问题' });
+    await sleep(800);
+    assert.equal(await c.eval(`document.querySelector('[data-slot="form"] textarea').value`), '桌宠带来的问题', '输入框已有内容不覆盖');
+    await c.eval(`document.querySelector('[data-slot="form"] textarea').value = ''`);
+    await pet({ source: 'pet', action: 'group-summary', prompt: '帮我汇总一个群今天的讨论。' });
+    await until(`document.querySelector('[data-slot="form"] textarea').value.startsWith('汇总群「」')`, 'pet action chip', 10000);
+    await c.eval(`document.querySelector('[data-slot="form"] textarea').value = ''`);
+    result.checks.push('桌宠事件：带提醒编号时展开并定位那条提醒；带问题时填进空输入框、不覆盖已有内容；带动作时等于点对应小标签');
+
     // ⑥ 只调了查询命令
     const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
     for (const call of calls) checkArgs(call, { allowSetup: call[0] === 'auth' && call[1] === 'login' });
