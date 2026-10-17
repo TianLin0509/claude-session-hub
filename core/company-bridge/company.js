@@ -25,6 +25,15 @@ const { GatePasser } = require('./gate-pass');
 const { HubAdmin } = require('./hub-admin');
 
 const PURPOSE = 'company-bridge';
+// 特战会话名（2026-10-18 田哥：「在公司侧 session 名字里直接看出对应家里哪个」）：家里编号 Q-1018-01、
+// 由家里的 Codex 会话发问 → 「1018-Q1-codex」。编号不是这个格式（极少见）时退回「特战 · 问题标题」。
+function tezhanSessionTitle(t) {
+  const m = /^Q-(\d{4})-(\d+)$/.exec(String(t.id || ''));
+  if (!m) return '特战 · ' + short(t.title, 26);
+  const kind = String(t.from?.kind || '').toLowerCase();
+  const agent = /codex/.test(kind) ? 'codex' : /deepseek/.test(kind) ? 'deepseek' : /claude/.test(kind) ? 'claude' : kind.replace(/[^a-z0-9]/g, '').slice(0, 12) || 'home';
+  return `${m[1]}-Q${Number(m[2])}-${agent}`;
+}
 // 历代默认说明：没改过的老设置里存的就是它们，读设置时换成当前默认。
 const V1_INSTRUCTIONS = [
   '你是公司电脑上的代码阅读助手，替家里的 Agent 回答关于公司代码的问题。请遵守：',
@@ -513,7 +522,7 @@ class CompanyBridge {
       if (!known) {
         sessionId = randomUUID();
         const cwd = s.codeRoots.find(p => this.deps.isDirectory ? this.deps.isDirectory(p) : true) || this.deps.fallbackCwd;
-        const opts = { id: sessionId, cwd, title: '特战 · ' + short(t.title, 26), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
+        const opts = { id: sessionId, cwd, title: tezhanSessionTitle(t), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
           effort: s.effort, addDirs: s.codeRoots.filter(p => p !== cwd) };
         // 号池里有可用的号就走号池（自动挑进行中会话最少的号），并行的问题分散到不同账号；挑不出号时退回个人账号，问题不卡住。
         let created = null;
