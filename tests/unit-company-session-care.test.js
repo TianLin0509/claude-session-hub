@@ -218,14 +218,19 @@ test('并行上限：工作日忙时用设定值；晚上、周末放宽；再�
   // 周五 21:50 闲时、只有个人账号：每号闲时放到 6 个（2026-10-17 田哥：晚上同时开 6 个没问题）→ 闲时上限 6
   const night = care.parallelCap({ date: at('2026-10-16T21:50:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(16) });
   assert.equal(night.cap, 6); assert.equal(night.peak, false); assert.equal(night.limitedBy, '闲时上限');
-  // 个人账号、忙时仍按每号 2 个收：设定 4 也只开 2
-  const peakOne = care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), peakCap: 4, idleCap: 6, lanes: 1, memory: mem(16) });
+  // 2026-10-17 新默认：工作日忙时 3 个、每号忙时 3 个 → 个人账号白天就能开 3 个
+  assert.equal(care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), lanes: 1, memory: mem(16) }).cap, 3);
+  // 每号忙时上限可调：设成 2 时，忙时设定 4 也只开 2
+  const peakOne = care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), peakCap: 4, perAccountPeak: 2, lanes: 1, memory: mem(16) });
   assert.equal(peakOne.cap, 2); assert.match(peakOne.limitedBy, /可用账号数/);
   // 周六白天：号池 2 个号 + 个人 = 3 条道 → 闲时上限 6
   assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, memory: mem(20) }).cap, 6);
-  // 内存只剩 8 GB（25%）：再开一个就低于 20% → 只能维持现有的 2 个
-  const tight = care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, working: 2, memory: mem(7.5) });
+  // 内存保底默认 10%：32 GB 剩 4 GB，再开一个就低于 3.2 GB → 只能维持现有的 2 个
+  const tight = care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, working: 2, memory: mem(4) });
   assert.equal(tight.cap, 2); assert.equal(tight.limitedBy, '内存余量');
+  // 同样剩 7.5 GB：保底 10% 还能再开 3 个（共 5），保底调到 20% 就只能维持 2 个
+  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), idleCap: 6, lanes: 3, working: 2, memory: mem(7.5) }).cap, 5);
+  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), idleCap: 6, lanes: 3, working: 2, memory: mem(7.5), memFloor: 0.2 }).cap, 2);
   // 午休 12:30 不算忙时
   assert.equal(care.isPeak(at('2026-10-16T12:30:00+08:00')), false);
 });
