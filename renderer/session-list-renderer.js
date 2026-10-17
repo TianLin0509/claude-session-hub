@@ -682,8 +682,8 @@ sessionListEl.addEventListener('keydown', event => {
     const item = collectSidebarItems().find(entry => entry.id === id);
     if (!item) return;
     if (tezhanMode && isTezhanSession(item) !== tezhanOnly) {
-      tezhanOnly = isTezhanSession(item);
-      savePreference('hubSidebarTezhanOnly', String(tezhanOnly)); syncWirelessControl();
+      // 只为这次定位切过去，不存：否则刷新后自己的会话整片消失（2026-10-17 审核）。
+      tezhanOnly = isTezhanSession(item); syncWirelessControl();
     } else if (!tezhanMode && isWirelessSession(item) && !showWireless) {
       showWireless = true;
       savePreference('hubSidebarShowWireless', 'true'); syncWirelessControl();
@@ -773,6 +773,15 @@ sessionListEl.addEventListener('keydown', event => {
     const sessionMap = renderSessions;
   const visible = filteredSidebarItems(sessionMap);
   const sections = sidebarView(visible, sessionMap, recentDays, { now: renderNow, classify });
+  if (tezhanMode && wirelessControl) {
+    // 藏起来的特战会话里有出错或未读的：按钮上标个数，点亮就能看到（2026-10-17 审核）。
+    const hidden = tezhanOnly ? [] : collectSidebarItems(sessionMap).filter(isTezhanSession);
+    const failed = hidden.length ? new Set(partitionSidebarSessions(hidden, { now: renderNow, classify, sessionMap }).failed.map(x => x.id)) : new Set();
+    const attention = hidden.filter(x => failed.has(x.id) || sidebarItemHasUnread(x, sessionMap)).length;
+    const label = attention ? `特战 ${attention}` : '特战';
+    if (wirelessControl.textContent !== label) wirelessControl.textContent = label;
+    wirelessControl.dataset.attention = attention ? (failed.size ? 'failed' : 'unread') : '';
+  }
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
   // back to the top, which feels like the sidebar is "fighting" the user.
