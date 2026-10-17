@@ -169,6 +169,11 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
 
   await r.home.checkNow();
   assert.equal(r.home.thread(asked.thread).rounds[0].status, 'running');
+  // 通道串的进度线要用：公司第一次说收到、开始处理的时间（2026-10-16）
+  const firstRound = r.home.thread(asked.thread).rounds[0];
+  assert.ok(firstRound.ackAt >= firstRound.sentAt && firstRound.startedAt >= firstRound.ackAt, '记下 ackAt 与 startedAt');
+  // 界面从 bridge:status 读这两个时间：要原样带出
+  assert.ok(r.home.status().threads.find(t => t.id === asked.thread).rounds[0].startedAt);
 
   r.cs.busy.add(companySession); r.cs.answer(companySession, '半截');
   await r.company.checkNow();

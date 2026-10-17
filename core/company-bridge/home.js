@@ -332,7 +332,10 @@ class HomeBridge {
         changed = true;
         if (message.state === 'error') return { ...r, status: 'error', error: String(message.note || '公司报错'), errorAt: this.now(), delivered: false, nextTryAt: null };
         // 公司重试了失败的这一轮：清掉上次的报错，等新的回执。
-        return { ...r, status: message.state === 'running' ? 'running' : 'received', note: message.note || null, error: null };
+        // 通道串的进度线（2026-10-16）：记下公司第一次说「已收到」和「开始处理」的时间，算每段耗时。
+        const running = message.state === 'running';
+        return { ...r, status: running ? 'running' : 'received', note: message.note || null, error: null,
+          ackAt: r.ackAt || this.now(), ...(running && !r.startedAt ? { startedAt: this.now() } : {}) };
       }
       if (message.type === 'reply') {
         // 同一轮只收第一份回执（发件箱重发、服务端重放都不会让它再投递一次）。
