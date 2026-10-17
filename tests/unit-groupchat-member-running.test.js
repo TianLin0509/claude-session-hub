@@ -122,7 +122,7 @@ function sectionOf(html, needle) {
 }
 
 function memberLogoStates(html) {
-  return Object.fromEntries([...html.matchAll(/<span class="sl-title">[^]*?AI-(claude|codex|kimi)<\/span><span class="sl-kind ai-logo logo-[^"]+" data-state="([^"]+)"/g)].map(m=>[m[1],m[2]]));
+  return Object.fromEntries([...html.matchAll(/<span class="sl-kind ai-logo logo-[^"]+" data-state="([^"]+)"[^>]*><\/span><span class="sl-title">[^]*?AI-(claude|codex|kimi)<\/span>/g)].map(m=>[m[2],m[1]]));
 }
 
 console.log('Running unit-groupchat-member-running tests...');
