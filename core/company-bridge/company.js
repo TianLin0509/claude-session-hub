@@ -21,6 +21,8 @@ const { AskHome } = require('./ask-home');
 // 2026-10-15：设置菜单的隐藏入口（unlock.js）与放行页自动点击（gate-pass.js）。
 const { matchesUnlock } = require('./unlock');
 const { GatePasser } = require('./gate-pass');
+// 2026-10-17：家里远程让这台 Hub 更新 / 重启（hub-admin.js），共用这条通道和数据库。
+const { HubAdmin } = require('./hub-admin');
 
 const PURPOSE = 'company-bridge';
 // 历代默认说明：没改过的老设置里存的就是它们，读设置时换成当前默认。
@@ -55,8 +57,11 @@ const DEFAULT_INSTRUCTIONS = V3_INSTRUCTIONS.replace('替家里的 Agent 办事'
 const OLD_DEFAULTS = [V1_INSTRUCTIONS, V2_INSTRUCTIONS, V3_INSTRUCTIONS];
 // maxParallel 是工作日忙时的上限；闲时（晚上、周末）放宽到 maxParallelIdle，并按可用账号和内存再收（session-care.js parallelCap）。
 // usePool：通道新开的会话走号池（自动挑进行中会话最少的号），号池没有可用的号时用个人账号。
-const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructions: DEFAULT_INSTRUCTIONS, effort: 'high', maxParallel: 2, maxParallelIdle: 6,
-  busyHours: care.DEFAULT_BUSY_HOURS, usePool: true, pollSeconds: 30, autoGate: false });
+// 2026-10-17 田哥：工作日忙时 3 个、每号忙时 3 / 闲时 6 个、内存保底 10%，都可在设置里调（parallelRev 2 起）。
+const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructions: DEFAULT_INSTRUCTIONS, effort: 'high', maxParallel: 3, maxParallelIdle: 6,
+  perAccountPeak: 3, perAccountIdle: 6, memFloorPct: 10, busyHours: care.DEFAULT_BUSY_HOURS, usePool: true, pollSeconds: 30, autoGate: false, parallelRev: 2,
+  // 允许家里远程更新 / 重启这台 Hub（2026-10-17 田哥：默认开）。
+  allowRemoteAdmin: true });
 const ACTIVE_POLL_MS = 10000;
 const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -66,6 +71,8 @@ const MAX_CODE_RUN = 12;
 const MAX_CODE_TOTAL = 30;
 // 发出后会话停下、却一直没读到回答：判定没答上，告诉家里。
 const NO_ANSWER_MS = 10 * 60000;
+// 记录还在写时最多等多久（长仿真、全量编译）；过了照旧按「没答上」处理，避免永远挂着。
+const LONG_RUN_MS = 3 * 60 * 60000;
 // 发出后多久核实「提问真的写进了 CodeAgent 的记录」；刚发出这段时间里 hook 可能还没到，也按「在干活」占名额。
 const VERIFY_MS = 3 * 60000;
 const STARTUP_GRACE_MS = 3 * 60000;
@@ -178,6 +185,7 @@ class CompanyBridge {
     this.busy = null; this.advanceBusy = null; this.deliverBusy = null; this.timer = null; this.nextPullAt = 0; this.lastPullAt = 0;
     this.askHome = new AskHome({ bridge: this, deps });
     this.images = new (require('./images').BridgeImages)(this);
+    this.hubAdmin = new HubAdmin({ bridge: this, deps });
     this.gatePass = new GatePasser({ open: url => deps.openHiddenGate(url), logDir: path.join(deps.dataDir, 'logs'), now: () => this.now(),
       notify: (title, text) => this.notify(title, text) });
     // 升级前就配对过的电脑（入口还没隐藏时用过）直接算已解锁，不让成员升级后找不到入口。
@@ -196,7 +204,9 @@ class CompanyBridge {
   settings() {
     const { model: _oldModel, ...s } = this.store.get('settings') || {}; // 旧版存过模型，现在不用
     const instructions = !s.instructions || OLD_DEFAULTS.includes(s.instructions.trim()) ? DEFAULT_INSTRUCTIONS : s.instructions;
-    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [] };
+    // 旧版设置页只能存「同时 N 个」且默认 2；没调过并行档位的（parallelRev 缺失且仍是旧默认 2）按新默认 3。
+    if (!s.parallelRev && Number(s.maxParallel) === 2) delete s.maxParallel;
+    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [], parallelRev: DEFAULT_SETTINGS.parallelRev };
   }
   setSettings(patch = {}) {
     const next = this.settings();
@@ -208,12 +218,17 @@ class CompanyBridge {
     }
     if ('instructions' in patch) { const t = String(patch.instructions || '').trim(); if (t.length > 8000) throw new Error('说明太长（上限 8000 字）'); next.instructions = t || DEFAULT_INSTRUCTIONS; }
     if ('effort' in patch) { if (!EFFORTS.includes(patch.effort)) throw new Error('思考深度只能是 low / medium / high / max'); next.effort = patch.effort; }
-    if ('maxParallel' in patch) { const n = Number(patch.maxParallel); if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('同时处理的问题数只能是 1–4'); next.maxParallel = n; }
-    if ('maxParallelIdle' in patch) { const n = Number(patch.maxParallelIdle); if (!Number.isInteger(n) || n < 1 || n > 8) throw new Error('闲时同时处理的问题数只能是 1–8'); next.maxParallelIdle = n; }
+    const int = (key, lo, hi, label) => { if (!(key in patch)) return; const n = Number(patch[key]); if (!Number.isInteger(n) || n < lo || n > hi) throw new Error(`${label}只能是 ${lo}–${hi}`); next[key] = n; };
+    int('maxParallel', 1, 8, '工作日忙时同时处理的问题数');
+    int('maxParallelIdle', 1, 12, '闲时同时处理的问题数');
+    int('perAccountPeak', 1, 8, '每个账号忙时同时处理的问题数');
+    int('perAccountIdle', 1, 12, '每个账号闲时同时处理的问题数');
+    int('memFloorPct', 5, 50, '内存保底百分比');
     if ('busyHours' in patch) { const spec = String(patch.busyHours || '').trim(); if (spec && !care.parseHours(spec).length) throw new Error('忙时格式如 08:30-12:00,13:30-17:30'); next.busyHours = spec || care.DEFAULT_BUSY_HOURS; }
     if ('usePool' in patch) next.usePool = patch.usePool === true;
     if ('pollSeconds' in patch) { const n = Number(patch.pollSeconds); if (!Number.isInteger(n) || n < 10 || n > 600) throw new Error('检查间隔只能是 10–600 秒'); next.pollSeconds = n; }
     if ('autoGate' in patch) next.autoGate = patch.autoGate === true;
+    if ('allowRemoteAdmin' in patch) next.allowRemoteAdmin = patch.allowRemoteAdmin === true;
     this.store.set('settings', next);
     this.tightenPoll(); this.changed();
     return next;
@@ -270,6 +285,8 @@ class CompanyBridge {
         this.nextPullAt = this.lastPullAt + this.polling().intervalSeconds * 1000;
         try { await this.link.pull(message => this.receive(message)); } catch {}
         await this.passGate();
+        // 上次远程更新 / 重启的结果、版本变化，通道接通后报回家里。
+        try { await this.hubAdmin.announce(); } catch (e) { console.warn('[company-bridge] hub-admin announce', e.message); }
         this.changed();
       }
     })().finally(() => { this.busy = null; });
@@ -278,6 +295,8 @@ class CompanyBridge {
       if (!this.advanceBusy) this.advanceBusy = this.advance().finally(() => { this.advanceBusy = null; });
       await this.advanceBusy;
     }
+    // 远程更新 / 重启：等到安全时机就重启（hub-admin.js）。
+    if (this.link.paired()) { try { await this.hubAdmin.advance(); } catch (e) { console.warn('[company-bridge] hub-admin', e.message); } }
     // 家里对 ask_home 的回复：和「自动作答」开关无关，配对了就送。
     if (this.link.paired()) {
       if (!this.deliverBusy) this.deliverBusy = this.askHome.deliver().finally(() => { this.deliverBusy = null; });
@@ -314,6 +333,7 @@ class CompanyBridge {
       return;
     }
     if (this.askHome.receive(message)) return;
+    if (this.hubAdmin.receive(message)) return;
     // 家里报：这些问题的发问会话还在活动（追问可能性大，答完的会话保温加倍）。
     if (message.type === 'asker') {
       if (message.gen && message.gen !== this.link.gen()) return;
@@ -351,6 +371,15 @@ class CompanyBridge {
     if (!s) return false;
     return !!this.deps.isAgentTurnActive?.(id) || require('../session-runtime-truth').sessionRuntimeIsActive(s) || s.status === 'running' || !!this.deps.hasPendingPrompt?.(id);
   }
+  // 原生记录最近 NO_ANSWER_MS 内有写入：CodeAgent 还在干活。拿不到路径或读不到时间按「不新鲜」处理（沿用原判定）。
+  transcriptFresh(sessionId) {
+    const meta = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId);
+    const file = meta && meta.transcriptPath;
+    if (!file) return false;
+    let ms = null;
+    try { ms = this.deps.transcriptMtime ? this.deps.transcriptMtime(file) : require('node:fs').statSync(file).mtimeMs; } catch { return false; }
+    return Number.isFinite(ms) && this.now() - ms < NO_ANSWER_MS;
+  }
   lastFinal(sessionId) {
     const meta = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId);
     if (!meta) return null;
@@ -374,6 +403,8 @@ class CompanyBridge {
     const queue = this.openThreads().filter(x => x.state === 'queued')
       .sort((a, b) => (Number(!!b.sessionId) - Number(!!a.sessionId)) || a.createdAt - b.createdAt);
     let waiting = 0;
+    // 家里要求重启、正在等手上的任务答完：新任务先排队，重启后接着做。
+    if (this.hubAdmin.holdingDispatch()) { this.careSessions(); return; }
     for (const t of queue) {
       if (t.sessionId && this.sessionBusy(t.sessionId)) continue; // 追问时原会话还在忙（例如改写上一轮），等它停下
       if (free > 0) { await this.dispatch(t); free -= 1; continue; }
@@ -387,10 +418,19 @@ class CompanyBridge {
     const s = this.settings();
     let lanes = 1;
     if (s.usePool) { try { lanes += Math.max(0, Number(this.deps.poolLanes?.()) || 0); } catch { /* 号池读不到就只算个人账号 */ } }
-    const limit = care.parallelCap({ date: new Date(this.now()), busyHours: s.busyHours, peakCap: s.maxParallel, idleCap: s.maxParallelIdle, lanes, working,
+    const limit = care.parallelCap({ date: new Date(this.now()), busyHours: s.busyHours, peakCap: s.maxParallel, idleCap: s.maxParallelIdle,
+      perAccountPeak: s.perAccountPeak, perAccountIdle: s.perAccountIdle, memFloor: s.memFloorPct / 100, lanes, working,
       memory: this.deps.memory ? this.deps.memory() : care.memoryNow() });
     this.parallelState = { ...limit, lanes, working, at: this.now() };
     return limit;
+  }
+  // 设置页显示「现在最多同时几个、受什么限制」；算不出来时不挡状态页。
+  parallelLimitSafe() {
+    try {
+      const working = this.openThreads().filter(x => x.state === 'running' && this.roundWorking(x)).length;
+      const { cap, peak, limitedBy, timeCap, laneCap, memCap } = this.parallelLimit(working);
+      return { cap, peak, limitedBy, timeCap, laneCap, memCap, working };
+    } catch { return null; }
   }
   // 排队的问题告诉家里：排第几、为什么在等。只在内容变化时发。
   reportQueue(t, position, limit, working) {
@@ -466,7 +506,7 @@ class CompanyBridge {
       if (!known) {
         sessionId = randomUUID();
         const cwd = s.codeRoots.find(p => this.deps.isDirectory ? this.deps.isDirectory(p) : true) || this.deps.fallbackCwd;
-        const opts = { id: sessionId, cwd, title: 'AI特战队 · ' + short(t.title, 22), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
+        const opts = { id: sessionId, cwd, title: '特战 · ' + short(t.title, 26), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
           effort: s.effort, addDirs: s.codeRoots.filter(p => p !== cwd) };
         // 号池里有可用的号就走号池（自动挑进行中会话最少的号），并行的问题分散到不同账号；挑不出号时退回个人账号，问题不卡住。
         let created = null;
@@ -537,6 +577,9 @@ class CompanyBridge {
           return this.failRound(t, r, '提问没能送进公司的 CodeAgent（重发一次后它的记录里仍没有这条提问）；可在「AI特战队专用功能」里点重试，或追问重发');
         }
       }
+      // CodeAgent 的原生记录还在写就是还在干活（长时间的编译、仿真）：会话表里查不到、或停摆超过 30 分钟都先别判失败，
+      // 最多等 LONG_RUN_MS（2026-10-17 Q-1017-17/21：跑 AirView 的会话还在运行，10 分钟就被判成「会话已关闭」）。
+      if (this.now() - r.sentAt < LONG_RUN_MS && this.transcriptFresh(t.sessionId)) return;
       if (this.now() - r.sentAt > NO_ANSWER_MS && !this.deps.getSession(t.sessionId)) return this.failRound(t, r, '会话已关闭，没有读到回答');
       if (this.now() - r.sentAt > NO_ANSWER_MS * 3) return this.failRound(t, r, '会话停下了，但一直没读到回答');
       return;
@@ -657,7 +700,7 @@ class CompanyBridge {
   status() {
     const c = this.link.config(), st = this.link.status();
     return {
-      ok: true, role: 'company', unlocked: this.unlocked(), settings: this.settings(), defaultInstructions: DEFAULT_INSTRUCTIONS,
+      ok: true, role: 'company', unlocked: this.unlocked(), settings: this.settings(), defaultInstructions: DEFAULT_INSTRUCTIONS, parallel: this.parallelLimitSafe(),
       link: { state: c.state || 'none', baseUrl: c.baseUrl || null, pairedAt: c.pairedAt || null, createdAt: c.createdAt || null, outbox: this.link.pendingOutbox() },
       net: { lastOkAt: st.lastOkAt || null, lastError: st.lastError || null, gate: st.gate || null, peerSeen: st.peerSeen || null, autoGate: this.gatePass.status() },
       nextPullAt: this.nextPullAt, now: this.now(), polling: this.polling(),
@@ -665,6 +708,7 @@ class CompanyBridge {
       askHome: this.askHome.status(),
       images: this.images.status(),
       care: this.careState || null,
+      hubAdmin: this.hubAdmin.status(),
     };
   }
   notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: 'AI特战队 · ' + title, text, sessionId }); } catch {} }

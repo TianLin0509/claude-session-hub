@@ -40,6 +40,15 @@ const tools = [
     inputSchema: schema({ thread: { type: 'string', description: '编号，如 Q-1016-02' } }, ['thread']),
   },
   {
+    name: 'company_hub_update',
+    description: '远程让公司电脑上的 AI Hub 自己更新或重启（用户说「让公司 Hub 更新 / 重启」「看看公司 Hub 什么版本」时用）。'
+      + 'op=update：公司 Hub 从发行源查新版本、下载校验，等手上的任务答完（最长 30 分钟）后重启替换，失败自动回滚；'
+      + 'op=restart：等任务答完后重启（不换版本）；op=status：只回报公司 Hub 的版本与更新状态。force=true 不等任务直接重启。'
+      + '调用后立即返回指令编号和公司最近的回报；进度与结果以 Hub 通知送达，稍后可用 op=status 查，不要循环等待。',
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    inputSchema: schema({ op: { type: 'string', enum: ['update', 'restart', 'status'] }, force: { type: 'boolean', description: '不等手上的任务，马上重启（默认 false）' } }, ['op']),
+  },
+  {
     name: 'company_thread',
     description: '查看本会话向公司提过的问题和全部回执（不传 thread 时列出本会话最近 10 个），以及公司电脑是否在线。回执会自动送达，一般不需要调用。',
     annotations: { readOnlyHint: true, openWorldHint: false },

@@ -9,6 +9,7 @@
 //   node company-ask.js image --thread Q-1017-01 --path D:\test.png [--allow-resize]
 //   node company-ask.js images [--thread Q-1017-01]
 //   node company-ask.js recollect --thread Q-1015-01   （补收：上一轮没答上时，取回公司会话里已经写好的回答）
+//   node company-ask.js --hub-update [--force] | --hub-restart [--force] | --hub-status   （远程让公司 Hub 更新 / 重启 / 报版本）
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -21,9 +22,10 @@ function text() {
   throw new Error('用 --file <Markdown 文件> 或 --text <文字> 给出内容');
 }
 async function main() {
-  const command = process.argv[2];
-  const tool = { ask: 'ask_company', followup: 'followup_company', show: 'company_thread', recollect: 'recollect_company', image: 'send_image_company', images: 'company_images' }[command];
-  if (!tool) throw new Error('用法：ask --file q.md [--title t] | followup --thread Q-xxxx --file f.md | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx]');
+  const hubOp = ['update', 'restart', 'status'].find(op => process.argv.includes('--hub-' + op));
+  const command = hubOp ? 'hub' : process.argv[2];
+  const tool = hubOp ? 'company_hub_update' : { ask: 'ask_company', followup: 'followup_company', show: 'company_thread', recollect: 'recollect_company', image: 'send_image_company', images: 'company_images' }[command];
+  if (!tool) throw new Error('用法：ask --file q.md [--title t] | followup --thread Q-xxxx --file f.md | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx] | --hub-update [--force] | --hub-restart [--force] | --hub-status');
   // 会话身份与通行证由 Hub 在开会话时注入；只能代表本会话提问。
   const session = process.env.HUB_BRIDGE_SESSION_ID, pass = process.env.HUB_BRIDGE_SESSION_PASS;
   if (!session || !pass) throw new Error('这个会话没有家里联动的通行证：请在家里和公司配对之后、由 AI Hub 新开（或重开）的 Codex / Claude 会话里使用');
@@ -31,7 +33,8 @@ async function main() {
   const endpointFile = process.env.HUB_BRIDGE_ENDPOINT_FILE || path.join(dataDir, 'company-bridge', 'mcp-endpoint.json');
   let endpoint;
   try { endpoint = JSON.parse(fs.readFileSync(endpointFile, 'utf8')); } catch { throw new Error('找不到 Hub 的家里联动入口（Hub 没开着，或版本太旧）：' + endpointFile); }
-  const args = command === 'ask' ? { question: text(), ...(arg('title') ? { title: arg('title') } : {}) }
+  const args = hubOp ? { op: hubOp, force: process.argv.includes('--force') }
+    : command === 'ask' ? { question: text(), ...(arg('title') ? { title: arg('title') } : {}) }
     : command === 'followup' ? { thread: arg('thread'), question: text() }
     : command === 'image' ? { thread: arg('thread'), path: arg('path'), caption: arg('caption') || '', allow_resize: process.argv.includes('--allow-resize'), ...(arg('round') ? { round: Number(arg('round')) } : {}) }
     : (arg('thread') ? { thread: arg('thread') } : {});

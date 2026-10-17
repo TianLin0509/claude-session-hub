@@ -37,8 +37,14 @@
   <link rel="stylesheet" href="capability-panel.css">
   <link rel="stylesheet" href="account-center-panel.css">
   <link rel="stylesheet" href="styles/assistant-panel.css">
+  <!-- 公司版「助理」页（2026-10-16）：按钮由脚本只在公司版插入，样式公开版也带着无害 -->
+  <link rel="stylesheet" href="styles/company-assistant-page.css">
+  <link rel="stylesheet" href="styles/pet-settings-tab.css">
   <!-- @community-strip 无线 Tab -->
   <link rel="stylesheet" href="styles/wireless-page.css">
+  <!-- @community-end -->
+  <!-- @community-strip 本地云端管理 -->
+  <link rel="stylesheet" href="styles/cloud-page.css">
   <!-- @community-end -->
   <link rel="stylesheet" href="file-manager-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
@@ -83,6 +89,8 @@
   <link rel="stylesheet" href="styles/preview-immersive.css">
   <link rel="stylesheet" href="styles/session-immersive.css">
 <link rel="stylesheet" href="styles/zoom-label.css">
+  <link rel="stylesheet" href="styles/appearance.css">
+  <link rel="stylesheet" href="styles/bridge-thread.css">
   <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
@@ -104,10 +112,16 @@
         <strong>AI Hub</strong><span id="coldwhite-preview-label" hidden>冷白预览 0.1</span><span id="hub-version"></span><span class="hub-pid" id="hub-pid"></span>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>
-      <div id="display-preset-switch" role="group" aria-label="显示预设">
-        <button type="button" data-display-mode="desktop" aria-pressed="true" title="电脑显示预设">电脑</button>
-        <button type="button" data-display-mode="phone" aria-pressed="false" title="手机显示预设 · A 均衡清晰">手机</button>
-        <button type="button" id="btn-display-settings" aria-expanded="false" aria-controls="display-preset-settings" title="调整当前预设的显示参数" aria-label="显示参数">⚙</button>
+      <div class="header-overflow-wrap" id="toolbar-more-wrap">
+        <button type="button" class="btn-zoom" id="btn-toolbar-more" title="更多操作" aria-label="更多操作" aria-haspopup="true" aria-expanded="false" aria-controls="toolbar-more-menu">⋯</button>
+        <div class="header-overflow-menu" id="toolbar-more-menu" hidden>
+          <div id="display-preset-switch" role="group" aria-label="显示预设">
+            <button type="button" data-display-mode="desktop" aria-pressed="true" title="电脑显示预设">电脑</button>
+            <button type="button" data-display-mode="phone" aria-pressed="false" title="手机显示预设 · A 均衡清晰">手机</button>
+            <button type="button" id="btn-display-settings" aria-expanded="false" aria-controls="display-preset-settings" title="调整当前预设的显示参数" aria-label="显示参数">⚙</button>
+          </div>
+          <div id="toolbar-more-actions"></div>
+        </div>
       </div>
       <aside id="display-preset-settings" hidden aria-label="显示参数"><strong>电脑显示参数</strong><div class="display-preset-fields"></div><p>两套参数分别保存；切换不改变会话和草稿。</p></aside>
       <button type="button" class="backstage-toggle" id="btn-backstage" aria-pressed="false" title="查看后台输出" hidden>后台</button>
@@ -144,6 +158,9 @@
       <button type="button" class="btn-shell-nav" id="btn-rail-memo" data-action="open-review" title="回顾 · 备忘与昨日之我" aria-label="回顾" aria-expanded="false" aria-controls="hub-workspace"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/review.png" alt="" aria-hidden="true" /></span><span class="btn-label">回顾</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-memory" hidden data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4ZM4 7l8 4 8-4M12 11v10"/></svg></span><span class="btn-label">记忆</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="资源 · 工具与记忆" aria-label="资源" aria-expanded="false" aria-controls="hub-workspace"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/resources.png" alt="" aria-hidden="true" /></span><span class="btn-label">资源</span></button>
+      <!-- @community-strip 云端仅在本地 Hub 提供 -->
+      <button type="button" class="btn-shell-nav" id="btn-cloud" title="云端 · 阿里云机器、服务与维护" aria-label="云端" aria-controls="cloud-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18a4 4 0 1 1 0-8 6 6 0 0 1 12-2 5 5 0 0 1 0 10H6Z"/></svg></span><span class="btn-label">云端</span></button>
+      <!-- @community-end -->
       <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/accounts.png" alt="" aria-hidden="true" /></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
       <!-- @community-strip 写作 Tab 依赖私人文章库与文风 skill -->
       <!-- 写作 Tab（2026-09-30）：作品库 / 写作台 / 文风。按田哥要求放在「账号」正下方。 -->
@@ -160,6 +177,7 @@
           <!-- 内容由 theme-controller.js 按 core/theme-config.js 的清单生成 -->
           <div class="options-theme-picker" id="options-theme-picker" role="radiogroup" aria-label="选择主题"></div>
           <div class="options-theme-note">默认冷白工作室；CLI 终端随冷白主题适配浅色。手动选择会保存。</div>
+          <button type="button" id="options-appearance">AI 头像与图标 →</button>
         </div>
       </div>
       <div class="options-wrapper">
@@ -275,7 +293,7 @@
         </button>
       </div>
       <div class="session-detail-bar"><button type="button" id="btn-session-details" aria-pressed="false">详细信息</button><label class="session-model-filter"><select id="session-model-filter" aria-label="侧栏模型" title="按模型筛选"><option value="all">模型</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="codeagent" hidden>CodeAgent</option><option value="other">其他</option></select></label><label class="session-project-filter"><select id="session-project-filter" aria-label="侧栏项目" title="按项目筛选"><option value="random">随机</option><option value="all" selected>项目</option></select></label></div><div id="session-project-filter-note" class="session-project-filter-note" role="status" hidden></div>
-      <div class="session-range-tabs" role="group" aria-label="会话范围"><button type="button" data-session-days="pinned" aria-pressed="false" title="只显示置顶的会话与群聊">置顶</button><button type="button" data-session-days="1" aria-pressed="true" title="未置顶的最近24小时会话；未读和活跃会话始终显示">今天</button><button type="button" data-session-days="3" aria-pressed="false" title="未置顶的最近72小时会话；未读和活跃会话始终显示">3 天</button></div>
+      <div class="session-range-tabs" role="group" aria-label="会话范围"><button type="button" data-session-days="pinned" aria-pressed="false" title="只显示置顶的会话与群聊">置顶</button><button type="button" data-session-days="1" aria-pressed="true" title="未置顶的最近24小时会话；未读和活跃会话始终显示">今天</button><button type="button" data-session-days="3" aria-pressed="false" title="未置顶的最近72小时会话；未读和活跃会话始终显示">3 天</button><button type="button" id="btn-sidebar-wireless" aria-pressed="false" title="显示无线协作会话">无线</button></div>
       <div class="session-list" id="session-list"></div>
       <section class="sidebar-insights" id="sidebar-insights" aria-label="用量与系统状态">
         <button type="button" class="sidebar-insights-toggle" id="sidebar-insights-toggle" aria-label="展开或收起用量与系统状态" aria-expanded="true" aria-controls="sidebar-insights-content" title="向下收起用量与系统状态">
@@ -285,6 +303,7 @@
         <div class="sidebar-insights-content" id="sidebar-insights-content">
           <div class="sidebar-insights-inner">
             <div class="sidebar-account-usage" id="rail-usage" data-presentation="footer" aria-label="账户剩余额度"></div>
+            <div class="sidebar-account-usage" id="rail-codeagent-quota" aria-label="CodeAgent 剩余额度" hidden></div>
             <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
           </div>
         </div>
@@ -919,5 +938,6 @@
     </div>
   </div>
 
+<script src="appearance-controller.js"></script>
 </body>
 </html>

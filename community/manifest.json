@@ -52,6 +52,12 @@
     "tests/fixtures/codeagent-env-echo.cmd"
   ],
   "drop": [
+    "core/cloud/**",
+    "main/ipc/cloud-handlers.js",
+    "renderer/cloud-page.js",
+    "renderer/styles/cloud-page.css",
+    "tests/unit-cloud-*.test.js",
+    "tests/e2e-cloud-page-cdp.js",
     "renderer/assets/navigation/sticker-v2/research.png",
     "renderer/assets/navigation/sticker-v2/study.png",
     "renderer/assets/navigation/sticker-v2/writing.png",
@@ -93,6 +99,8 @@
     "tests/e2e-bridge-images.js",
     "tests/helpers/bridge-images-ui.py",
     "tests/helpers/company-bridge-rig.js",
+    "tests/unit-company-hub-admin.test.js",
+    "tests/e2e-company-hub-remote-update.js",
     "tests/unit-writing-tab.test.js",
     "tests/e2e-writing-tab-cdp.js",
     "renderer/assets/ai-avatars/v1/**",

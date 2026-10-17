@@ -112,10 +112,28 @@ function getSidebarSearchEntries(doc) {
   return sidebarSources.get(doc)?.() || [];
 }
 
+function isWirelessSession(item) {
+  // Stable purpose survives renaming. The title prefix also covers older
+  // workbench records without purpose; unrelated wireless discussions stay.
+  return item?.purpose === 'wireless-proposal' || /^无线\s*[·・]/.test(String(item?.title || '').trim());
+}
+
+// 公司版（2026-10-17 田哥）：侧栏几乎全是 AI特战队通道替家里开的会话，挤掉了自己的会话。
+// 「今天 / 3 天」旁边的「无线」在公司版换成「特战」：平时隐藏这些会话，点亮后只看它们。
+function isTezhanSession(item) {
+  return item?.purpose === 'company-bridge' || /^(?:AI特战队|特战)\s*[·・]/.test(String(item?.title || '').trim());
+}
+function isCompanyEdition() {
+  try { return require('../core/distribution').target === 'company'; } catch { return false; }
+}
+
 function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
+  const bridgeBadge = typeof options.bridgeBadge === 'function' ? options.bridgeBadge
+    : id => { try { return (typeof window !== 'undefined' && window._bridgeThreads?.badge(id)) || null; } catch { return null; } };
+  doc.addEventListener?.('bridge-threads-updated', () => { try { renderSessionList(); } catch (error) { console.warn('[session-list] bridge refresh failed:', error && error.message); } });
   const publishSessionViews=createSessionViewPublisher(packet=>{
     const ipc=options.ipcRenderer || (typeof process!=='undefined'&&process.type==='renderer'?require('electron').ipcRenderer:null);
     ipc?.send?.('assistant:session-view',packet);
@@ -125,6 +143,9 @@ function createSessionListRenderer(options = {}) {
   let recentDays = 1;
   let pinnedOnly = false;
   let modelFilter = 'all';
+  let showWireless = false;
+  const tezhanMode = typeof options.companyEdition === 'boolean' ? options.companyEdition : isCompanyEdition();
+  let tezhanOnly = false;
   try {
     const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
     if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
@@ -133,6 +154,8 @@ function createSessionListRenderer(options = {}) {
     pinnedOnly = storage.getItem('hubSidebarRange') === 'pinned';
     const model = storage.getItem('hubSidebarModelFilter');
     if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
+    showWireless = storage.getItem('hubSidebarShowWireless') === 'true';
+    tezhanOnly = storage.getItem('hubSidebarTezhanOnly') === 'true';
   } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
   function savePreference(key, value) {
     try { storage.setItem(key, value); }
@@ -143,6 +166,29 @@ function createSessionListRenderer(options = {}) {
     for (const button of rangeControls) button.setAttribute('aria-pressed', String(pinnedOnly ? button.dataset.sessionDays === 'pinned' : Number(button.dataset.sessionDays) === recentDays));
   }
   syncRangeControls();
+  const wirelessControl = doc.getElementById?.('btn-sidebar-wireless');
+  if (tezhanMode && wirelessControl) { wirelessControl.textContent = '特战'; wirelessControl.dataset.mode = 'tezhan'; }
+  function syncWirelessControl() {
+    if (tezhanMode) {
+      wirelessControl?.setAttribute('aria-pressed', String(tezhanOnly));
+      wirelessControl?.setAttribute('title', tezhanOnly ? '只看 AI特战队会话中；再点一下回到自己的会话' : '只看 AI特战队会话（平时不在列表里占位置）');
+      return;
+    }
+    wirelessControl?.setAttribute('aria-pressed', String(showWireless));
+    wirelessControl?.setAttribute('title', showWireless ? '隐藏无线协作会话' : '显示无线协作会话');
+  }
+  syncWirelessControl();
+  wirelessControl?.addEventListener('click', () => {
+    if (tezhanMode) {
+      tezhanOnly = !tezhanOnly;
+      savePreference('hubSidebarTezhanOnly', String(tezhanOnly));
+    } else {
+      showWireless = !showWireless;
+      savePreference('hubSidebarShowWireless', String(showWireless));
+    }
+    syncWirelessControl(); renderSessionList();
+  });
+  const sideFilterPasses = item => tezhanMode ? isTezhanSession(item) === tezhanOnly : (showWireless || !isWirelessSession(item));
   for (const button of rangeControls) button.addEventListener('click', () => {
     pinnedOnly = button.dataset.sessionDays === 'pinned';
     if (!pinnedOnly) recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
@@ -264,7 +310,7 @@ function _logoKind(kind, modelId = '') {
 
 // AI mini logo for sidebar sub-session items. Reuses the .ai-logo + .logo-<kind>
 // classes already defined in styles.css for the toolbar dropdown.
-// 2026-09-01 · 侧栏瘦身：时间左边的「Opus 5 / gpt-5.6-sol」字串换成一枚品牌小图标。
+// 侧栏用标题前的品牌小图标标识 AI，具体型号保留在悬停说明中。
 //   扫列表时真正要一眼分辨的只是"哪家 CLI"，具体型号是二级信息 → 退到 tooltip
 //   （会话行的无障碍标签也包含完整 displayName）。
 //   拿不到图标的 kind 回落成原来的文字列，避免这一列直接消失。
@@ -333,8 +379,14 @@ function _sessionWarningText(session) {
     const metricClass = value => value != null && value >= 90 ? ' strip-resource-high strip-resource-critical'
       : value != null && value >= 85 ? ' strip-resource-high' : '';
     const proxy = typeof getProxyInfo === 'function' ? getProxyInfo() : null;
-    const proxyShort = _shortProxy(proxy && proxy.proxy);
     const egress = proxy && proxy.egress;
+    // Hub 没配代理、但 Windows 系统设置里有代理时（公司办公代理），出口探测走系统代理，这里按「代理」显示；
+    // xGate（公司安全终端 SPES5）开着时标「xGate」。xGate 的节点配置是加密的，国家以实测出口为准。
+    const systemProxy = egress && egress.proxySource === 'system' ? egress.proxyEndpoint : '';
+    const proxyShort = _shortProxy(proxy && proxy.proxy) || _shortProxy(systemProxy);
+    const xgate = !!(egress && egress.tunnel && egress.tunnel.xgate);
+    const vpnNic = egress && egress.tunnel && egress.tunnel.vpn;
+    const routeLabel = vpnNic ? 'VPN' : xgate ? 'xGate' : systemProxy ? '代理' : proxyShort ? 'VPN' : '直连';
     const foreign = egress && egress.foreign;
     const domestic = egress && egress.domestic;
     const displayRoute = proxyShort ? foreign : domestic;
@@ -343,8 +395,10 @@ function _sessionWarningText(session) {
 
     const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
     const foreignTitle = [
-      proxyShort ? 'Claude / Codex 订阅、Gemini：经 VPN 代理' : '未配置 VPN，显示直连出口',
-      proxyShort ? `本地代理：${proxyShort}` : '本地代理：未配置',
+      vpnNic ? `VPN 已连上：${vpnNic.name}（${vpnNic.address}）` : '',
+      xgate ? 'xGate（公司安全终端 SPES5）正在运行；它选的节点读不到，下面是实测出口' : '',
+      systemProxy ? '公网经 Windows 系统代理' : proxyShort ? 'Claude / Codex 订阅、Gemini：经 VPN 代理' : '未配置 VPN，显示直连出口',
+      systemProxy ? `系统代理：${proxyShort}` : proxyShort ? `本地代理：${proxyShort}` : '本地代理：未配置',
       displayRoute && displayRoute.ok ? `出口地区：${displayRoute.locationLabel || '未知地区'}` : `状态：${displayRoute && displayRoute.error || '检测中'}`,
       clashDelay ? `Clash 节点健康检查：${clashDelay.nodeName} · ${clashDelay.delayMs} ms（${new Date(clashDelay.measuredAt).toLocaleString('zh-CN')}）；这是探测请求延时，不能代表下载速度或 AI 网页加载耗时` : '',
       alert ? `${alert.title || '节点异常'}：${alert.message || ''}` : '',
@@ -370,14 +424,18 @@ function _sessionWarningText(session) {
     const networkTitle = network?.status === 'ok'
       ? `本机物理网卡合计：${(network.adapters || []).join('、')}\n下行 ${(network.downloadBps / 1024).toFixed(1)} KB/s · 上行 ${(network.uploadBps / 1024).toFixed(1)} KB/s\n最近 ${(network.windowMs / 1000).toFixed(1)} 秒均值；含所有应用，非 VPN 专属流量；K/M/G 表示 KB/s、MB/s、GB/s，按 1024 换算`
       : network?.status === 'unavailable' ? '网速暂不可用' : network?.status === 'disconnected' ? '没有已连接的物理网卡' : '网速采样中';
-    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download"><span class="strip-transfer-label">↓</span><b>${rate(network?.downloadBps)}</b></span><span class="strip-upload"><span class="strip-transfer-label">↑</span><b>${rate(network?.uploadBps)}</b></span></span>`;
+    // 本机 IP（2026-10-17）：网速右边显示首选的一个（公司电脑通常是 10 段），悬停列出所有网卡的地址。
+    const ips = Array.isArray(network?.ips) ? network.ips : [];
+    const ipTitle = ips.length ? '本机 IP：\n' + ips.map(x => `${x.name}：${x.address}`).join('\n') : '';
+    const ipChip = ips.length ? `<span class="strip-ip" title="${escapeHtml(ipTitle)}" aria-label="${escapeHtml('本机 IP ' + ips[0].address)}">${escapeHtml(ips[0].address)}</span>` : '';
+    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download"><span class="strip-transfer-label">↓</span><b>${rate(network?.downloadBps)}</b></span><span class="strip-upload"><span class="strip-transfer-label">↑</span><b>${rate(network?.uploadBps)}</b></span>${ipChip}</span>`;
     const location = displayRoute?.ok
       ? [displayRoute.countryZh || displayRoute.country || '国家未知', displayRoute.cityZh || displayRoute.city || '城市未知'].join(' ')
       : '出口未知';
     const domesticLabel = !egress ? '国内检测中' : domestic?.ok ? '国内正常' : '国内异常';
     const markup =
       '<div class="strip-resources" title="点击 CPU / 内存查看进程，点击硬盘释放空间">' + metric('CPU', cpuPct) + gpuMetric + metric('内存', memoryPct) + diskMetric + '</div>' +
-      `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${proxyShort ? 'VPN' : '直连'}</span><span class="strip-location">${escapeHtml(location)}</span>${clashDelay ? `<span class="strip-delay">节点 ${clashDelay.delayMs} ms</span>` : ''}</button>` +
+      `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${routeLabel}</span><span class="strip-location">${escapeHtml(location)}</span>${clashDelay ? `<span class="strip-delay">节点 ${clashDelay.delayMs} ms</span>` : ''}</button>` +
       transfer + (showDomesticRoute() ? `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span>` : '') + '</div>';
     if (stripEl._resourceMarkup === markup) return;
     stripEl._resourceMarkup = markup;
@@ -630,11 +688,18 @@ sessionListEl.addEventListener('keydown', event => {
     doc.dispatchEvent(new doc.defaultView.CustomEvent('sidebar:open-search', { detail }));
   }
   function filteredSidebarItems(sessionMap = getSessions()) {
-    return collectSidebarItems(sessionMap).filter(item => projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
+    return collectSidebarItems(sessionMap).filter(item => sideFilterPasses(item) && projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
   }
   function revealSearchItem(id, memberId = null) {
     const item = collectSidebarItems().find(entry => entry.id === id);
     if (!item) return;
+    if (tezhanMode && isTezhanSession(item) !== tezhanOnly) {
+      // 只为这次定位切过去，不存：否则刷新后自己的会话整片消失（2026-10-17 审核）。
+      tezhanOnly = isTezhanSession(item); syncWirelessControl();
+    } else if (!tezhanMode && isWirelessSession(item) && !showWireless) {
+      showWireless = true;
+      savePreference('hubSidebarShowWireless', 'true'); syncWirelessControl();
+    }
     if (pinnedOnly !== !!item.pinned) {
       pinnedOnly = !!item.pinned;
       savePreference('hubSidebarRange',pinnedOnly ? 'pinned' : String(recentDays)); syncRangeControls();
@@ -720,6 +785,15 @@ sessionListEl.addEventListener('keydown', event => {
     const sessionMap = renderSessions;
   const visible = filteredSidebarItems(sessionMap);
   const sections = sidebarView(visible, sessionMap, recentDays, { now: renderNow, classify });
+  if (tezhanMode && wirelessControl) {
+    // 藏起来的特战会话里有出错或未读的：按钮上标个数，点亮就能看到（2026-10-17 审核）。
+    const hidden = tezhanOnly ? [] : collectSidebarItems(sessionMap).filter(isTezhanSession);
+    const failed = hidden.length ? new Set(partitionSidebarSessions(hidden, { now: renderNow, classify, sessionMap }).failed.map(x => x.id)) : new Set();
+    const attention = hidden.filter(x => failed.has(x.id) || sidebarItemHasUnread(x, sessionMap)).length;
+    const label = attention ? `特战 ${attention}` : '特战';
+    if (wirelessControl.textContent !== label) wirelessControl.textContent = label;
+    wirelessControl.dataset.attention = attention ? (failed.size ? 'failed' : 'unread') : '';
+  }
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
   // back to the top, which feels like the sidebar is "fighting" the user.
@@ -859,8 +933,8 @@ sessionListEl.addEventListener('keydown', event => {
       div.innerHTML = [
         '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
         canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
-        '<span class="sl-title" aria-label="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + _warningHtml(meetingWarning) + escapeHtml(s.title) + (s._meeting?.orchestration?.enabled === true ? '<span class="sl-orch-tag" title="AI 编排模式">编排</span>' : '') + '</span>',
         '<span class="sl-group-logos" data-state="' + dotCls + '" aria-label="群聊 · ' + STATUS_LABELS[dotCls] + '">' + (logos || `<svg class="sl-kind sl-group-icon" data-state="${dotCls}" role="img" aria-label="群聊 · ${STATUS_LABELS[dotCls]}" viewBox="0 0 24 24"><path d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2M16 5a3 3 0 0 1 0 6m1 3a4 4 0 0 1 4 4v2"/></svg>`) + '</span>',
+        '<span class="sl-title" aria-label="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + _warningHtml(meetingWarning) + escapeHtml(s.title) + (s._meeting?.orchestration?.enabled === true ? '<span class="sl-orch-tag" title="AI 编排模式">编排</span>' : '') + '</span>',
         timeHtml(s, hasUnread ? unreadMembers.size : 0) + '</div>',
         hasUnread ? '<div class="sl-group-actions">' + (unreadChips ? '<div class="sl-unread-members">' + unreadChips + '</div>' : '')
           + (markMeetingRead ? '<button type="button" class="sl-meeting-read" data-action="mark-meeting-read" data-sidebar-control="read-' + escapeHtml(s.id) + '">整组已读</button>' : '') + '</div>' : '',
@@ -901,7 +975,7 @@ sessionListEl.addEventListener('keydown', event => {
       return;
     }
 
-    // Compact rows: title, stateful provider logo, and abbreviated activity time.
+    // Compact rows: stateful provider logo, title, and abbreviated activity time.
     // Runtime/context/unread details remain available through accessible labels.
     const isActive = s.id === getActiveSessionId();
     const runtimeTruth = getSessionRuntimeTruth(s, { now: Date.now() });
@@ -955,14 +1029,19 @@ sessionListEl.addEventListener('keydown', event => {
     // 号池会话：标题前一个「池」字（放在标题格里，不占卡片的列），悬停看用的是哪个号（core/codeagent-pool.js）。
     const poolHtml = s.codeagentPoolAccount
       ? `<span class="sl-pool" title="${escapeHtml('号池账号 · ' + (s.codeagentPoolLabel || s.codeagentPoolAccount))}">池</span>` : '';
-    div.innerHTML = '<span class="sl-title">' + _warningHtml(anyWarning) + poolHtml + escapeHtml(displayTitle) + '</span>'
-      + _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), s.currentModel?.id || '')
+    // 家里 ⇄ 公司通道（2026-10-16）：标题前一枚「⇄」标签（行高固定一行，放标题前才不会被省略号截掉）；
+    // 在途时标签里就是当前那一步和耗时，悬停看编号与全程。
+    const bridge = bridgeBadge(s.id);
+    const bridgeHtml = bridge ? `<span class="bt-badge" data-state="${escapeHtml(bridge.state)}" data-role="${escapeHtml(bridge.role || '')}" title="${escapeHtml(bridge.sub)}">${escapeHtml(bridge.chip)}</span>` : '';
+    div.innerHTML = _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), s.currentModel?.id || '')
+      + '<span class="sl-title">' + _warningHtml(anyWarning) + poolHtml + bridgeHtml + escapeHtml(displayTitle) + '</span>'
       + timeHtml(s, showUnread ? Math.max(1, unreadCount) : 0);
     if (child) div.className += ' child';
     if (detailsEnabled) {
       div.className += ' has-details';
       div.innerHTML = '<div class="sl-line1">' + div.innerHTML + '</div>'
-        + detailsHtml(s, { escapeHtml, modelShort });
+        + detailsHtml(s, { escapeHtml, modelShort })
+        + (bridge ? `<div class="bt-badge-sub" data-state="${escapeHtml(bridge.state)}">⇄ ${escapeHtml(bridge.sub)}${bridge.pin ? ' · ' + escapeHtml(bridge.pin) : ''}</div>` : '');
       detailSessionIds.add(s.id);
     }
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
@@ -1091,6 +1170,8 @@ sessionListEl.addEventListener('mousedown', (e) => {
 }
 
 module.exports = {
+  isWirelessSession,
+  isTezhanSession,
   createSessionListRenderer,
   showDomesticRoute,
   compareLatestActivityDesc,

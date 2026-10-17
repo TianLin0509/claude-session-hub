@@ -163,3 +163,16 @@ test('替换脚本：程序退出后替换并核对；任何一步失败就全�
   assert.equal(fs.readFileSync(path.join(installed, 'app.asar.unpacked', 'core', 'settings.json'), 'utf8'), '{"v":2}');
   assert.equal(fs.existsSync(stagingPaths(dataDir).newDir), false, '成功后清掉暂存');
 });
+
+test('增量包里的路径只能是 app.asar 和 app.asar.unpacked/（不含依赖）：已装的老版本按这条核对，多一种路径就整包拒收、升级失败', t => {
+  const root = tmp(t);
+  const res = fakeResources(root, 'X');
+  fs.mkdirSync(path.join(res, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(res, 'scripts', 'desktop-icon-layout.ps1'), 'extraResources 里的脚本');
+  fs.mkdirSync(path.join(res, 'app.asar.unpacked', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(res, 'app.asar.unpacked', 'scripts', 'desktop-icon-layout.ps1'), 'asarUnpack 出来的脚本');
+  const packed = packPayload(res, path.join(root, 'u.gz'));
+  const legacyOk = p => p === 'app.asar' || (p.startsWith('app.asar.unpacked/') && !p.startsWith('app.asar.unpacked/node_modules/'));
+  assert.ok(packed.files.every(f => legacyOk(f.path)), packed.files.map(f => f.path).join(', '));
+  assert.ok(packed.files.some(f => f.path === 'app.asar.unpacked/scripts/desktop-icon-layout.ps1'), '解包出来的脚本随增量包送达');
+});

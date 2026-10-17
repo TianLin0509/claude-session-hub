@@ -172,3 +172,44 @@ test('default curl probe starts its process off the main thread', async () => {
     Object.assign(childProcess, originals);
   }
 });
+
+test('Hub 没配代理时退到 Windows 系统代理探测出口，并带上 xGate 是否开着（公司电脑，Q-1017-20）', async () => {
+  const sg = route('203.0.113.20', 'SG', 'Singapore', 'Singapore');
+  const calls = [];
+  const monitor = createNetworkEgressMonitor({
+    getProxy: () => '',
+    getSystemProxy: async () => 'http://proxy.corp:8080',
+    getTunnel: async () => ({ xgate: true }),
+    cacheMs: 0,
+    probe: async ({ route: routeType, proxy }) => { calls.push([routeType, proxy]); return routeType === 'proxy' ? sg : { ok: false, route: 'direct', error: '直连出口不可用' }; },
+  });
+  const status = await monitor.getStatus({ force: true });
+  assert.deepEqual(calls.find(c => c[0] === 'proxy'), ['proxy', 'http://proxy.corp:8080'], '出口探测走系统代理');
+  assert.equal(status.proxySource, 'system');
+  assert.equal(status.proxyEndpoint, 'http://proxy.corp:8080');
+  assert.equal(status.foreign.ok, true);
+  assert.equal(status.tunnel.xgate, true);
+
+  const own = createNetworkEgressMonitor({ getProxy: () => 'http://127.0.0.1:7890', getSystemProxy: async () => 'http://proxy.corp:8080', cacheMs: 0,
+    probe: async ({ route: routeType, proxy }) => ({ ...sg, route: routeType, proxyUsed: proxy }) });
+  const mine = await own.getStatus({ force: true });
+  assert.equal(mine.proxySource, 'hub', 'Hub 配了代理（家里的 Clash）就用 Hub 的，不看系统代理');
+  assert.equal(mine.proxyEndpoint, 'http://127.0.0.1:7890');
+});
+
+test('解析 Windows 系统代理与 xGate 进程', () => {
+  const { parseSystemProxy, parseXgateRunning } = require('../core/windows-network-context.js');
+  assert.equal(parseSystemProxy('    ProxyEnable    REG_DWORD    0x1\r\n    ProxyServer    REG_SZ    proxy.corp:8080\r\n'), 'http://proxy.corp:8080');
+  assert.equal(parseSystemProxy('ProxyEnable    REG_DWORD    0x0\nProxyServer    REG_SZ    proxy.corp:8080'), '', '关着的不算');
+  assert.equal(parseSystemProxy('ProxyEnable    REG_DWORD    0x1\nProxyServer    REG_SZ    http=h1:80;https=h2:443'), 'http://h2:443');
+  assert.equal(parseSystemProxy('ProxyEnable    REG_DWORD    0x1'), '');
+  assert.equal(parseXgateRunning('"SPES5.exe","15268","Console","1","182,340 K"\r\n'), true);
+  assert.equal(parseXgateRunning('信息: 没有运行的任务匹配指定标准。'), false);
+});
+
+test('公司 VPN 网卡：只认 Up 且拿到真实 IPv4 的（169.254 自动地址不算连上）', () => {
+  const { parseVpnAdapters } = require('../core/windows-network-context.js');
+  assert.deepEqual(parseVpnAdapters('TAP-Windows Adapter V9|10.20.30.40\r\nArray Networks SSL VPN Adapter|169.254.3.4\r\n'), [{ name: 'TAP-Windows Adapter V9', address: '10.20.30.40' }]);
+  assert.deepEqual(parseVpnAdapters(''), []);
+  assert.deepEqual(parseVpnAdapters('乱码一行'), []);
+});
