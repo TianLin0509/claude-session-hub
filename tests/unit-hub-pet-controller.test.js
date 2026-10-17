@@ -29,6 +29,9 @@ class FakeWindow extends EventEmitter {
   setBounds(b) { this.bounds = { ...b }; }
   getBounds() { return { ...this.bounds }; }
   showInactive() { this.visible = true; }
+  show() { this.visible = true; }
+  focus() { this.focused = true; }
+  hide() { this.visible = false; }
   isVisible() { return this.visible; }
 }
 FakeWindow.all = [];
@@ -52,18 +55,20 @@ function setup({ company = true, settings = null, now = () => new Date(2026, 9, 
   const mainWc = new FakeWebContents();
   const mainWindow = { webContents: mainWc, isDestroyed: () => false };
   const sent = [];
-  let menu = null;
   const bus = new NoticeBus({ now });
   const ctl = createHubPetController({
     BrowserWindow: FakeWindow, screen, ipcMain, powerMonitor: { getSystemIdleTime: () => 0 }, app: { getAppMetrics: () => [] },
-    Menu: { buildFromTemplate: t => ({ popup: () => { menu = t; } }) },
     htmlPath: 'pet.html', preloadPath: 'pet-preload.js', assetsDir: path.join(ROOT, 'renderer', 'assets', 'hub-pet'), dataDir,
     company, getMainWindow: () => mainWindow, focusPrimaryWindow: () => sent.push(['focus']), sendToRenderer: (ch, p) => sent.push([ch, p]),
     noticeBus: bus, debug: true, watchFullscreen: false, logger: { warn() {} }, now,
   });
   created.push(ctl);
   const petEvent = () => ({ sender: FakeWindow.all[0].webContents });
-  return { ctl, ipcMain, bus, sent, dataDir, mainWc, petEvent, getMenu: () => menu };
+  // 右键菜单（2026-10-17 起是自绘的小窗）：返回菜单窗口里显示的内容，act() 模拟点了菜单里的一项。
+  const menuWin = () => FakeWindow.all.find(w => w.options.title === 'AI Hub 桌宠菜单');
+  const openMenu = async () => { ipcMain.emit('hub-pet:menu', petEvent()); await tick(); return menuWin().webContents.last('hub-pet-menu:state'); };
+  const act = payload => ipcMain.emit('hub-pet-menu:act', { sender: menuWin().webContents }, payload);
+  return { ctl, ipcMain, bus, sent, dataDir, mainWc, petEvent, openMenu, act, menuWin };
 }
 const tick = () => new Promise(r => setImmediate(r));
 
@@ -93,7 +98,7 @@ test('公司版默认开、家里版默认关；窗口透明无边框置顶不�
 });
 
 test('新提醒：欢呼 + 气泡说标题；点气泡展开正文；安静一小时只亮小圆点', async () => {
-  const { ctl, bus, petEvent, ipcMain, getMenu } = setup();
+  const { ctl, bus, petEvent, ipcMain, openMenu, act } = setup();
   ctl.start();
   await tick();
   const w = FakeWindow.all[0];
@@ -108,10 +113,9 @@ test('新提醒：欢呼 + 气泡说标题；点气泡展开正文；安静一�
   assert.equal(st.bubble, null);
   assert.notEqual(st.pose, 'happy');
 
-  ipcMain.emit('hub-pet:menu', petEvent());
-  const quiet = getMenu().find(i => i.label === '安静一小时');
-  assert.ok(quiet, '右键菜单有「安静一小时」');
-  quiet.click();
+  const menu = await openMenu();
+  assert.equal(menu.quietHour, false, '右键菜单有「安静一小时」开关');
+  act({ type: 'quietHour', value: true });
   bus.publish({ id: 'n2', kind: 'awaiting-reply', title: '组员 B 等你 14 小时了' });
   st = w.webContents.last('hub-pet:state');
   assert.equal(st.bubble, null);
@@ -120,14 +124,27 @@ test('新提醒：欢呼 + 气泡说标题；点气泡展开正文；安静一�
   ctl.dispose();
 });
 
-test('右键菜单包含 6 件助理事项和各项开关；点事项、点宠物都打开助理页', async () => {
-  const { ctl, ipcMain, petEvent, getMenu, sent } = setup();
+test('右键菜单（自绘小窗）：6 件助理事项、说话频率、安静开关、已安装的形象；点事项打开助理页，换形象当场生效', async () => {
+  const { ctl, ipcMain, petEvent, sent, openMenu, act, menuWin } = setup();
   ctl.start();
   await tick();
-  ipcMain.emit('hub-pet:menu', petEvent());
-  const labels = getMenu().filter(i => i.label).map(i => i.label);
-  for (const l of ['今天的会', '下午会前准备', '谁在等我回', '汇总某个群', '未读邮件分拣', '起草周报', '安静一小时', '今天别说话', '说话频率', '换角色']) assert.ok(labels.includes(l), '缺少菜单项 ' + l);
-  getMenu().find(i => i.label === '谁在等我回').click();
+  const menu = await openMenu();
+  const w = menuWin();
+  assert.equal(w.options.transparent, true);
+  assert.equal(w.options.frame, false);
+  assert.equal(w.options.webPreferences.sandbox, true);
+  assert.equal(w.visible, true, '右键后菜单显示');
+  assert.deepEqual(menu.actions.map(a => a.label), ['今天的会', '下午会前准备', '谁在等我回', '汇总某个群', '未读邮件分拣', '起草周报']);
+  assert.deepEqual(menu.modes.map(m => m.label), ['活泼', '温和', '安静']);
+  assert.equal(menu.mode, 'gentle');
+  assert.ok(menu.roles.some(r => r.id === '01-cat') && menu.roles.some(r => r.id === '03-penguin'), '列出已安装的形象');
+  assert.ok(menu.roles.every(r => r.preview), '每个形象带预览图');
+  assert.equal(menu.role.id, '01-cat');
+  act({ type: 'mode', mode: 'lively' });
+  assert.equal(w.webContents.last('hub-pet-menu:state').mode, 'lively', '换频率后菜单当场更新、不收起');
+  assert.equal(w.visible, true);
+  act({ type: 'action', action: 'awaiting-reply' });
+  assert.equal(w.visible, false, '点事项后菜单收起');
   assert.deepEqual(sent.slice(-2)[0], ['focus']);
   assert.equal(sent.slice(-1)[0][0], 'hub-pet:open-assistant');
   assert.equal(sent.slice(-1)[0][1].action, 'awaiting-reply');
@@ -135,9 +152,18 @@ test('右键菜单包含 6 件助理事项和各项开关；点事项、点宠�
   ipcMain.emit('hub-pet:release', petEvent());
   assert.equal(sent.slice(-1)[0][0], 'hub-pet:open-assistant');
   assert.equal(sent.slice(-1)[0][1].source, 'pet');
-  getMenu().find(i => i.label === '换角色').submenu.find(r => r.label === '企鹅').click();
+  await openMenu();
+  act({ type: 'role', role: '03-penguin' });
   assert.equal(FakeWindow.all[0].webContents.last('hub-pet:state').role, '03-penguin');
+  act({ type: 'role', role: 'not-installed' });
+  assert.equal(FakeWindow.all[0].webContents.last('hub-pet:state').role, '03-penguin', '没装的形象不认');
+  act({ type: 'settings', tab: 'pet' });
+  assert.equal(sent.slice(-1)[0][1].settingsTab, 'pet', '「桌宠设置…」打开助理设置的桌宠分页');
+  // 只认菜单窗口自己发来的
+  ipcMain.emit('hub-pet-menu:act', { sender: {} }, { type: 'hide' });
+  assert.equal(ctl.getSettings().enabled, true);
   ctl.dispose();
+  assert.equal(w.destroyed, true, '收起桌宠时菜单窗口一起销毁');
 });
 
 test('设置：只认主窗口；关掉销毁窗口并写盘，再打开恢复', async () => {

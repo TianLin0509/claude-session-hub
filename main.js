@@ -558,8 +558,11 @@ if (process.env.CLAUDE_HUB_E2E === '1' && process.env.CLAUDE_HUB_EGRESS_FIXTURE)
     console.warn('[network-egress] invalid E2E fixture:', error && error.message);
   }
 }
+const windowsNetworkContext = require('./core/windows-network-context').createWindowsNetworkContext();
 const networkEgressMonitor = createNetworkEgressMonitor({
   getProxy: () => getHubConfig().proxy,
+  getSystemProxy: () => windowsNetworkContext.systemProxy(),
+  getTunnel: () => windowsNetworkContext.tunnel(),
   statePath: path.join(getHubDataDir(), 'network-egress-state.json'),
   ...(networkEgressProbe ? { probe: networkEgressProbe } : {}),
   logger: console,
@@ -1335,6 +1338,9 @@ function createWindow() {
         canShow: () => !keepIsolatedE2EWindowHidden() || process.env.CLAUDE_HUB_E2E_SHOW_PET === '1',
         debug: isIsolatedHub(),
         logger: console,
+        // 在线下载形象走 Electron 的网络栈（跟系统代理）；隔离测试用 AI_HUB_PET_SOURCES 指向本地源。
+        fetchImpl: (...args) => net.fetch(...args),
+        roleSources: process.env.AI_HUB_PET_SOURCES ? JSON.parse(process.env.AI_HUB_PET_SOURCES) : null,
       });
     } catch (error) { console.warn('[hub-pet] setup failed:', error && error.message); }
   }

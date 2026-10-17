@@ -101,3 +101,16 @@ test('a sampler that stops answering is killed and reported, not waited on forev
   assert.match(result.error, /timed out/);
   assert.equal(sampler.spawned[0].killed, true);
 });
+
+test('本机 IP：去掉回环、169.254、代理 TUN 假地址和虚拟机网卡，10 段排第一（公司电脑底栏显示它）', () => {
+  const { localAddresses } = require('../core/live-resource-telemetry');
+  const got = localAddresses({
+    'WLAN': [{ family: 'IPv4', address: '192.168.3.3', internal: false }, { family: 'IPv6', address: 'fe80::1', internal: false }],
+    '以太网': [{ family: 'IPv4', address: '10.12.34.56', internal: false }],
+    'vEthernet (WSL)': [{ family: 'IPv4', address: '172.20.0.1', internal: false }],
+    'Clash': [{ family: 'IPv4', address: '198.18.0.1', internal: false }],
+    '本地连接*1': [{ family: 'IPv4', address: '169.254.10.2', internal: false }],
+    'Loopback Pseudo-Interface 1': [{ family: 'IPv4', address: '127.0.0.1', internal: true }],
+  });
+  assert.deepEqual(got, [{ name: '以太网', address: '10.12.34.56' }, { name: 'WLAN', address: '192.168.3.3' }]);
+});

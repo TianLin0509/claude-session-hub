@@ -1,6 +1,6 @@
 {
   "name": "ai-group-chat-hub",
-  "version": "1.6.522",
+  "version": "1.6.523",
   "description": "多模型 AI 群聊 Hub",
   "main": "main-bootstrap.js",
   "scripts": {
@@ -65,7 +65,9 @@
       "claude-wx.ico",
       "core/claude-fast-settings.json",
       "core/claude-subscription-fast-settings.json",
-      "core/claude-subscription-standard-settings.json"
+      "core/claude-subscription-standard-settings.json",
+      "scripts/desktop-icon-layout.ps1",
+      "scripts/desktop-icon-layout.cs"
     ],
     "extraResources": [
       {

@@ -107,8 +107,26 @@ proxyInfo.proxy = '';
 renderer.renderSidebarStrip();
 assert.match(stripEl.innerHTML, /直连/);
 assert.match(stripEl.innerHTML, /中国 北京/);
+// 公司电脑（2026-10-17，Q-1017-20）：Hub 没配代理，系统设置里有办公代理，出口探测走它；xGate（SPES5）开着。
+proxyInfo = { proxy: '', egress: { proxySource: 'system', proxyEndpoint: 'http://proxy.corp:8080', tunnel: { xgate: false },
+  foreign: { ok: true, countryZh: '新加坡', cityZh: '新加坡', locationLabel: '新加坡' }, domestic: { ok: false } } };
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /<span>代理<\/span>/, '系统代理按「代理」显示，不再是「直连」');
+assert.match(stripEl.innerHTML, /新加坡/);
+assert.doesNotMatch(stripEl.innerHTML, /出口未知/);
+assert.match(stripEl.innerHTML, /系统代理：/);
+proxyInfo.egress.tunnel = { xgate: true };
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /<span>xGate<\/span>/);
+assert.match(stripEl.innerHTML, /xGate（公司安全终端 SPES5）正在运行/);
+// 本机 IP：网速右边显示首选那个，悬停列出全部
+resourceUsage = { network: { status: 'ok', downloadBps: 2048, uploadBps: 1024, windowMs: 2000, adapters: ['以太网'], ips: [{ name: '以太网', address: '10.12.34.56' }, { name: 'WLAN', address: '192.168.1.5' }] } };
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /class="strip-ip"[^>]*>10\.12\.34\.56<\/span>/);
+assert.match(stripEl.innerHTML, /WLAN：192\.168\.1\.5/);
 resourceUsage = {};
 renderer.renderSidebarStrip();
+assert.doesNotMatch(stripEl.innerHTML, /strip-ip/, '取不到 IP 时不显示');
 assert.match(stripEl.innerHTML, /CPU<b>—<\/b>/);
 assert.match(stripEl.innerHTML, /内存<b>—<\/b>/);
 assert.doesNotMatch(stripEl.innerHTML, /strip-resource-critical/);
