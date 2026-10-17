@@ -44,20 +44,15 @@ function fakeResources(root, asarText, extra = {}) {
   fs.writeFileSync(path.join(res, 'app.asar'), asarText);
   fs.writeFileSync(path.join(res, 'app.asar.unpacked', 'core', 'settings.json'), extra.settings || '{"v":1}');
   fs.writeFileSync(path.join(res, 'app.asar.unpacked', 'node_modules', 'node-pty', 'package.json'), '{"version":"1.1.0"}');
-  for (const [rel, text] of Object.entries(extra.scripts || {})) {
-    fs.mkdirSync(path.dirname(path.join(res, 'scripts', rel)), { recursive: true });
-    fs.writeFileSync(path.join(res, 'scripts', rel), text);
-  }
   return res;
 }
 
-test('增量包：装 app.asar、非依赖的解包文件和 resources/scripts，解包逐个核对', t => {
+test('增量包：只装 app.asar 和非依赖的解包文件，解包逐个核对', t => {
   const root = tmp(t);
-  const res = fakeResources(root, 'NEW-ASAR'.repeat(1000), { scripts: { 'desktop-icon-layout.ps1': 'ps1', 'hooks/stop.js': 'js' } });
+  const res = fakeResources(root, 'NEW-ASAR'.repeat(1000));
   const out = path.join(root, 'u.gz');
   const packed = packPayload(res, out);
-  // 2026-10-17：之前不带 scripts/，基线之后新增的 desktop-icon-layout.ps1 到不了公司电脑，「排齐图标」报缺脚本。
-  assert.deepEqual(packed.files.map(f => f.path), ['app.asar', 'app.asar.unpacked/core/settings.json', 'scripts/desktop-icon-layout.ps1', 'scripts/hooks/stop.js']);
+  assert.deepEqual(packed.files.map(f => f.path), ['app.asar', 'app.asar.unpacked/core/settings.json']);
   assert.equal(packed.sha256, sha256(fs.readFileSync(out)));
   const dest = path.join(root, 'new');
   unpackPayload(out, dest);
@@ -143,7 +138,7 @@ function runHelper(paths) {
 
 test('替换脚本：程序退出后替换并核对；任何一步失败就全部回滚，结果只报告一次', { skip: process.platform !== 'win32' }, t => {
   const root = tmp(t);
-  const newRes = fakeResources(path.join(root, 'build'), 'NEW'.repeat(5000), { settings: '{"v":2}', scripts: { 'desktop-icon-layout.ps1': 'NEW-PS1' } });
+  const newRes = fakeResources(path.join(root, 'build'), 'NEW'.repeat(5000), { settings: '{"v":2}' });
   const payload = path.join(root, 'u.gz');
   packPayload(newRes, payload);
   const installed = fakeResources(path.join(root, 'install'), 'OLD'.repeat(5000));
@@ -156,7 +151,6 @@ test('替换脚本：程序退出后替换并核对；任何一步失败就全�
   assert.equal(result.ok, false); assert.equal(result.rolledBack, true); assert.match(result.reason, /模拟失败/);
   assert.equal(fs.readFileSync(path.join(installed, 'app.asar'), 'utf8'), 'OLD'.repeat(5000));
   assert.equal(fs.readFileSync(path.join(installed, 'app.asar.unpacked', 'core', 'settings.json'), 'utf8'), '{"v":1}');
-  assert.equal(fs.existsSync(path.join(installed, 'scripts', 'desktop-icon-layout.ps1')), false, '回滚时删掉新加的脚本');
   assert.equal(takeLastResult(dataDir), null, '只报告一次');
 
   // 成功
@@ -167,6 +161,18 @@ test('替换脚本：程序退出后替换并核对；任何一步失败就全�
   assert.equal(result.version, '1.0.1');
   assert.equal(fs.readFileSync(path.join(installed, 'app.asar'), 'utf8'), 'NEW'.repeat(5000));
   assert.equal(fs.readFileSync(path.join(installed, 'app.asar.unpacked', 'core', 'settings.json'), 'utf8'), '{"v":2}');
-  assert.equal(fs.readFileSync(path.join(installed, 'scripts', 'desktop-icon-layout.ps1'), 'utf8'), 'NEW-PS1', '基线里没有的脚本随增量包装上');
   assert.equal(fs.existsSync(stagingPaths(dataDir).newDir), false, '成功后清掉暂存');
+});
+
+test('增量包里的路径只能是 app.asar 和 app.asar.unpacked/（不含依赖）：已装的老版本按这条核对，多一种路径就整包拒收、升级失败', t => {
+  const root = tmp(t);
+  const res = fakeResources(root, 'X');
+  fs.mkdirSync(path.join(res, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(res, 'scripts', 'desktop-icon-layout.ps1'), 'extraResources 里的脚本');
+  fs.mkdirSync(path.join(res, 'app.asar.unpacked', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(res, 'app.asar.unpacked', 'scripts', 'desktop-icon-layout.ps1'), 'asarUnpack 出来的脚本');
+  const packed = packPayload(res, path.join(root, 'u.gz'));
+  const legacyOk = p => p === 'app.asar' || (p.startsWith('app.asar.unpacked/') && !p.startsWith('app.asar.unpacked/node_modules/'));
+  assert.ok(packed.files.every(f => legacyOk(f.path)), packed.files.map(f => f.path).join(', '));
+  assert.ok(packed.files.some(f => f.path === 'app.asar.unpacked/scripts/desktop-icon-layout.ps1'), '解包出来的脚本随增量包送达');
 });

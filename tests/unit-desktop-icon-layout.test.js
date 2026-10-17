@@ -8,7 +8,11 @@ const { registerDesktopOrganizerIpc } = require('../main/ipc/desktop-organizer-h
 const sample = { flags: 0x801, spacingX: 90, spacingY: 100, icons: Array.from({ length: 8 }, (_, index) => ({ index, x: Math.floor(index / 6) * 90, y: index % 6 * 100 })) };
 (async () => {
   assert.equal(desktopLayoutScript(path.join('dev', 'core'), 'resources'), path.join('dev', 'scripts', 'desktop-icon-layout.ps1'));
-  assert.equal(desktopLayoutScript(path.join('resources', 'app.asar', 'core'), 'resources'), path.join('resources', 'scripts', 'desktop-icon-layout.ps1'));
+  assert.equal(desktopLayoutScript(path.join('resources', 'app.asar', 'core'), 'resources', () => false), path.join('resources', 'scripts', 'desktop-icon-layout.ps1'));
+  // 一键更新只替换 app.asar 和解包目录：解包目录里有就用它（基线安装包的 resources/scripts 可能没有这个脚本）
+  assert.equal(desktopLayoutScript(path.join('resources', 'app.asar', 'core'), 'resources', p => p.includes('app.asar.unpacked')), path.join('resources', 'app.asar.unpacked', 'scripts', 'desktop-icon-layout.ps1'));
+  const pkg = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  for (const f of ['scripts/desktop-icon-layout.ps1', 'scripts/desktop-icon-layout.cs']) assert.ok(pkg.build.asarUnpack.includes(f), 'asarUnpack 要带 ' + f + '，否则增量更新送不到');
   assert.deepEqual(verifyColumns(sample), { iconCount: 8, columns: 2, rowsPerColumn: 6, verified: true });
   assert.throws(() => verifyColumns({ ...sample, flags: 0x800 }), /未启用/);
   const gaps = structuredClone(sample); gaps.icons[2].y += 100; assert.throws(() => verifyColumns(gaps), /空隙/);
