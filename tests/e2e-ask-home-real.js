@@ -107,6 +107,8 @@ async function main() {
     const until = async (label, read, timeout = 30000, every = 1000) => { let last; for (const end = Date.now() + timeout; Date.now() < end;) { last = await read(); if (last) return last; await wait(every); } throw Error('timeout ' + label + ' last=' + j(last)); };
     const shot = async (c, name) => { const r = await c.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(r.data, 'base64')); log('截图 ' + name + '.png'); };
     const click = async (c, selector) => {
+      // 设置页加了「同时处理」一栏后变长，「保存」可能在视野外：像人一样先滚过去再点（2026-10-17）。
+      await c.eval('document.querySelector(' + j(selector) + ')?.scrollIntoView({block:"center"})');
       await until('clickable ' + selector, () => c.eval('(()=>{const e=document.querySelector(' + j(selector) + ');if(!e||e.disabled)return false;const r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return r.width>0&&(h===e||e.contains(h))})()'), 20000, 300);
       const p = await c.eval('(()=>{const r=document.querySelector(' + j(selector) + ').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()');
       for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, ...p, button: 'left', clickCount: 1 });
