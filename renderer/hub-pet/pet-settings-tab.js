@@ -124,6 +124,9 @@ function mountPetSettingsTab(container, { ipcRenderer, window, document }) {
     render();
   };
   ipcRenderer.on('hub-pet:roles-state', onState);
+  // 在桌宠右键菜单里换了形象、说话频率或安静开关，分页跟着变。
+  const onChanged = () => { if (!container.isConnected) { ipcRenderer.removeListener?.('hub-pet:settings-changed', onChanged); return; } void refresh(); };
+  ipcRenderer.on('hub-pet:settings-changed', onChanged);
 
   refresh();
   return { refresh };

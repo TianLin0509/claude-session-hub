@@ -212,6 +212,8 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   // 否则把 prompt 填进输入框（输入框里已有内容不覆盖）；noticeId 对应的提醒展开并滚到眼前。
   async function fromPet(detail = {}) {
     await open();
+    // 桌宠右键「桌宠设置…」「更多形象…」：直接打开设置的对应分页。
+    if (detail.settingsTab) { openSettings(String(detail.settingsTab)); return; }
     const input = page.querySelector('[data-slot="form"] textarea');
     const chip = detail.action ? (data?.chips || []).find(c => c.action === detail.action) : null;
     if (chip && !(chip.fill && input.value.trim())) await useChip(chip);

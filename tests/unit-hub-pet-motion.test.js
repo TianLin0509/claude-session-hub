@@ -44,16 +44,21 @@ test('甩出屏幕会被拉回工作区', () => {
   assert.ok(plan.final.x <= 1920 - 280 + 65);
 });
 
-test('帧序列按时间插值：两帧之间按小数部分叠加', () => {
-  const seq = { from: 0, to: 24, fps: 10, loop: true };
-  assert.deepEqual(M.sequenceFrame(0, seq), { a: 0, b: 1, mix: 0, done: false });
-  const mid = M.sequenceFrame(1250, seq);
-  assert.equal(mid.a, 12); assert.equal(mid.b, 13); assert.ok(Math.abs(mid.mix - 0.5) < 1e-9);
-  assert.equal(M.sequenceFrame(2450, seq).b, 0, '循环时最后一帧接回第一帧');
-  const once = { from: 20, to: 24, fps: 10, loop: false };
-  assert.deepEqual(M.sequenceFrame(10000, once), { a: 24, b: 24, mix: 0, done: true });
-  const back = { from: 24, to: 20, fps: 10, loop: false };
-  assert.equal(M.sequenceFrame(150, back).a, 23);
+test('帧序列逐帧硬切（2026-10-17：不再叠两帧淡入，那就是残影）；小动作 5 帧停一下再倒放，跳过被裁切的帧', () => {
+  const list = M.gesturePlaylist(5, 5, [], 175, 220);
+  assert.deepEqual(list.map(x => x.f), [5, 6, 7, 8, 9, 8, 7, 6, 5]);
+  assert.equal(list[4].ms, 175 + 220, '峰值帧多停一会儿');
+  assert.equal(M.gesturePlaylist(10, 5, [12]), null, '片段里有被裁切的帧就整段不用');
+  const at = M.playlistFrame(175 * 2 + 10, list, false);
+  assert.deepEqual(at, { f: 7, index: 2, done: false });
+  assert.equal(Object.keys(at).includes('mix'), false, '没有半透明叠帧');
+  assert.equal(M.playlistFrame(1e6, list, false).done, true);
+  assert.equal(M.playlistFrame(1e6, list, false).f, 5, '倒放回起点');
+  const typing = M.pingPong([0, 1, 2, 3, 4], 110);
+  assert.deepEqual(typing.map(x => x.f), [0, 1, 2, 3, 4, 3, 2, 1]);
+  assert.equal(M.playlistFrame(110 * 8 + 5, typing, true).f, 0, '循环接回第一帧');
+  assert.deepEqual(M.frameRange(14, 18, [15]), [14, 16, 17, 18]);
+  assert.deepEqual(M.frameRange(7, 3, []), [7, 6, 5, 4, 3]);
   assert.equal(M.sheetPosition(0), '0% 0%');
   assert.equal(M.sheetPosition(24), '100% 100%');
   assert.equal(M.sheetPosition(7), '50% 25%');

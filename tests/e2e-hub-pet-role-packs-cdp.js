@@ -58,7 +58,7 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
       const t = await petTarget();
       if (!t) return null;
       const c = await connectCDP(t.webSocketDebuggerUrl); pets.push(c);
-      return c.eval(`(()=>{const d=window.__hubPetDebug&&window.__hubPetDebug();const cel=document.querySelector('#layers .layer:last-child .cel');return {pose:d&&d.pose,bg:cel?getComputedStyle(cel).backgroundImage:''};})()`);
+      return c.eval(`(()=>{const d=window.__hubPetDebug&&window.__hubPetDebug();const cel=document.querySelector('#layers .cel');return {pose:d&&d.pose,bg:cel?getComputedStyle(cel).backgroundImage:''};})()`);
     };
 
     await wait('!!document.getElementById("btn-company-assistant")', '助理入口');
