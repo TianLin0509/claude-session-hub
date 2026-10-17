@@ -126,7 +126,7 @@ async function main() {
     check('主页也能访问显示预设', await c.eval('!document.querySelector("#toolbar-more-menu").hidden && document.querySelector("button[data-display-mode=phone]").getBoundingClientRect().width>0'));
     await click('button[data-display-mode="phone"]');
     await c.send('Page.reload'); await _waitMs(500);
-    await until('!!window.WorkspaceController && !!document.querySelector("#btn-sidebar-wireless")');
+    await until('!!window.WorkspaceController && !!document.querySelector("#session-list [data-session-id=ordinary]")');
     check('刷新后保持无线开启和手机显示偏好', await c.eval('document.documentElement.dataset.displayMode==="phone" && document.querySelector("#btn-sidebar-wireless").getAttribute("aria-pressed")==="true"'));
     evidence.passed = true;
   } catch (error) { evidence.error = error.stack; console.error(error.stack); process.exitCode = 1; if (c) await shot('失败').catch(() => {}); }
