@@ -5,6 +5,8 @@
 //   在公司被拦，显示「出口未知」。走系统代理实测能通（出口新加坡）。
 // - 公司的 xGate 是公司安全终端 SPES 套件里的 SPES5.exe：节点配置加密、读不出选了哪个国家，也不改系统代理、
 //   不建虚拟网卡；能可靠判断的只有「进程在不在」。所以 xGate 只标「开着」，国家以走系统代理实测的出口为准。
+// - 公司 VPN（OpenVPN 的 TAP-Windows 网卡、Array SSL VPN 网卡等）：回执里最可靠的判据是「VPN 虚拟网卡 Up 且拿到
+//   非 169.254 的 IPv4」。VPN 客户端进程常驻、不代表已连上，不看进程。
 const childProcess = require('child_process');
 
 const INTERNET_SETTINGS = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
@@ -33,14 +35,35 @@ function parseSystemProxy(regText) {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : 'http://' + value;
 }
 
+// 已连上的 VPN 网卡：每行「网卡描述|IPv4」。
+const VPN_ADAPTER_SCRIPT = [
+  "$ErrorActionPreference = 'SilentlyContinue'",
+  "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'TAP-Windows|SSL VPN|Array Networks|VPN|AnyConnect|Fortinet|WireGuard' } | ForEach-Object {",
+  "  $ip = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1",
+  "  if ($ip) { [Console]::Out.WriteLine($_.InterfaceDescription + '|' + $ip.IPAddress) }",
+  "}",
+].join('\n');
+function parseVpnAdapters(text) {
+  return String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+    const at = line.lastIndexOf('|');
+    return at > 0 ? { name: line.slice(0, at).trim(), address: line.slice(at + 1).trim() } : null;
+  }).filter(x => x && /^\d{1,3}(\.\d{1,3}){3}$/.test(x.address) && !x.address.startsWith('169.254.'));
+}
+
 // tasklist 的 CSV 输出里有没有 SPES5.exe。
 function parseXgateRunning(tasklistText) {
   return /^"SPES5\.exe"/im.test(String(tasklistText || ''));
 }
 
+function offMainExecFile(file, args, opts, callback) {
+  const { sharedOffMainExecFile } = require('./off-main-exec.js');
+  sharedOffMainExecFile()(file, args, opts).then(({ stdout }) => callback(null, stdout), error => callback(error));
+}
+
 function createWindowsNetworkContext(options = {}) {
   const platform = options.platform || process.platform;
-  const execFileImpl = options.execFile || childProcess.execFile;
+  // 起子进程在 Windows 上会同步卡住调用线程（50–125ms/次，见 network-egress-monitor.js），主进程里改用共享的后台执行线程。
+  const execFileImpl = options.execFile || (require('worker_threads').isMainThread ? offMainExecFile : childProcess.execFile);
   const now = options.now || Date.now;
   let proxyCache = null;
   let tunnelCache = null;
@@ -54,9 +77,14 @@ function createWindowsNetworkContext(options = {}) {
   }
 
   async function tunnel() {
-    if (platform !== 'win32') return { xgate: false };
+    if (platform !== 'win32') return { xgate: false, vpn: null };
     if (tunnelCache && now() - tunnelCache.at < CACHE_MS) return tunnelCache.value;
-    const value = { xgate: parseXgateRunning(await run(execFileImpl, 'tasklist.exe', ['/FI', 'IMAGENAME eq SPES5.exe', '/FO', 'CSV', '/NH'])) };
+    const encoded = Buffer.from(VPN_ADAPTER_SCRIPT, 'utf16le').toString('base64');
+    const [tasks, adapters] = await Promise.all([
+      run(execFileImpl, 'tasklist.exe', ['/FI', 'IMAGENAME eq SPES5.exe', '/FO', 'CSV', '/NH']),
+      run(execFileImpl, 'powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]),
+    ]);
+    const value = { xgate: parseXgateRunning(tasks), vpn: parseVpnAdapters(adapters)[0] || null };
     tunnelCache = { at: now(), value };
     return value;
   }
@@ -64,4 +92,4 @@ function createWindowsNetworkContext(options = {}) {
   return { systemProxy, tunnel };
 }
 
-module.exports = { createWindowsNetworkContext, parseSystemProxy, parseXgateRunning };
+module.exports = { createWindowsNetworkContext, parseSystemProxy, parseVpnAdapters, parseXgateRunning };
