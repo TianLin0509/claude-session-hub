@@ -381,7 +381,7 @@ function _sessionWarningText(session) {
     const proxy = typeof getProxyInfo === 'function' ? getProxyInfo() : null;
     const egress = proxy && proxy.egress;
     // Hub 没配代理、但 Windows 系统设置里有代理时（公司办公代理），出口探测走系统代理，这里按「代理」显示；
-    // xGate（华为安全终端 SPES5）开着时标「xGate」。xGate 的节点配置是加密的，国家以实测出口为准。
+    // xGate（公司安全终端 SPES5）开着时标「xGate」。xGate 的节点配置是加密的，国家以实测出口为准。
     const systemProxy = egress && egress.proxySource === 'system' ? egress.proxyEndpoint : '';
     const proxyShort = _shortProxy(proxy && proxy.proxy) || _shortProxy(systemProxy);
     const xgate = !!(egress && egress.tunnel && egress.tunnel.xgate);
@@ -394,7 +394,7 @@ function _sessionWarningText(session) {
 
     const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
     const foreignTitle = [
-      xgate ? 'xGate（华为安全终端 SPES5）正在运行；它选的节点读不到，下面是实测出口' : '',
+      xgate ? 'xGate（公司安全终端 SPES5）正在运行；它选的节点读不到，下面是实测出口' : '',
       systemProxy ? '公网经 Windows 系统代理' : proxyShort ? 'Claude / Codex 订阅、Gemini：经 VPN 代理' : '未配置 VPN，显示直连出口',
       systemProxy ? `系统代理：${proxyShort}` : proxyShort ? `本地代理：${proxyShort}` : '本地代理：未配置',
       displayRoute && displayRoute.ok ? `出口地区：${displayRoute.locationLabel || '未知地区'}` : `状态：${displayRoute && displayRoute.error || '检测中'}`,

@@ -3,7 +3,7 @@
 // - 公司电脑的代理配在 Windows 系统设置（注册表 Internet Settings 的 ProxyEnable / ProxyServer，办公代理:8080），
 //   不在 HTTP(S)_PROXY 环境变量里，Hub 也没配代理，于是底栏一直显示「直连」；出口探测用 curl --noproxy 直连公网，
 //   在公司被拦，显示「出口未知」。走系统代理实测能通（出口新加坡）。
-// - 公司的 xGate 是华为安全终端 SPES 套件里的 SPES5.exe：节点配置加密、读不出选了哪个国家，也不改系统代理、
+// - 公司的 xGate 是公司安全终端 SPES 套件里的 SPES5.exe：节点配置加密、读不出选了哪个国家，也不改系统代理、
 //   不建虚拟网卡；能可靠判断的只有「进程在不在」。所以 xGate 只标「开着」，国家以走系统代理实测的出口为准。
 const childProcess = require('child_process');
 
