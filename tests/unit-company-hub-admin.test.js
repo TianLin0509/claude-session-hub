@@ -255,6 +255,31 @@ test('恢复失败：通道轮次按失败流程报回家里（可补收 / 追�
   assert.equal(again.status().hubAdmin.resumeIssues.length, 0);
 });
 
+// 2026-10-18：在忙的本机会话被记进清单后，关闭途中其实已经答完；重启后恢复它就够了，不再补「继续」（否则它会多答一遍）。
+// 没答完的（最后一条是工具调用）照旧发「继续」。按原生记录判断（receipt-reader.js transcriptTurnFinished）。
+test('本机会话关闭前已答完：重启后只恢复、不发「继续」；没答完的照旧发', async t => {
+  const fs = require('node:fs');
+  for (const finished of [true, false]) {
+    const r = setup(t); await pair(r);
+    const { sid } = await withWork(r);
+    const file = path.join(r.root, `local-${finished}.jsonl`);
+    const row = (type, message) => JSON.stringify({ type, uuid: type + Math.random(), sessionId: 'native-local', timestamp: new Date(r.clock.now).toISOString(), message });
+    fs.writeFileSync(file, [row('user', { role: 'user', content: '帮我整理一下日志' }),
+      finished ? row('assistant', { role: 'assistant', id: 'm1', stop_reason: 'end_turn', content: [{ type: 'text', text: '整理好了。' }] })
+        : row('assistant', { role: 'assistant', id: 'm1', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'tu', name: 'Bash', input: {} }] })].join('\n') + '\n');
+    Object.assign(r.cs.map.get('s-local'), { transcriptPath: file, ccSessionId: 'native-local' });
+    await r.home.hubAdmin({ op: 'restart', force: true });
+    await roundTrip(r);
+    const again = restartCompany(t, r);
+    await again.checkNow(); await r.home.checkNow();
+    assert.deepEqual(r.cs.resumed.sort(), [sid, 's-local'].sort(), '两个会话都按原编号恢复');
+    assert.deepEqual(continues(r).map(x => x.id).sort(), (finished ? [sid] : [sid, 's-local']).sort());
+    assert.equal(again.hubAdmin.state().resumeAfterRestart, null);
+    assert.deepEqual(again.status().hubAdmin.resumeIssues, [], '答完的不标「重启打断」');
+    assert.match(statuses(r).find(x => x.phase === 'resumed').note, finished ? /已恢复 1 个，失败 0 个/ : /已恢复 2 个，失败 0 个/);
+  }
+});
+
 test('恢复途中又重启：标了「恢复中」的不再发第二遍「继续」，通道轮次报失败', async t => {
   const r = setup(t); await pair(r);
   const { thread } = await withWork(r, { local: false });

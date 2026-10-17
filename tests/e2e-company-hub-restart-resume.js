@@ -10,6 +10,9 @@
 //   答到一半（在跑一条 75 秒的命令，模拟长编译）→ 家里用命令行 --hub-restart --force →
 //   公司记下这个会话、报「中断 1 个任务后重启」→ app.relaunch + quit（真实优雅退出）→ 新进程接通通道报「已重启」→
 //   按原编号恢复会话、经正规发送入口只发「继续」→ CodeAgent 接着做完 → 回执照常发回家里、送进提问的会话。
+// --duplicate（2026-10-18，v2.1.9 验收第 1 次卡住的那类情况）：命令跑起来后像人一样按 Esc 打断，再经正规发送入口
+//   把同一段提问原样再发一遍（同一轮的提问在原生记录里出现两次，和通道补发的效果一样），CodeAgent 重新开跑后再远程重启。
+//   旧版回执核对见到两条一样的提问就判「不唯一」，这一轮一直卡在途；修好后最后一份之后的回答照常回执。
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), http = require('node:http'), assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
 const { createHmac, randomBytes } = require('node:crypto');
@@ -21,7 +24,8 @@ const RELAY = process.env.HUB_E2E_RELAY || 'C:\\Users\\lintian\\company-drop\\se
 const STANDIN = path.join(__dirname, 'fixtures', 'codeagent-standin', 'codeagent.cmd');
 const argv = process.argv.slice(2);
 const repo = path.resolve(__dirname, '..');
-const out = path.resolve(argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : path.join(repo, 'artifacts', '20261017-company-hub-restart-resume-claude1'));
+const DUPLICATE = argv.includes('--duplicate');
+const out = path.resolve(argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : path.join(repo, 'artifacts', DUPLICATE ? '20261018-company-hub-restart-resume-duplicate-claude1' : '20261017-company-hub-restart-resume-claude1'));
 const j = JSON.stringify;
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 
@@ -59,7 +63,7 @@ async function main() {
   const t0 = Date.now(); const log = m => console.log(`[${Math.round((Date.now() - t0) / 1000)}s] ${m}`);
   const nonce = randomBytes(3).toString('hex');
   const token = 'RESUME-E2E-OK-' + nonce;
-  const result = { passed: false, root, out, token, checks: [],
+  const result = { passed: false, variant: DUPLICATE ? 'duplicate' : 'standard', root, out, token, checks: [],
     scope: '真实 Electron ×2（家里源码 + 公司版导出）+ 真实通道服务 + CodeAgent 替身（真 Claude Code + Haiku）+ 真实 app.relaunch 优雅重启 + 真实会话恢复与正规发送入口' };
   const check = (ok, label) => { assert.ok(ok, label); result.checks.push(label); log('✔ ' + label); };
   let relay, home, company, hc, cc, cport;
@@ -143,7 +147,22 @@ async function main() {
         .flatMap(o => (Array.isArray(o.message?.content) ? o.message.content : [])).find(b => b?.type === 'tool_use' && /75000/.test(JSON.stringify(b.input || {})));
       return use && !raw.includes('"tool_use_id":"' + use.id + '"') ? use.id : null;
     };
-    const toolId = await until('long command running', running, 5 * 60000, 1000);
+    let toolId = await until('long command running', running, 5 * 60000, 1000);
+    if (DUPLICATE) {
+      // 像人一样按 Esc 打断（真实按键），等会话停下；再经正规发送入口把同一段提问原样发一遍。
+      const file = (await companyMeta()).transcriptPath;
+      const prompt = userTexts(file).find(t => t.includes(token));
+      cc.eval(`require("electron").ipcRenderer.send("terminal-input", ${j({ sessionId: csid, data: '\u001b' })})`);
+      await until('interrupted', async () => { const raw = fs.readFileSync(file, 'utf8'); const st = (await status(cc)).threads.find(t => t.id === thread);
+        return raw.includes('"tool_use_id":"' + toolId + '"') && st.session && !st.session.busy; }, 120000, 1000);
+      check(true, '按 Esc 打断了那条 75 秒的命令，会话停下');
+      const resend = await cc.eval(`require("electron").ipcRenderer.invoke("session:send-prompt", ${j({ sessionId: csid, text: prompt, clientSubmissionId: 'e2e-duplicate-' + nonce })})`);
+      result.duplicateSend = { ok: resend?.ok, sendStatus: resend?.sendStatus };
+      await until('duplicate prompt in transcript', async () => userTexts(file).filter(t => t === prompt).length === 2, 180000, 1000);
+      check(true, '经正规发送入口把同一段提问原样再发了一遍：原生记录里这一轮的提问出现两次');
+      toolId = await until('long command running again', async () => { const id = await running(); return id && id !== toolId ? id : null; }, 5 * 60000, 1000);
+      check(true, 'CodeAgent 按重发的那一份重新跑起 75 秒的命令');
+    }
     const busyBefore = (await status(cc)).threads.find(t => t.id === thread).session;
     check(busyBefore?.busy === true, `公司 CodeAgent 会话 ${csid.slice(0, 8)} 正在跑 75 秒的命令（命令已发出、还没有结果）`);
     await shot(cc, '01-company-working-before-restart');
@@ -178,6 +197,7 @@ async function main() {
     const texts = await until('bare continue in transcript', async () => { const m = await companyMeta(); const t = m && m.transcriptPath ? userTexts(m.transcriptPath) : []; return t.includes('继续') && t; }, 120000, 2000);
     result.companyUserTexts = texts.map(t => t.slice(0, 80));
     check(texts.filter(t => t === '继续').length === 1 && texts.findIndex(t => t.includes(token)) < texts.indexOf('继续'), 'CodeAgent 原生记录里：原提问之后收到一句纯「继续」（只一次，一字不多）');
+    if (DUPLICATE) check(texts.filter(t => t.includes(token)).length === 2, '「继续」之前同一段提问出现过两次（重复请求）');
     const cthread = (await status(cc)).threads.find(t => t.id === thread);
     check(cthread.rounds[0].resumedAt && !cthread.rounds[0].error, '公司这一轮保持在途（记下恢复时间，没有报错）');
     // 公司版侧栏平时不列通道会话：像人一样点亮「特战」再看（tests/e2e-company-tezhan-sidebar-cdp.js 同一个按钮）。
@@ -225,7 +245,7 @@ async function main() {
     }
     if (company) await gracefulQuit(company, { allowAlreadyExited: true }).catch(() => {});
     try { relay && relay.kill(); } catch {}
-    fs.writeFileSync(path.join(out, '20261017-restart-resume-result-claude1.json'), JSON.stringify(result, null, 2));
+    fs.writeFileSync(path.join(out, DUPLICATE ? '20261018-restart-resume-duplicate-result-claude1.json' : '20261017-restart-resume-result-claude1.json'), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ passed: result.passed, checks: result.checks.length, error: result.error ? String(result.error).split('\n')[0] : null }));
     if (!result.passed) process.exitCode = 1;
   }
