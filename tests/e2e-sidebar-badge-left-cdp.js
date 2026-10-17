@@ -16,6 +16,14 @@ const row = id => `.session-item[data-session-id="${id}"]`;
 const group = '.session-item[data-meeting-id="badge-group"]';
 function check(value, label) { assert(value, label); evidence.checks.push(label); console.log('PASS ' + label); }
 
+async function selectDisplayMode(mode) {
+  if (await cdp.eval('document.querySelector("#toolbar-more-menu").hidden')) {
+    await click(cdp, '#btn-toolbar-more');
+  }
+  await click(cdp, `button[data-display-mode="${mode}"]`);
+  await waitFor(cdp, `document.documentElement.dataset.displayMode===${JSON.stringify(mode)}`);
+}
+
 async function screenshot(name) {
   const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(shot.data, 'base64'));
@@ -62,7 +70,7 @@ async function inspectLayout(label) {
     cdp = await connectFirstPage(hub);
     await waitFor(cdp, '!!window.__hubE2E');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
-    await click(cdp, '[data-display-mode="desktop"]');
+    await selectDisplayMode('desktop');
     const fixtures = [
       { id:'badge-long', kind:'codex', title:'AI Hub 头像风格与侧栏会话徽章位置的长标题排版核验', status:'idle', nativeRuntime:nativeSnapshot('idle') },
       { id:'badge-running', kind:'codex', title:'运行中的 Codex 会话', status:'running', nativeRuntime:nativeSnapshot('running') },
@@ -114,11 +122,11 @@ async function inspectLayout(label) {
 
     await click(cdp, '#btn-session-details');
     await cdp.eval("document.documentElement.dataset.theme='dark'");
-    await click(cdp, '[data-display-mode="phone"]');
+    await selectDisplayMode('phone');
     await _waitMs(300);
     await inspectLayout('深色紧凑显示预设');
     await screenshot('20261017-badge-left-dark');
-    await click(cdp, '[data-display-mode="desktop"]');
+    await selectDisplayMode('desktop');
     await cdp.eval("document.documentElement.dataset.theme='codex';document.documentElement.style.setProperty('--display-session-width','280px')");
     await inspectLayout('加宽侧栏 280 px');
     evidence.ok = true;
