@@ -83,7 +83,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
       else if (verb === 'send') { await call('bridge:send-pairing'); showMessage?.('配对码已发到公司收件箱：到公司电脑打开收件箱网页复制'); }
       else if (verb === 'check') { await call('bridge:check-now'); }
       else if (verb === 'hub-update') {
-        if (!window.confirm('让公司 Hub 更新到发行源上的最新版本？它会等手上的任务答完（最长 30 分钟）再重启，失败自动回滚。')) return;
+        if (!window.confirm('让公司 Hub 更新到发行源上的最新版本？它会先等手上的任务答完（默认最多 3 分钟，到时先记下、中断，重启后自动接着做）再重启，失败自动回滚。')) return;
         await call('bridge:hub-admin', { op: 'update' }); showMessage?.('已发出更新指令：进度会以通知送达');
       }
       else if (verb === 'hub-status') { await call('bridge:hub-admin', { op: 'status' }); showMessage?.('已请公司 Hub 回报状态'); }

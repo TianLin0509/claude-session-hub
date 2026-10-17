@@ -228,7 +228,8 @@ class HomeBridge {
     this.changed();
     const label = { update: '更新', restart: '重启', status: '查状态' }[op];
     return { id, op, status: '已发出', ...this.peer(), company: this.companyHub(),
-      next: `公司 Hub 收到后会${op === 'status' ? '回报版本与更新状态' : label === '更新' ? '查版本、下载、等手上的任务答完再重启更新' : '等手上的任务答完再重启'}${force ? '（force：不等任务）' : ''}；`
+      next: `公司 Hub 收到后会${op === 'status' ? '回报版本与更新状态' : label === '更新' ? '查版本、下载，等手上的任务答完再重启更新' : '等手上的任务答完再重启'}`
+        + (op === 'status' ? '' : force ? '（force：不等，在跑的任务先记下、中断，重启后自动接着做）' : '（默认最多等 3 分钟，到时在跑的任务先记下、中断，重启后自动接着做，回执照常发回）') + '；'
         + '进度和结果会以 Hub 通知送达，也可以稍后用 op:"status" 查（返回里的 company.recent 是公司最近的回报）。不要循环等待。' };
   }
   // 公司 Hub 的版本与最近回报（最近 20 条）。
@@ -238,7 +239,7 @@ class HomeBridge {
     return { version: st.company?.current || null, latest: st.company?.latest || null, reportedAt: st.company?.at || null, recent,
       pending: (st.commands || []).filter(c => c.op !== 'status' && !this.adminDone(c.id)).map(c => c.id) };
   }
-  adminDone(id) { return (this.adminState().statuses || []).some(x => x.id === id && ['up-to-date', 'failed', 'refused', 'busy', 'unsupported', 'updated', 'rolled-back', 'restarted'].includes(x.phase)); }
+  adminDone(id) { return (this.adminState().statuses || []).some(x => x.id === id && ['up-to-date', 'failed', 'refused', 'busy', 'unsupported', 'updated', 'rolled-back', 'restarted', 'superseded'].includes(x.phase)); }
   receiveAdmin(message) {
     if (message.gen && message.gen !== this.link.gen()) return;
     const st = this.adminState();
