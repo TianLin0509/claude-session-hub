@@ -40,6 +40,8 @@ const json = JSON.stringify;
       throw new Error('timeout: ' + label);
     };
     const click = async selector => {
+      // 设置页变长后「保存」可能在视野外：像人一样先滚过去再点（2026-10-17 加了并行档位一栏）。
+      await c.eval(`document.querySelector(${json(selector)})?.scrollIntoView({ block: 'center' })`);
       await until('clickable ' + selector, () => c.eval(`(() => { const e = document.querySelector(${json(selector)}); if (!e || e.disabled) return false; const r = e.getBoundingClientRect(), h = document.elementFromPoint(r.x+r.width/2, r.y+r.height/2); return r.width > 0 && (h === e || e.contains(h)); })()`));
       const p = await c.eval(`(() => { const r = document.querySelector(${json(selector)}).getBoundingClientRect(); return { x: r.x+r.width/2, y: r.y+r.height/2 }; })()`);
       for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, ...p, button: 'left', clickCount: 1 });
@@ -128,7 +130,8 @@ const json = JSON.stringify;
       };
     })()`);
     const now = Date.now();
-    const fixture = { ok: true, role: 'company', settings: { enabled: true, codeRoots: ['D:\\code\\example'], effort: 'high', maxParallel: 2, pollSeconds: 45, instructions: '根据授权范围查询资料，完成后汇报结果。' },
+    const fixture = { ok: true, role: 'company', settings: { enabled: true, codeRoots: ['D:\\code\\example'], effort: 'high', maxParallel: 3, maxParallelIdle: 6, perAccountPeak: 3, perAccountIdle: 6, memFloorPct: 10, busyHours: '08:30-12:00,13:30-17:30', usePool: true, pollSeconds: 45, instructions: '根据授权范围查询资料，完成后汇报结果。' },
+      parallel: { cap: 6, peak: false, limitedBy: '闲时上限', working: 1 },
       defaultInstructions: '根据授权范围查询资料，完成后汇报结果。',
       link: { state: 'paired', pairedAt: now, outbox: 0 }, net: { lastOkAt: new Date(now).toISOString(), peerSeen: new Date(now).toISOString() },
       polling: { active: true, intervalSeconds: 10, activeUntil: now + 600000 }, now, nextPullAt: now + 10000,
@@ -160,6 +163,21 @@ const json = JSON.stringify;
     assert.equal(await c.eval('window.__companyUiFixture.saved[0].pollSeconds'), 45);
     assert.equal(await c.eval('window.__companyUiFixture.saved[0].codeRoots'), draftRoots);
     check('保存按钮保留原设置值并提交编辑内容');
+
+    // 2026-10-17 田哥：工作日忙时 3 个、内存保底 10%，这些数字都可在设置里调。
+    const parallelText = await c.eval('document.getElementById("home-link-dialog").innerText');
+    assert.match(parallelText, /同时处理/); assert.match(parallelText, /现在是闲时，最多同时 6 个（1 个在跑，受闲时上限限制）/);
+    const saved0 = await c.eval('window.__companyUiFixture.saved[0]');
+    assert.deepEqual([saved0.maxParallel, saved0.maxParallelIdle, saved0.perAccountPeak, saved0.perAccountIdle, saved0.memFloorPct, saved0.usePool], [3, 6, 3, 6, 10, true]);
+    await c.eval(`(() => { const set = (k, v) => { const e = document.querySelector('[data-hl-f=' + k + ']'); e.value = v; e.dispatchEvent(new Event('change', { bubbles: true })); };
+      set('maxParallel', '4'); set('memFloorPct', '15'); set('perAccountIdle', '8'); })()`);
+    await c.eval('document.querySelector("[data-hl-f=maxParallel]").scrollIntoView({ block: "center" })');
+    await shot('03b-parallel-settings');
+    await click('[data-hl=save]');
+    await until('parallel saved', () => c.eval('window.__companyUiFixture.saved.length === 2'));
+    const saved1 = await c.eval('window.__companyUiFixture.saved[1]');
+    assert.deepEqual([saved1.maxParallel, saved1.memFloorPct, saved1.perAccountIdle], [4, 15, 8]);
+    check('并行档位（忙时、闲时、每号、内存保底、忙时时段、号池）在设置页可见、可改、保存时提交');
 
     fixture.net = { gate: { since: new Date(now).toISOString() } };
     await show(fixture);

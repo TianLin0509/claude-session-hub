@@ -37,6 +37,8 @@
   <link rel="stylesheet" href="capability-panel.css">
   <link rel="stylesheet" href="account-center-panel.css">
   <link rel="stylesheet" href="styles/assistant-panel.css">
+  <!-- 公司版「助理」页（2026-10-16）：按钮由脚本只在公司版插入，样式公开版也带着无害 -->
+  <link rel="stylesheet" href="styles/company-assistant-page.css">
   <!-- @community-strip 无线 Tab -->
   <link rel="stylesheet" href="styles/wireless-page.css">
   <!-- @community-end -->
@@ -87,6 +89,7 @@
   <link rel="stylesheet" href="styles/session-immersive.css">
 <link rel="stylesheet" href="styles/zoom-label.css">
   <link rel="stylesheet" href="styles/appearance.css">
+  <link rel="stylesheet" href="styles/bridge-thread.css">
   <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
@@ -299,6 +302,7 @@
         <div class="sidebar-insights-content" id="sidebar-insights-content">
           <div class="sidebar-insights-inner">
             <div class="sidebar-account-usage" id="rail-usage" data-presentation="footer" aria-label="账户剩余额度"></div>
+            <div class="sidebar-account-usage" id="rail-codeagent-quota" aria-label="CodeAgent 剩余额度" hidden></div>
             <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
           </div>
         </div>

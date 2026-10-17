@@ -169,6 +169,11 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
 
   await r.home.checkNow();
   assert.equal(r.home.thread(asked.thread).rounds[0].status, 'running');
+  // 通道串的进度线要用：公司第一次说收到、开始处理的时间（2026-10-16）
+  const firstRound = r.home.thread(asked.thread).rounds[0];
+  assert.ok(firstRound.ackAt >= firstRound.sentAt && firstRound.startedAt >= firstRound.ackAt, '记下 ackAt 与 startedAt');
+  // 界面从 bridge:status 读这两个时间：要原样带出
+  assert.ok(r.home.status().threads.find(t => t.id === asked.thread).rounds[0].startedAt);
 
   r.cs.busy.add(companySession); r.cs.answer(companySession, '半截');
   await r.company.checkNow();
@@ -602,6 +607,27 @@ test('公司设置：旧版存的模型不再生效；没改过的历代默认�
   assert.equal(r.company.settings().instructions, '我自己写的说明');
   r.company.setSettings({ instructions: '' });
   assert.equal(r.company.settings().instructions, DEFAULT_INSTRUCTIONS);
+});
+
+// 2026-10-17 田哥：工作日忙时 3 个、内存保底 10%，这些数字都可在设置里调。
+test('并行设置：旧版存的默认 2 换成新默认 3，调过的保留；各档位可设、越界报错；状态页给出现在的上限和原因', async t => {
+  const r = rig(t);
+  r.company.store.set('settings', { enabled: true, codeRoots: [], maxParallel: 2, pollSeconds: 30 });
+  let s = r.company.settings();
+  assert.equal(s.maxParallel, 3); assert.equal(s.perAccountPeak, 3); assert.equal(s.perAccountIdle, 6); assert.equal(s.memFloorPct, 10);
+  r.company.setSettings({ maxParallel: 2, perAccountIdle: 8, memFloorPct: 15, busyHours: '09:00-18:00' });
+  s = r.company.settings();
+  assert.equal(s.maxParallel, 2, '用户在新设置页亲手选的 2 要保留');
+  assert.equal(s.perAccountIdle, 8); assert.equal(s.memFloorPct, 15); assert.equal(s.busyHours, '09:00-18:00');
+  assert.throws(() => r.company.setSettings({ memFloorPct: 60 }), /内存保底百分比只能是 5–50/);
+  assert.throws(() => r.company.setSettings({ maxParallel: 9 }), /1–8/);
+  const p = r.company.status().parallel;
+  assert.ok(p && Number.isInteger(p.cap) && p.cap >= 1 && typeof p.limitedBy === 'string');
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'home-link.js'), 'utf8');
+  for (const key of ['maxParallel', 'maxParallelIdle', 'perAccountPeak', 'perAccountIdle', 'memFloorPct', 'busyHours', 'usePool']) {
+    assert.match(ui, new RegExp(`data-hl-f="\\$\\{key\\}"|data-hl-f="${key}"`), `设置页要能改 ${key}`);
+    assert.match(ui, new RegExp(`${key}: (Number\\()?field\\('${key}'\\)`), `保存时要带上 ${key}`);
+  }
 });
 
 test('公司 CodeAgent 会话即使带了模型也不走 /model 菜单；普通 CodeAgent 会话照旧', () => {

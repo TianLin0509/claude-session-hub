@@ -55,8 +55,9 @@ const DEFAULT_INSTRUCTIONS = V3_INSTRUCTIONS.replace('替家里的 Agent 办事'
 const OLD_DEFAULTS = [V1_INSTRUCTIONS, V2_INSTRUCTIONS, V3_INSTRUCTIONS];
 // maxParallel 是工作日忙时的上限；闲时（晚上、周末）放宽到 maxParallelIdle，并按可用账号和内存再收（session-care.js parallelCap）。
 // usePool：通道新开的会话走号池（自动挑进行中会话最少的号），号池没有可用的号时用个人账号。
-const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructions: DEFAULT_INSTRUCTIONS, effort: 'high', maxParallel: 2, maxParallelIdle: 6,
-  busyHours: care.DEFAULT_BUSY_HOURS, usePool: true, pollSeconds: 30, autoGate: false });
+// 2026-10-17 田哥：工作日忙时 3 个、每号忙时 3 / 闲时 6 个、内存保底 10%，都可在设置里调（parallelRev 2 起）。
+const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructions: DEFAULT_INSTRUCTIONS, effort: 'high', maxParallel: 3, maxParallelIdle: 6,
+  perAccountPeak: 3, perAccountIdle: 6, memFloorPct: 10, busyHours: care.DEFAULT_BUSY_HOURS, usePool: true, pollSeconds: 30, autoGate: false, parallelRev: 2 });
 const ACTIVE_POLL_MS = 10000;
 const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -195,7 +196,9 @@ class CompanyBridge {
   settings() {
     const { model: _oldModel, ...s } = this.store.get('settings') || {}; // 旧版存过模型，现在不用
     const instructions = !s.instructions || OLD_DEFAULTS.includes(s.instructions.trim()) ? DEFAULT_INSTRUCTIONS : s.instructions;
-    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [] };
+    // 旧版设置页只能存「同时 N 个」且默认 2；没调过并行档位的（parallelRev 缺失且仍是旧默认 2）按新默认 3。
+    if (!s.parallelRev && Number(s.maxParallel) === 2) delete s.maxParallel;
+    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [], parallelRev: DEFAULT_SETTINGS.parallelRev };
   }
   setSettings(patch = {}) {
     const next = this.settings();
@@ -207,8 +210,12 @@ class CompanyBridge {
     }
     if ('instructions' in patch) { const t = String(patch.instructions || '').trim(); if (t.length > 8000) throw new Error('说明太长（上限 8000 字）'); next.instructions = t || DEFAULT_INSTRUCTIONS; }
     if ('effort' in patch) { if (!EFFORTS.includes(patch.effort)) throw new Error('思考深度只能是 low / medium / high / max'); next.effort = patch.effort; }
-    if ('maxParallel' in patch) { const n = Number(patch.maxParallel); if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('同时处理的问题数只能是 1–4'); next.maxParallel = n; }
-    if ('maxParallelIdle' in patch) { const n = Number(patch.maxParallelIdle); if (!Number.isInteger(n) || n < 1 || n > 8) throw new Error('闲时同时处理的问题数只能是 1–8'); next.maxParallelIdle = n; }
+    const int = (key, lo, hi, label) => { if (!(key in patch)) return; const n = Number(patch[key]); if (!Number.isInteger(n) || n < lo || n > hi) throw new Error(`${label}只能是 ${lo}–${hi}`); next[key] = n; };
+    int('maxParallel', 1, 8, '工作日忙时同时处理的问题数');
+    int('maxParallelIdle', 1, 12, '闲时同时处理的问题数');
+    int('perAccountPeak', 1, 8, '每个账号忙时同时处理的问题数');
+    int('perAccountIdle', 1, 12, '每个账号闲时同时处理的问题数');
+    int('memFloorPct', 5, 50, '内存保底百分比');
     if ('busyHours' in patch) { const spec = String(patch.busyHours || '').trim(); if (spec && !care.parseHours(spec).length) throw new Error('忙时格式如 08:30-12:00,13:30-17:30'); next.busyHours = spec || care.DEFAULT_BUSY_HOURS; }
     if ('usePool' in patch) next.usePool = patch.usePool === true;
     if ('pollSeconds' in patch) { const n = Number(patch.pollSeconds); if (!Number.isInteger(n) || n < 10 || n > 600) throw new Error('检查间隔只能是 10–600 秒'); next.pollSeconds = n; }
@@ -384,10 +391,19 @@ class CompanyBridge {
     const s = this.settings();
     let lanes = 1;
     if (s.usePool) { try { lanes += Math.max(0, Number(this.deps.poolLanes?.()) || 0); } catch { /* 号池读不到就只算个人账号 */ } }
-    const limit = care.parallelCap({ date: new Date(this.now()), busyHours: s.busyHours, peakCap: s.maxParallel, idleCap: s.maxParallelIdle, lanes, working,
+    const limit = care.parallelCap({ date: new Date(this.now()), busyHours: s.busyHours, peakCap: s.maxParallel, idleCap: s.maxParallelIdle,
+      perAccountPeak: s.perAccountPeak, perAccountIdle: s.perAccountIdle, memFloor: s.memFloorPct / 100, lanes, working,
       memory: this.deps.memory ? this.deps.memory() : care.memoryNow() });
     this.parallelState = { ...limit, lanes, working, at: this.now() };
     return limit;
+  }
+  // 设置页显示「现在最多同时几个、受什么限制」；算不出来时不挡状态页。
+  parallelLimitSafe() {
+    try {
+      const working = this.openThreads().filter(x => x.state === 'running' && this.roundWorking(x)).length;
+      const { cap, peak, limitedBy, timeCap, laneCap, memCap } = this.parallelLimit(working);
+      return { cap, peak, limitedBy, timeCap, laneCap, memCap, working };
+    } catch { return null; }
   }
   // 排队的问题告诉家里：排第几、为什么在等。只在内容变化时发。
   reportQueue(t, position, limit, working) {
@@ -654,7 +670,7 @@ class CompanyBridge {
   status() {
     const c = this.link.config(), st = this.link.status();
     return {
-      ok: true, role: 'company', unlocked: this.unlocked(), settings: this.settings(), defaultInstructions: DEFAULT_INSTRUCTIONS,
+      ok: true, role: 'company', unlocked: this.unlocked(), settings: this.settings(), defaultInstructions: DEFAULT_INSTRUCTIONS, parallel: this.parallelLimitSafe(),
       link: { state: c.state || 'none', baseUrl: c.baseUrl || null, pairedAt: c.pairedAt || null, createdAt: c.createdAt || null, outbox: this.link.pendingOutbox() },
       net: { lastOkAt: st.lastOkAt || null, lastError: st.lastError || null, gate: st.gate || null, peerSeen: st.peerSeen || null, autoGate: this.gatePass.status() },
       nextPullAt: this.nextPullAt, now: this.now(), polling: this.polling(),

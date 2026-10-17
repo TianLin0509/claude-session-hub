@@ -103,6 +103,7 @@ const { registerPromptInspectIpc } = require('./main/ipc/prompt-inspect-handlers
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { createDesktopNotificationController } = require('./main/desktop-notification-controller.js');
+const { createHubPetController } = require('./main/hub-pet-controller.js');
 const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handlers.js');
 const { registerMemoryReleaseIpc } = require('./main/ipc/memory-release-handlers.js');
 const { registerDiskReleaseIpc } = require('./main/ipc/disk-release-handlers.js');
@@ -483,6 +484,9 @@ let windowsShellWatchdog = null;
 
 let mainWindow;
 let desktopNotificationController = null;
+let hubPetController = null;
+// 桌宠「敲键盘」看的是助理会话本轮是否还在跑（CLI hook 报告的状态）。
+const HUB_PET_ASSISTANT_PURPOSES = new Set(['company-assistant', 'hub-assistant']);
 const sessionManager = new SessionManager();
 const { SessionTokenUsageService } = require('./main/usage/session-token-usage-service.js');
 const { isSessionViewer } = require('./core/session-observer-policy');
@@ -1305,6 +1309,40 @@ function createWindow() {
         || process.env.CLAUDE_HUB_E2E_SHOW_NOTIFICATION === '1',
       logger: console,
     });
+  }
+  // 助理桌宠（2026-10-16）：Hub 开着时出现在桌面角落，设置里可关；家里自用版默认关。设计见 docs/design/hub-pet.md。
+  if (!hubPetController) {
+    try {
+      const petDistribution = require('./core/distribution');
+      hubPetController = createHubPetController({
+        BrowserWindow, screen, ipcMain, Menu, powerMonitor, app,
+        htmlPath: path.join(__dirname, 'renderer', 'hub-pet', 'pet.html'),
+        preloadPath: path.join(__dirname, 'renderer', 'hub-pet', 'pet-preload.js'),
+        assetsDir: path.join(__dirname, 'renderer', 'assets', 'hub-pet'),
+        dataDir: getHubDataDir(),
+        company: petDistribution.target === 'company',
+        available: petDistribution.featureEnabled('hubPet'),
+        getMainWindow: () => mainWindow,
+        focusPrimaryWindow,
+        sendToRenderer,
+        noticeBus: require('./core/company-assistant/notice-bus').noticeBus(),
+        isAssistantBusy: () => {
+          for (const s of sessionManager.sessions.values()) {
+            if (s && s.agentTurnActive && HUB_PET_ASSISTANT_PURPOSES.has(s.info && s.info.purpose)) return true;
+          }
+          return false;
+        },
+        canShow: () => !keepIsolatedE2EWindowHidden() || process.env.CLAUDE_HUB_E2E_SHOW_PET === '1',
+        debug: isIsolatedHub(),
+        logger: console,
+      });
+    } catch (error) { console.warn('[hub-pet] setup failed:', error && error.message); }
+  }
+  if (hubPetController) {
+    // 桌宠跟着主窗口走：主窗口加载完才出现；主窗口关掉时先收起桌宠，
+    // 否则这个小窗会让 Electron 等不到 window-all-closed、Hub 退不干净。
+    mainWindow.webContents.once('did-finish-load', () => { try { hubPetController?.start(); } catch (error) { console.warn('[hub-pet] start failed:', error && error.message); } });
+    mainWindow.once('closed', () => { try { hubPetController?.stop(); } catch (_) {} });
   }
   // index.html 的 <title>AI 群聊 Hub</title> 在页面加载完成后会触发 page-title-updated 覆盖
   // BrowserWindow.title — preventDefault 阻止覆盖，保留带 PID 的标题
@@ -2366,6 +2404,41 @@ try {
     });
   }
 } catch (error) { console.error('[company-bridge] 家里联动未启动：', error.message); }
+// 公司版「助理」（2026-10-16）：每日简报 + 对话 + 6 条提醒，只读 WeLink，数据只留在本机 Hub 数据目录。
+// 只在公司版启用（core/company-assistant/gate.js），不依赖家里联动的配对。提醒经提醒总线发布：这里转成桌面通知并告诉页面。
+let companyAssistantService = null;
+try {
+  if (require('./core/company-assistant/gate').companyAssistantEnabled()) {
+    const { CompanyAssistant } = require('./core/company-assistant/service');
+    const live = new (require('./core/hub-assistant/live-history').LiveHistory)();
+    const loadMeta = id => {
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return null;
+      const saved = require('./core/session-store').loadSessionFile(id, { strict: true });
+      return saved ? { ...saved, id: saved.hubId || id } : null;
+    };
+    companyAssistantService = new CompanyAssistant({
+      dataDir: getHubDataDir(),
+      noTimer: process.env.CLAUDE_HUB_ASSISTANT_TIMER === '0',
+      createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
+      sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+      getSession: id => sessionManager.getSession(id),
+      getSessionMetadata: loadMeta,
+      resumeSession: async id => { const meta = require('./core/session-store').loadSessionFile(id, { strict: true }); return meta ? resumeSession({ ...meta, hubId: id }) : null; },
+      isAgentTurnActive: id => sessionManager.isAgentTurnActive(id),
+      // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
+      readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
+      nodeExecutable: process.execPath,
+      onChanged: () => sendToRenderer('company-assistant:changed', {}),
+    });
+    require('./core/company-assistant/notice-bus').noticeBus().on('notice', notice => {
+      sendToRenderer('company-assistant:notice', notice);
+      // 点通知打开助理页（页面认这个固定编号），不直接跳进会话。
+      try { void desktopNotificationController?.show({ sessionId: 'company-assistant', title: notice.title, body: notice.text, kind: 'assistant' }); } catch (error) { console.warn('[company-assistant] notification', error.message); }
+    });
+    companyAssistantService.start();
+    require('./main/ipc/company-assistant-handlers').registerCompanyAssistantIpc(ipcMain, companyAssistantService);
+  }
+} catch (error) { console.error('[company-assistant] 公司助理未启动：', error.message); }
 // AI 编排模式（2026-10-04）：编排员通过 hub_orchestrator 工具驱动群聊与交付工作流。
 try {
   global.__orchestrationService = require('./main/orchestration/service').createOrchestrationService({
@@ -4162,6 +4235,8 @@ async function runFinalShutdownCleanup() {
   };
   capture('desktop-notification', () => desktopNotificationController?.dispose());
   desktopNotificationController = null;
+  capture('hub-pet', () => hubPetController?.dispose());
+  hubPetController = null;
   capture('completion-notifier', () => completionNotifier.dispose());
   capture('session-auto-suspend', () => sessionAutoSuspendScheduler?.stop());
   capture('claude-hook-watchdog', () => claudeHookWatchdog?.stop());
@@ -4173,6 +4248,7 @@ async function runFinalShutdownCleanup() {
   capture('hub-assistant', () => assistantService?.close());
   capture('wireless-assistant', () => wirelessService?.close());
   capture('company-bridge', () => companyBridgeService?.close());
+  capture('company-assistant', () => companyAssistantService?.close());
   capture('hub-orchestration', () => global.__orchestrationService?.stop());
   capture('hub-phone', () => phoneService?.close());
   clearTimeout(sessionSearchPrewarmTimer);

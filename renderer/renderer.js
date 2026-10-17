@@ -7333,6 +7333,10 @@ const accountUsageController = createAccountUsageController({
   isMemoOpen: () => memoPanel.isOpen(),
 });
 const renderAccountUsage = accountUsageController.render;
+// CodeAgent 额度条：每轮回答结束读屏幕 Stats 面板的 Credit（applyCodeAgentScreenContext），每个账号一行。
+const codeagentQuotaBar = require('./codeagent-quota-bar.js').createCodeAgentQuotaBar({ document, storage: window.localStorage, escapeHtml });
+codeagentQuotaBar.render();
+window.codeagentQuotaBar = codeagentQuotaBar;
 // 欢迎页只提供创建入口；项目数据按需由现有创建面板加载。
 homeWorkbench = createHomeWorkbench({
   document,
@@ -8184,7 +8188,11 @@ function applyCodeAgentScreenContext(session, sessionId) {
   let context = null;
   try {
     const lines = terminalActivityMonitor ? terminalActivityMonitor.extractLiveScreenLines(sessionId) : [];
-    context = require('../core/codeagent-screen-stats').parseCodeAgentContext(lines);
+    const stats = require('../core/codeagent-screen-stats');
+    context = stats.parseCodeAgentContext(lines);
+    // 同一面板里的额度：按会话用的账号（号池账号或个人账号）记一行（renderer/codeagent-quota-bar.js）。
+    const credit = stats.parseCodeAgentCredit(lines);
+    if (credit && typeof codeagentQuotaBar !== 'undefined') codeagentQuotaBar.update(credit, { account: session.codeagentPoolLabel || '个人账号' });
   } catch { context = null; }
   if (!context) return;
   session.contextUsed = context.contextUsed;
@@ -8652,6 +8660,8 @@ const configModal = createConfigModalController({
   applyCardDisplaySettings: applyHubCardDisplaySettings,
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
+// 助理桌宠：配置里的开关与角色，以及「点桌宠打开助理」的入口事件（hub-pet:open-assistant）。
+try { require('./hub-pet/hub-settings.js').mountHubPetSettings({ document, window, ipcRenderer }); } catch (error) { console.warn('[hub-pet] settings mount failed:', error && error.message); }
 const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
   document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { window.hubWorkspaces?.close(); window.__cloudHide?.(); memoryPanel.close(); capabilityPanel.close(); },
 });
@@ -8707,6 +8717,21 @@ async function openSessionById(sessionId) {
 }
 window.__hubOpenSession = openSessionById;
 window.__hubToast = message => showToast(message);
+// 公司版「助理」页（2026-10-16）：每日简报 + 对话 + 提醒；只在公司版启用（core/company-assistant/gate.js）。
+if (require('../core/company-assistant/gate').companyAssistantEnabled()) {
+  // 左侧只留一个「助理」：公司版本来就关着旧助理（features.assistant=false）；隔离测试用开关打开公司助理时也一并藏起旧入口。
+  const oldAssistantNav = document.getElementById('btn-assistant');
+  if (oldAssistantNav) oldAssistantNav.style.display = 'none';
+  try {
+    const companyAssistantPage = require('./company-assistant-page').createCompanyAssistantPage({
+      document, window, ipcRenderer,
+      closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+      showMessage: message => showToast(message),
+      openSession: openSessionById,
+    });
+    window.__companyAssistantHide = () => companyAssistantPage.close();
+  } catch (error) { console.warn('[company-assistant] 助理页未启动：', error.message); }
+}
 // @community-strip 无线 Tab · SuperRAN 助理（2026-10-14）：写法同助理页，点左侧其他按钮自动关闭。
 try {
   const wirelessPage = require('./wireless-page').createWirelessPage({
