@@ -43,10 +43,10 @@
 /* Footer remains the existing single 34px row, including every provider and VPN. */
 
 /* Every compact session uses one line in both display modes. Explicit details
-   remain an opt-in expansion; logo and time reserve only their actual width. */
+   remain an opt-in expansion; the leading badge has room for its status ring. */
 :root[data-display-mode] body #session-list .session-item.slim:not(.meeting):not(.has-details),
 :root[data-display-mode] body #session-list .session-item.slim .sl-line1 {
-  display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:3px;
+  display:grid; grid-template-columns:minmax(20px,max-content) minmax(0,1fr) auto; gap:3px;
   height:27px; min-height:27px; max-height:27px; padding:0 6px;
   align-items:center; box-sizing:border-box;
 }
@@ -56,7 +56,7 @@
   display:block; min-width:0; white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; line-height:1.3;
 }
-:root[data-display-mode] body #session-list .sl-line1.with-arrow { grid-template-columns:10px minmax(0,1fr) auto auto; }
+:root[data-display-mode] body #session-list .sl-line1.with-arrow { grid-template-columns:10px minmax(20px,max-content) minmax(0,1fr) auto; }
 :root[data-display-mode] body #session-list .sl-kind { width:13px; height:13px; margin:0; }
 :root[data-display-mode] body #session-list .sl-group-logos { padding:0; }
 :root[data-display-mode] body #session-list .sl-group-logos .sl-kind { animation:none; }
