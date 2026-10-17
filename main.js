@@ -30,6 +30,7 @@ if (process.env.CLAUDE_HUB_NO_CDP !== '1' && !_hasCdpSwitch) {
 const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
 const { WorkspaceService, normalizeKey: normalizeWorkspaceKey } = require('./core/workspace-service.js');
 const stateStore = require('./core/state-store.js');
+const { primeV8MemoryPoolForExit } = require('./core/v8-exit-guard.js');
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const {
   appendManagedLaunchAudit,
@@ -4408,6 +4409,11 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
       shutdownDrainState = 'drained';
       console.log(`[shutdown] PTY drain complete: ${result.drainedPtyCount} session(s), ${result.durationMs}ms`);
       if (!cleanup.clean) console.error('[shutdown] exiting with cleanShutdown=false because cleanup reported errors');
+      // 2026-10-18：先让 V8 内存池「刚排过归还任务」，并给后台线程一点时间跑完，
+      // 免得销毁 isolate 时再排任务、撞上 Node 平台关闭（0x80000003，见 core/v8-exit-guard.js）。
+      const v8Prime = primeV8MemoryPoolForExit();
+      if (!v8Prime.ok) console.warn('[shutdown] V8 memory-pool prime skipped:', v8Prime.error);
+      await new Promise(resolve => setTimeout(resolve, 80));
       // Re-enter app.quit only after every node-pty onExit callback completed
       // while the Node environment was still alive.
       app.quit();
@@ -4435,4 +4441,10 @@ app.on('before-quit', (event) => {
 
 app.on('window-all-closed', () => {
   void beginGracefulHubShutdown('window-all-closed');
+});
+
+// 'quit' 是原生收尾前最后一个能跑 JS 的点：再刷新一次 V8 内存池的计时，覆盖「前一次刷新后、
+// 原生收尾前恰好过期」的窄窗口（core/v8-exit-guard.js）。
+app.on('quit', () => {
+  try { primeV8MemoryPoolForExit(); } catch (_) {}
 });
