@@ -117,6 +117,36 @@ test('syncSharedConfig defaults a fresh account to the first model of its own ac
   assert.equal(synced.model, 'deepseek-v4-flash-0731', 'never inherit the personal model the pool account may not have');
 });
 
+// 2026-10-17 公司实测：两个号分别只有 GLM、只有 DeepSeek v4；通道开到 DS 号上报「找不到 GLM」。
+// 原因：定模型时只看配置文件，没读「一键获取模型权限」探测到的清单，DS 号没定下模型就退回 CodeAgent 默认的 GLM。
+test('syncSharedConfig uses the probed model list: a DeepSeek-only account gets its own model, and a stale GLM setting is replaced', () => {
+  const probe = require('../core/codeagent-model-probe');
+  const personal = tmp(), target = tmp();
+  fs.writeFileSync(path.join(personal, 'settings.json'), JSON.stringify({ model: 'GLM-5.2-WX-Auto' }));
+  probe.writeProbed(path.join(target, probe.MODELS_FILE), { models: ['deepseek-v4-0731'], defaultModel: '' });
+  pool.syncSharedConfig(personal, target);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target, 'settings.json'), 'utf8')).model, 'deepseek-v4-0731');
+  // 号自己存过一个它没有权限的模型（例如早先手动选过 GLM）：换成清单里的
+  fs.writeFileSync(path.join(target, 'settings.json'), JSON.stringify({ model: 'GLM-5.2-WX-Auto' }));
+  pool.syncSharedConfig(personal, target);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target, 'settings.json'), 'utf8')).model, 'deepseek-v4-0731');
+  // 清单里有的、号主自己选的模型保留
+  probe.writeProbed(path.join(target, probe.MODELS_FILE), { models: ['deepseek-v4-0731', 'deepseek-v4-flash-0731'], defaultModel: 'deepseek-v4-0731' });
+  fs.writeFileSync(path.join(target, 'settings.json'), JSON.stringify({ model: 'deepseek-v4-flash-0731' }));
+  pool.syncSharedConfig(personal, target);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target, 'settings.json'), 'utf8')).model, 'deepseek-v4-flash-0731');
+});
+
+test('pickAccount without a model prefers accounts whose model list is known over ones that may fall back to a default they lack', () => {
+  const picked = pool.pickAccount([
+    acct({ id: 'unknown', models: [], modelsAuthoritative: false, activeSessions: 0 }),
+    acct({ id: 'ds', models: ['deepseek-v4-0731'], modelsAuthoritative: true, activeSessions: 1 }),
+  ]);
+  assert.equal(picked.id, 'ds');
+  // 只有清单未知的号时仍可用（问题不卡住）
+  assert.equal(pool.pickAccount([acct({ id: 'unknown' })]).id, 'unknown');
+});
+
 test('projectCredentialsOverride flags a working directory whose .cac credentials would win over the pool account', () => {
   const cwd = tmp();
   assert.equal(pool.projectCredentialsOverride(cwd), null);

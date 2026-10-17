@@ -157,7 +157,7 @@ const Q2 = '请再核对 10 处：OLLA 的叠加位置、步长、BLER 目标、
     check('「追问」把命令开头填进本会话输入框；「补收」直接调 bridge:recollect（带会话与编号）');
     await until('toast gone', () => q(`![...document.querySelectorAll('body *')].some(e => e.childElementCount === 0 && /已请公司补收/.test(e.textContent) && e.getBoundingClientRect().height > 0)`), 15000).catch(() => {});
 
-    // ② 公司会话：家里提问收进通道串，顶部为家里办事
+    // ② 公司会话：家里提问收进通道串，顶部「特战任务」
     state.role = 'company';
     state.threads = [{ id: 'Q-1016-05', sessionId: 'co-s1', title: 'AirView 下行调度与 AMC', state: 'replied', from: { title: 'SuperRAN · AirView OLLA 核对（Claude）', kind: 'claude' }, createdAt: T - 31 * MIN,
       rounds: [{ round: 1, question: Q1, receivedAt: T - 30 * MIN, sentAt: T - 29 * MIN, reply: ANSWER1, replyAt: T - 15 * MIN, meta: { model: 'GLM-5.2-WX-Auto' } },
@@ -180,14 +180,14 @@ const Q2 = '请再核对 10 处：OLLA 的叠加位置、步长、BLER 目标、
         acts: block.querySelectorAll('[data-bridge-action]').length, answers: root.querySelectorAll(':scope > .turn-card.assistant').length,
         homeAvatar: block.querySelector('.bt-round.party-home img')?.getAttribute('src') || '' };
     })()`);
-    assert.match(co.banner, /为家里办事：\s*SuperRAN · AirView OLLA 核对（Claude）/);
-    assert.match(co.head, /为家里办事 · Q-1016-05 · 家里 Claude/);
+    assert.match(co.banner, /特战任务：\s*SuperRAN · AirView OLLA 核对（Claude）/);
+    assert.match(co.head, /特战任务 · Q-1016-05 · 家里 Claude/);
     assert.deepEqual(co.rows.map(r => r.split('|')[0]), ['家里问', '公司答', '家里问', '公司答']);
     assert.ok(co.rows[0].includes('party-home'));
     assert.match(co.homeAvatar, /claude/);
     assert.equal(co.acts, 0);
     assert.equal(co.answers, 2, 'CodeAgent 自己的回答照常显示');
-    check('公司会话：顶部「为家里办事：<家里会话标题>」，家里提问收进通道串、家里 Claude 署名暖色，CodeAgent 回答照常显示');
+    check('公司会话：顶部「特战任务：<家里会话标题>」，家里提问收进通道串、家里 Claude 署名暖色，CodeAgent 回答照常显示');
     await q(`document.querySelector('#co-s1 .bt-anchor .bridge-thread').open = true`);
     await shot('03-公司会话');
 
