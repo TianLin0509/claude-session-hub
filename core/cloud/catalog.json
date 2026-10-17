@@ -1,0 +1,301 @@
+{
+    "machine":  {
+                    "label":  "阿里云服务器",
+                    "host":  "8.130.158.231",
+                    "user":  "Administrator",
+                    "keyName":  "codex_aliyun",
+                    "region":  "乌兰察布",
+                    "instanceType":  "ecs.e-c1m1.large",
+                    "domains":  [
+                                    "ai.lt-stockpartner.tech",
+                                    "me.lt-stockpartner.tech",
+                                    "trace.lt-stockpartner.tech"
+                                ],
+                    "privateHost":  "me.lt-stockpartner.tech"
+                },
+    "maintenance":  {
+                        "tempRoots":  [
+                                          "C:\\Windows\\Temp",
+                                          "C:\\Users\\Administrator\\AppData\\Local\\Temp"
+                                      ],
+                        "logRoots":  [
+                                         "C:\\TeamWeekly\\logs",
+                                         "C:\\AITeamWeekly\\logs",
+                                         "C:\\WeeklyPlatform\\logs",
+                                         "C:\\SuperRANPortal\\logs",
+                                         "C:\\SuperRANTeam\\logs",
+                                         "C:\\AIHubAssistant\\logs",
+                                         "C:\\company-relay\\logs",
+                                         "C:\\Caddy\\logs"
+                                     ],
+                        "minAgeDays":  7,
+                        "maxFiles":  50,
+                        "maxFileBytes":  10485760
+                    },
+    "services":  [
+                     {
+                         "id":  "superran-dev",
+                         "name":  "SuperRAN 协作台",
+                         "category":  "网页与协作",
+                         "purpose":  "提案、开发任务与协作进展",
+                         "url":  "https://ai.lt-stockpartner.tech/superran-dev/",
+                         "port":  18781,
+                         "folder":  "C:/SuperRANPortal",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "superran-records",
+                         "name":  "SuperRAN 工作记录",
+                         "category":  "网页与协作",
+                         "purpose":  "团队工作记录与成果",
+                         "url":  "https://ai.lt-stockpartner.tech/superran/",
+                         "port":  18770,
+                         "folder":  "C:/SuperRANTeam",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-2",
+                         "name":  "SuperRAN 开工会",
+                         "category":  "网页与协作",
+                         "purpose":  "团队开工说明和入门材料",
+                         "url":  "https://ai.lt-stockpartner.tech/superran/kickoff/",
+                         "port":  null,
+                         "folder":  "C:/SuperRANTeam/kickoff",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "gitea",
+                         "name":  "代码仓库 Gitea",
+                         "category":  "网页与协作",
+                         "purpose":  "代码仓库与 PR",
+                         "url":  "https://ai.lt-stockpartner.tech/repos/",
+                         "port":  18780,
+                         "folder":  "C:/SuperRANRepo",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "ai-team",
+                         "name":  "AI 团队周报",
+                         "category":  "网页与协作",
+                         "purpose":  "AI 团队工作与周报入口",
+                         "url":  "https://ai.lt-stockpartner.tech/ai-team/ui/",
+                         "port":  18775,
+                         "folder":  "C:/AITeamWeekly",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "weekly",
+                         "name":  "小组周报",
+                         "category":  "网页与协作",
+                         "purpose":  "小组周报填写与查看",
+                         "url":  "https://ai.lt-stockpartner.tech/weekly/",
+                         "port":  18760,
+                         "folder":  "C:/TeamWeekly",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "reports",
+                         "name":  "周报中心",
+                         "category":  "网页与协作",
+                         "purpose":  "集中查看与管理周报",
+                         "url":  "https://ai.lt-stockpartner.tech/reports/",
+                         "port":  18786,
+                         "folder":  "C:/WeeklyPlatform",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "airlens",
+                         "name":  "AirLens",
+                         "category":  "网页与协作",
+                         "purpose":  "无线前沿信号雷达",
+                         "url":  "https://ai.lt-stockpartner.tech/airlens/",
+                         "port":  18765,
+                         "folder":  "C:/airlens",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "chuxin",
+                         "name":  "初心投研",
+                         "category":  "网页与协作",
+                         "purpose":  "量化信息与投资工作台",
+                         "url":  "https://ai.lt-stockpartner.tech/chuxin/",
+                         "port":  13104,
+                         "folder":  "C:/chuxin-research",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-9",
+                         "name":  "Trace A/B 分析台",
+                         "category":  "网页与协作",
+                         "purpose":  "Trace 对比与分析",
+                         "url":  "https://trace.lt-stockpartner.tech/",
+                         "port":  null,
+                         "folder":  "C:/trace-site",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "style",
+                         "name":  "工作风格地图",
+                         "category":  "网页与协作",
+                         "purpose":  "组会答题与工作风格展示",
+                         "url":  "https://me.lt-stockpartner.tech/style/",
+                         "port":  18796,
+                         "folder":  "C:/stylemap",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "captain",
+                         "name":  "管理晴雨表",
+                         "category":  "网页与协作",
+                         "purpose":  "管理反馈页面",
+                         "url":  "https://me.lt-stockpartner.tech/captain/",
+                         "port":  18792,
+                         "folder":  "C:/captain-gate；C:/captain-site",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "rules",
+                         "name":  "AI Hub 规则发布",
+                         "category":  "网页与协作",
+                         "purpose":  "公开版／公司版规则管理",
+                         "url":  "https://me.lt-stockpartner.tech/hub-rules/admin/",
+                         "port":  18793,
+                         "folder":  "C:/hub-rules",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-13",
+                         "name":  "AI 圆桌派官网",
+                         "category":  "网页与协作",
+                         "purpose":  "扩展介绍与下载",
+                         "url":  "https://ai.lt-stockpartner.tech/",
+                         "port":  null,
+                         "folder":  "C:/arena-site",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-14",
+                         "name":  "个人主页",
+                         "category":  "网页与协作",
+                         "purpose":  "个人介绍、论文和作品入口",
+                         "url":  "https://me.lt-stockpartner.tech/",
+                         "port":  null,
+                         "folder":  "C:/home-site",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-15",
+                         "name":  "AI Hub 公司版更新",
+                         "category":  "软件下载与更新",
+                         "purpose":  "公司版增量与完整安装包分发",
+                         "url":  "https://me.lt-stockpartner.tech/hub-update/company/latest.json",
+                         "port":  null,
+                         "folder":  "C:/hub-update/site/company",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-16",
+                         "name":  "秘书终结者更新",
+                         "category":  "软件下载与更新",
+                         "purpose":  "秘书终结者程序与代码更新",
+                         "url":  "https://me.lt-stockpartner.tech/hub-update/mishu/latest.json",
+                         "port":  null,
+                         "folder":  "C:/hub-update/site/mishu",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-17",
+                         "name":  "PPT Doctor 更新",
+                         "category":  "软件下载与更新",
+                         "purpose":  "PPT Doctor 安装与更新分发",
+                         "url":  "https://me.lt-stockpartner.tech/pptutor/manifest.json",
+                         "port":  null,
+                         "folder":  "C:/pptutor-updates",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-18",
+                         "name":  "AI 圆桌 Lite 更新",
+                         "category":  "软件下载与更新",
+                         "purpose":  "圆桌 Lite 扩展更新",
+                         "url":  "https://me.lt-stockpartner.tech/pptutor/yuanzhuo-lite/update-manifest.json",
+                         "port":  null,
+                         "folder":  "C:/pptutor-updates/yuanzhuo-lite",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-19",
+                         "name":  "AI 圆桌 Android",
+                         "category":  "软件下载与更新",
+                         "purpose":  "安卓安装页与版本清单",
+                         "url":  "https://ai.lt-stockpartner.tech/android/",
+                         "port":  null,
+                         "folder":  "C:/arena-site/android",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "site-20",
+                         "name":  "我的助理 Android",
+                         "category":  "软件下载与更新",
+                         "purpose":  "我的助理安卓安装与更新",
+                         "url":  "https://ai.lt-stockpartner.tech/assistant/android/",
+                         "port":  null,
+                         "folder":  "C:/arena-site/assistant/android",
+                         "backend":  false,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "company-drop",
+                         "name":  "公司文件收件箱",
+                         "category":  "中转服务",
+                         "purpose":  "公司与家里的文件、文字交接",
+                         "url":  "",
+                         "port":  18791,
+                         "folder":  "C:/company-drop；C:/company-relay",
+                         "backend":  true,
+                         "privateEntry":  true
+                     },
+                     {
+                         "id":  "assistant",
+                         "name":  "AI Hub 助理中转",
+                         "category":  "中转服务",
+                         "purpose":  "手机助理与本机 Hub 的通信中转",
+                         "url":  "https://ai.lt-stockpartner.tech/assistant/api/health",
+                         "port":  18788,
+                         "folder":  "C:/AIHubAssistant",
+                         "backend":  true,
+                         "privateEntry":  false
+                     },
+                     {
+                         "id":  "caddy",
+                         "name":  "网页网关 Caddy",
+                         "category":  "网关",
+                         "purpose":  "统一提供 HTTPS、静态网页与请求转发",
+                         "url":  "",
+                         "port":  443,
+                         "folder":  "C:/Caddy",
+                         "backend":  true,
+                         "privateEntry":  false
+                     }
+                 ]
+}
