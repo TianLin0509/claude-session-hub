@@ -7,6 +7,13 @@ const schema = (properties, required = []) => ({ type: 'object', properties, req
 const string = { type: 'string' };
 const tools = [
   {
+    name: 'send_image_company',
+    description: '明确需要传图片时，将本机 PNG/JPEG/WebP 图片发送到已有的公司问答线程。Hub 在本机压缩和加密，完整文字消息小于 60000 字节；默认保留分辨率，allow_resize=true 才允许缩小。请先用 ask_company 建立线程。只传路径，不把图片编码放入问题。返回待发送或已发送不等于对端已收到，可用 company_images 查校验和通知状态。',
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    inputSchema: schema({ thread: string, path: { type: 'string', description: '本机图片绝对路径' }, round: { type: 'integer', minimum: 1 }, caption: string, allow_resize: { type: 'boolean', default: false } }, ['thread', 'path']),
+  },
+  { name: 'company_images', description: '查看属于当前会话的通道图片：大小、压缩方式、对端校验、通知状态和本机路径。', annotations: { readOnlyHint: true, openWorldHint: false }, inputSchema: schema({ thread: string }) },
+  {
     name: 'ask_company',
     description: '请公司电脑上的 CodeAgent 新开一个会话办事，回执是 Markdown 文字说明，不含源码。它在公司内网里，能读公司代码（如 AirView、L2 的实际实现）、'
       + '查公司电脑上的文件、文档和环境、运行查询类命令；不改动公司电脑。'

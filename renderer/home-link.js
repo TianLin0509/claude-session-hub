@@ -6,7 +6,7 @@
 // 解锁时没有输入框、没有提示，菜单里只是多了这一项。
 (() => {
   const { ipcRenderer } = require('electron');
-  let dialog = null, data = null, editing = false, pool = null, poolTimer = null;
+  let dialog = null, data = null, editing = false, pool = null, poolTimer = null, imagePanel = null;
   let tab = (() => { try { return localStorage.getItem('hub.homeLink.tab') === 'pool' ? 'pool' : 'link'; } catch { return 'link'; } })();
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const clock = at => at ? new Date(at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
@@ -221,6 +221,11 @@
       <div class="hl-sec hl-row"><span class="hl-muted" style="flex:1">配对于 ${clock(data.link.pairedAt)}。解除后需要对端重新生成配对码。</span><button class="hl-btn" data-hl="unpair">解除配对</button></div>` : ''}`;
     // 正在改设置时别把输入框刷掉
     if (keep) body.querySelector('[data-hl-sec="settings"]').replaceWith(keep);
+    if (paired) {
+      if (!imagePanel) imagePanel = require('./bridge-images').createBridgeImages({ document, ipcRenderer, refresh: load });
+      body.insertBefore(imagePanel.root, body.querySelector('[data-hl-sec="settings"]'));
+      imagePanel.update(data);
+    }
     dialog.querySelector('.hl-state').textContent = { none: '未配对', 'waiting-welcome': '等待确认', paired: data.settings.enabled ? '已接通 · 自动作答' : '已接通 · 作答已关' }[data.link.state] || data.link.state;
   }
   async function load() { data = await call('bridge:status'); render(); void loadPool(); }

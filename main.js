@@ -2321,6 +2321,7 @@ try {
   const bridgeRole = require('./core/company-bridge/role').bridgeRole();
   const bridgeDeps = {
     dataDir: getHubDataDir(),
+    imageCodec: require('./core/company-bridge/image-codec').createImageCodec(),
     noTimer: process.env.CLAUDE_HUB_BRIDGE_TIMER === '0',
     createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
     sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),

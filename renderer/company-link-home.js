@@ -2,7 +2,7 @@
 // 无线页里的「公司联动」（2026-10-15，家里一端）：配对、公司是否在线、家里的 Agent 向公司提过的问题和回执。
 // 问答本身由 Agent 通过「问公司」工具或 company-ask 命令发起，这里只看进度、管配对和挂载范围。
 function createCompanyLinkSection({ document, ipcRenderer, openSession, showMessage }) {
-  let root = null, data = null;
+  let root = null, data = null, images = null;
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const clock = at => at ? new Date(at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke(channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
@@ -62,6 +62,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
     if (!root || !data) return;
     root.querySelector('.cl-head').innerHTML = head();
     root.querySelector('.wp-list').innerHTML = threads() + consults();
+    images?.update(data);
   }
   async function load() {
     if (!root) return;
@@ -97,6 +98,8 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
     root.className = 'wp-section cl-section'; root.hidden = true;
     root.innerHTML = '<h2>公司联动</h2><p class="wp-hint">家里的 Agent 需要核对公司代码时，向公司 Hub 的 CodeAgent 提问；回执到了自动发回提问的会话。公司 CodeAgent 遇到难题也会用 ask_home 向家里求助，家里开 Claude 会话作答（不行换 Codex），回复自动发回公司。</p><div class="wp-strip cl-head"></div><div class="wp-list"></div>';
     container.append(root);
+    images = require('./bridge-images').createBridgeImages({ document, ipcRenderer, refresh: load });
+    root.insertBefore(images.root, root.querySelector('.wp-list'));
     root.addEventListener('click', e => { const b = e.target.closest('[data-cl]'); if (b && b.tagName !== 'SELECT') void action(b.dataset.cl, b); });
     root.addEventListener('change', e => { if (e.target.dataset.cl === 'attach') void call('bridge:set-settings', { attach: e.target.value }).then(load).catch(err => showMessage?.(err.message)); });
     ipcRenderer.on('bridge:changed', () => { if (root.isConnected && !root.closest('[hidden]:not(.cl-section)')) void load(); });
