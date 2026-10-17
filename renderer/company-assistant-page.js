@@ -116,7 +116,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     const auto = d.mailSetup || {};
     const why = auto.reason === 'no-email' ? 'WeLink 账号信息里没读到你的邮箱。' : auto.email ? `用 ${esc(auto.email)} 自动配置没成功${auto.output ? '（' + esc(auto.output) + '）' : ''}。` : '';
     return `<article class="ca-setup"><b>填一次公司邮箱，邮件和日历就能用</b><p class="ca-note">${why}只用来让 welink-cli 找到公司邮件服务器，不发邮件，数据只留在这台电脑。</p>
-      <div class="ca-row"><input type="email" data-f="setup-email" placeholder="例如 zhangsan@huawei.com" value="${esc(d.settings.email || auto.email || '')}"><button type="button" class="ca-btn primary" data-ca="setup-mail">配置</button></div><p class="ca-note" data-f="setup-msg"></p></article>`;
+      <div class="ca-row"><input type="email" data-f="setup-email" placeholder="公司邮箱地址" value="${esc(d.settings.email || auto.email || '')}"><button type="button" class="ca-btn primary" data-ca="setup-mail">配置</button></div><p class="ca-note" data-f="setup-msg"></p></article>`;
   }
 
   function briefCard() {
@@ -274,7 +274,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     }).join('');
     return `<fieldset><legend>WeLink 登录</legend><div class="ca-row">${loginLine}</div></fieldset>
       <fieldset class="col"><legend>公司邮箱（邮件和日历要用）</legend>
-        <div class="ca-row"><input type="email" data-f="email" placeholder="例如 zhangsan@huawei.com" value="${esc(s.email || '')}"><button type="button" class="ca-btn primary" data-x="mail">${d.calendarNeedsSetup ? '配置邮件和日历' : '重新配置'}</button>${from ? `<span class="ca-note">${from}</span>` : ''}</div>
+        <div class="ca-row"><input type="email" data-f="email" placeholder="公司邮箱地址" value="${esc(s.email || '')}"><button type="button" class="ca-btn primary" data-x="mail">${d.calendarNeedsSetup ? '配置邮件和日历' : '重新配置'}</button>${from ? `<span class="ca-note">${from}</span>` : ''}</div>
         <p class="ca-note" data-f="mail-msg">${d.calendarNeedsSetup ? '还没接入。' : '已接入。'}只让 welink-cli 按邮箱找一次公司邮件服务器，不发邮件。</p></fieldset>
       <fieldset class="col"><legend>最近一次取数（${d.refreshedAt ? when(d.refreshedAt) : '还没取过'}）</legend>${snapRows}
         <div class="ca-row"><button type="button" class="ca-btn small" data-ca="refresh">刷新数据</button></div></fieldset>
