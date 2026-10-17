@@ -350,6 +350,24 @@ test('新指令遇到等待中的旧指令：force 或换了动作就接手（�
   assert.ok(!r.box.controller.calls.includes('apply'), '被取代的更新不再替换');
 });
 
+test('长任务：会话表里看不出在忙、但原生记录还在写（transcriptFresh）的通道轮次也算在干活，到时记进清单', async t => {
+  const box = { mtime: 0 };
+  const r = setup(t, { extra: { transcriptMtime: () => box.mtime } }); await pair(r);
+  const { thread, sid } = await withWork(r, { local: false });
+  r.cs.busy.delete(sid);
+  r.cs.map.set(sid, { ...r.cs.map.get(sid), transcriptPath: 'D:/fake/' + sid + '.jsonl' });
+  r.clock.now += 5 * MIN; // 过了刚发出的 3 分钟起步期
+  box.mtime = r.clock.now - 60000; // 1 分钟前还在写（AirView 编译中）
+  assert.deepEqual(r.company.hubAdmin.workingList().map(x => [x.kind, x.thread]), [['bridge', thread]]);
+  box.mtime = r.clock.now - 11 * MIN; // 记录 10 分钟以上没动：不算
+  assert.deepEqual(r.company.hubAdmin.workingList(), []);
+  box.mtime = r.clock.now;
+  await r.home.hubAdmin({ op: 'restart', force: true });
+  await roundTrip(r);
+  assert.equal(r.box.relaunched, 1);
+  assert.deepEqual(r.company.hubAdmin.state().resumeAfterRestart.items.map(x => x.sessionId), [sid]);
+});
+
 test('重启后发的话必须被回执核对认作同一轮的延续', () => {
   const { RESUME_TEXT } = require('../core/company-bridge/hub-admin');
   const { BARE_CONTINUE } = require('../core/company-bridge/receipt-reader');

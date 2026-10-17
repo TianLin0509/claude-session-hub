@@ -174,10 +174,12 @@ class HubAdmin {
   }
 
   // 正在干活的：通道里在作答的轮次 + 在忙的 CodeAgent 会话（人自己开的也算）。一个会话只记一次。
+  // 通道轮次的原生记录最近 10 分钟还在写（transcriptFresh：长时间的 AirView 编译、仿真，会话表里可能查不到）也算在干活。
   workingList() {
     const b = this.bridge, out = [], seen = new Set();
+    const fresh = id => { try { return !!b.transcriptFresh?.(id); } catch { return false; } };
     for (const t of b.openThreads()) {
-      if (t.state !== 'running' || !t.sessionId || seen.has(t.sessionId) || !b.roundWorking(t)) continue;
+      if (t.state !== 'running' || !t.sessionId || seen.has(t.sessionId) || !(b.roundWorking(t) || fresh(t.sessionId))) continue;
       seen.add(t.sessionId);
       out.push({ sessionId: t.sessionId, kind: 'bridge', thread: t.id, round: runningRound(t)?.round ?? null });
     }
