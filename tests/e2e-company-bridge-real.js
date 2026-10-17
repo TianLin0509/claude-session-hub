@@ -300,7 +300,7 @@ async function main() {
     await hc.eval(`window.__hubOpenSession(${j(hsid)})`); await wait(2500);
     await shot(hc, '08-home-agent-card');
     result.companySessionTitle = (await cc.eval(`(async()=>(await require("electron").ipcRenderer.invoke("get-sessions")).find(x=>x.id===${j(companySession)})?.title)()`));
-    assert.match(result.companySessionTitle, /^特战 · /);
+    assert.match(result.companySessionTitle, /^\d{4}-Q\d+-[a-z0-9]+$/);
     const polls = proxy.state.companyPolls.filter(at => at >= activeStartedAt);
     const gaps = polls.slice(1).map((at, i) => (at - polls[i]) / 1000).sort((a, b) => a - b);
     result.companyPollTiming = { count: polls.length, minSeconds: gaps[0], medianSeconds: gaps[Math.floor(gaps.length / 2)], maxSeconds: gaps[gaps.length - 1] };

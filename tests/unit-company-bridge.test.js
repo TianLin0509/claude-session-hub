@@ -161,6 +161,9 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   assert.deepEqual(created.opts.addDirs, ['D:/code/common']);
   assert.equal(created.opts.model, undefined, '模型用 CodeAgent 默认，不传给会话（否则会走 /model 菜单）');
   assert.equal(created.opts.purpose, 'company-bridge');
+  // 会话名一眼对上家里那一个（2026-10-18）：Q-MMDD-01 由家里 Codex 发问 → MMDD-Q1-codex
+  const [, mmdd] = asked.thread.match(/^Q-(\d{4})-01$/);
+  assert.equal(created.opts.title, `${mmdd}-Q1-codex`);
   const companySession = created.opts.id;
   assert.match(r.cs.sent[0].text, /保持公司电脑原样/);
   assert.match(r.cs.sent[0].text, /不回传源码/);
