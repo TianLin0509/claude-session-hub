@@ -254,6 +254,8 @@ class HubAdmin {
       await this.report(job.id, 'restarting', note);
       // 等这条消息真的送出去再退出；送不出去也照常重启（发件箱持久，重启后补发）。
       await this.bridge.link.flush().catch(() => {});
+      // 送消息卡了 3 分钟以上、看门狗已把这条判失败并清了恢复清单：不再重启，免得中断的会话没人接（2026-10-17 审核）。
+      if (!this.applying) return;
       if (job.op === 'update') this.controller().apply();
       else this.deps.relaunch();
     } catch (error) {
@@ -347,7 +349,9 @@ class HubAdmin {
       }
     } catch (error) { ok = false; note = short(error.message, 120); }
     const outcome = { state: ok ? 'resumed' : 'failed', note, at: this.now() };
-    this.settle({ ...item, ...outcome }, ok);
+    // 落结果出错也不能卡住清单：否则这一项一直停在「恢复中」，后面的会话都轮不到（2026-10-17 审核）。
+    try { this.settle({ ...item, ...outcome }, ok); }
+    catch (error) { console.warn('[hub-admin] 恢复结果没能落下：' + (error && error.message)); }
     return outcome;
   }
   // 结果落到各自的地方：通道轮次继续在途（只清标记、记下恢复时间）或按失败流程报回家里；本机会话失败记进侧栏标记。
