@@ -129,7 +129,9 @@ async function main() {
       // 不用 sleep：Claude Code 会拦下单独的 sleep（2026-10-17 第 2 轮实测）。
       '1. 先用命令行工具在前台执行这条命令：`node -e "setTimeout(()=>console.log(1),75000)"`（运行 75 秒，模拟长时间编译；无副作用，是本测试要求的）。不要放到后台运行，等它结束再做第 2 步。',
       `2. 然后只回答一行：${token}`,
-      '如果中途被打断、之后收到「继续」，就把没做完的步骤做完，最后仍只回答那一行。'].join('\n'));
+      '如果中途被打断、之后收到「继续」，就把没做完的步骤做完，最后仍只回答那一行。',
+      // --duplicate：Esc 打断后重发同一段，Haiku 曾回「已停止，等你说继续」就收工（2026-10-18 实测），这里写明要重做。
+      ...(DUPLICATE ? ['如果这段请求被打断后又原样发来一遍，就从第 1 步重新完整做一遍（重新执行那条命令），最后仍只回答那一行。'] : [])].join('\n'));
     const asked = cli(['ask', '--file', qfile, '--title', '重启恢复测试']);
     const thread = asked.result?.thread || asked.thread;
     check(/^Q-/.test(thread || ''), `家里经「问公司」命令行发出问题 ${thread}`);
@@ -144,7 +146,8 @@ async function main() {
       if (!f || !fs.existsSync(f)) return null;
       const raw = fs.readFileSync(f, 'utf8');
       const use = raw.split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
-        .flatMap(o => (Array.isArray(o.message?.content) ? o.message.content : [])).find(b => b?.type === 'tool_use' && /75000/.test(JSON.stringify(b.input || {})));
+        // 取最后一次：--duplicate 里第一次被 Esc 打断后会重新跑一次。
+        .flatMap(o => (Array.isArray(o.message?.content) ? o.message.content : [])).findLast(b => b?.type === 'tool_use' && /75000/.test(JSON.stringify(b.input || {})));
       return use && !raw.includes('"tool_use_id":"' + use.id + '"') ? use.id : null;
     };
     let toolId = await until('long command running', running, 5 * 60000, 1000);
