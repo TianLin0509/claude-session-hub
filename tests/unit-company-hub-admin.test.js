@@ -368,6 +368,26 @@ test('长任务：会话表里看不出在忙、但原生记录还在写（trans
   assert.deepEqual(r.company.hubAdmin.state().resumeAfterRestart.items.map(x => x.sessionId), [sid]);
 });
 
+test('已答完、只等核对发回的轮次不算在干活；重启前已答完的不发「继续」（不让它多答一遍）', async t => {
+  const r = setup(t); await pair(r);
+  const { thread, sid } = await withWork(r, { local: false });
+  // 刚发出 3 分钟内（起步期），会话已经停了、回答也写完了
+  r.cs.busy.delete(sid); r.cs.answer(sid, '合并方式：Chase。');
+  assert.deepEqual(r.company.hubAdmin.workingList(), [], '答完的不记');
+  // 另一种：记下时还在跑，关闭前恰好答完 → 重启后不发「继续」，回执照常收
+  r.cs.finals.delete(sid); r.cs.busy.add(sid);
+  await r.home.hubAdmin({ op: 'restart', force: true });
+  await roundTrip(r);
+  assert.deepEqual(r.company.hubAdmin.state().resumeAfterRestart.items.map(x => x.sessionId), [sid]);
+  r.cs.answer(sid, '合并方式：Chase。');
+  const again = restartCompany(t, r);
+  await again.checkNow(); await r.home.checkNow();
+  assert.equal(continues(r).length, 0);
+  assert.equal(again.hubAdmin.state().resumeAfterRestart, null);
+  r.clock.now += 20000; await again.checkNow(); await r.home.checkNow();
+  assert.match(r.home.thread(thread).rounds[0].reply || '', /Chase/);
+});
+
 test('重启后发的话必须被回执核对认作同一轮的延续', () => {
   const { RESUME_TEXT } = require('../core/company-bridge/hub-admin');
   const { BARE_CONTINUE } = require('../core/company-bridge/receipt-reader');

@@ -180,6 +180,8 @@ class HubAdmin {
     const fresh = id => { try { return !!b.transcriptFresh?.(id); } catch { return false; } };
     for (const t of b.openThreads()) {
       if (t.state !== 'running' || !t.sessionId || seen.has(t.sessionId) || !(b.roundWorking(t) || fresh(t.sessionId))) continue;
+      // 会话停着、这一轮的回答已经写完（只等通道下一轮核对发回）：不算在干活，不能给它补「继续」。
+      if (!b.sessionBusy(t.sessionId) && this.answered(t)) continue;
       seen.add(t.sessionId);
       out.push({ sessionId: t.sessionId, kind: 'bridge', thread: t.id, round: runningRound(t)?.round ?? null });
     }
@@ -194,6 +196,14 @@ class HubAdmin {
     return out;
   }
   workingCount() { return this.workingList().length; }
+  // 这一轮发出之后，会话里已经有新的最终回答（不是发前那条基线）。
+  answered(t) {
+    const r = runningRound(t);
+    if (!r || !t.sessionId) return false;
+    let final = null;
+    try { final = this.bridge.lastFinal(t.sessionId); } catch { return false; }
+    return !!final && final.id !== r.baseline;
+  }
   // 由通道定时器调用：等待阶段看能不能重启了；重启阶段看进程是不是真的退出了（看门狗）。
   async advance() {
     const job = this.job();
@@ -307,6 +317,11 @@ class HubAdmin {
       if (!t || t.state === 'cancelled' || t.gen !== b.link.gen() || !r || r.reply || r.error) {
         if (t && r) b.patchRound(t, r.round, { resumePending: null });
         return { state: 'resumed', skipped: true, note: '这一轮已结束或已作废，不用恢复' };
+      }
+      // 关闭前它已经把这一轮答完了（只是还没核对发回）：不发「继续」，交给通道照常收回执。
+      if (this.answered(t)) {
+        b.patchRound(t, r.round, { resumePending: null, resumedAt: this.now() });
+        return { state: 'resumed', skipped: true, note: '重启前已答完，不用继续' };
       }
     }
     let ok = false, note;
