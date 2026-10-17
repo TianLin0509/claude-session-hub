@@ -146,7 +146,7 @@ test('排队/处理中：块里有等待占位，块头状态跟着记录', () =
   assert.doesNotMatch(html, /bt-headline/);
 });
 
-test('公司会话：家里提问收进通道串，署名家里 Claude，块头写为家里办事', () => {
+test('公司会话：家里提问收进通道串，署名家里 Claude，块头写特战任务（2026-10-17 田哥：公司侧不再写「家里」）', () => {
   const rec = { id: 'Q-1016-05', sessionId: 'co-1', bridgeRole: 'answerer', bridgePeer: 'home', from: { title: 'SuperRAN · AirView OLLA 核对', kind: 'claude' },
     rounds: [{ round: 1, question: '要地图', receivedAt: T0 - 40 * MIN, sentAt: T0 - 39 * MIN, reply: '📌 关键文件 12 个', replyAt: T0 - 25 * MIN },
       { round: 2, question: '再核对', receivedAt: T0, sentAt: T0 + MIN, reply: '📌 10 条都有证据', replyAt: T0 + 12 * MIN, meta: { model: 'GLM-5.2-WX-Auto' } }] };
@@ -154,7 +154,7 @@ test('公司会话：家里提问收进通道串，署名家里 Claude，块头�
   const rows = bt.collectRows(cards, { role: 'answerer', peer: 'home', record: rec });
   assert.deepEqual(rows.map(r => `${r.round}${r.who}`), ['1peer', '1self', '2peer', '2self']);
   const html = bt.threadBlock(deps, { threadId: 'Q-1016-05', role: 'answerer', peer: 'home', record: rec, agent: 'claude' }, rows, T0 + 13 * MIN);
-  assert.match(html, /为家里办事 · Q-1016-05 · 家里 Claude/);
+  assert.match(html, /特战任务 · Q-1016-05 · 家里 Claude/);
   assert.match(html, /bt-round party-home[^>]*><summary><span class="bt-av"><img src="assets\/claude\.png"/);
   assert.match(html, /<b class="bt-name">家里问<\/b>/);
   assert.match(html, /<b class="bt-name">公司答<\/b>/);
@@ -190,7 +190,8 @@ test('线程记录合并与列表标签', () => {
   assert.equal(bt.sessionBadge('nobody', recs, now), null);
   const companyRecs = bt.recordsFromStatus({ ok: true, role: 'company', threads: [{ id: 'Q-1016-05', sessionId: 'c1', from: { title: 'x' }, rounds: [{ round: 2, receivedAt: T0, reply: 'r', replyAt: T0 + MIN }] }, { id: 'Q-1016-01#123', rounds: [] }], askHome: [] });
   assert.deepEqual(Object.keys(companyRecs), ['Q-1016-05'], '存档的旧编号（带 #）不进');
-  assert.equal(bt.sessionBadge('c1', companyRecs, now).chip, '⇄ 家里');
+  assert.doesNotMatch(bt.sessionBadge('c1', companyRecs, now).chip, /家里/);
+  assert.match(bt.sessionBadge('c1', companyRecs, now).sub, /^特战任务 · /);
   assert.deepEqual(bt.recordsFromStatus({ ok: true, role: 'company', unlocked: false }), {});
   assert.deepEqual(bt.recordsFromStatus({ ok: false, error: 'x' }), {});
 });
