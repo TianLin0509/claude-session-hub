@@ -2403,6 +2403,8 @@ try {
       currentVersion: require('./core/distribution').editionVersion || app.getVersion(),
       relaunch: () => { app.relaunch(); app.quit(); },
       listSessionIds: () => [...(sessionManager.sessions?.keys?.() || [])],
+      // 重启后恢复被中断的会话（hub-admin.js resumeInterrupted）：主窗口加载完、钩子服务在听之后再恢复，会话状态才能被界面和 hook 接住。
+      appReady: () => !!hookPort && !!mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading(),
     });
     companyBridgeService.start();
     sessionManager.setExtraMcpProvider(({ kind, opts, id }) => companyBridgeService.sessionPlan({ kind, opts, id }));

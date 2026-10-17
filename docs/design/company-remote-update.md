@@ -14,18 +14,31 @@
 | 阶段 | 含义 |
 |---|---|
 | checking / downloading | 查版本、多源下载与 sha256 校验（控制器负责） |
-| waiting | 已下载，等「通道里没有在作答的轮次、没有在忙的 CodeAgent 会话」；最长 30 分钟，`force` 不等；等待期间新任务只排队不派发 |
-| applying / restarting | 已报「即将重启」并等这条消息送出（`link.flush`），调用 `apply()` 或 `app.relaunch()+quit()` |
-| 结束态 | up-to-date、failed、refused（设置里关了）、busy（已有一条在跑）、unsupported（不是安装版）、updated、rolled-back、restarted |
+| waiting | 已下载，等「通道里没有在作答的轮次、没有在忙的 CodeAgent 会话」；最多等宽限期 `restartGraceMinutes`（默认 3 分钟，0–30，0 = 不等；`force` = 0），到时走「中断—恢复」（见下节）；等待期间新任务只排队不派发 |
+| applying / restarting | 已报「即将重启」（或「中断 N 个任务后重启」）并等这条消息送出（`link.flush`），调用 `apply()` 或 `app.relaunch()+quit()`；本进程里这段时间也不派发新任务；看门狗：3 分钟内进程没退出就清标记、判 failed 并回报 |
+| 结束态 | up-to-date、failed、refused（设置里关了）、busy（已有一条在跑）、superseded（等待中被新指令取代）、unsupported（不是安装版）、updated、rolled-back、restarted |
 
-- 只认当前配对代次；同一编号只处理一次；同一时间只跑一条。
+- 只认当前配对代次（job 记下 `gen`，解除或重新配对后等待中的指令作废并回报）；同一编号只处理一次；同一时间只跑一条。
+  例外：旧指令还在 waiting 时，新指令带 `force` 或换了动作就取代它（旧的报 superseded），同动作不带 force 仍回 busy。
 - 不接受来自通道的文件或网址；版本只取发行源清单，`planUpdate` 保证不降级。只走增量包：完整安装包的安装向导要人点（oneClick:false），远程退出后没人点 Hub 就一直关着，所以回 failed 说明原因。
 - 重启后：通道接通时读 `takeLastResult()` 的结果，报 updated（已更新到 vX）/ rolled-back（原因 + 已回滚到 vY）；没读到结果报 failed。
   中途重启（停在下载或等待）报 failed，可以再发。版本变化时公司也主动报一次 online（不发通知），家里面板据此显示公司版本。
 - 设置 `allowRemoteAdmin`（默认 true），在公司「AI特战队专用功能」设置的「同时处理」下方。
 
+## 中断—恢复（2026-10-17 v2.1.9）
+
+田哥 22:40（人在公司实测远程重启）：「有时候不能等所有会话都完成，可以先记着，先重启中断，等重启完后再恢复——效率更高。」
+
+1. **宽限**：在干活的 = 通道里在作答的轮次（会话在忙、刚发出 3 分钟内、或原生记录 10 分钟内还在写 `transcriptFresh`）+ 本机在忙的 CodeAgent 会话（人自己开的也算）。宽限内都答完就直接重启。
+2. **记下**：宽限到了还有在干活的，把它们写进通道数据库里的 `hubAdmin.resumeAfterRestart = { jobId, boot, at, items:[{ sessionId, kind:'bridge'|'local', thread, round, interruptedAt }] }`；通道轮次标 `resumePending`（期间 collect 不按「会话已关闭」判失败），给家里发一条「这一轮先记下，重启后接着做」，然后报「中断 N 个任务后重启」并重启。没能开始重启就作废清单。
+3. **恢复**（下一次启动，`boot` 不同才处理；主窗口加载完、钩子服务在听之后）：逐项先标「恢复中」再动手 → `resumeSession` 按原编号恢复 → 恢复后它已自己接着做就不再发，否则经正规发送入口（`session:send-prompt` 同一路径，等 CLI 就绪、分块提交、语义确认）只发纯「继续」。`receipt-reader.js` 的 `BARE_CONTINUE` 把它认作同一轮的延续，回执归属不变；`hub-admin.js` 启动时断言 `RESUME_TEXT` 被它认出。
+4. **结果**：通道轮次保持在途、记下 `resumedAt`（之后的「没答上」计时从这里起算），回执照常发回；恢复失败的按 `failRound` 报回家里（家里可补收或追问）。本机会话恢复失败记进 `resumeIssues`，侧栏标「重启打断」，悬停看原因（24 小时内、之后没人在那个会话里打字才显示）。处理完清单即清空，回报「已恢复 N 个，失败 M 个（原因）」。
+5. **只恢复一次**：程序在恢复途中又重启时，标了「恢复中」的项不再发第二遍，通道轮次报失败。看门狗判重启没成时，同一份清单在本进程里处理：会话还活着的算没被中断，不发「继续」。
+
 ## 测试
 
-- 单测：`tests/unit-company-hub-admin.test.js`（控制器替身 + 内存通道两端）。
+- 单测：`tests/unit-company-hub-admin.test.js`（控制器替身 + 内存通道两端；含宽限、中断—恢复、恢复失败、只恢复一次、看门狗、配对代次、取代旧指令）。
 - 真实端到端：`tests/e2e-company-hub-remote-update.js`（两台隔离 Electron + relay_server.py + 本机更新源 + 真实替换脚本与重启）。
   差距：开发运行替换的是临时 resources 目录里的 app.asar，重启后显示的版本号不变；真包换版本由 `tests/e2e-app-update-packaged.js` 覆盖。
+- 真实端到端（中断—恢复）：`tests/e2e-company-hub-restart-resume.js`（同一套双 Electron + 通道服务；CodeAgent 替身 = 真 Claude Code + Haiku 正在跑 75 秒命令 → 家里命令行 `--hub-restart --force` → 公司真实 `app.relaunch` 优雅重启 → 恢复会话、只发「继续」→ 家里收到该轮回执）。
+  差距：替身是 Claude Code，不是公司真机 CodeAgent；update 走替换脚本重启的那条路径用同一份恢复逻辑，但端到端只跑了 restart。
