@@ -139,9 +139,11 @@ async function main() {
 
     // ⑥ 只调了查询命令
     const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-    for (const call of calls) checkArgs(call, { allowSetup: call[0] === 'auth' && call[1] === 'login' });
+    for (const call of calls) checkArgs(call, { allowSetup: (call[0] === 'auth' && call[1] === 'login') || (call[0] === 'mail' && call[1] === 'autodiscover') });
+    assert.equal(calls.filter(c => c[1] === 'login').length, 1, '扫码登录只在点按钮时跑一次');
+    assert.ok(calls.filter(c => c[1] === 'autodiscover').length <= 2, '自动配置邮箱不反复跑');
     result.welinkCalls = calls.length;
-    result.checks.push(`假 welink-cli 共收到 ${calls.length} 次调用，全是查询命令（外加一次扫码登录）`);
+    result.checks.push(`假 welink-cli 共收到 ${calls.length} 次调用，全是查询命令（外加一次扫码登录、自动配置邮箱 ${calls.filter(c => c[1] === 'autodiscover').length} 次）`);
     const sessionsList = await c.eval(`ipcRenderer.invoke('get-sessions').then(list => list.filter(s => s.purpose === 'company-assistant').map(s => ({ kind: s.kind, cwd: s.cwd })))`);
     assert.equal(sessionsList.length, 1);
     assert.ok(sessionsList[0].cwd.includes('company-assistant'), sessionsList[0].cwd);
