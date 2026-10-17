@@ -77,7 +77,7 @@ function planRelease({ candidates, keepWarmMs, now, memory, sessionBytes = SESSI
 // ---------------------------------------------------------------- 并行上限（2026-10-16 田哥：「白天算力紧张，晚上尤其周末几乎不受限」，
 // 并「把号池考虑到通道里，加速双向通信」）。三者取最小、至少 1：
 //   时段：工作日忙时用成员设的上限（默认 2）；其余时间放宽到闲时上限（默认 6）；
-//   账号：每个可用账号（个人 + 号池里能用的号）忙时最多 2 个、闲时 3 个在跑——同一个号有分钟级额度；
+//   账号：每个可用账号（个人 + 号池里能用的号）忙时最多 2 个在跑（同一个号白天有分钟级额度）；闲时每号放到 6 个（2026-10-17 田哥：晚上同时开 6 个没问题），实际由闲时上限和内存收；
 //   内存：再开一个会话后可用内存仍不低于 20%（每个 CodeAgent 会话约 1.3 GB）。
 const DEFAULT_BUSY_HOURS = '08:30-12:00,13:30-17:30';
 function parseHours(spec) {
@@ -93,7 +93,7 @@ function isPeak(date, spec = DEFAULT_BUSY_HOURS) {
 function parallelCap({ date, busyHours = DEFAULT_BUSY_HOURS, peakCap = 2, idleCap = 6, lanes = 1, working = 0, memory = null, sessionBytes = SESSION_BYTES }) {
   const peak = isPeak(date, busyHours);
   const timeCap = peak ? peakCap : Math.max(peakCap, idleCap);
-  const laneCap = Math.max(1, lanes) * (peak ? 2 : 3);
+  const laneCap = Math.max(1, lanes) * (peak ? 2 : 6);
   let memCap = Infinity;
   if (memory && memory.total > 0) memCap = working + Math.max(0, Math.floor((memory.free - LOW_FREE_RATIO * memory.total) / sessionBytes));
   const cap = Math.max(1, Math.min(timeCap, laneCap, memCap));
