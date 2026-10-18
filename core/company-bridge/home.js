@@ -14,6 +14,8 @@ const { AssistantStore } = require('../hub-assistant/store');
 const { claimTimers, ownsTimers } = require('../hub-assistant/timer-owner');
 const { BridgeLink } = require('./link');
 const { HomeConsult, PURPOSE: CONSULT_PURPOSE } = require('./home-consult');
+const { MODEL_ID, sanitizeModelTable, describeModels } = require('./model-table-text');
+const guard = require('./delivery-guard');
 
 const ACTIVE_POLL_MS = 10000;
 // 空闲也每分钟看一次：公司的求助（ask_home）靠它及时收到（2026-10-15 起，原来 3 分钟）。
@@ -22,12 +24,23 @@ const DEFAULT_SETTINGS = Object.freeze({ attach: 'wireless' });
 const short = (s, n = 28) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
 const STATE_LABEL = { sent: '已发出', received: '公司已收到', running: '公司在处理', replied: '已回执', error: '公司报错', cancelled: '已作废' };
 
+// 回执里注明公司用的模型（2026-10-18 按模型派活）；家里指定了模型、回答里实际出现的却是另一家的，明说出来。
+const family = id => { const s = String(id || '').toLowerCase(); return s.includes('deepseek') ? 'deepseek' : s.includes('glm') ? 'glm' : s.includes('minimax') ? 'minimax' : s; };
+function modelNote(t, r) {
+  const meta = r.meta || {};
+  const used = meta.actualModel || meta.model || '';
+  const asked = t.model || meta.requestedModel || '';
+  if (asked && !meta.requestedModel) return `；指定了模型 ${asked}，但公司 Hub 没有确认按它作答（可能是旧版，不认指定模型）${used ? '，公司会话模型 ' + used : ''}`;
+  if (asked && meta.actualModel && family(asked) !== family(meta.actualModel)) return `；指定的模型是 ${asked}，回答里实际出现的是 ${meta.actualModel}`;
+  if (asked && !meta.actualModel) return `；指定模型 ${asked}，未从回答里确认实际模型`;
+  return used ? `；公司模型 ${used}` : '';
+}
 function replyMessage(t, r) {
   if (r.error) {
     return [`【公司回执 ${t.id} · 第 ${r.round} 轮 · 没答上】`, '', r.error, '', '——', '公司那边这一轮没有给出回答。可以用 followup_company 换个问法重问，或先按现有证据继续，并在汇报里写明待公司核实的点。'].join('\n');
   }
   return [`【公司回执 ${t.id} · 第 ${r.round} 轮】`, '', r.reply, '', '——',
-    '以上是公司 CodeAgent 的回执（不含源码）。请核对：可信就据此继续；把握程度低、没读到关键部分或与家里证据矛盾时，用 followup_company 追问（同一个公司会话，它记得上一轮读过的内容），次数不限。'].join('\n');
+    `以上是公司 CodeAgent 的回执（不含源码${modelNote(t, r)}）。请核对：可信就据此继续；把握程度低、没读到关键部分或与家里证据矛盾时，用 followup_company 追问（同一个公司会话，它记得上一轮读过的内容），次数不限。`].join('\n');
 }
 // 线程状态由各轮推导：最后一轮决定结果。
 function deriveState(t) {
@@ -102,6 +115,7 @@ class HomeBridge {
     const tmp = this.endpointFile + '.' + process.pid + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify({ url: `http://127.0.0.1:${this.server.address().port}/tool` }), { mode: 0o600 });
     fs.renameSync(tmp, this.endpointFile);
+    this.writeModelsFile(); // MCP 列工具时读它（文件被删了也能补回）
     if (this.deps.noTimer || this.timer) return;
     this.timer = setInterval(() => { void this.tick().catch(e => console.warn('[company-bridge] tick', e.message)); }, 5000);
     this.timer.unref?.();
@@ -169,18 +183,63 @@ class HomeBridge {
     throw new Error('未知工具');
   }
   meta(sessionId) { const s = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId); return s || {}; }
-  async ask(sessionId, { question, title }) {
+
+  // ---- 公司模型表（2026-10-18 按模型派活）：公司汇总的可用模型与忙闲，家里 Agent 发问前据此选模型 ----
+  // 存在本机数据库，另写一份 company-models.json 给 MCP 列工具时读（工具描述里带上模型表）。
+  companyModels() { const s = this.store.get('companyModels'); return s && s.table ? s : null; }
+  receiveModels(raw, gen) {
+    if (gen && gen !== this.link.gen()) return;
+    const table = sanitizeModelTable(raw);
+    if (!table) return;
+    const entry = { table, receivedAt: this.now() };
+    this.store.set('companyModels', entry);
+    this.writeModelsFile(entry);
+    this.changed();
+  }
+  writeModelsFile(entry = this.companyModels()) {
+    if (!entry) return;
+    try {
+      const file = path.join(this.dir, 'company-models.json'), tmp = file + '.' + process.pid + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(entry, null, 1), 'utf8');
+      fs.renameSync(tmp, file);
+    } catch (error) { console.warn('[company-bridge] 模型表写不进文件：' + error.message); }
+  }
+  // 工具返回里带的简表：每个模型一行字。
+  modelsBrief() {
+    const entry = this.companyModels();
+    if (!entry) return '模型表未知（公司还没报过，或公司 Hub 版本较旧）：可以不指定模型，用公司默认';
+    return describeModels(entry.table, entry.receivedAt);
+  }
+  // 家里 Agent 填的模型名：模型表已知时必须在表里（大小写不敏感，按表里的写法发）；未知时只核对格式，由公司核对。
+  resolveModel(value) {
+    const model = typeof value === 'string' ? value.trim() : '';
+    if (!model) return '';
+    const entry = this.companyModels();
+    if (entry && entry.table.models.length) {
+      const hit = entry.table.models.find(m => m.id.toLowerCase() === model.toLowerCase());
+      if (!hit) throw new Error(`公司模型表里没有「${model}」。可选：${entry.table.models.map(m => m.id).join('、')}；不指定 model 则用公司默认`);
+      return hit.id;
+    }
+    if (!MODEL_ID.test(model)) throw new Error('模型名格式不对：只能是字母数字开头、含 . _ : / - 的模型名');
+    return model;
+  }
+
+  async ask(sessionId, { question, title, model }) {
     question = String(question || '').trim();
     if (question.length < 10) throw new Error('问题太短：请写清目的、要它做的事或要问的点、已知的线索和回复要求');
     if (question.length > 50000) throw new Error('问题超过 5 万字，请精简');
+    model = this.resolveModel(model);
     const id = this.nextThreadId(), m = this.meta(sessionId), gen = this.link.gen();
     const t = { id, sessionId, sessionTitle: m.title || null, title: short(title || question, 40), gen, createdAt: this.now(),
-      rounds: [{ round: 1, question, sentAt: this.now(), status: 'sent' }] };
-    await this.link.send('ask', { thread: id, gen, round: 1, title: t.title, question, from: { title: m.title || null, kind: m.kind || null } });
+      ...(model ? { model } : {}), rounds: [{ round: 1, question, sentAt: this.now(), status: 'sent' }] };
+    // 老版本的公司 Hub 不认 model：忽略它，照旧用默认模型（回执里会写实际用的模型）。
+    await this.link.send('ask', { thread: id, gen, round: 1, title: t.title, question, from: { title: m.title || null, kind: m.kind || null }, ...(model ? { model } : {}) });
     this.saveThread(t);
     this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
     this.changed();
-    return { thread: id, status: '已发出', ...this.peer(),
+    // 模型表未知（公司 Hub 还没报过，多半是旧版）时指定了模型：如实提醒可能不生效（旧版公司忽略 model，照旧用默认）。
+    const caution = model && !this.companyModels() ? { modelNote: '公司模型表未知（公司 Hub 可能是旧版），指定的模型可能不生效；回执末尾会注明公司是否按它作答' } : {};
+    return { thread: id, status: '已发出', model: model || '公司默认', ...caution, ...this.peer(),
       next: '等待回执时每 10 秒检查一次，处理时长取决于公司 Agent 的任务。回执到了会作为一条新消息自动发到本会话，现在请结束本轮（或先做不依赖回执的工作），不要循环等待。' };
   }
   async followup(sessionId, { thread, question }) {
@@ -207,6 +266,12 @@ class HomeBridge {
     if (t.state === 'cancelled' || t.gen !== this.link.gen()) throw new Error('这个编号属于上一次配对，已作废');
     const r = t.rounds[t.rounds.length - 1];
     if (!r) throw new Error('这个编号还没有任何一轮');
+    // 回执在家里、只是投递标了「可能已送达，未能确认」：补收就是在本机重新投一次（不用麻烦公司），手动重投的出口（复审 2026-10-18）。
+    if (r.deliveryUnconfirmed && (r.reply || r.error)) {
+      this.saveThread({ ...t, rounds: t.rounds.map(x => x.round === r.round ? { ...x, ...guard.FRESH_DELIVERY } : x) });
+      this.changed();
+      return { thread: t.id, round: r.round, status: '已重新投递', ...this.peer(), next: '这一轮的回执已在家里，会重新送进本会话；现在请结束本轮。' };
+    }
     const waiting = !r.reply && !r.error && this.now() - (r.sentAt || 0) > 20 * 60000;
     if (!r.error && !waiting && !(r.reply && !r.delivered)) throw new Error('最后一轮正常回执了，或发出还不到 20 分钟；补收只用于「没答上」或迟迟没有回执的轮次');
     await this.link.send('recollect', { thread: t.id, gen: t.gen, round: r.round });
@@ -282,9 +347,10 @@ class HomeBridge {
       if (!t || t.sessionId !== sessionId) throw new Error('找不到本会话的编号 ' + thread);
       list = [t];
     } else list = this.store.db.prepare('SELECT payload FROM bridge_threads WHERE session=? ORDER BY updated DESC LIMIT 10').all(sessionId).map(r => JSON.parse(r.payload));
-    return { ...this.peer(), threads: list.map(t => ({ thread: t.id, title: t.title, state: STATE_LABEL[t.state] || t.state,
+    return { ...this.peer(), companyModels: this.modelsBrief(), threads: list.map(t => ({ thread: t.id, title: t.title, state: STATE_LABEL[t.state] || t.state, model: t.model || '公司默认',
       rounds: t.rounds.map(r => ({ round: r.round, question: r.question, status: STATE_LABEL[r.status] || r.status,
-        ...(r.note && !r.reply && !r.error ? { note: r.note } : {}), reply: r.reply || null, error: r.error || null })) })) };
+        ...(r.note && !r.reply && !r.error ? { note: r.note } : {}), ...(r.meta?.actualModel || r.meta?.model ? { usedModel: r.meta.actualModel || r.meta.model } : {}),
+        reply: r.reply || null, error: r.error || null })) })) };
   }
   peer() {
     const st = this.link.status();
@@ -369,6 +435,9 @@ class HomeBridge {
     }
     if (this.consult.receive(message)) return;
     if (message.type === 'hub-admin-status') { this.receiveAdmin(message); return; }
+    // 公司的模型表（2026-10-18）：单独推来的，或随回执、随「指定模型没有可用的号」的报错带来的。
+    if (message.type === 'models') { this.receiveModels(message.table, message.gen); return; }
+    if (message.models) this.receiveModels(message.models, message.gen);
     const t = this.thread(String(message.thread || ''));
     if (!t || t.state === 'cancelled' || (message.gen && t.gen && message.gen !== t.gen)) return;
     const round = Number(message.round) || 0;
@@ -378,7 +447,7 @@ class HomeBridge {
       if (message.type === 'status') {
         if (r.reply) return r;
         changed = true;
-        if (message.state === 'error') return { ...r, status: 'error', error: String(message.note || '公司报错'), errorAt: this.now(), delivered: false, nextTryAt: null };
+        if (message.state === 'error') return { ...r, status: 'error', error: String(message.note || '公司报错'), errorAt: this.now(), ...guard.FRESH_DELIVERY };
         // 公司重试了失败的这一轮：清掉上次的报错，等新的回执。
         // 通道串的进度线（2026-10-16）：记下公司第一次说「已收到」和「开始处理」的时间，算每段耗时。
         const running = message.state === 'running';
@@ -389,7 +458,7 @@ class HomeBridge {
         // 同一轮只收第一份回执（发件箱重发、服务端重放都不会让它再投递一次）。
         if (r.reply) return r;
         changed = true;
-        return { ...r, status: 'replied', reply: String(message.text || ''), replyMid: message.mid, replyAt: this.now(), meta: message.meta || null, error: null, delivered: false, nextTryAt: null };
+        return { ...r, status: 'replied', reply: String(message.text || ''), replyMid: message.mid, replyAt: this.now(), meta: message.meta || null, error: null, ...guard.FRESH_DELIVERY };
       }
       return r;
     });
@@ -418,12 +487,21 @@ class HomeBridge {
             if (!session) { this.markDelivery(t, r, { deliveryError: '提问的会话没能恢复，稍后重试' }, false); continue; }
           }
           if (this.sessionBusy(t.sessionId)) continue;
+          // 重投前核对（delivery-guard.js）：这一轮之后会话已经发出更晚的一轮，或原生记录里已有这条回执，就不再投。
+          // 标记是回执第一行全文（真回执「…第 N 轮】」、报错「…· 没答上】」），之前投过的「没答上」不会被当成真回执（复审 2026-10-18）。
+          const done = guard.alreadyDelivered(this.thread(t.id) || t, r, { meta: session, marker: replyMessage(t, r).split('\n')[0], now: this.now(),
+            ...(this.deps.transcriptHasText ? { hasText: this.deps.transcriptHasText } : {}) });
+          if (done) { this.markDelivery(t, r, done); continue; }
           const receipt = await this.deps.sendPrompt(t.sessionId, replyMessage(t, r), randomUUID());
           // 明确没发进去才算失败；确认迟到、结果未知都按已送达，不重发（重发会让 Agent 收到两遍）。
-          if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) throw new Error(receipt?.error || '没有发进会话');
-          this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null });
+          // 发送入口报「只差空白」（content-mismatch）也是内容已进会话（2026-10-18 Q-1018-07：制表符被换成空格，重投了 6 次）。
+          if (guard.explicitFailure(receipt)) throw Object.assign(new Error(receipt?.error || receipt?.message || '没有发进会话'), { counted: !!receipt && !receipt.notSent });
+          this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null,
+            ...(guard.contentArrivedWithDiff(receipt) ? { deliveryNote: guard.MISMATCH_NOTE } : {}) });
         } catch (error) {
-          this.markDelivery(t, r, { deliveryError: error.message }, false);
+          // 明确失败最多重投 3 次，之后停止并在「公司联动」列表里标「可能已送达，未能确认」。
+          const f = guard.failure(this.thread(t.id)?.rounds.find(x => x.round === r.round) || r, error.message, { notSent: !error.counted, now: this.now() });
+          this.markDelivery(t, r, f.patch, f.final);
         }
       }
     }
@@ -431,7 +509,7 @@ class HomeBridge {
   markDelivery(t, r, patch, final = true) {
     const fresh = this.thread(t.id) || t;
     const rounds = fresh.rounds.map(x => x.round === r.round
-      ? { ...x, ...patch, ...(final && !patch.delivered ? { delivered: true, deliveredAt: null } : {}), nextTryAt: final ? null : this.now() + 60000 } : x);
+      ? { ...x, ...patch, ...(final && !patch.delivered ? { delivered: true, deliveredAt: null } : {}), nextTryAt: final ? null : patch.nextTryAt || this.now() + 60000 } : x);
     this.saveThread({ ...fresh, rounds }); this.changed();
   }
 
@@ -447,6 +525,7 @@ class HomeBridge {
       consults: this.consult.view(),
       images: this.images.status(),
       companyHub: this.companyHub(),
+      companyModels: this.companyModels(),
     };
   }
   notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: '公司联动 · ' + title, text, sessionId }); } catch {} }

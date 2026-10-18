@@ -21,7 +21,8 @@ const tools = [
       + '内容要自包含（对方看不到你的上下文）：写清目的、要它做的事或要问的点（编号列出）、已知的线索（家里现在的做法、建议去看的目录或关键词）、回复要求。'
       + '调用后立即返回编号；公司一个来回通常 10 分钟以上，回执到达后 Hub 会把它作为一条新消息自动发到本会话。发出后请结束本轮，或先做不依赖回执的工作，不要循环等待或反复查询。',
     annotations: { readOnlyHint: false, openWorldHint: true },
-    inputSchema: schema({ question: { type: 'string', description: 'Markdown 格式的完整问题' }, title: { type: 'string', description: '一句话标题（可选，20 字内）' } }, ['question']),
+    inputSchema: schema({ question: { type: 'string', description: 'Markdown 格式的完整问题' }, title: { type: 'string', description: '一句话标题（可选，20 字内）' },
+      model: { type: 'string', description: '公司那边用哪个模型（可选，按工具描述里的模型表选；不填 = 公司默认）' } }, ['question']),
   },
   {
     name: 'followup_company',
@@ -57,10 +58,24 @@ const tools = [
   },
 ];
 
+// ask_company 的描述带上公司模型表（2026-10-18 按模型派活）：家里 Hub 收到公司的模型表后写在通道目录的 company-models.json，
+// 每次列工具时现读；没有时写明「模型表未知」。模型表的写法与家里一端共用（core/company-bridge/model-table-text.js）。
+function readModels(env = process.env) {
+  if (!env.HUB_BRIDGE_ENDPOINT_FILE) return null;
+  try { return JSON.parse(fs.readFileSync(require('node:path').join(require('node:path').dirname(env.HUB_BRIDGE_ENDPOINT_FILE), 'company-models.json'), 'utf8')); }
+  catch { return null; }
+}
+function listTools(env = process.env) {
+  let guide;
+  try { guide = require('../core/company-bridge/model-table-text').modelGuide(readModels(env)); }
+  catch { guide = '模型表未知：可以不填 model，用公司默认。'; }
+  return tools.map(t => t.name === 'ask_company' ? { ...t, description: t.description + '\n\n发问前先看公司模型表，按任务难度和忙闲选 model：\n' + guide } : t);
+}
+
 async function handle(request) {
   if (request.method === 'initialize') return { protocolVersion: request.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'company-bridge', version: '0.1.0' } };
   if (request.method === 'ping') return {};
-  if (request.method === 'tools/list') return { tools };
+  if (request.method === 'tools/list') return { tools: listTools() };
   if (request.method === 'tools/call') {
     if (!tools.some(t => t.name === request.params?.name)) throw new Error('未知工具');
     const endpoint = JSON.parse(fs.readFileSync(process.env.HUB_BRIDGE_ENDPOINT_FILE, 'utf8'));
@@ -71,6 +86,8 @@ async function handle(request) {
   }
   throw new Error('未知方法');
 }
+module.exports = { listTools, readModels };
+if (require.main !== module) return;
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on('line', async line => {
   let request;
