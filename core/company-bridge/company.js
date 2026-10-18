@@ -82,7 +82,9 @@ const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructi
   perAccountPeak: 3, perAccountIdle: 6, memFloorPct: 10, busyHours: care.DEFAULT_BUSY_HOURS, usePool: true, pollSeconds: 30, autoGate: false, parallelRev: 2,
   // 允许家里远程更新 / 重启这台 Hub（2026-10-17 田哥：默认开）。
   // restartGraceMinutes：远程重启前最多等手上的任务几分钟，到时先记下、中断，重启后自动接着做（2.1.9；0 = 立即，hub-admin.js）。
-  allowRemoteAdmin: true, restartGraceMinutes: 3 });
+  allowRemoteAdmin: true, restartGraceMinutes: 3,
+  // 允许对端直查这台电脑的状态（2026-10-18，只读，hub-admin.js diag；独立于远程更新开关，默认开）。
+  allowRemoteDiag: true });
 const ACTIVE_POLL_MS = 10000;
 const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -226,14 +228,18 @@ class CompanyBridge {
   }
   now() { return this.deps.now ? this.deps.now() : Date.now(); }
   // 本机各号的身份字样（工号掩码、备注、号池编号、显示名），由 main 从号池登记和个人账号凭证里取；读不到就只按掩码样式换。
+  // 每次现读（号刚加进号池、备注刚改，下一条消息就要换掉）；读号池要同步读盘，批量脱敏的调用方先取一份快照再传给 scrubText
+  // （2026-10-18 审核：直查脱敏上千个字符串时每次都读盘，会卡住主进程）。
   accountSecrets() {
+    if (this.secretsSnapshot) return this.secretsSnapshot; // 直查采集与量大小期间用同一份（几秒内）
     let list = [];
     try { list = (this.deps.accountSecrets?.() || []).map(String).filter(s => s.trim().length >= 2); } catch { list = []; }
     return [...new Set(list)].sort((a, b) => b.length - a.length);
   }
-  scrubText(text) {
+  // secrets：调用方批量脱敏时传入同一份快照（hub-admin.js diag）。
+  scrubText(text, secrets = this.accountSecrets()) {
     let s = String(text);
-    for (const secret of this.accountSecrets()) {
+    for (const secret of secrets) {
       const isNote = !/\*|^[a-z0-9]{6,16}$/.test(secret);
       s = s.split(secret).join(isNote ? '（号主备注）' : '号池里的一个号');
     }
@@ -285,6 +291,7 @@ class CompanyBridge {
     if ('pollSeconds' in patch) { const n = Number(patch.pollSeconds); if (!Number.isInteger(n) || n < 10 || n > 600) throw new Error('检查间隔只能是 10–600 秒'); next.pollSeconds = n; }
     if ('autoGate' in patch) next.autoGate = patch.autoGate === true;
     if ('allowRemoteAdmin' in patch) next.allowRemoteAdmin = patch.allowRemoteAdmin === true;
+    if ('allowRemoteDiag' in patch) next.allowRemoteDiag = patch.allowRemoteDiag === true;
     this.store.set('settings', next);
     this.tightenPoll(); this.changed();
     return next;
@@ -675,7 +682,9 @@ class CompanyBridge {
         const cwd = s.codeRoots.find(p => this.deps.isDirectory ? this.deps.isDirectory(p) : true) || this.deps.fallbackCwd;
         const opts = { id: sessionId, cwd, title: tezhanSessionTitle(t), purpose: PURPOSE, autonomous: true, noInheritCursor: true,
           effort: s.effort, addDirs: s.codeRoots.filter(p => p !== cwd) };
-        // 号池里有可用的号就走号池（自动挑进行中会话最少的号），并行的问题分散到不同账号；挑不出号时退回个人账号，问题不卡住。
+        // 不指定模型：个人账号和号池里能用的号一起挑（route.pickAnyRoute：每号上限 → 进行中会话最少 → 上次分配时间轮转），
+        // 并行的问题分散到不同账号（2026-10-18 田哥反馈 v2.1.11：以前号池有号就只开号池，个人账号只在号池失败时兜底）。
+        // 号池开会话失败时退回个人账号，问题不卡住。读不到账号清单的老环境按以前：有号池就走号池自动挑号。
         let created = null;
         let poolLanes = 0;
         try { poolLanes = s.usePool ? Number(this.deps.poolLanes?.()) || 0 : 0; } catch { poolLanes = 0; }
@@ -691,9 +700,16 @@ class CompanyBridge {
           created = await this.deps.createSession('codeagent', { ...opts, codeagentRouteModel: pick.model,
             ...(pick.account.pool ? { codeagentAccount: 'pool', codeagentPoolPick: pick.account.key } : {}) });
           this.bridgeLog(`route ${t.id} model=${pick.model} account=${pick.account.pool ? 'pool' : 'personal'}${pick.switchModel ? ' 切默认模型' : ''}`);
-        } else if (poolLanes > 0) {
-          try { created = await this.deps.createSession('codeagent', { ...opts, codeagentAccount: 'pool' }); }
-          catch (error) { console.warn('[company-bridge] 号池开会话失败，改用个人账号：' + error.message); created = null; }
+        } else {
+          const accounts = this.routeAccounts();
+          const pick = accounts && accounts.length ? route.pickAnyRoute(accounts, { working: this.workingByAccount(), cap: this.perAccountCap() }) : null;
+          const poolOpts = pick && pick.ok ? (pick.account.pool ? { codeagentAccount: 'pool', codeagentPoolPick: pick.account.key } : null)
+            : poolLanes > 0 ? { codeagentAccount: 'pool' } : null;
+          if (pick && pick.ok) this.bridgeLog(`route ${t.id} model=(default) account=${pick.account.pool ? 'pool' : 'personal'} active=${pick.account.activeSessions || 0}`);
+          if (poolOpts) {
+            try { created = await this.deps.createSession('codeagent', { ...opts, ...poolOpts }); }
+            catch (error) { console.warn('[company-bridge] 号池开会话失败，改用个人账号：' + error.message); created = null; }
+          }
         }
         if (!created && !t.model) created = await this.deps.createSession('codeagent', opts);
         if (!created || created.id !== sessionId) throw new Error('会话创建结果与预留编号不一致');
@@ -822,6 +838,11 @@ class CompanyBridge {
     }
     await this.sendReply(t, r, text, receipt ? { userMessageId: receipt.userMessageId, sourceMessageIds: receipt.records.map(record => record.messageId) } : {});
   }
+  // 会话原生记录里最后一条回答的模型（读不到返回空串）。
+  answerModel(meta) {
+    if (!meta || !this.deps.lastAnswerModel) return '';
+    try { return String(this.deps.lastAnswerModel(meta) || '').trim(); } catch { return ''; }
+  }
   // 把一轮的回答发回家：删超限的源码、截长、核对代次，落账和入发件箱同一个事务。collect 和补收共用。
   async sendReply(t, r, text, extraMeta = {}) {
     let removed = 0;
@@ -835,11 +856,15 @@ class CompanyBridge {
     const fresh = this.thread(t.id);
     if (!fresh || fresh.state === 'cancelled' || fresh.gen !== this.link.gen()) return;
     const session = this.deps.getSession(t.sessionId);
+    // 先从会话原生记录读一次最后一条回答的模型：会话元数据里的实际模型由 main.js observeCodeAgentModel 异步补记，
+    // 回执可能赶在它前面（2026-10-18 田哥反馈 v2.1.11：DS 号的回答被标成 GLM / 只写「CodeAgent 当前模型」）。
+    const answered = this.answerModel(session || this.deps.getSessionMetadata?.(t.sessionId));
     // 家里指定了模型的：另记指定的和回答里实际出现的模型，家里据此提示「指定 X、实际 Y」（不一致时）。
     // 没指定、却落在为通道切过模型的号上（session-manager codeagentLaunchModel）：也写明实际模型，免得家里以为用的是默认。
-    const routed = t.model ? { requestedModel: t.model, actualModel: session?.codeagentActualModel || null }
-      : session?.codeagentLaunchModel ? { actualModel: session.codeagentActualModel || session.codeagentLaunchModel } : {};
-    const meta = { model: session?.currentModel?.id || session?.model || null, ...routed, elapsedSec: Math.round((this.now() - (r.firstSentAt || r.sentAt || r.receivedAt || this.now())) / 1000), codeLinesRemoved: removed, rewritten: !!r.rewriteAsked, ...extraMeta };
+    const actual = answered || session?.codeagentActualModel || null;
+    const routed = t.model ? { requestedModel: t.model, actualModel: actual }
+      : session?.codeagentLaunchModel ? { actualModel: actual || session.codeagentLaunchModel } : {};
+    const meta = { model: answered || session?.currentModel?.id || session?.model || null, ...routed, elapsedSec: Math.round((this.now() - (r.firstSentAt || r.sentAt || r.receivedAt || this.now())) / 1000), codeLinesRemoved: removed, rewritten: !!r.rewriteAsked, ...extraMeta };
     // 回答落账和回执入发件箱放在同一个事务：要么都成，要么都不成（下一轮再收）。之后发件箱负责重发。
     // 每份回执带一份最新的模型表（家里据此更新本地存的那份）。
     const models = this.modelTableSafe();
@@ -953,7 +978,8 @@ class CompanyBridge {
       models: this.modelTableSafe(),
     };
   }
-  notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: 'AI特战队 · ' + title, text, sessionId }); } catch {} }
+  // quiet：只在界面上给一条轻提示，不弹系统通知（对端直查这类不需要人处理的事，diag.js）。
+  notify(title, text, sessionId = null, { quiet = false } = {}) { try { this.deps.onNotify?.({ title: 'AI特战队 · ' + title, text, sessionId, ...(quiet ? { quiet: true } : {}) }); } catch {} }
   changed() { try { this.deps.onChanged?.(); } catch {} }
   close() { clearInterval(this.timer); this.timer = null; this.askHome.close(); try { this.store.close(); } catch {} }
 }
