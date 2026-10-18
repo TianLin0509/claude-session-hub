@@ -101,6 +101,7 @@
     "tests/helpers/company-bridge-rig.js",
     "tests/unit-company-hub-admin.test.js",
     "tests/unit-company-restart-recovery.test.js",
+    "tests/unit-company-model-route.test.js",
     "tests/e2e-company-hub-remote-update.js",
     "tests/unit-writing-tab.test.js",
     "tests/e2e-writing-tab-cdp.js",

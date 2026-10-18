@@ -465,6 +465,13 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
 // 公司版助理会话（purpose=company-assistant，2026-10-16）同样处理：不挂 Hub 的 MCP，用默认模型。
 // 公司版论坛的摘要会话（purpose=company-forum，2026-10-18）同样处理。
 function codeAgentReadOnly(opts) { return !!opts && ['company-bridge', 'company-assistant', 'company-forum'].includes(opts.purpose); }
+// AI特战队通道里家里指定的模型（2026-10-18，core/codeagent-model-route.js）：只认通道会话（purpose=company-bridge），
+// 不走 --model 也不走 /model 菜单，靠号的配置目录 settings.json 定模型（号池同步配置时写；个人账号只在默认就是它时才用）。
+function codeAgentRouteModel(opts) {
+  if (!opts || opts.purpose !== 'company-bridge' || typeof opts.codeagentRouteModel !== 'string') return '';
+  const id = opts.codeagentRouteModel.trim();
+  return require('./codeagent-models').isSafeModelId(id) ? id : '';
+}
 function shouldPickCodeAgentModel(opts) {
   // model 也来自分支、历史恢复和场景元数据；只有本次操作的明确意图才能打开菜单。
   return !!(opts && opts.model && opts.codeagentModelPick === true && !codeAgentReadOnly(opts));
@@ -508,6 +515,7 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config) {
   require('./codeagent-models').appendModelLog(hubDataDir, {
     event: 'launch', session: String(id || '').slice(0, 8), kind,
     requested: inheritModel ? '(inherit)' : opts.model || '(default)', model: requestedModel || '(inherit)', resume: identity.length ? identity[0] : '',
+    ...(codeAgentRouteModel(opts) ? { route: codeAgentRouteModel(opts) } : {}),
   });
   return { cmd, sessionId, model: requestedModel };
 }
@@ -1445,7 +1453,17 @@ class SessionManager extends EventEmitter {
     const cwd = opts.cwd || process.env.USERPROFILE || process.env.HOME || '';
     const override = pool.projectCredentialsOverride(cwd);
     if (override) throw new Error(`工作目录里有 ${override}，CodeAgent 会优先用它登录，号池选的号不会生效；请换一个工作目录`);
-    const sync = pool.syncSharedConfig(personalConfig.configDir, account.dir);
+    // 家里指定了模型：这个号得有它的权限；默认模型不是它时，只在号上没有进行中的会话时切（不影响正在跑的会话）。
+    // 没指定时，之前为通道切过模型、且号上已没有进行中的会话，换回切之前的模型（syncSharedConfig）。
+    const routeModel = codeAgentRouteModel(opts);
+    if (routeModel) {
+      if (!account.models.some(m => m.toLowerCase() === routeModel.toLowerCase())) throw new Error(`号池账号 ${pool.label(account)} 没有 ${routeModel} 的权限，未启动会话`);
+      const current = pool.effectiveModel(account.dir);
+      if (current.toLowerCase() !== routeModel.toLowerCase() && account.activeSessions > 0) {
+        throw new Error(`号池账号 ${pool.label(account)} 正在用 ${current || '别的模型'} 跑会话，不能切到 ${routeModel}；等它们结束后再试`);
+      }
+    }
+    const sync = pool.syncSharedConfig(personalConfig.configDir, account.dir, undefined, { routeModel, idle: !routeModel && account.activeSessions === 0 });
     if (sync.errors.length) console.warn(`[codeagent-pool] ${account.id} 同步配置：${sync.errors.join('；')}`);
     if (typeof this.deployCodeAgentHooks === 'function') {
       try { this.deployCodeAgentHooks(account.dir); } catch (error) { console.warn(`[codeagent-pool] ${account.id} hook：${error.message}`); }
@@ -1552,6 +1570,15 @@ class SessionManager extends EventEmitter {
     if (isCodeAgent && (opts.codeagentAccount === 'pool' || opts.codeagentPoolAccount)) {
       codeagentPool = this._resolveCodeAgentPool(opts, codeagentConfig);
       codeagentConfig = { ...codeagentConfig, configDir: codeagentPool.account.dir };
+    } else if (isCodeAgent && codeAgentRouteModel(opts)) {
+      // 个人账号不切默认模型（号主自己日常用的配置）：此刻的默认就是指定模型才开，否则明确报错，不静默换模型。
+      const routeModel = codeAgentRouteModel(opts);
+      const personal = require('./codeagent-model-route').personalAccount({ dataDir: getHubDataDir(), personalDir: codeagentConfig.configDir });
+      if (!personal) throw new Error('个人账号没有有效的登录，未启动会话');
+      if (!personal.models.some(m => m.toLowerCase() === routeModel.toLowerCase())) throw new Error(`个人账号没有 ${routeModel} 的权限，未启动会话`);
+      if (String(personal.defaultModel).toLowerCase() !== routeModel.toLowerCase()) {
+        throw new Error(`个人账号此刻的默认模型是 ${personal.defaultModel || '未知'}，通道不改个人账号的默认模型；${routeModel} 请用号池里有它权限的号`);
+      }
     }
 
     if (isClaude) {
@@ -2056,7 +2083,9 @@ class SessionManager extends EventEmitter {
       currentModel = { id: mid, displayName: mid === 'kimi-code/k3' || mid === 'k3' ? 'Kimi K3' : mid };
     } else if (isCodeAgent) {
       const mid = require('./codeagent-config').normalizeCodeAgentModel(opts.model);
-      currentModel = !shouldPickCodeAgentModel(opts)
+      const routeModel = codeAgentRouteModel(opts);
+      currentModel = routeModel ? { id: routeModel, displayName: require('./codeagent-models').modelLabel(routeModel) }
+        : !shouldPickCodeAgentModel(opts)
         ? { id: '', displayName: 'CodeAgent 当前模型' }
         : { id: mid, displayName: require('./codeagent-models').modelLabel(mid) };
     }
@@ -2168,6 +2197,7 @@ class SessionManager extends EventEmitter {
       ...(isCodeAgent ? { codeagentConfigDir: codeagentConfig.configDir, codeagentIdentityPending: !codeagentLaunch.sessionId,
         codeagentForkSourceSessionId: opts.forkCCSessionId || opts.codeagentForkSourceSessionId || undefined,
         codeagentModelPick: shouldPickCodeAgentModel(opts) } : {}),
+      ...(isCodeAgent && codeAgentRouteModel(opts) ? { codeagentRouteModel: codeAgentRouteModel(opts) } : {}),
       ...(isCodexRuntime && opts.effort ? { effort: normalizeCodexEffort(opts.effort) } : {}),
       ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
       ...(opts.geminiChatId ? { geminiChatId: opts.geminiChatId } : {}),
@@ -3688,6 +3718,7 @@ class SessionManager extends EventEmitter {
       ...(info.codeagentActualModel ? { codeagentActualModel: info.codeagentActualModel } : {}),
       ...(info.codeagentRequestedModel ? { codeagentRequestedModel: info.codeagentRequestedModel } : {}),
       ...(typeof info.codeagentModelPick === 'boolean' ? { codeagentModelPick: info.codeagentModelPick } : {}),
+      ...(info.codeagentRouteModel ? { codeagentRouteModel: info.codeagentRouteModel } : {}),
       ...(info.effort ? { effort: info.effort } : {}),
       ...(typeof info.contextPct === 'number' ? { contextPct: info.contextPct } : {}),
       ...(typeof info.contextUsed === 'number' ? { contextUsed: info.contextUsed } : {}),
@@ -4058,6 +4089,7 @@ module.exports = {
     buildClaudePtyLaunch,
     buildCodeAgentPtyLaunch,
     shouldPickCodeAgentModel,
+    codeAgentRouteModel,
     applyClaudeSessionEnv,
     resolveClaudeLaunchModel,
     quotePowerShellLiteral,

@@ -39,7 +39,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
       const rounds = t.rounds.map(r => `<div class="cl-round"><b>第 ${r.round} 轮</b> <span class="wp-meta">问于 ${clock(r.sentAt)}${r.replyAt ? ' · 回执 ' + clock(r.replyAt) : ''}${r.meta?.model ? ' · ' + esc(r.meta.model) : ''}${r.meta?.elapsedSec ? ' · 用时 ' + Math.round(r.meta.elapsedSec / 60) + ' 分钟' : ''}${r.deliveryError ? ' · <span class="bad">' + esc(r.deliveryError) + '</span>' : ''}</span>
         <pre>${esc(r.question)}</pre>${r.reply ? `<pre class="ans">${esc(r.reply)}</pre>` : ''}${r.error ? `<p class="wp-note warn">${esc(r.error)}</p>` : ''}</div>`).join('');
       return `<article class="wp-item"><div class="wp-item-head"><span class="wp-pill ${tone}">${label}</span><strong>${esc(t.id)} · ${esc(t.title)}</strong>${undelivered ? '<span class="wp-tag">等会话停下再送</span>' : ''}</div>
-        <div class="wp-meta">来自会话「${esc(t.session?.title || t.sessionTitle || t.sessionId)}」 · ${t.rounds.length} 轮 · 发起 ${clock(t.createdAt)}</div>
+        <div class="wp-meta">来自会话「${esc(t.session?.title || t.sessionTitle || t.sessionId)}」 · ${t.rounds.length} 轮 · 发起 ${clock(t.createdAt)}${t.model ? ' · 指定模型 ' + esc(t.model) : ''}</div>
         <details class="cl-details"><summary>看问答</summary>${rounds}</details>
         <div class="wp-actions"><button type="button" class="wp-link" data-cl="open:${esc(t.sessionId)}">${t.session?.open ? '打开提问的会话' : '找回提问的会话'}</button></div></article>`;
     }).join('');

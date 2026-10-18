@@ -119,7 +119,7 @@
       const rounds = t.rounds.map(r => `<div><b>第 ${r.round} 轮</b>${r.error ? ` <span class="hl-pill bad">${esc(r.error)}</span>` : ''}<pre>${esc(r.question)}</pre>${r.reply ? `<div class="hl-muted">回执（${clock(r.replyAt)}）</div><pre>${esc(r.reply)}</pre>` : ''}</div>`).join('');
       return `<div class="hl-item"><div class="hl-row"><span class="hl-pill ${tone}">${label}</span><b>${esc(t.id)}</b><span>${esc(t.title)}</span>
         <span style="flex:1"></span>${t.sessionId ? `<button class="hl-link" data-hl="open:${esc(t.sessionId)}">${t.session?.open ? '打开会话' : '找回会话'}</button>` : ''}${t.state === 'failed' ? `<button class="hl-link" data-hl="retry:${esc(t.id)}">重试</button>` : ''}</div>
-        <div class="hl-muted">收到 ${clock(t.createdAt)} · ${t.rounds.length} 轮${t.from?.title ? ' · 来自会话「' + esc(t.from.title) + '」' : ''}</div>
+        <div class="hl-muted">收到 ${clock(t.createdAt)} · ${t.rounds.length} 轮${t.model ? ' · 家里指定模型 ' + esc(t.model) : ''}${t.from?.title ? ' · 来自会话「' + esc(t.from.title) + '」' : ''}</div>
         <details><summary class="hl-muted">看问答</summary>${rounds}</details></div>`;
     }).join('');
   }

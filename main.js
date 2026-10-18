@@ -2390,6 +2390,14 @@ try {
         return pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {} })
           .filter(a => a.state === 'ready' && !a.sameAsPersonal && !a.duplicateOf).length;
       },
+      // 家里按模型派活（core/codeagent-model-route.js）：个人账号 + 号池各号的模型、此刻的默认模型、进行中会话数（休眠的不算）。
+      routeAccounts: ({ usePool = true } = {}) => {
+        const personalDir = require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
+        const personalActive = sessionManager.getAllSessions().filter(s => /^codeagent(?:-resume)?$/.test(String(s.kind || ''))
+          && !s.codeagentPoolAccount && s.status !== 'dormant' && s.status !== 'closed').length;
+        return require('./core/codeagent-model-route').routeAccounts({ dataDir: getHubDataDir(), personalDir,
+          activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalActive, usePool });
+      },
       fallbackCwd: os.homedir(),
       isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
