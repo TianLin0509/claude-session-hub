@@ -24,7 +24,8 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
   const checks = [];
   const check = (name) => { checks.push(name); console.log('✓ ' + name); };
   try {
-    hub = await launchIsolatedHub({ dataDir: path.join(temp, 'data'), port: await freePort(), entryPath, label: 'company-tezhan', windowMode: 'hidden' });
+    // hidden 窗口在负载下第二次截图会超时（v2.1.8、v2.1.10 发布各遇一次）；截图只是取证，改用后台窗口，断言不变。
+    hub = await launchIsolatedHub({ dataDir: path.join(temp, 'data'), port: await freePort(), entryPath, label: 'company-tezhan', windowMode: 'background' });
     cdp = await connectFirstPage(hub, t => t.type === 'page' && /renderer[\\/]index\.html/i.test(t.url || ''));
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     const wait = async (expr, label) => { const until = Date.now() + 30000; while (!(await cdp.eval(expr))) { if (Date.now() > until) throw new Error('timeout ' + label); await _waitMs(100); } };
