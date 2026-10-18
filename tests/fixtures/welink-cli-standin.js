@@ -59,7 +59,8 @@ if (group === '__test' && sub === 'say') {
   const p2p = (account, name) => ({ cross_instance: false, group_id: '0', group_name: '', group_type: 'NORMAL_GROUP', native_name: name, recent_conversation_type: 'CHAT_TYPE_P2P_MSG', staff_name: account + ' 00000000', target_account: account });
   const grp = (id, name) => ({ cross_instance: false, group_id: id, group_name: name, group_type: 'NORMAL_GROUP', native_name: '', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' });
   const all = [p2p('colleague_a', '同事甲'), grp('g-100', '项目群A'), grp('g-phone', '助理 CodeAgent'),
-    ...Array.from({ length: 12 }, (_, i) => p2p('old_' + i, '老同事' + i)), grp('g-200', '部门大群'), p2p('colleague_d', '同事丁')];
+    // 垫着的空旧单聊个数：WELINK_STANDIN_PAD，默认 12；单测设 0 省时间
+    ...Array.from({ length: Number(process.env.WELINK_STANDIN_PAD ?? 12) }, (_, i) => p2p('old_' + i, '老同事' + i)), grp('g-200', '部门大群'), p2p('colleague_d', '同事丁')];
   const count = Math.min(50, Math.max(1, Number(arg('--count') || 10)));
   out({ app_service_id: 'x', conversation_info: all.slice(0, count), error: { error_code: 0, error_msg: '' } });
 } else if (group === 'im' && sub === 'query-history-message' && arg('--group-id') === 'g-phone') {

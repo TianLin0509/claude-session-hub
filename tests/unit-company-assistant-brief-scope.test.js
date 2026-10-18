@@ -13,15 +13,16 @@ const D = require('../core/company-assistant/data');
 const B = require('../core/company-assistant/brief');
 const { CompanyAssistant } = require('../core/company-assistant/service');
 const { NoticeBus } = require('../core/company-assistant/notice-bus');
+const { standinRunner } = require('./helpers/welink-standin-inproc');
 
 const STANDIN = path.join(__dirname, 'fixtures', 'welink-cli-standin.js');
 
-function rig() {
+function rig({ pad = 0 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'company-brief-scope-')), log = path.join(dir, 'calls.log');
   fs.writeFileSync(path.join(dir, 'welink-exchange'), 'user001@example.com');
-  const env = { ...process.env, WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: path.join(dir, 'welink-state') };
+  const env = { ...process.env, WELINK_STANDIN_PAD: String(pad), WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: path.join(dir, 'welink-state') };
   const svc = new CompanyAssistant({ dataDir: dir, noTimer: true, noTools: true, bus: new NoticeBus(),
-    welinkRun: (args, opts) => W.run(args, { ...opts, cli: STANDIN, env }),
+    welinkRun: standinRunner(env), // 在测试进程里跑假 welink-cli（tests/helpers/welink-standin-inproc.js）
     createSession: async (kind, opts) => ({ id: opts.id }), sendPrompt: async () => ({ ok: true }), getSession: () => null, readFinals: () => [] });
   const calls = () => fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   return { dir, svc, calls };
@@ -44,11 +45,11 @@ test('会话列表：单聊 group_id 是 "0" 也认成单聊，名字取对方�
 });
 
 test('默认取全部：会话列表带 --count 50；所有单聊和群都取，大群往回翻页取完回看时间内的消息，超出 36 小时的不要；手机专用群不进简报', async () => {
-  const r = rig();
+  const r = rig({ pad: 8 }); // 垫 8 个空的旧单聊，部门大群和同事丁排到第 12、13 名：不带 --count 就漏掉
   r.svc.setSettings({ phone: { groupId: 'g-phone', enabled: false } });
   const snap = await r.svc.refresh({ force: true });
   assert.ok(r.calls().some(a => a[1] === 'query-recent-conversation' && a.join(' ').includes('--count 50')), '不带 --count 只给 10 个');
-  assert.equal(snap.conversations.length, 17);
+  assert.equal(snap.conversations.length, 13);
   assert.deepEqual(Object.keys(snap.messages).sort(), ['colleague_a', 'colleague_d', 'g-100', 'g-200'], '列表第 10 名以后的会话也取到了；专用群除外');
   assert.equal(snap.messages['g-200'].length, 140, '150 条里最早 10 条在 40 小时前，不要');
   const pages = r.calls().filter(a => a[1] === 'query-history-message' && a.includes('g-200'));
@@ -61,7 +62,7 @@ test('默认取全部：会话列表带 --count 50；所有单聊和群都取，
   const before = r.calls().length;
   const again = await r.svc.refresh({ force: true });
   const inc = r.calls().slice(before).filter(a => a[1] === 'query-history-message');
-  assert.equal(inc.length, 16, '每个会话（不含专用群）各查一次');
+  assert.equal(inc.length, 12, '每个会话（不含专用群）各查一次');
   const target = a => a[a.indexOf(a.includes('--group-id') ? '--group-id' : '--user-account') + 1];
   const withCache = inc.filter(a => ['colleague_a', 'colleague_d', 'g-100', 'g-200'].includes(target(a)));
   assert.equal(withCache.length, 4);
