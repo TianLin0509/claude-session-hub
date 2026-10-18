@@ -953,7 +953,8 @@ class CompanyBridge {
       models: this.modelTableSafe(),
     };
   }
-  notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: 'AI特战队 · ' + title, text, sessionId }); } catch {} }
+  // quiet：只在界面上给一条轻提示，不弹系统通知（对端直查这类不需要人处理的事，diag.js）。
+  notify(title, text, sessionId = null, { quiet = false } = {}) { try { this.deps.onNotify?.({ title: 'AI特战队 · ' + title, text, sessionId, ...(quiet ? { quiet: true } : {}) }); } catch {} }
   changed() { try { this.deps.onChanged?.(); } catch {} }
   close() { clearInterval(this.timer); this.timer = null; this.askHome.close(); try { this.store.close(); } catch {} }
 }

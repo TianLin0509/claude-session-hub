@@ -51,6 +51,21 @@ const tools = [
     inputSchema: schema({ op: { type: 'string', enum: ['update', 'restart', 'status'] }, force: { type: 'boolean', description: '不等手上的任务，马上重启（在跑的任务先记下，重启后自动接着做；默认 false）' } }, ['op']),
   },
   {
+    name: 'company_diag',
+    description: '直查公司电脑和公司 AI Hub 的状态：秒级、不排队、不占公司 CodeAgent（公司 Hub 主进程直接读系统信息和自身状态，压缩后经加密通道回报，不开会话）。'
+      + '适合查：内存为什么紧、谁占了内存（按内存排的进程、CodeAgent 进程数与总内存、Hub 自身占用、不在 Hub 进程树里的 CodeAgent/node/electron 残留进程）、'
+      + '通道队列为什么排队（并行上限及受什么限制、每个问题在跑还是排队、排队原因、会话在不在、记录最后写入时间）、Hub 里的会话、号池各号状态与模型、通道与 Hub 日志尾部。'
+      + 'sections 可选 machine（内存/CPU/开机时长/磁盘）、processes、hub、pool、logs，不填 = 全部。调用后最多等约 45 秒、拿到就直接返回结果；'
+      + '公司检查通道的间隔是 10 秒，空闲时按公司设置（默认 30 秒），等不到会返回编号，稍后带 id 再调一次取结果（不要反复发新的直查，公司 30 秒内只处理一次）。'
+      + '只读：不改动公司电脑、不读源码；号身份已换成「个人 / 号 1 / 号 2」，日志已脱敏。要读公司代码或文件内容仍用 ask_company。',
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    inputSchema: schema({
+      sections: { type: 'array', items: { type: 'string', enum: ['machine', 'processes', 'hub', 'pool', 'logs'] }, description: '要查的段落，不填 = 全部' },
+      lines: { type: 'integer', minimum: 1, maximum: 200, description: '日志每份取最后几行（默认 80）' },
+      id: { type: 'string', description: '取之前那次直查的结果（不发新的）' },
+    }),
+  },
+  {
     name: 'company_thread',
     description: '查看本会话向公司提过的问题和全部回执（不传 thread 时列出本会话最近 10 个），以及公司电脑是否在线。回执会自动送达，一般不需要调用。',
     annotations: { readOnlyHint: true, openWorldHint: false },
@@ -80,7 +95,7 @@ async function handle(request) {
     if (!tools.some(t => t.name === request.params?.name)) throw new Error('未知工具');
     const endpoint = JSON.parse(fs.readFileSync(process.env.HUB_BRIDGE_ENDPOINT_FILE, 'utf8'));
     const response = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + (process.env.HUB_BRIDGE_SESSION_PASS || ''), 'Content-Type': 'application/json', 'X-Hub-Bridge-Session': process.env.HUB_BRIDGE_SESSION_ID || '' },
-      body: JSON.stringify(request.params), signal: AbortSignal.timeout(60000) });
+      body: JSON.stringify(request.params), signal: AbortSignal.timeout(request.params?.name === 'company_diag' ? 90000 : 60000) }); // 直查会等回报最多约 45 秒
     const data = await response.json();
     return { content: [{ type: 'text', text: JSON.stringify(data.ok ? data.result : { error: data.error }, null, 1) }], isError: !data.ok };
   }

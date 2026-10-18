@@ -20,6 +20,10 @@ const guard = require('./delivery-guard');
 const ACTIVE_POLL_MS = 10000;
 // 空闲也每分钟看一次：公司的求助（ask_home）靠它及时收到（2026-10-15 起，原来 3 分钟）。
 const IDLE_POLL_MS = 60000;
+// 直查（2026-10-18）：发出后到回报前每 5 秒看一次通道（定时器本身 5 秒一跳）；MCP / 命令行最多等 45 秒；本机留最近 5 份。
+const DIAG_POLL_MS = 5000;
+const DIAG_WAIT_MS = 45000;
+const DIAG_KEEP = 5;
 const DEFAULT_SETTINGS = Object.freeze({ attach: 'wireless' });
 const short = (s, n = 28) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
 const STATE_LABEL = { sent: '已发出', received: '公司已收到', running: '公司在处理', replied: '已回执', error: '公司报错', cancelled: '已作废' };
@@ -134,7 +138,7 @@ class HomeBridge {
   getMcpEntry(sessionId) {
     return { name: 'company_bridge', command: this.deps.nodeExecutable || 'node', args: [this.deps.mcpScript || path.resolve(__dirname, '../../scripts/company-bridge-mcp.js')],
       env: { HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile, HUB_BRIDGE_SESSION_ID: sessionId || '', HUB_BRIDGE_SESSION_PASS: this.passFor(sessionId || '') },
-      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve', company_hub_update: 'approve', send_image_company: 'approve', company_images: 'approve' } };
+      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve', company_hub_update: 'approve', company_diag: 'approve', send_image_company: 'approve', company_images: 'approve' } };
   }
   wantsMcp({ kind, opts = {} }) {
     if (!this.link.paired()) return false;
@@ -180,6 +184,7 @@ class HomeBridge {
     if (request.name === 'send_image_company') return this.images.send(sessionId, args);
     if (request.name === 'company_images') return { images: this.images.view(sessionId, args.thread) };
     if (request.name === 'company_hub_update') return this.hubAdmin(args);
+    if (request.name === 'company_diag') return this.diag({ sections: args.sections, lines: args.lines, id: args.id });
     throw new Error('未知工具');
   }
   meta(sessionId) { const s = this.deps.getSession(sessionId) || this.deps.getSessionMetadata?.(sessionId); return s || {}; }
@@ -284,16 +289,29 @@ class HomeBridge {
   // ---- 远程更新 / 重启公司 Hub（2026-10-17，公司一端见 hub-admin.js）----
   // 只发指令编号和动作；更新到哪个版本由公司 Hub 从发行源自己查（清单校验 + sha256），通道里不带文件或网址。
   adminState() { return this.store.get('hubAdmin') || {}; }
-  async hubAdmin({ op = 'update', force = false } = {}) {
+  async hubAdmin({ op = 'update', force = false, sections, lines } = {}) {
     if (!this.link.paired()) throw new Error('家里和公司还没配对');
-    if (!['update', 'restart', 'status'].includes(op)) throw new Error('op 只能是 update / restart / status');
+    if (!['update', 'restart', 'status', 'diag'].includes(op)) throw new Error('op 只能是 update / restart / status / diag');
+    let extra = {};
+    if (op === 'diag') {
+      // 段落只认白名单（公司那边同样再核一遍）；不认识的直接报错，免得 Agent 以为查了。
+      const D = require('./diag');
+      const asked = Array.isArray(sections) ? sections : typeof sections === 'string' && sections.trim() ? sections.split(/[,，\s]+/) : [];
+      const bad = asked.map(s => String(s).trim().toLowerCase()).filter(s => s && !D.SECTIONS.includes(s));
+      if (bad.length) throw new Error(`sections 只能是 ${D.SECTIONS.join(' / ')}，不认识：${bad.join('、')}`);
+      extra = { sections: D.parseSections(asked).sections, ...(lines != null ? { lines: D.parseLines(lines) } : {}) };
+    }
     const d = new Date(this.now() + 8 * 3600000);
     const id = 'HA-' + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0') + '-' + randomBytes(3).toString('hex');
-    await this.link.send('hub-admin', { id, gen: this.link.gen(), op, force: force === true });
+    await this.link.send('hub-admin', { id, gen: this.link.gen(), op, force: force === true, ...extra });
     const st = this.adminState();
-    this.store.set('hubAdmin', { ...st, commands: [{ id, op, force: force === true, sentAt: this.now() }, ...(st.commands || [])].slice(0, 20) });
-    this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
+    this.store.set('hubAdmin', { ...st, commands: [{ id, op, force: force === true, sentAt: this.now(), ...extra }, ...(st.commands || [])].slice(0, 20) });
+    this.nextPullAt = Math.min(this.nextPullAt, this.now() + (op === 'diag' ? DIAG_POLL_MS : ACTIVE_POLL_MS));
     this.changed();
+    if (op === 'diag') {
+      return { id, op, status: '已发出', sections: extra.sections, ...this.peer(),
+        next: '公司 Hub 下一次检查通道时直接采集并回报（秒级，不开 CodeAgent、不占并行名额、不排队；公司检查通道的间隔是 10 秒，空闲时按公司设置，默认 30 秒）。用 company_diag 带上 id 取结果。' };
+    }
     const label = { update: '更新', restart: '重启', status: '查状态' }[op];
     return { id, op, status: '已发出', ...this.peer(), company: this.companyHub(),
       next: `公司 Hub 收到后会${op === 'status' ? '回报版本与更新状态' : label === '更新' ? '查版本、下载，等手上的任务答完再重启更新' : '等手上的任务答完再重启'}`
@@ -305,21 +323,72 @@ class HomeBridge {
     const st = this.adminState();
     const recent = (st.statuses || []).slice(0, 5).map(x => ({ id: x.id, phase: x.phase, note: x.note, at: x.at }));
     return { version: st.company?.current || null, latest: st.company?.latest || null, reportedAt: st.company?.at || null, recent,
-      pending: (st.commands || []).filter(c => c.op !== 'status' && !this.adminDone(c.id)).map(c => c.id) };
+      pending: (st.commands || []).filter(c => !['status', 'diag'].includes(c.op) && !this.adminDone(c.id)).map(c => c.id) };
   }
-  adminDone(id) { return (this.adminState().statuses || []).some(x => x.id === id && ['up-to-date', 'failed', 'refused', 'busy', 'unsupported', 'updated', 'rolled-back', 'restarted', 'superseded'].includes(x.phase)); }
+  adminDone(id) { return (this.adminState().statuses || []).some(x => x.id === id && ['up-to-date', 'failed', 'refused', 'busy', 'unsupported', 'updated', 'rolled-back', 'restarted', 'superseded', 'diag', 'status'].includes(x.phase)); }
   receiveAdmin(message) {
     if (message.gen && message.gen !== this.link.gen()) return;
     const st = this.adminState();
     if ((st.statuses || []).some(x => x.mid && x.mid === message.mid)) return;
     const entry = { mid: message.mid || null, id: message.id || null, phase: String(message.phase || ''), note: String(message.note || '').slice(0, 600),
       current: message.current || null, latest: message.latest || null, at: this.now(), companyAt: message.at || null, lastResult: message.lastResult || null };
-    this.store.set('hubAdmin', { ...st, statuses: [entry, ...(st.statuses || [])].slice(0, 20),
+    // 直查回报（2026-10-18，diag.js）：解压存最近几份，不进 statuses 的大字段；不发通知（卡片、命令行、MCP 都在等它）。
+    let diags = st.diags || [];
+    if (entry.phase === 'diag') {
+      let result = null, error = null;
+      try { result = require('./diag').decode(message.diag); } catch (e) { error = '回报解不开：' + e.message; }
+      diags = [{ id: entry.id, at: this.now(), companyAt: entry.companyAt, note: entry.note, bytes: Number(message.diagBytes) || null, elapsedMs: Number(message.elapsedMs) || null,
+        degraded: Array.isArray(message.degraded) ? message.degraded.map(String).slice(0, 10) : [], result, error }, ...diags.filter(x => x.id !== entry.id)].slice(0, DIAG_KEEP);
+    }
+    this.store.set('hubAdmin', { ...st, statuses: [entry, ...(st.statuses || [])].slice(0, 20), diags,
       company: { current: entry.current || st.company?.current || null, latest: entry.latest || st.company?.latest || null, at: this.now() } });
-    // 「在线」只更新版本，不打扰；其余都发通知。
-    if (entry.phase !== 'online') this.notify('公司 Hub', entry.note || entry.phase);
+    // 「在线」只更新版本，不打扰；直查结果由等它的地方拿；其余都发通知。
+    if (entry.phase !== 'online' && entry.phase !== 'diag' && !(entry.phase === 'refused' && this.isDiag(entry.id))) this.notify('公司 Hub', entry.note || entry.phase);
     this.changed();
   }
+  isDiag(id) { return (this.adminState().commands || []).some(c => c.id === id && c.op === 'diag'); }
+
+  // ---- 直查公司电脑与公司 Hub（2026-10-18；公司一端 hub-admin.js diag、diag.js）----
+  // MCP / 命令行默认等回报（最多约 45 秒，期间每 2.5 秒看一次通道），到了直接返回结果；超时返回编号，之后带 id 再取。
+  async diag({ sections, id, lines, wait = true, waitMs = DIAG_WAIT_MS } = {}) {
+    if (id) return this.diagView(String(id));
+    const sent = await this.hubAdmin({ op: 'diag', sections, lines });
+    if (!wait) return sent;
+    const sleep = this.deps.sleep || (ms => new Promise(r => setTimeout(r, ms)));
+    const until = Date.now() + Math.max(0, Number(waitMs) || 0);
+    for (;;) {
+      await this.checkNow().catch(() => {});
+      const view = this.diagView(sent.id);
+      if (view.status !== '等待回报') return view;
+      if (Date.now() + DIAG_POLL_MS / 2 >= until) return { ...view, next: `等了 ${Math.round((Number(waitMs) || 0) / 1000)} 秒公司还没回报（公司空闲时按它的设置检查通道，默认 30 秒一次）；稍后用 company_diag 带 id「${sent.id}」再取，不要循环发新的直查。` };
+      await sleep(DIAG_POLL_MS / 2);
+    }
+  }
+  diagEntry(id) { return (this.adminState().diags || []).find(x => x.id === id) || null; }
+  // 给 Agent / 界面的结果：编号、状态、摘要与完整内容。
+  diagView(id) {
+    const st = this.adminState();
+    const cmd = (st.commands || []).find(c => c.id === id && c.op === 'diag');
+    if (!cmd) throw new Error('找不到直查编号 ' + id);
+    const entry = this.diagEntry(id);
+    const status = (st.statuses || []).find(x => x.id === id && x.phase !== 'diag');
+    const base = { id, sections: cmd.sections || null, sentAt: cmd.sentAt, ...this.peer() };
+    if (entry) {
+      if (entry.error) return { ...base, status: '回报解不开', error: entry.error, note: entry.note };
+      return { ...base, status: '已回报', receivedAt: entry.at, waitedSec: Math.round((entry.at - cmd.sentAt) / 1000), elapsedMs: entry.elapsedMs, bytes: entry.bytes,
+        degraded: entry.degraded, summary: entry.note, diag: entry.result };
+    }
+    if (status) return { ...base, status: status.phase === 'refused' ? '公司没处理' : '公司报错', note: status.note };
+    return { ...base, status: '等待回报' };
+  }
+  // 界面用：最近一份直查（没有带 id 时）。
+  diagLatest(id) {
+    const st = this.adminState();
+    const want = id || (st.commands || []).find(c => c.op === 'diag')?.id;
+    if (!want) return { status: '还没查过' };
+    try { return this.diagView(want); } catch (error) { return { status: '还没查过', error: error.message }; }
+  }
+  diagPending() { return (this.adminState().commands || []).some(c => c.op === 'diag' && this.now() - c.sentAt < DIAG_WAIT_MS * 2 && !this.adminDone(c.id)); }
   // 告诉公司哪些问题的发问会话还在活动（2026-10-16，设计第 1 块）：答完的公司会话据此多保温一会儿。
   // 只报最近 3 小时内有回执的线索；集合变了立刻报，没变每 10 分钟报一次，没有就不报。
   async reportAskers() {
@@ -387,7 +456,8 @@ class HomeBridge {
     const state = this.link.config().state;
     if (!state || state === 'none') return { intervalSeconds: 0, active: false, activeUntil: null };
     // 远程更新指令发出 2 小时内还没有结果：加快检查，及时收到进度。
-    const adminWaiting = (this.adminState().commands || []).some(c => c.op !== 'status' && this.now() - c.sentAt < 2 * 3600000 && !this.adminDone(c.id));
+    const adminWaiting = (this.adminState().commands || []).some(c => !['status', 'diag'].includes(c.op) && this.now() - c.sentAt < 2 * 3600000 && !this.adminDone(c.id));
+    if (state === 'paired' && this.diagPending()) return { intervalSeconds: DIAG_POLL_MS / 1000, active: true, activeUntil: null };
     const active = state === 'pending' || adminWaiting || this.openThreads().length > 0 || this.consult.openThreads().length > 0;
     return { intervalSeconds: (active ? ACTIVE_POLL_MS : IDLE_POLL_MS) / 1000, active, activeUntil: null };
   }
@@ -526,6 +596,8 @@ class HomeBridge {
       images: this.images.status(),
       companyHub: this.companyHub(),
       companyModels: this.companyModels(),
+      // 直查只给轻量信息（完整内容走 bridge:diag-result）
+      companyDiag: (() => { const d = (this.adminState().diags || [])[0]; return { pending: this.diagPending(), latest: d ? { id: d.id, at: d.at, note: d.note, error: d.error || null } : null }; })(),
     };
   }
   notify(title, text, sessionId = null) { try { this.deps.onNotify?.({ title: '公司联动 · ' + title, text, sessionId }); } catch {} }
