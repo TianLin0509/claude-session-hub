@@ -1,6 +1,9 @@
 'use strict';
 // 公司版「助理」服务（2026-10-16 定稿：简报 + 对话；6 条提醒都要；只读；数据只留在这台电脑）。
 //   取数：Hub 用 welink-cli 的查询命令（白名单见 welink.js）取会议、日程、消息、邮件，存在 <数据目录>/company-assistant/。
+//     消息（2026-10-18 田哥改）：默认取回看时间（36 小时）内所有单聊和群的全部消息，不限个数、不限条数，宁可多；
+//     「全部」= welink-cli 能列出的最近 50 个会话（--count 上限 50、不能翻页；默认只给 10 个）。设置里可以限个数、调回看时长。
+//     免打扰、置顶 welink-cli 拿不到（Q-1018-10），所以不做这两个设置。不再要手动勾「关注群」。每个会话缓存已取到的消息，之后只补拉新的。
 //   简报：工作日定时（默认 08:20）生成；打开助理页时当天还没有就当场生成。先出按规则排的清单，再请 CodeAgent 挑重点，逐条核对出处。
 //   对话：固定一个 CodeAgent 会话（purpose=company-assistant，不挂 Hub 的 MCP 和「问家里」），它查 WeLink 只用工作目录里的只读包装 welink-ro.cmd。
 //   提醒：每分钟按 reminders.js 算该发的，经提醒总线（notice-bus.js）发布；每小时最多 3 条，同一件事只提醒一次。
@@ -23,6 +26,7 @@ const TOOLS_VERSION = 1;
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true, briefTime: '08:20', summaryTime: '18:00', waitHours: 4, prepMinutes: 15, maxPerHour: 3, refreshMinutes: 10,
   watchGroups: [], keywords: [], myName: '', workdays: [1, 2, 3, 4, 5], cliPath: '', email: '', emailFrom: '', chips: [], phone: DEFAULT_PHONE,
+  lookbackHours: 36, maxConversations: 0,
 });
 // 输入框上方的常用问题（设计稿 B）。fill=true 的只填进输入框，等补全再发。
 const BUILTIN_CHIPS = Object.freeze([
@@ -46,8 +50,13 @@ const INSTRUCTIONS = [
 ].join('\n');
 const JOB_TIMEOUT_MS = 12 * 60000;
 const FRESH_MS = 3 * 60000;
-const HISTORY_PER_CONV = 30;
-const MAX_P2P = 12;
+// 每页取 100 条（welink-cli 的上限）；一个会话最多往回翻 30 页，只为防止翻页死循环，正常回看时间内远到不了。
+const HISTORY_PAGE = 100;
+const MAX_PAGES = 30;
+const LOOKBACK_CHOICES = [12, 24, 36, 48, 72];
+const CONVERSATION_LIMIT = 50; // query-recent-conversation --count 的上限（默认 10），不能翻页
+// 消息编号比大小：真机是长整数（BigInt 比），测试数据可能是普通字符串。
+const idCmp = (a, b) => { try { const x = BigInt(a), y = BigInt(b); return x < y ? -1 : x > y ? 1 : 0; } catch { return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0; } };
 
 class CompanyAssistant {
   constructor(deps) {
@@ -82,6 +91,8 @@ class CompanyAssistant {
     if ('enabled' in patch) next.enabled = !!patch.enabled;
     if (hhmm(patch.briefTime)) next.briefTime = hhmm(patch.briefTime);
     if (hhmm(patch.summaryTime)) next.summaryTime = hhmm(patch.summaryTime);
+    if ('lookbackHours' in patch && LOOKBACK_CHOICES.includes(Number(patch.lookbackHours))) next.lookbackHours = Number(patch.lookbackHours);
+    if ('maxConversations' in patch && Number.isFinite(Number(patch.maxConversations))) next.maxConversations = Math.max(0, Math.min(CONVERSATION_LIMIT, Math.round(Number(patch.maxConversations))));
     for (const [k, lo, hi] of [['waitHours', 1, 24], ['prepMinutes', 5, 60], ['maxPerHour', 1, 10], ['refreshMinutes', 5, 60]]) {
       if (k in patch && Number.isFinite(Number(patch[k]))) next[k] = Math.min(hi, Math.max(lo, Math.round(Number(patch[k]))));
     }
@@ -187,8 +198,8 @@ class CompanyAssistant {
     const runJson = async (label, args) => {
       try {
         let r = await this.welink(args);
-        let data = welink.parseJson(r.stdout);
-        if (data == null && !args.includes('--format')) { r = await this.welink([...args, '--format', 'json']); data = welink.parseJson(r.stdout); }
+        let data = welink.parseJsonBig(r.stdout);
+        if (data == null && !args.includes('--format')) { r = await this.welink([...args, '--format', 'json']); data = welink.parseJsonBig(r.stdout); }
         if (data == null) { errors.push({ label, text: D.short(r.stderr || r.stdout || '没有输出', 200), calendar: welink.calendarNeedsSetup(r.stderr + r.stdout) }); return null; }
         return data;
       } catch (error) { errors.push({ label, text: D.short(error.message, 200) }); return null; }
@@ -214,14 +225,9 @@ class CompanyAssistant {
         if (snap.mailSetup.ok) { for (let i = errors.length - 1; i >= 0; i -= 1) if (errors[i].calendar) errors.splice(i, 1); await queryCalendar(); }
       }
       snap.calendarNeedsSetup = errors.some(e => e.calendar);
-      const convRaw = await runJson('最近会话', ['im', 'query-recent-conversation']);
+      const convRaw = await runJson('最近会话', ['im', 'query-recent-conversation', '--count', String(CONVERSATION_LIMIT)]);
       if (convRaw) snap.conversations = D.conversations(convRaw);
-      const watched = new Set(s.watchGroups.map(g => g.id));
-      const pick = [...snap.conversations.filter(c => c.group && watched.has(c.id)), ...snap.conversations.filter(c => !c.group).slice(0, MAX_P2P)];
-      for (const conv of pick) {
-        const raw = await runJson(`消息（${conv.name}）`, ['im', 'query-history-message', conv.group ? '--group-id' : '--user-account', conv.id, '--query-count', String(HISTORY_PER_CONV)]);
-        if (raw) snap.messages[conv.id] = D.messages(raw, conv, snap.login.uid);
-      }
+      await this.collectMessages(snap, s, now, runJson);
       const mailRaw = await runJson('未读邮件', ['mail', 'list', '--is-read', '0', '--max', '20']);
       if (mailRaw) snap.mails = D.mails(mailRaw);
       snap.calendarNeedsSetup = errors.some(e => e.calendar);
@@ -231,6 +237,63 @@ class CompanyAssistant {
     try { fs.mkdirSync(path.join(this.workspace, 'data'), { recursive: true }); fs.writeFileSync(path.join(this.workspace, 'data', 'today.json'), JSON.stringify(snap, null, 1), 'utf8'); } catch { /* 下次再写 */ }
     this.pruneFiles();
     return snap;
+  }
+  // 消息：最近会话里每个会话在回看时间内的全部消息，按会话列表原顺序（最近的在前）。
+  // 已缓存的会话只补拉比缓存里最新那条更新的消息；第一次取时从最新一页往回翻，翻到早于回看时间为止。
+  // 会话列表没有时间字段，没法预先跳过安静的会话：每次刷新每个会话都要查一次（约 2 秒一次，50 个约 2 分钟，在后台跑）。
+  async collectMessages(snap, s, now, runJson) {
+    const cutoff = now - s.lookbackHours * 3600000, me = snap.login.uid, phoneGroup = s.phone?.groupId || '';
+    let list = snap.conversations.filter(c => c.id !== phoneGroup); // 手机对话的专用群不进简报
+    const limited = s.maxConversations > 0 && list.length > s.maxConversations;
+    if (limited) list = list.slice(0, s.maxConversations);
+    const cache = this.read('message-cache.json', {}), next = {}, names = D.namesOf(snap.conversations);
+    for (const conv of list) {
+      const got = await this.conversationHistory(conv, cache[conv.id], cutoff, me, s.myName, runJson, names);
+      next[conv.id] = got.cache;
+      if (got.messages.length) snap.messages[conv.id] = got.messages;
+    }
+    this.write('message-cache.json', next);
+    const all = Object.values(snap.messages);
+    snap.scope = { lookbackHours: s.lookbackHours, since: cutoff, listed: snap.conversations.length, fetched: list.length, limited, maxConversations: s.maxConversations,
+      withMessages: all.length, messages: all.reduce((n, l) => n + l.length, 0), p2p: Object.keys(snap.messages).filter(id => !snap.conversations.find(c => c.id === id)?.group).length,
+      listCap: CONVERSATION_LIMIT, listFull: snap.conversations.length >= CONVERSATION_LIMIT };
+  }
+  async conversationHistory(conv, cached, cutoff, me, myName, runJson, names = null) {
+    // 回看时间调长了（缓存覆盖的起点晚于这次的起点）：这个会话重新完整取一遍。
+    if (cached && !(cached.since <= cutoff + 60000)) cached = null;
+    const since = cached ? cached.since : cutoff;
+    const base = ['im', 'query-history-message', conv.group ? '--group-id' : '--user-account', conv.id, '--query-count', String(HISTORY_PAGE)];
+    const label = `消息（${conv.name}）`;
+    const norm = raw => D.messages(raw, conv, me, { myName, names });
+    const keep = new Map((cached?.messages || []).filter(m => !m.at || m.at >= cutoff).map(m => [m.key, m]));
+    const add = list => { for (const m of list) keep.set(m.key, m); };
+    if (cached?.newest) {
+      let from = cached.newest;
+      for (let i = 0; i < MAX_PAGES; i += 1) {
+        const raw = await runJson(label, [...base, '--message-id', from, '--query-direction', '1']);
+        const page = raw ? norm(raw) : [];
+        add(page);
+        const newest = page.reduce((x, m) => (!x || idCmp(m.key, x) > 0 ? m.key : x), null);
+        if (page.length < HISTORY_PAGE || !newest || idCmp(newest, from) <= 0) break;
+        from = newest;
+      }
+    } else {
+      let raw = await runJson(label, base);
+      for (let i = 0; raw && i < MAX_PAGES; i += 1) {
+        const page = norm(raw);
+        add(page);
+        const oldest = page[0];
+        // 这一页没满、或者最旧一条已经早于回看时间（时间读不到时只取一页）：够了。往更旧翻时，真机会把上一页最旧那条再给一次，按编号去重。
+        if (page.length < HISTORY_PAGE || !oldest || !oldest.at || oldest.at < cutoff) break;
+        raw = await runJson(label, [...base, '--message-id', oldest.key, '--query-direction', '0']);
+      }
+    }
+    return this.historyResult(keep, conv, cutoff, cached?.newest, since);
+  }
+  historyResult(keep, conv, cutoff, previousNewest, since) {
+    const messages = [...keep.values()].filter(m => !m.at || m.at >= cutoff).sort((a, b) => (a.at || 0) - (b.at || 0) || idCmp(a.key, b.key));
+    const newest = [...keep.keys()].reduce((x, k) => (!x || idCmp(k, x) > 0 ? k : x), previousNewest || null);
+    return { messages, cache: { newest, since, messages } };
   }
   // 本人邮箱：设置里填过的优先；否则读 WeLink 账号信息（onebox user-info，只读）。读到的存进设置，下次不再查。
   async accountEmail(s = this.settings()) {
@@ -263,6 +326,9 @@ class CompanyAssistant {
     try {
       const keep = D.dayKey(this.now() - 14 * 86400000);
       for (const f of fs.readdirSync(this.dir)) { const m = f.match(/^(?:raw|brief)-(\d{4}-\d\d-\d\d)\.json$/); if (m && m[1] < keep) fs.unlinkSync(this.file(f)); }
+      // 简报用的消息原文只留 3 天（量大）。
+      const recent = D.dayKey(this.now() - 3 * 86400000), data = path.join(this.workspace, 'data');
+      for (const f of fs.existsSync(data) ? fs.readdirSync(data) : []) { const m = f.match(/^brief-input-(\d{4}-\d\d-\d\d)\.md$/); if (m && m[1] < recent) fs.unlinkSync(path.join(data, f)); }
     } catch { /* 清理失败不要紧 */ }
   }
 
@@ -284,6 +350,8 @@ class CompanyAssistant {
     this.write(`brief-${day}.json`, brief);
     this.changed();
     this.queue = this.queue.filter(j => !(j.type === 'brief' && j.day === day));
+    // 全部消息原文写进助理工作目录，提问里只列重要的那部分（brief.js 的 inlineMessages）。
+    try { fs.mkdirSync(path.join(this.workspace, 'data'), { recursive: true }); fs.writeFileSync(path.join(this.workspace, B.inputFileName(day)), B.briefInputFile(snap, { day, now, settings: s }), 'utf8'); } catch { /* 写不了就只靠提问里的部分 */ }
     this.enqueue({ type: 'brief', day, prompt: B.briefPrompt(snap, { day, now, settings: s, commitments: st.commitments }) });
     return brief;
   }
@@ -464,7 +532,7 @@ class CompanyAssistant {
     return { ok: true, enabled: s.enabled, now, day, settings: s, chips: [...BUILTIN_CHIPS, ...s.chips.map(c => ({ ...c, custom: true }))],
       cliFound: !!this.cli(), login: snap?.login || null, loginFlow: this.loginFlow, calendarNeedsSetup: !!snap?.calendarNeedsSetup, mailSetup: snap?.mailSetup || null,
       counts: snap ? { meetings: (snap.meetings || []).length, calendar: (snap.calendar || []).length, messages: Object.values(snap.messages || {}).reduce((n, l) => n + l.length, 0), mails: (snap.mails || []).length } : null,
-      refreshedAt: snap?.at || null, refreshing: !!this.refreshing, errors: snap?.errors || [], conversations: (snap?.conversations || []).slice(0, 60),
+      refreshedAt: snap?.at || null, refreshing: !!this.refreshing, errors: snap?.errors || [], conversations: (snap?.conversations || []).slice(0, 60), scope: snap?.scope || null,
       brief: this.brief(day), nextBriefAt: next, chat: this.chat().slice(-60), job: this.job ? { type: this.job.type, sentAt: this.job.sentAt || null } : null,
       queued: this.queue.length, session: sid ? { id: sid, open: !!this.deps.getSession(sid), busy: this.sessionBusy(sid) } : null,
       notices: st.notices.slice(0, 10), commitments: st.commitments, phone: this.phone.status() };

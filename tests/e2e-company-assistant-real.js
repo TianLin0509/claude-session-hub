@@ -76,6 +76,14 @@ async function main() {
     await until(`/从 WeLink 账号自动读到/.test(document.querySelector('.ca-tab-body')?.innerText || '')`, 'welink tab email', 10000);
     assert.equal(await c.eval(`document.querySelector('[data-f="email"]').value`), 'user001@example.com');
     await shot('02b-settings-welink');
+    // 2026-10-18：「简报与提醒」页不再勾关注群，改成「聊天记录范围」，并写明上次取到多少会话和消息（假 welink-cli 有 17 个会话，第 10 名以后的也要取到）
+    await c.eval(`document.querySelector('[data-ca="settings-tab:brief"]').click()`);
+    await until(`/聊天记录范围/.test(document.querySelector('.ca-tab-body')?.innerText || '') && /上次取到 \\d+ 个会话/.test(document.querySelector('.ca-tab-body')?.innerText || '')`, 'brief tab scope', 10000);
+    const scopeText = await c.eval(`document.querySelector('.ca-tab-body').innerText`);
+    assert.ok(!/关注的群/.test(scopeText), '关注群设置已去掉');
+    assert.match(scopeText, /上次取到 4 个会话（单聊 2、群 2）/);
+    await shot('02c-settings-brief-scope');
+    result.checks.push('设置「简报与提醒」：关注群换成聊天记录范围（回看时长、会话个数），显示上次取到 4 个会话（含列表第 10 名以后的）');
     await c.eval(`document.querySelector('[data-ca="close-panel"]').click()`);
     result.checks.push('邮件和日历：登录后自动从 WeLink 读邮箱配好；设置「WeLink 与邮箱」页显示邮箱来源和各项取数结果');
 

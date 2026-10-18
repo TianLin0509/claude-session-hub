@@ -92,7 +92,7 @@ test('数据整理：会议只取今天、单聊最后一句不是我说的算�
 
 test('简报：清单版五栏、空栏不显示；AI 版出处不在原始数据里的删掉并计数；处理过的不再出现；首屏最多 10 条', () => {
   const snap = snapshotAt();
-  const settings = { watchGroups: [{ id: 'g1', name: '项目群' }] };
+  const settings = { keywords: ['转测'] }; // 2026-10-18：不再手动勾关注群，群里提到关注词就算「群里和你相关」
   const list = B.fallbackBrief(snap, { day: '2026-10-14', now: NOW, settings });
   assert.deepEqual(list.sections.map(s => s.key), ['meetings', 'awaiting', 'groups', 'mail']);
   assert.equal(list.by, 'list');

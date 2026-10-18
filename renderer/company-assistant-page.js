@@ -359,13 +359,15 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   }
 
   function briefTab() {
-    const s = data.settings, watched = new Set(s.watchGroups.map(g => g.id));
-    const groups = (data.conversations || []).filter(c => c.group);
-    const known = new Set(groups.map(g => g.id));
-    const extra = s.watchGroups.filter(g => !known.has(g.id)).map(g => ({ ...g, group: true }));
+    const s = data.settings, sc = data.scope;
     const opts = (list, cur, fmt = x => x) => list.map(x => `<option value="${x}"${String(x) === String(cur) ? ' selected' : ''}>${fmt(x)}</option>`).join('');
-    return `<fieldset><legend>关注的群（简报里出「关注群要点」，关注词也在这些群里找）</legend>
-        <div class="ca-groups">${[...groups, ...extra].map(g => `<label><input type="checkbox" data-group="${esc(g.id)}" data-name="${esc(g.name)}"${watched.has(g.id) ? ' checked' : ''}>${esc(g.name)}</label>`).join('') || '<span class="ca-note">还没取到最近会话：先扫码登录、点「刷新数据」。</span>'}</div></fieldset>
+    // 2026-10-18：不再手动勾「关注群」，默认取回看时间内所有单聊和群。免打扰、置顶 welink-cli 拿不到（Q-1018-10），不做这两个设置。
+    const last = sc ? `上次取到 ${sc.withMessages} 个会话（单聊 ${sc.p2p}、群 ${sc.withMessages - sc.p2p}）共 ${sc.messages} 条消息${sc.limited ? `，按设置只取了最近 ${sc.maxConversations} 个会话` : ''}。` : '还没取过数据：先扫码登录、点「刷新数据」。';
+    return `<fieldset class="col"><legend>聊天记录范围（简报、提醒和对话都用这份数据）</legend>
+        <div class="ca-row"><label>回看最近<select data-f="lookbackHours">${opts([12, 24, 36, 48, 72], s.lookbackHours, x => x + ' 小时')}</select></label>
+          <label>会话个数<select data-f="maxConversations">${opts([0, 10, 20, 30], s.maxConversations, x => (Number(x) ? '最近 ' + x + ' 个' : '全部（默认）'))}</select></label></div>
+        <p class="ca-note">「全部」是 WeLink 最近会话里排前 50 个（welink-cli 一次最多列 50 个）中，回看时间内有消息的单聊和群，每个都取全部消息。WeLink 的免打扰、置顶信息 welink-cli 拿不到，所以没有这两项设置。</p>
+        <p class="ca-note">${last}</p></fieldset>
       <fieldset><legend>提醒</legend>
         <label>关注词（逗号分隔）<input type="text" data-f="keywords" value="${esc(s.keywords.join('，'))}"></label>
         <label>等你回复超过<select data-f="waitHours">${opts([1, 2, 3, 4, 6, 8, 12, 24], s.waitHours, x => x + ' 小时')}</select>提醒</label>
@@ -407,7 +409,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
       e.target.disabled = true;
       try {
         await call('set-settings', {
-          watchGroups: [...panel.querySelectorAll('[data-group]:checked')].map(x => ({ id: x.dataset.group, name: x.dataset.name })),
+          lookbackHours: Number(v('lookbackHours')), maxConversations: Number(v('maxConversations')),
           keywords: v('keywords'), waitHours: Number(v('waitHours')), prepMinutes: Number(v('prepMinutes')), maxPerHour: Number(v('maxPerHour')),
           briefTime: v('briefTime'), summaryTime: v('summaryTime'), refreshMinutes: Number(v('refreshMinutes')),
           chips: s.chips.filter((_, i) => panel.querySelector(`[data-chip="${i}"]`)?.checked !== false),
