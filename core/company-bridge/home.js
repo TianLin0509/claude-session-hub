@@ -3,7 +3,8 @@
 // 公司的 CodeAgent 新开会话去办（读代码、查本机文件与环境，不改动公司电脑），写成 Markdown 回执（不含源码）。回执到了，Hub 把它作为一条新消息发回提问的会话：
 // 会话停着就直接唤醒，开着在忙就等它停下，已关闭就先恢复再发。追问进同一个公司会话，次数不限，由 Agent 自己判断。
 //
-// 只在自用版里启用（社区版、公司版导出时删掉本文件）。通道地址取自公司收件箱的本机配置。
+// 只在自用版里启用（社区版、公司版导出时删掉本文件）。通道地址取自公司收件箱的本机配置；
+// 特战队同事（2026-10-18）没有收件箱，粘贴组长发的邀请码后改用团队入口的地址（team-link.js），并装上团队版 skill。
 // 本机接口按会话发通行证（HMAC(本机密钥, 会话编号)）：会话只能以自己的身份提问、追问和查看。
 // 反方向（公司 CodeAgent 用 ask_home 向家里求助）由 home-consult.js 处理，共用这条通道和数据库。
 const fs = require('node:fs');
@@ -17,6 +18,8 @@ const { HomeConsult, PURPOSE: CONSULT_PURPOSE } = require('./home-consult');
 const { MODEL_ID, sanitizeModelTable, describeModels } = require('./model-table-text');
 const guard = require('./delivery-guard');
 const Q = require('../codeagent-quota');
+const { parseInvite, TeamAdmin } = require('./team-link');
+const { installTeamSkills } = require('./team-skills');
 
 const ACTIVE_POLL_MS = 10000;
 // 空闲也每分钟看一次：公司的求助（ask_home）靠它及时收到（2026-10-15 起，原来 3 分钟）。
@@ -97,10 +100,12 @@ class HomeBridge {
     this.busy = null; this.deliverBusy = null; this.consultBusy = null; this.timer = null; this.nextPullAt = 0; this.server = null;
     this.consult = new HomeConsult({ bridge: this, deps });
     this.images = new (require('./images').BridgeImages)(this);
+    this.team = new TeamAdmin({ teamAdmin: deps.teamAdmin, fetchImpl: deps.fetchImpl });
     if (!deps.noTimer) claimTimers(this.store);
   }
   now() { return this.deps.now ? this.deps.now() : Date.now(); }
-  settings() { return { ...DEFAULT_SETTINGS, ...(this.store.get('settings') || {}) }; }
+  // 用邀请码接入的同事没有 SuperRAN 目录：默认挂给所有 Codex / Claude 会话。
+  settings() { return { ...DEFAULT_SETTINGS, ...(this.invite() ? { attach: 'all' } : {}), ...(this.store.get('settings') || {}) }; }
   setSettings(patch = {}) {
     const next = this.settings();
     if ('attach' in patch) { if (!['wireless', 'all'].includes(patch.attach)) throw new Error('挂载范围只能是 wireless 或 all'); next.attach = patch.attach; }
@@ -134,6 +139,7 @@ class HomeBridge {
     fs.writeFileSync(tmp, JSON.stringify({ url: `http://127.0.0.1:${this.server.address().port}/tool` }), { mode: 0o600 });
     fs.renameSync(tmp, this.endpointFile);
     this.writeModelsFile(); // MCP 列工具时读它（文件被删了也能补回）
+    this.installSkills(); // 只有用邀请码接入的电脑才装；Hub 升级后顺带升级没被改过的
     if (this.deps.noTimer || this.timer) return;
     this.timer = setInterval(() => { void this.tick().catch(e => console.warn('[company-bridge] tick', e.message)); }, 5000);
     this.timer.unref?.();
@@ -530,12 +536,53 @@ class HomeBridge {
     return { companyOnline: minutes != null && minutes <= 3, companyLastSeen: minutes == null ? '还没在线过' : minutes <= 1 ? '刚刚在线' : `${minutes} 分钟前在线` };
   }
 
+  // ---- 特战队邀请码与成员管理（2026-10-18）----
+  invite() { const v = this.store.get('teamInvite'); return v && v.url ? v : null; }
+  setInvite(code) {
+    const next = parseInvite(code);
+    const c = this.link.config();
+    if ((c.state || 'none') !== 'none' && c.baseUrl !== next.url) throw new Error('已经配对或正在配对：先解除配对（或取消配对码），再换邀请码');
+    this.store.set('teamInvite', { ...next, savedAt: this.now() });
+    this.installSkills();
+    this.changed();
+    return this.status();
+  }
+  clearInvite() {
+    if ((this.link.config().state || 'none') !== 'none') throw new Error('先解除配对，再清除邀请码');
+    this.store.set('teamInvite', null); this.changed();
+    return this.status();
+  }
+  installSkills() {
+    if (!this.invite()) return null;
+    try {
+      const prev = this.store.get('teamSkills') || {};
+      const known = [...new Set([...(prev.known || []), ...(prev.installed || [])])];
+      const report = (this.deps.installTeamSkills || installTeamSkills)({ homeDir: this.deps.homeDir, known });
+      this.store.set('teamSkills', { ...report, known: [...new Set([...known, ...report.installed])], at: this.now() });
+      return report;
+    } catch (error) { console.warn('[company-bridge] team skills', error.message); return null; }
+  }
+  teamMembers() { return this.team.members(); }
+  teamCreate(label) { return this.team.create(label); }
+  teamRevoke(id) { return this.team.revoke(id); }
+  teamStatus() {
+    const inv = this.invite();
+    let inbox = false; try { inbox = !!this.deps.relayBaseUrl?.(); } catch {}
+    const skills = this.store.get('teamSkills');
+    return { invite: inv ? { label: inv.label || '', host: new URL(inv.url).host, savedAt: inv.savedAt || null } : null, inbox,
+      needsInvite: !inv && !inbox && !this.deps.bridgeApiUrl?.(), admin: this.team.available(),
+      skills: skills ? { installed: skills.installed, updated: skills.updated, kept: skills.kept, removed: skills.removed || [], errors: skills.errors, known: skills.known || [], at: skills.at } : null };
+  }
+
   // ---- 配对 ----
+  // 通道地址：测试指定的 → 邀请码（特战队同事）→ 公司收件箱配置（组长本机，原样）。
   baseUrl() {
     const direct = this.deps.bridgeApiUrl?.();
     if (direct) return direct.replace(/\/+$/, '');
+    const inv = this.invite();
+    if (inv) return inv.url.replace(/\/+$/, '');
     const url = this.deps.relayBaseUrl?.();
-    if (!url) throw new Error('没找到公司收件箱的配置，无法确定通道地址');
+    if (!url) throw new Error('还没有通道地址：先粘贴组长发的邀请码');
     return url.replace(/\/+$/, '') + '/api';
   }
   createPairing() { this.cancelOpen('重新配对'); const code = this.link.createPairing(this.baseUrl()); this.store.set('pairingCode', code); this.nextPullAt = 0; this.changed(); return { code, ...this.status() }; }
@@ -689,7 +736,7 @@ class HomeBridge {
     const c = this.link.config(), st = this.link.status();
     let baseUrl = null; try { baseUrl = this.baseUrl(); } catch {}
     return {
-      ok: true, role: 'home', settings: this.settings(), baseUrl,
+      ok: true, role: 'home', settings: this.settings(), baseUrl: baseUrl && baseUrl.replace(/\/hub-link\/[^/]+\//, '/hub-link/…/'), team: this.teamStatus(),
       link: { state: c.state || 'none', pairedAt: c.pairedAt || null, pairingCode: c.state === 'pending' ? this.store.get('pairingCode') : null, outbox: this.link.pendingOutbox() },
       net: { lastOkAt: st.lastOkAt || null, lastError: st.lastError || null, gate: st.gate || null, peerSeen: st.peerSeen || null }, peer: this.peer(),
       now: this.now(), nextPullAt: this.nextPullAt, polling: this.polling(),

@@ -2360,6 +2360,9 @@ try {
   // @community-strip 家里一端只在自用版
   if (bridgeRole === 'home') {
     const { HomeBridge } = require('./core/company-bridge/home');
+    // 收件箱配置、管理口令、团队 skill 都在用户目录下；隔离测试可用 CLAUDE_HUB_BRIDGE_HOME 换成临时目录（模拟同事电脑）。
+    const bridgeHome = (process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_BRIDGE_HOME) || os.homedir();
+    const dropConfig = () => { try { return JSON.parse(fs.readFileSync(path.join(bridgeHome, '.config', 'company-drop', 'config.json'), 'utf8')); } catch { return null; } };
     const live = new (require('./core/hub-assistant/live-history').LiveHistory)();
     companyBridgeService = new HomeBridge({ ...bridgeDeps,
       // 公司求助（ask_home）由家里新开的 Claude / Codex 会话作答：用 Hub 的默认配置，按各自的原生记录读最终回答。
@@ -2372,9 +2375,15 @@ try {
       isWirelessWorkspace: cwd => require('./core/claude-mcp-profile').isWirelessWorkspace(cwd),
       // 测试可直接指定通道接口地址（本机通道服务）；平时取公司收件箱配置里的地址再加 /api。
       bridgeApiUrl: () => (process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_BRIDGE_API_URL) || null,
-      relayBaseUrl: () => {
-        try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'company-drop', 'config.json'), 'utf8')).base_url || null; } catch { return null; }
+      relayBaseUrl: () => dropConfig()?.base_url || null,
+      // 特战队成员管理（2026-10-18）：组长本机的收件箱配置里有 team_admin_token（部署团队入口时生成）才算组长。
+      teamAdmin: () => {
+        const c = dropConfig();
+        if (!c || !c.team_admin_token || !c.base_url) return null;
+        const origin = new URL(c.base_url).origin;
+        return { apiUrl: origin + '/hub-link-admin/api', origin, token: c.team_admin_token };
       },
+      homeDir: bridgeHome,
       relayPush: (text, label) => new Promise((resolve, reject) => {
         const cmd = path.join(os.homedir(), '.codex', 'skills', 'company-drop', 'scripts', 'company-relay.cmd');
         require('child_process').execFile('cmd.exe', ['/d', '/c', cmd, 'push', '--text', text, '--label', label], { windowsHide: true, timeout: 60000 }, (error, stdout) => {
