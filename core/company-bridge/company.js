@@ -84,7 +84,11 @@ const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructi
   // restartGraceMinutes：远程重启前最多等手上的任务几分钟，到时先记下、中断，重启后自动接着做（2.1.9；0 = 立即，hub-admin.js）。
   allowRemoteAdmin: true, restartGraceMinutes: 3,
   // 允许对端直查这台电脑的状态（2026-10-18，只读，hub-admin.js diag；独立于远程更新开关，默认开）。
-  allowRemoteDiag: true });
+  allowRemoteDiag: true,
+  // 直查 airview 段看这些目录下最近更新的结果文件（只看名字、大小、修改时间），连同代码位置一起（diag.js resultFiles）。
+  resultDirs: ['C:/AirView'],
+  // 允许对端远程维护（2026-10-18 三期，remote-act.js：休眠空闲通道会话、结束残留进程、临时调并行档位、取消排队 / 重试问题），默认开。
+  allowRemoteMaintain: true });
 const ACTIVE_POLL_MS = 10000;
 const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -195,6 +199,8 @@ function ensureOpenColumn(db, needsWork) {
 function roundPhase(r) { return r.reply ? 'replied' : r.error ? 'failed' : r.sentAt ? 'running' : 'queued'; }
 // 在途轮次从什么时候算起：发出时间；远程重启后恢复会话、发了「继续」的，从恢复时间算（hub-admin.js）。
 function activeSince(r) { return Math.max(r.sentAt || 0, r.resumedAt || 0); }
+// 派发途中重读线程后：这一轮是不是还在排队（没被取消、没落 error）。
+function stillQueued(t, r) { const cur = t.rounds.find(x => x.round === r.round); return !!cur && roundPhase(cur) === 'queued'; }
 function deriveState(t) {
   if (t.state === 'cancelled') return 'cancelled';
   const phases = t.rounds.map(roundPhase);
@@ -267,7 +273,7 @@ class CompanyBridge {
     const instructions = !s.instructions || OLD_DEFAULTS.includes(s.instructions.trim()) ? DEFAULT_INSTRUCTIONS : s.instructions;
     // 旧版设置页只能存「同时 N 个」且默认 2；没调过并行档位的（parallelRev 缺失且仍是旧默认 2）按新默认 3。
     if (!s.parallelRev && Number(s.maxParallel) === 2) delete s.maxParallel;
-    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [], parallelRev: DEFAULT_SETTINGS.parallelRev };
+    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [], resultDirs: Array.isArray(s.resultDirs) ? s.resultDirs : DEFAULT_SETTINGS.resultDirs, parallelRev: DEFAULT_SETTINGS.parallelRev };
   }
   setSettings(patch = {}) {
     const next = this.settings();
@@ -292,6 +298,13 @@ class CompanyBridge {
     if ('autoGate' in patch) next.autoGate = patch.autoGate === true;
     if ('allowRemoteAdmin' in patch) next.allowRemoteAdmin = patch.allowRemoteAdmin === true;
     if ('allowRemoteDiag' in patch) next.allowRemoteDiag = patch.allowRemoteDiag === true;
+    if ('allowRemoteMaintain' in patch) next.allowRemoteMaintain = patch.allowRemoteMaintain === true;
+    if ('resultDirs' in patch) {
+      const list = (Array.isArray(patch.resultDirs) ? patch.resultDirs : String(patch.resultDirs || '').split(/\r?\n/)).map(s => String(s).trim()).filter(Boolean);
+      if (list.length > 10) throw new Error('仿真结果目录最多 10 个');
+      if (list.some(s => s.length > 260)) throw new Error('目录路径太长');
+      next.resultDirs = list;
+    }
     this.store.set('settings', next);
     this.tightenPoll(); this.changed();
     return next;
@@ -460,7 +473,10 @@ class CompanyBridge {
   // 推进：在途的轮次看有没有答完；排队的轮次按并发上限开会话或续问。同一问题一次只有一轮在途。
   async advance() {
     const s = this.settings(), gen = this.link.gen();
-    for (const t of this.openThreads()) {
+    for (const listed of this.openThreads()) {
+      // 每个都重读：前一个 collect 等待期间，这一个可能已被取消 / 解除配对（2026-10-18 审核：拿旧对象写回会把取消覆盖掉）
+      const t = this.thread(listed.id);
+      if (!t || !['queued', 'running'].includes(t.state)) continue;
       if (t.gen !== gen) { this.saveThread({ ...t, state: 'cancelled', cancelNote: '属于上一次配对' }); continue; }
       if (t.state === 'running') await this.collect(t);
     }
@@ -475,7 +491,10 @@ class CompanyBridge {
     let waiting = 0;
     // 家里要求重启、正在等手上的任务答完：新任务先排队，重启后接着做。
     if (this.hubAdmin.holdingDispatch()) { this.careSessions(); return; }
-    for (let t of queue) {
+    for (const listed of queue) {
+      // 重读：前一个 dispatch 等待（开会话、发送）期间，这一个可能已被对端取消（remote-act.js cancel-queued）或解除配对
+      let t = this.thread(listed.id);
+      if (!t || t.state !== 'queued' || t.gen !== gen) continue;
       if (t.sessionId && this.sessionBusy(t.sessionId)) continue; // 追问时原会话还在忙（例如改写上一轮），等它停下
       if (t.rounds.some(x => roundPhase(x) === 'queued' && x.retryAt > this.now())) continue; // CLI 还没就绪，到点再发
       // 家里指定了模型、要新开会话：只等有这个模型的号空出来，不占别的问题的名额（没有哪个号有它的，交给 dispatch 报回）。
@@ -715,13 +734,14 @@ class CompanyBridge {
         if (!created || created.id !== sessionId) throw new Error('会话创建结果与预留编号不一致');
         // 开会话要十几秒：期间可能已解除配对。重新读一次，作废了就不再发问题。
         const latest = this.thread(t.id);
-        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen()) { if (latest) this.saveThread({ ...latest, sessionId }); return; }
+        // 这一轮在开会话期间被对端取消了（remote-act.js cancel-queued 给该轮落了 error）：也不再发
+        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen() || !stillQueued(latest, r)) { if (latest) this.saveThread({ ...latest, sessionId }); return; }
         t = this.saveThread({ ...latest, sessionId, everAnswered: false });
       } else if (!this.deps.getSession(sessionId)) {
         await this.deps.resumeSession(sessionId);
         if (!this.deps.getSession(sessionId)) throw new Error('原会话没能恢复');
         const latest = this.thread(t.id);
-        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen()) return;
+        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen() || !stillQueued(latest, r)) return;
         t = latest;
       }
       const before = this.lastFinal(sessionId);

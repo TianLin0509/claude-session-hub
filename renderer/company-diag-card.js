@@ -13,7 +13,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   const STATE = { active: '开着', dormant: '休眠', closed: '已关闭' };
   const PURPOSE = { 'company-bridge': '特战通道', 'company-assistant': '助理' };
   const KIND = { codeagent: 'CodeAgent', node: 'Node', 'electron-helper': '孤立的 Electron 子进程' };
-  let dialog = null, timer = null, waitingSince = 0, currentId = null, previous = null;
+  let dialog = null, timer = null, waitingSince = 0, currentId = null, previous = null, shown = null;
 
   const table = (head, rows) => rows.length ? `<table class="cl-diag-table"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '';
   const row = (k, v, r = '') => `<div class="wp-row"><span class="k">${esc(k)}</span><span class="v">${v}</span><span class="r">${r}</span></div>`;
@@ -46,15 +46,25 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       ${s.hubScripts?.count ? row('Hub 后台脚本', `浏览器守护、网页圆桌、更新脚本等 ${esc(s.hubScripts.count)} 个，共 ${gb(s.hubScripts.memMB)}（按设计脱离 Hub 运行，不算残留）`) : ''}
       ${s.otherHubs?.count ? row('别的 Hub', `${esc(s.otherHubs.count)} 个 Hub 主进程在当前 Hub 之外，连同名下共 ${esc(s.otherHubs.processes)} 个进程、${gb(s.otherHubs.memMB)}（另一个实例，不算残留）`) : ''}
       ${row('全机', `${esc(p.total)} 个进程${p.hubFound ? '' : ' · <span class="bad">没在进程表里找到 Hub 主进程</span>'}`)}</div>
-      ${leftovers ? '<h4>残留嫌疑</h4>' + leftovers : ''}${others ? '<h4>别的 Hub（不算残留）</h4>' + others : ''}${tops ? `<details class="cl-details"><summary>按内存排的前 ${(p.top || []).length} 个进程</summary>${tops}</details>` : ''}`);
+      ${leftovers ? '<h4>残留嫌疑</h4>' + leftovers + (s.leftovers.killable ? `<div class="cl-diag-actions"><button type="button" class="hub-button" data-diag-act="kill-orphans">结束可结束的残留（${esc((p.leftovers || []).filter(x => x.killable).length)} 个）</button><span class="wp-meta">只按 PID 结束，动手前公司会重新核对，Hub 进程树永远不动</span></div>` : '') : ''}${others ? '<h4>别的 Hub（不算残留）</h4>' + others : ''}${tops ? `<details class="cl-details"><summary>按内存排的前 ${(p.top || []).length} 个进程</summary>${tops}</details>` : ''}`);
   }
   function hub(h) {
     if (!h) return '';
     if (h.error) return block('通道并行与队列', failed(h));
     const par = h.parallel;
-    const queue = table(['编号', '标题', '轮次', '状态', '已等 / 已跑', '排队原因', '会话', '记录最后写入'], (h.queue.threads || []).map(q => [esc(q.thread), esc(q.title || ''), esc(q.round ?? '—') + ' / ' + esc(q.rounds ?? '—'),
+    const queue = table(['编号', '标题', '轮次', '状态', '已等 / 已跑', '排队原因', '会话', '记录最后写入', ''], (h.queue.threads || []).map(q => [esc(q.thread), esc(q.title || ''), esc(q.round ?? '—') + ' / ' + esc(q.rounds ?? '—'),
       esc(PHASE[q.phase] || q.phase) + (q.resumePending ? '（重启后待恢复）' : ''), q.phase === 'queued' ? dur(q.waitedSec) : dur(q.runningSec), esc(q.queueNote || (q.retryAt ? '等 CLI 就绪后重发' : '') || '—'),
-      q.session ? `${q.sessionAlive ? '在' : '<span class="bad">不在</span>'} · ${q.sessionBusy ? '忙' : '闲'}` : '还没开', q.transcriptAt ? ago(q.transcriptAt) : '—']));
+      q.session ? `${q.sessionAlive ? '在' : '<span class="bad">不在</span>'} · ${q.sessionBusy ? '忙' : '闲'}` : '还没开', q.transcriptAt ? ago(q.transcriptAt) : '—',
+      q.phase === 'queued' ? `<button type="button" class="wp-link" data-diag-act="cancel-queued" data-thread="${esc(q.thread)}">取消</button>` : '']));
+    const failedList = table(['编号', '标题', '轮次', '没答上的原因', '时间', ''], (h.failed || []).map(f => [esc(f.thread), esc(f.title || ''), esc(f.round ?? '—'), esc(f.error || ''), ago(f.failedAt),
+      `<button type="button" class="wp-link" data-diag-act="retry" data-thread="${esc(f.thread)}">重试</button>`]));
+    // 远程维护（三期）：休眠空闲通道会话、临时调并行档位
+    const opt = (list, cur) => list.map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${l}</option>`).join('');
+    const maintain = `<div class="cl-diag-actions"><button type="button" class="hub-button" data-diag-act="suspend-idle">让空闲的通道会话休眠</button>
+      <span class="cl-diag-par">临时：内存保底 <select data-diag-p="memFloorPct">${opt([[5, '5%'], [8, '8%'], [10, '10%'], [15, '15%'], [20, '20%']], 5)}</select>
+      · 同时 <select data-diag-p="maxParallel">${opt([['', '不改'], [1, '1 个'], [2, '2 个'], [3, '3 个'], [4, '4 个'], [6, '6 个']], '')}</select>
+      · <select data-diag-p="restoreAfterHours">${opt([[1, '1 小时后恢复'], [2, '2 小时后恢复'], [4, '4 小时后恢复'], ['', '不自动恢复']], 2)}</select>
+      <button type="button" class="hub-button" data-diag-act="set-parallel">调整</button></span></div>`;
     const sessions = table(['标题', '用途', '状态', '最后活动', '号', 'PID', '内存'], (h.sessions.list || []).map(s => [esc(s.title || s.id), esc(PURPOSE[s.purpose] || s.purpose || s.kind),
       esc(STATE[s.state] || s.state) + (s.busy ? ' · 在忙' : ''), ago(s.lastActiveAt), esc(s.account || '—'), esc(s.pid ?? '—'), gb(s.memMB)]));
     const counts = Object.entries(h.sessions.byState || {}).map(([k, v]) => `${STATE[k] || k} ${v}`).join(' · ');
@@ -62,7 +72,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       : '算不出来', par ? `时段上限 ${esc(par.timeCap)} · 账号上限 ${esc(par.laneCap)} · 内存上限 ${esc(par.memCap ?? '不限')}` : '')}
       ${row('队列', `在跑 ${esc(h.queue.running)} 个 · 排队 ${esc(h.queue.queued)} 个${h.holdingDispatch ? ' · <span class="bad">等重启，暂停派发</span>' : ''}`)}
       ${row('公司 Hub', `v${esc(h.version || '?')} · 已运行 ${dur(h.uptimeSec ?? (h.uptimeMin || 0) * 60)} · PID ${esc(h.pid)}${h.care ? ` · 答完保温 ${esc(h.care.keepWarmMinutes)} 分钟` : ''}${h.adminJob && h.adminJob.phase ? ' · 远程指令 ' + esc(h.adminJob.phase) : ''}`)}
-      ${h.processNote ? row('提示', esc(h.processNote)) : ''}</div>${queue || '<p class="wp-empty">通道里没有在跑或排队的问题。</p>'}`)
+      ${h.processNote ? row('提示', esc(h.processNote)) : ''}</div>${queue || '<p class="wp-empty">通道里没有在跑或排队的问题。</p>'}${failedList ? '<h4>最近没答上的问题</h4>' + failedList : ''}${maintain}`)
       + block('Hub 里的会话', sessions ? `<p class="wp-meta">${esc(h.sessions.total)} 个 · ${esc(counts)}（已关闭的会话不在内存里，不列出）</p>${sessions}` : '<p class="wp-empty">Hub 里没有打开的会话。</p>');
   }
   function pool(p) {
@@ -72,7 +82,42 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       esc((a.models || []).length ? (a.models || []).join('、') : '—') + (a.duplicate ? '（和别的号重复）' : '') + (a.sameAsPersonal ? '（和个人账号是同一个号）' : '')]);
     return block('号池', `<p class="wp-meta">${p.usePool ? '通道开会话走号池' : '通道只用个人账号'} · 可用 ${esc(p.ready)} 个号</p>` + table(['号', '状态', '进行中', '默认模型', '模型'], rows));
   }
-  function logs(l) {
+  // ---- 二期：CodeAgent、仿真、功能 ----
+  const okErr = (okAt, err) => `${okAt ? '最近成功 ' + time(okAt) : '还没成功过'}${err ? ` · <span class="bad">最近错误：${esc(err)}</span>` : ''}`;
+  function codeagent(c) {
+    if (!c) return '';
+    if (c.error) return block('CodeAgent', failed(c));
+    const p = c.personal;
+    const quota = table(['号', '剩余额度', '档位', '读自会话', '读数时间'], (c.quota || []).map(q => [esc(q.account), `<b>${esc(q.pct)}%</b>（${esc(q.remaining)}${q.total ? ' / ' + esc(q.total) : ''}）`, esc(q.bucket || ''), esc(q.session), ago(q.sessionActiveAt)]));
+    return block('CodeAgent', `<div class="wp-strip">${row('版本', c.version ? 'v' + esc(c.version) : `<span class="bad">没读到：${esc(c.versionError || '')}</span>`)}
+      ${row('个人账号', p ? `${p.ready ? esc(p.state) : `<span class="bad">${esc(p.state)}</span>`}${p.expiresAt ? ' · 登录到期 ' + time(p.expiresAt) : ''}${p.defaultModel ? ' · 默认模型 ' + esc(p.defaultModel) : ''}` : esc(c.loginError || '读不到'))}
+      ${row('号池', `${esc(c.pool.total)} 个号，可用 ${esc(c.pool.ready)} 个${c.pool.needLogin ? `，<span class="bad">${esc(c.pool.needLogin)} 个需要重新登录</span>` : ''}`)}
+      ${row('额度', (c.quota || []).length ? `读了 ${esc(c.quotaScreens.read)} 个会话屏幕` : esc(c.quotaNote || '没读到'))}</div>${quota}`);
+  }
+  function airview(a) {
+    if (!a) return '';
+    if (a.error) return block('仿真', failed(a));
+    const procRow = x => [esc(x.name), esc(x.pid), gb(x.memMB), time(x.startedAt), x.startedAt ? dur(Math.max(0, Date.now() - x.startedAt) / 1000) : '—',
+      x.session ? '会话 ' + esc(x.session) : x.hub ? 'Hub' : '其他', esc(x.hint || '')];
+    const head = ['名称', 'PID', '内存', '启动于', '已运行', '归属', '看起来是'];
+    // 按内存排，前 8 个直接显示，其余折叠
+    const procs = Array.isArray(a.processes) && a.processes.length ? table(head, a.processes.slice(0, 8).map(procRow))
+      + (a.processes.length > 8 ? `<details class="cl-details"><summary>其余 ${a.processes.length - 8} 个</summary>${table(head, a.processes.slice(8).map(procRow))}</details>` : '') : '';
+    const dirs = (a.dirs || []).map(d => `${esc(d.dir)}：${d.error ? `<span class="bad">${esc(d.error)}</span>` : `${esc(d.files)} 个结果文件${d.truncated ? '（没扫完）' : ''}`}`).join('<br>');
+    const files = table(['目录', '文件（相对路径）', '大小', '修改时间'], (a.recent || []).map(f => [esc(f.dir), esc(f.rel), f.sizeKB >= 1024 ? (f.sizeKB / 1024).toFixed(1) + ' MB' : esc(f.sizeKB) + ' KB', ago(f.mtime)]));
+    return block('仿真', `${a.processes?.error ? `<p class="wp-note warn">进程没采到：${esc(a.processes.error)}</p>` : procs || '<p class="wp-empty">没有在跑的 Python / MATLAB / AirView 进程。</p>'}
+      <div class="wp-strip">${row('结果目录', dirs || '设置里没有配置目录')}${a.filesError ? row('提示', `<span class="bad">${esc(a.filesError)}</span>`) : ''}${a.scanned != null ? row('扫描', `看了 ${esc(a.scanned)} 个条目，用时 ${esc(a.scanMs)} 毫秒${a.truncated ? '（达到上限，没扫完）' : ''}；只看文件名、大小、修改时间${a.note ? '；' + esc(a.note) : ''}`) : ''}</div>
+      ${files ? `<h4>最近更新的结果文件（前 ${(a.recent || []).length} 个）</h4>${files}` : ''}`);
+  }
+  function features(f) {
+    if (!f) return '';
+    if (f.error) return block('功能', failed(f));
+    const line = (name, x, extra = '') => !x ? '' : x.error ? row(name, `<span class="bad">没读到：${esc(x.error)}</span>`) : x.note ? row(name, esc(x.note)) : row(name, okErr(x.lastSuccessAt, x.lastError) + extra);
+    return block('功能', `<div class="wp-strip">${line('论坛', f.forum, f.forum && !f.forum.note && !f.forum.error ? ` · 今天${f.forum.today ? '已取' : '还没取'}${f.forum.syncing ? ' · 正在取' : ''}` : '')}
+      ${line('简报', f.brief, f.brief?.login && !f.brief.login.ok ? ' · <span class="bad">WeLink 没登录</span>' : '')}
+      ${line('手机对话', f.phone, f.phone && !f.phone.note && !f.phone.error ? (f.phone.active ? ' · 开着' : ' · 没开') : '')}
+      ${line('桌宠形象', f.pet, f.pet?.downloaded?.length ? ` · 已下载 ${f.pet.downloaded.map(r => esc(r.name)).join('、')}` : '')}</div>`);
+  }  function logs(l) {
     if (!l) return '';
     if (l.error) return block('日志', failed(l));
     if (l.omitted) return block('日志', `<p class="wp-note">${esc(l.note)}</p>`);
@@ -85,7 +130,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       + (view.summary ? `<p class="wp-note">${esc(view.summary)}</p>` : '')
       + (view.degraded?.length ? `<p class="wp-note warn">回报超过单条消息上限，已精简：${esc(view.degraded.join('；'))}</p>` : '')
       + (d.note ? `<p class="wp-note warn">${esc(d.note)}</p>` : '');
-    return head + machine(d.machine) + processes(d.processes) + hub(d.hub) + pool(d.pool) + logs(d.logs);
+    return head + machine(d.machine) + processes(d.processes) + hub(d.hub) + codeagent(d.codeagent) + pool(d.pool) + airview(d.airview) + features(d.features) + logs(d.logs);
   }
   function paint(html, { busy = false } = {}) {
     if (!dialog) return;
@@ -112,7 +157,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       inflight = true;
       try {
         const view = await call('bridge:diag-result', { id: currentId });
-        if (view.status === '已回报') { stop(); previous = null; paint(body(view)); return; }
+        if (view.status === '已回报') { stop(); previous = null; shown = view; paint(body(view)); return; }
         if (view.status !== '等待回报') { stop(); paint(`<p class="wp-note warn">${esc(view.status)}：${esc(view.note || view.error || '')}</p>` + (previous ? `<p class="wp-meta">上一次（${time(previous.receivedAt)}）的结果：</p>` + body(previous) : '')); return; }
         if (Date.now() - waitingSince > 120000) { stop(); paint(waitingHtml('<span class="bad">两分钟还没回报：公司 Hub 可能不在线，或版本较旧、还不支持直查。</span>')); return; }
         paint(waitingHtml(), { busy: true });
@@ -120,13 +165,66 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       finally { inflight = false; }
     }, 2500);
   }
+  // ---- 远程维护（三期）：按钮 → 二次确认 → hub-admin op:'act' → 等回报 → 顶部横条显示结果和前后对比 ----
+  const ACT_LABEL = { 'suspend-idle': '让空闲的通道会话休眠', 'kill-orphans': '结束残留进程', 'set-parallel': '临时调整并行档位', 'cancel-queued': '取消排队中的问题', retry: '重试失败的问题' };
+  function banner(html, tone = '') {
+    const el = dialog?.querySelector('.cl-diag-act-result');
+    if (!el) return;
+    el.hidden = !html; el.className = 'cl-diag-act-result' + (tone ? ' ' + tone : ''); el.innerHTML = html;
+    if (html) el.scrollIntoView({ block: 'nearest' }); // 按钮多在卡片下半，结果横条在顶上：滚过去让人看见
+  }
+  function actDetail(v) {
+    const a = v.act || {};
+    const mem = a.before && a.after && !/可用内存/.test(v.note || '') ? `可用内存 ${esc(a.before.freeMB)} → ${esc(a.after.freeMB)} MB` : '';
+    const list = a.results ? a.results.map(x => `PID ${esc(x.pid)}：${x.ok ? (x.already ? '已经不在了' : x.confirmed === false ? '已发出结束请求、未确认退出' : '已结束') : esc(x.why || '没动')}`).join('；')
+      : a.suspended ? [...a.suspended.map(x => `${esc(x.thread)} 已休眠`), ...(a.skipped || []).map(x => `${esc(x.thread)} 没动（${esc(x.why)}）`)].join('；') : '';
+    return [mem, list].filter(Boolean).join('<br>');
+  }
+  async function maintain(action, el) {
+    const params = {};
+    let confirmText = '';
+    if (action === 'kill-orphans') {
+      const targets = (shown?.diag?.processes?.leftovers || []).filter(x => x.killable).map(x => ({ pid: x.pid, startedAt: x.startedAt, name: x.name, memMB: x.memMB }));
+      if (!targets.length) return banner('这份结果里没有可结束的残留。', 'warn');
+      params.targets = targets.map(({ pid, startedAt }) => ({ pid, startedAt }));
+      confirmText = `结束公司电脑上的这 ${targets.length} 个残留进程？\n${targets.map(x => `PID ${x.pid}  ${x.name}  ${gb(x.memMB)}`).join('\n')}\n\n公司会按 PID 结束，动手前重新核对（启动时间对不上、又属于某个 Hub 的都不动）。`;
+    } else if (action === 'suspend-idle') confirmText = '让公司电脑上答完空着的通道会话立即休眠？人自己开的会话不动，休眠的会话追问时会自动恢复。';
+    else if (action === 'set-parallel') {
+      for (const k of ['memFloorPct', 'maxParallel', 'restoreAfterHours']) { const v = dialog.querySelector(`[data-diag-p=${k}]`)?.value; if (v) params[k] = Number(v); }
+      // 闲时上限取「忙时、闲时」两者较大的：只改忙时，晚上和周末不生效，所以两个一起改
+      if (params.maxParallel) params.maxParallelIdle = params.maxParallel;
+      confirmText = `临时把公司「内存保底」改成 ${params.memFloorPct}%${params.maxParallel ? `、同时处理改成 ${params.maxParallel} 个（忙时、闲时都改）` : ''}，${params.restoreAfterHours ? params.restoreAfterHours + ' 小时后自动恢复原值' : '不自动恢复'}？`;
+    } else {
+      params.thread = el?.dataset.thread || '';
+      confirmText = action === 'cancel-queued' ? `取消排队中的问题 ${params.thread}？提问的会话会收到「被对端取消」。` : `重试问题 ${params.thread}？`;
+    }
+    if (!window.confirm(confirmText)) return;
+    dialog.querySelectorAll('[data-diag-act]').forEach(b => { b.disabled = true; });
+    banner(`<span class="wp-pill run">执行中</span> 已请公司 Hub ${esc(ACT_LABEL[action])}，等回报……`);
+    try {
+      const { id } = await call('bridge:hub-admin', { op: 'act', action, params });
+      const start = Date.now();
+      for (;;) {
+        await new Promise(r => setTimeout(r, 2500));
+        if (!dialog) return;
+        const v = await call('bridge:act-result', { id });
+        if (v.status === '等待回报') { if (Date.now() - start > 120000) { banner('两分钟还没回报：公司 Hub 可能不在线。', 'warn'); return; } continue; }
+        const ok = v.status === '已执行' && v.act && v.act.ok !== false;
+        banner(`<b>${esc(v.note || v.status)}</b>${actDetail(v) ? '<div class="wp-meta">' + actDetail(v) + '</div>' : ''}<div class="wp-meta">点「重新查看」看最新状态（30 秒内只能查一次）。</div>`, ok ? 'ok' : 'warn');
+        return;
+      }
+    } catch (error) { banner('没做成：' + esc(error.message), 'warn'); }
+    finally { dialog?.querySelectorAll('[data-diag-act]').forEach(b => { b.disabled = false; }); }
+  }
   function open() {
     if (!dialog) {
       dialog = document.createElement('dialog');
       dialog.className = 'hub-dialog cl-diag';
       dialog.innerHTML = '<h2>公司电脑状态</h2><p class="wp-hint">公司 Hub 直接读取电脑和自身状态后回报：秒级、不经 CodeAgent、不占并行名额。号身份显示为「个人 / 号 1」，日志已脱敏。</p>'
-        + '<div class="cl-diag-body"></div><footer class="hub-dialog-actions"><button type="button" class="hub-button" data-diag="close">关闭</button><button type="button" class="hub-button hub-button-primary" data-diag="again">重新查看</button></footer>';
+        + '<div class="cl-diag-act-result" hidden></div><div class="cl-diag-body"></div><footer class="hub-dialog-actions"><button type="button" class="hub-button" data-diag="close">关闭</button><button type="button" class="hub-button hub-button-primary" data-diag="again">重新查看</button></footer>';
       dialog.addEventListener('click', e => {
+        const maint = e.target.closest('[data-diag-act]');
+        if (maint) { void maintain(maint.dataset.diagAct, maint); return; }
         const act = e.target.closest('[data-diag]')?.dataset.diag;
         if (act === 'close') dialog.close();
         else if (act === 'again') void request();
