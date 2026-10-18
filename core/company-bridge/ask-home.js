@@ -202,12 +202,12 @@ class AskHome {
       if (r.round !== round || r.reply) return r;
       if (message.type === 'home-status') {
         changed = true;
-        if (message.state === 'error') return { ...r, status: 'error', error: String(message.note || '家里报错'), errorAt: this.now(), delivered: false, nextTryAt: null };
+        if (message.state === 'error') return { ...r, status: 'error', error: String(message.note || '家里报错'), errorAt: this.now(), ...guard.FRESH_DELIVERY };
         return { ...r, status: message.state === 'running' ? 'running' : 'received', note: message.note || null };
       }
       // 同一轮只收第一份回复（发件箱重发、服务端重放都不会让它再投递一次）。
       changed = true;
-      return { ...r, status: 'replied', reply: String(message.text || ''), replyMid: message.mid, replyAt: this.now(), meta: message.meta || null, error: null, delivered: false, nextTryAt: null };
+      return { ...r, status: 'replied', reply: String(message.text || ''), replyMid: message.mid, replyAt: this.now(), meta: message.meta || null, error: null, ...guard.FRESH_DELIVERY };
     });
     if (!changed) return true;
     this.saveThread({ ...t, rounds });
@@ -233,17 +233,17 @@ class AskHome {
           }
           if (this.bridge.sessionBusy(t.sessionId)) continue;
           // 和家里收公司回执同一套兜底（delivery-guard.js，2026-10-18 Q-1018-07）：已发出更晚一轮 / 原生记录里已有这条回复就不再投；
-          // 发送入口报「只差空白」按已进会话；明确失败最多重投 3 次。
-          const done = guard.alreadyDelivered(this.thread(t.id) || t, r, { meta: session, marker: `【家里回复 ${t.id} · 第 ${r.round} 轮`, now: this.now(),
+          // 发送入口报「只差空白」按已进会话；结果不明确的失败最多重投 3 次。标记是回复第一行全文（「没答上」与真回复不混）。
+          const done = guard.alreadyDelivered(this.thread(t.id) || t, r, { meta: session, marker: replyMessage(t, r).split('\n')[0], now: this.now(),
             ...(this.deps.transcriptHasText ? { hasText: this.deps.transcriptHasText } : {}) });
           if (done) { this.markDelivery(t, r, done); continue; }
           const receipt = await this.deps.sendPrompt(t.sessionId, replyMessage(t, r), randomUUID());
           // 明确没发进去才算失败；确认迟到、结果未知都按已送达，不重发（重发会让 Agent 收到两遍）。
-          if (guard.explicitFailure(receipt)) throw new Error(receipt?.error || receipt?.message || '没有发进会话');
+          if (guard.explicitFailure(receipt)) throw Object.assign(new Error(receipt?.error || receipt?.message || '没有发进会话'), { counted: !!receipt && !receipt.notSent });
           this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null,
             ...(guard.contentArrivedWithDiff(receipt) ? { deliveryNote: guard.MISMATCH_NOTE } : {}) });
         } catch (error) {
-          const f = guard.failure(this.thread(t.id)?.rounds.find(x => x.round === r.round) || r, error.message);
+          const f = guard.failure(this.thread(t.id)?.rounds.find(x => x.round === r.round) || r, error.message, { notSent: !error.counted, now: this.now() });
           this.markDelivery(t, r, f.patch, f.final);
         }
       }
@@ -252,7 +252,7 @@ class AskHome {
   markDelivery(t, r, patch, final = true) {
     const fresh = this.thread(t.id) || t;
     const rounds = fresh.rounds.map(x => x.round === r.round
-      ? { ...x, ...patch, ...(final && !patch.delivered ? { delivered: true, deliveredAt: null } : {}), nextTryAt: final ? null : this.now() + 60000 } : x);
+      ? { ...x, ...patch, ...(final && !patch.delivered ? { delivered: true, deliveredAt: null } : {}), nextTryAt: final ? null : patch.nextTryAt || this.now() + 60000 } : x);
     this.saveThread({ ...fresh, rounds }); this.bridge.changed();
   }
   status() {

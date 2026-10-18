@@ -10,7 +10,8 @@ const { rig, pair } = require('./helpers/company-bridge-rig');
 const guard = require('../core/company-bridge/delivery-guard');
 
 const MIN = 60000;
-const MISMATCH = { ok: false, sendStatus: 'content-mismatch', enterAttempts: 0, acknowledgementSource: 'prompt-submitted' };
+// 真 Claude Code 复现的回执原样（tests/e2e-bridge-delivery-tabs-real.js）。
+const MISMATCH = { ok: false, kind: 'codeagent', sendStatus: 'content-mismatch', mode: 'closed-loop', enterAttempts: 1, acknowledgementSource: 'claude-user-prompt-submit' };
 const FAILED = { ok: false, error: 'send-failed' };
 
 // 家里：一条已回执、还没送进会话的线程（第 1 轮）。
@@ -114,4 +115,100 @@ test('公司一端：家里回复送进 CodeAgent 会话同样兜底（只差空
   await r.company.askHome.deliver();
   assert.equal(calls.length, 0);
   assert.equal(r.company.askHome.thread('H-1018-03').rounds[0].delivered, true);
+});
+
+// ---- 复审 2026-10-18 ----
+test('【阻断】同一轮先投过「没答上」，之后补收 / 重试出真回答：标记按第一行全文核对，真回答照常投进去，上一份的投递状态不带过来', async t => {
+  const r = rig(t); await pair(r);
+  const th = homeThread(r, { rounds: [{ round: 1, question: '问', sentAt: r.clock.now, status: 'error', error: '会话停下了，但一直没读到回答', errorAt: r.clock.now,
+    delivered: true, deliveredAt: r.clock.now, deliveryFailures: 2, deliveryNote: '旧的', deliveryUnconfirmed: null }] });
+  const file = path.join(r.root, 'claude.jsonl');
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: '【公司回执 Q-1018-07 · 第 1 轮 · 没答上】\n\n会话停下了' } }) + '\n');
+  r.hs.map.get('home-s').transcriptPath = file;
+  // 真回答到了（补收取回）
+  await r.home.receive({ type: 'reply', thread: th.id, gen: th.gen, round: 1, text: '真正的回答：PF 权重每 TTI 更新', mid: 'm-real' });
+  let round = r.home.thread(th.id).rounds[0];
+  assert.equal(round.delivered, false);
+  for (const k of ['deliveryFailures', 'deliveryRetries']) assert.equal(round[k], 0, k + ' 清零');
+  for (const k of ['deliveryNote', 'deliveryUnconfirmed', 'deliveryError', 'nextTryAt']) assert.equal(round[k], null, k + ' 清掉');
+  const calls = sendWith(r, 'home', [{ ok: true }]);
+  r.clock.now += 1000; await r.home.deliver();
+  assert.equal(calls.length, 1, '真回答投进去了，没被旧的「没答上」挡住');
+  assert.match(calls[0].text, /^【公司回执 Q-1018-07 · 第 1 轮】\n\n真正的回答/);
+  assert.equal(r.home.thread(th.id).rounds[0].delivered, true);
+  // 原生记录里有了真回执之后，再核对就认得出
+  fs.appendFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: calls[0].text } }) + '\n');
+  assert.equal(guard.transcriptHasText({ transcriptPath: file }, '【公司回执 Q-1018-07 · 第 1 轮】'), true);
+  assert.equal(guard.transcriptHasText({ transcriptPath: file }, '【公司回执 Q-1018-07 · 第 2 轮】'), false);
+});
+
+test('明确没发（notSent）不计入 3 次上限，按 1→2→5→10 分钟退避一直重试；就绪后照常投递', async t => {
+  const r = rig(t); await pair(r);
+  const th = homeThread(r);
+  let ready = false;
+  const calls = sendWith(r, 'home', [() => (ready ? { ok: true } : { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-not-ready' })]);
+  const gaps = [];
+  for (let i = 0; i < 6; i++) {
+    await r.home.deliver();
+    const round = r.home.thread(th.id).rounds[0];
+    assert.equal(round.delivered, false); assert.ok(!round.deliveryUnconfirmed);
+    gaps.push(round.nextTryAt - r.clock.now);
+    r.clock.now = round.nextTryAt;
+  }
+  assert.deepEqual(gaps, [1, 2, 5, 10, 10, 10].map(m => m * MIN));
+  assert.equal(calls.length, 6);
+  ready = true; await r.home.deliver();
+  assert.equal(r.home.thread(th.id).rounds[0].delivered, true);
+});
+
+test('「可能已送达，未能确认」的轮次：补收就在本机重新投一次（手动重投的出口）', async t => {
+  const r = rig(t); await pair(r);
+  const th = homeThread(r);
+  sendWith(r, 'home', [FAILED]);
+  for (let i = 0; i < 3; i++) { await r.home.deliver(); r.clock.now += 61000; }
+  assert.equal(r.home.thread(th.id).rounds[0].deliveryUnconfirmed, true);
+  const before = r.relay.posts;
+  const res = await r.home.invoke({ name: 'recollect_company', callerSessionId: 'home-s', arguments: { thread: th.id } });
+  assert.equal(res.status, '已重新投递'); assert.equal(r.relay.posts, before, '不用麻烦公司');
+  const calls = sendWith(r, 'home', [{ ok: true }]);
+  await r.home.deliver();
+  assert.equal(calls.length, 1);
+  assert.equal(r.home.thread(th.id).rounds[0].delivered, true);
+});
+
+test('更晚一轮早于这一轮的回执发出（补收晚到的回答）：照常投递', async t => {
+  const r = rig(t); await pair(r);
+  const th = homeThread(r, { rounds: [
+    { round: 1, question: '问', sentAt: r.clock.now, status: 'replied', reply: '补收取回的回答', replyAt: r.clock.now + 5 * MIN, delivered: false },
+    { round: 2, question: '追问', sentAt: r.clock.now + MIN, status: 'sent' }] });
+  const calls = sendWith(r, 'home', [{ ok: true }]);
+  await r.home.deliver();
+  assert.equal(calls.length, 1);
+  assert.equal(r.home.thread(th.id).rounds[0].delivered, true);
+  assert.ok(!r.home.thread(th.id).rounds[0].deliveryNote);
+});
+
+test('原生后端的 content-mismatch 不当作「内容已进会话」', () => {
+  assert.equal(guard.contentArrivedWithDiff(MISMATCH), true);
+  assert.equal(guard.contentArrivedWithDiff({ ...MISMATCH, source: 'claude-stream-json' }), false);
+  assert.equal(guard.contentArrivedWithDiff({ ...MISMATCH, acknowledgementSource: 'claude-stream-json' }), false);
+  assert.equal(guard.contentArrivedWithDiff({ ok: false, sendStatus: 'content-mismatch' }), false, '不是 PTY 提交闭环的回执不信');
+  assert.equal(guard.explicitFailure({ ...MISMATCH, source: 'claude-stream-json' }), true);
+});
+
+test('公司一端：家里回复先投过「没答上」、之后真回复到达，照常投进 CodeAgent 会话', async t => {
+  const r = rig(t); await pair(r);
+  r.cs.map.set('c1', { id: 'c1', kind: 'codeagent', status: 'idle' });
+  const file = path.join(r.root, 'ca.jsonl');
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: '【家里回复 H-1018-05 · 第 1 轮 · 没答上】\n\n家里没答上' } }) + '\n');
+  r.cs.map.get('c1').transcriptPath = file;
+  const th = r.company.askHome.saveThread({ id: 'H-1018-05', sessionId: 'c1', title: '求助', gen: r.company.link.gen(), createdAt: r.clock.now,
+    rounds: [{ round: 1, question: '问', sentAt: r.clock.now, status: 'error', error: '家里没答上', errorAt: r.clock.now, delivered: true, deliveryFailures: 1 }] });
+  r.company.askHome.receive({ type: 'home-reply', thread: th.id, gen: th.gen, round: 1, text: '家里的真回复', mid: 'm1', meta: { agent: 'claude' } });
+  const round = r.company.askHome.thread(th.id).rounds[0];
+  assert.equal(round.delivered, false); assert.equal(round.deliveryFailures, 0);
+  const calls = sendWith(r, 'company', [{ ok: true }]);
+  await r.company.askHome.deliver();
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].text, /^【家里回复 H-1018-05 · 第 1 轮 · Claude】/);
 });

@@ -266,6 +266,12 @@ class HomeBridge {
     if (t.state === 'cancelled' || t.gen !== this.link.gen()) throw new Error('这个编号属于上一次配对，已作废');
     const r = t.rounds[t.rounds.length - 1];
     if (!r) throw new Error('这个编号还没有任何一轮');
+    // 回执在家里、只是投递标了「可能已送达，未能确认」：补收就是在本机重新投一次（不用麻烦公司），手动重投的出口（复审 2026-10-18）。
+    if (r.deliveryUnconfirmed && (r.reply || r.error)) {
+      this.saveThread({ ...t, rounds: t.rounds.map(x => x.round === r.round ? { ...x, ...guard.FRESH_DELIVERY } : x) });
+      this.changed();
+      return { thread: t.id, round: r.round, status: '已重新投递', ...this.peer(), next: '这一轮的回执已在家里，会重新送进本会话；现在请结束本轮。' };
+    }
     const waiting = !r.reply && !r.error && this.now() - (r.sentAt || 0) > 20 * 60000;
     if (!r.error && !waiting && !(r.reply && !r.delivered)) throw new Error('最后一轮正常回执了，或发出还不到 20 分钟；补收只用于「没答上」或迟迟没有回执的轮次');
     await this.link.send('recollect', { thread: t.id, gen: t.gen, round: r.round });
@@ -441,7 +447,7 @@ class HomeBridge {
       if (message.type === 'status') {
         if (r.reply) return r;
         changed = true;
-        if (message.state === 'error') return { ...r, status: 'error', error: String(message.note || '公司报错'), errorAt: this.now(), delivered: false, nextTryAt: null };
+        if (message.state === 'error') return { ...r, status: 'error', error: String(message.note || '公司报错'), errorAt: this.now(), ...guard.FRESH_DELIVERY };
         // 公司重试了失败的这一轮：清掉上次的报错，等新的回执。
         // 通道串的进度线（2026-10-16）：记下公司第一次说「已收到」和「开始处理」的时间，算每段耗时。
         const running = message.state === 'running';
@@ -452,7 +458,7 @@ class HomeBridge {
         // 同一轮只收第一份回执（发件箱重发、服务端重放都不会让它再投递一次）。
         if (r.reply) return r;
         changed = true;
-        return { ...r, status: 'replied', reply: String(message.text || ''), replyMid: message.mid, replyAt: this.now(), meta: message.meta || null, error: null, delivered: false, nextTryAt: null };
+        return { ...r, status: 'replied', reply: String(message.text || ''), replyMid: message.mid, replyAt: this.now(), meta: message.meta || null, error: null, ...guard.FRESH_DELIVERY };
       }
       return r;
     });
@@ -482,18 +488,19 @@ class HomeBridge {
           }
           if (this.sessionBusy(t.sessionId)) continue;
           // 重投前核对（delivery-guard.js）：这一轮之后会话已经发出更晚的一轮，或原生记录里已有这条回执，就不再投。
-          const done = guard.alreadyDelivered(this.thread(t.id) || t, r, { meta: session, marker: `【公司回执 ${t.id} · 第 ${r.round} 轮`, now: this.now(),
+          // 标记是回执第一行全文（真回执「…第 N 轮】」、报错「…· 没答上】」），之前投过的「没答上」不会被当成真回执（复审 2026-10-18）。
+          const done = guard.alreadyDelivered(this.thread(t.id) || t, r, { meta: session, marker: replyMessage(t, r).split('\n')[0], now: this.now(),
             ...(this.deps.transcriptHasText ? { hasText: this.deps.transcriptHasText } : {}) });
           if (done) { this.markDelivery(t, r, done); continue; }
           const receipt = await this.deps.sendPrompt(t.sessionId, replyMessage(t, r), randomUUID());
           // 明确没发进去才算失败；确认迟到、结果未知都按已送达，不重发（重发会让 Agent 收到两遍）。
           // 发送入口报「只差空白」（content-mismatch）也是内容已进会话（2026-10-18 Q-1018-07：制表符被换成空格，重投了 6 次）。
-          if (guard.explicitFailure(receipt)) throw new Error(receipt?.error || receipt?.message || '没有发进会话');
+          if (guard.explicitFailure(receipt)) throw Object.assign(new Error(receipt?.error || receipt?.message || '没有发进会话'), { counted: !!receipt && !receipt.notSent });
           this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null,
             ...(guard.contentArrivedWithDiff(receipt) ? { deliveryNote: guard.MISMATCH_NOTE } : {}) });
         } catch (error) {
           // 明确失败最多重投 3 次，之后停止并在「公司联动」列表里标「可能已送达，未能确认」。
-          const f = guard.failure(this.thread(t.id)?.rounds.find(x => x.round === r.round) || r, error.message);
+          const f = guard.failure(this.thread(t.id)?.rounds.find(x => x.round === r.round) || r, error.message, { notSent: !error.counted, now: this.now() });
           this.markDelivery(t, r, f.patch, f.final);
         }
       }
@@ -502,7 +509,7 @@ class HomeBridge {
   markDelivery(t, r, patch, final = true) {
     const fresh = this.thread(t.id) || t;
     const rounds = fresh.rounds.map(x => x.round === r.round
-      ? { ...x, ...patch, ...(final && !patch.delivered ? { delivered: true, deliveredAt: null } : {}), nextTryAt: final ? null : this.now() + 60000 } : x);
+      ? { ...x, ...patch, ...(final && !patch.delivered ? { delivered: true, deliveredAt: null } : {}), nextTryAt: final ? null : patch.nextTryAt || this.now() + 60000 } : x);
     this.saveThread({ ...fresh, rounds }); this.changed();
   }
 

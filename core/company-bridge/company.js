@@ -243,6 +243,8 @@ class CompanyBridge {
     const out = { ...payload };
     // 回答正文是 CodeAgent 写的，里面不会有 Hub 自己的号身份，不动（免得改坏正文）。
     for (const key of ['note', 'error']) if (typeof out[key] === 'string') out[key] = this.scrubText(out[key]);
+    // 远程更新的上次结果（hub-admin.js announce）里的失败原因同样过一遍。
+    if (out.lastResult && typeof out.lastResult === 'object' && typeof out.lastResult.reason === 'string') out.lastResult = { ...out.lastResult, reason: this.scrubText(out.lastResult.reason) };
     if (out.meta && typeof out.meta === 'object') { const { poolLabel: _p, account: _a, ...meta } = out.meta; out.meta = meta; }
     return out;
   }
@@ -475,13 +477,15 @@ class CompanyBridge {
         // 等「能跑它的号池号空出来切模型」最多 MODEL_SWITCH_WAIT_MS：号一直有会话就别无限排队，回家里说明并给出现在能直接用的模型。
         const qr = t.rounds.find(x => roundPhase(x) === 'queued');
         if (pick && pick.reason === 'switch' && qr) {
+          // 号上只剩答完保温、没在干活的通道会话：先让它们休眠，号空出来就能切（复审 2026-10-18）。
+          this.freeForSwitch(pick.model);
           const since = qr.switchWaitSince && qr.switchWaitSince >= this.bootAt ? qr.switchWaitSince : this.now();
           if (!qr.switchWaitSince || qr.switchWaitSince !== since) t = this.patchRound(t, qr.round, { switchWaitSince: since });
           if (this.now() - since >= MODEL_SWITCH_WAIT_MS) { this.rejectModel(t, qr, this.routeAccounts(), 'switch'); continue; }
         } else if (qr && qr.switchWaitSince) t = this.patchRound(t, qr.round, { switchWaitSince: null });
         if (pick && !pick.ok && pick.reason !== 'none') {
           waiting += 1;
-          this.reportQueue(t, waiting, limit, working, `排队：等 ${pick.model} 的号空出来（${pick.reason === 'switch' ? '有它权限的号正在跑别的模型的会话' : `有它权限的号都在处理 ${this.perAccountCap()} 个问题`}）`);
+          this.reportQueue(t, waiting, limit, working, `排队：等 ${pick.model} 的号空出来（${pick.reason === 'switch' ? '有它权限的号正在处理其他会话，空出来后切换' : `有它权限的号都在处理 ${this.perAccountCap()} 个问题`}）`);
           continue;
         }
       }
@@ -550,6 +554,33 @@ class CompanyBridge {
     if (!accounts) return null;
     return route.pickRoute(accounts, model, { working: this.workingByAccount(), cap: this.perAccountCap() });
   }
+  // 有该模型权限、默认不是它的号池号上，只剩答完保温的通道会话（不在干活、没有待派的追问）时让它们休眠，号空出来就能切模型。
+  // 人自己开的会话、在干活的通道会话都不动；每个模型一分钟最多试一次。返回请求休眠的会话数。
+  freeForSwitch(model) {
+    if (!this.deps.suspendSession || !this.deps.listSessionIds) return 0;
+    this.freeAt = this.freeAt || {};
+    const k = String(model).toLowerCase();
+    if (this.now() - (this.freeAt[k] || 0) < CARE_EVERY_MS) return 0;
+    this.freeAt[k] = this.now();
+    const accounts = (this.routeAccounts() || []).filter(a => a.pool && route.hasModel(a, model) && String(a.defaultModel).toLowerCase() !== k && a.activeSessions > 0);
+    if (!accounts.length) return 0;
+    const threads = this.threads(300);
+    const bridgeSessions = new Set(threads.map(t => t.sessionId).filter(Boolean));
+    const pending = new Set(threads.filter(t => ['queued', 'running'].includes(t.state)).map(t => t.sessionId).filter(Boolean));
+    let n = 0;
+    for (const a of accounts) {
+      const ids = (this.deps.listSessionIds() || []).filter(id => { const s = this.deps.getSession(id); return s && s.codeagentPoolAccount === a.key && s.status !== 'dormant' && s.status !== 'closed'; });
+      if (!ids.length || !ids.every(id => bridgeSessions.has(id) && !pending.has(id) && !this.sessionBusy(id))) continue;
+      for (const id of ids) {
+        let result;
+        try { result = this.deps.suspendSession(id, { reason: 'company-bridge-model-switch', minIdleMs: 60000, excludePinned: true, excludeFocused: true, excludeMeeting: true }); }
+        catch (error) { result = { ok: false, message: error.message }; }
+        this.careLog(`${result?.ok ? 'suspend' : 'skip'} session=${String(id).slice(0, 8)} 为切到 ${model} 先休眠保温会话${result?.ok ? '' : '；跳过：' + (result?.message || result?.error || '未知')}`);
+        if (result?.ok) n += 1;
+      }
+    }
+    return n;
+  }
   // 发给家里的模型表：按模型聚合，不含账号名、工号、备注。
   modelTable() {
     const accounts = this.routeAccounts();
@@ -573,7 +604,7 @@ class CompanyBridge {
   rejectModel(t, r, accounts, reason = 'none') {
     const options = reason === 'switch' ? route.servableNow(accounts || []) : route.listModels(accounts || []);
     const why = reason === 'switch'
-      ? `指定的模型 ${t.model}：能跑它的号一直在用别的模型跑会话，等了 ${MODEL_SWITCH_WAIT_MS / 60000} 分钟仍切不过去；没有开会话。${options.length ? `现在可直接用的模型：${options.join('、')}，` : ''}可以换一个模型重问，或不指定模型用公司默认`
+      ? `指定的模型 ${t.model}：有它权限的号这段时间都在处理其他会话，等了 ${MODEL_SWITCH_WAIT_MS / 60000} 分钟没能空出来切换；没有开会话。${options.length ? `现在可直接用的模型：${options.join('、')}，` : ''}可以换一个模型重问，或不指定模型用公司默认`
       : `指定的模型 ${t.model} 在公司这边没有可用的号${options.length ? `（可选：${options.join('、')}）` : '（公司这边暂时没有可用的号）'}；没有开会话，可以换一个模型重问，或不指定模型用公司默认`;
     this.patchRound(t, r.round, { error: why, failedAt: this.now() });
     const models = this.modelTableSafe();

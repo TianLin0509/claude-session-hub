@@ -353,12 +353,12 @@ test('指定模型等切换最多 10 分钟：号池号一直有会话就不再�
   const res = await r.home.invoke({ name: 'ask_company', callerSessionId: 'home-s', arguments: { question: '帮我查一下 AirView 里 RSRP 统计的入口文件', model: DS } });
   await r.company.checkNow(); await r.company.checkNow(); await r.home.checkNow();
   assert.equal(r.company.thread(res.thread).state, 'queued');
-  assert.match(r.home.thread(res.thread).rounds[0].note, /排队：等 deepseek-v4-0731 的号空出来（有它权限的号正在跑别的模型的会话）/);
+  assert.match(r.home.thread(res.thread).rounds[0].note, /排队：等 deepseek-v4-0731 的号空出来（有它权限的号正在处理其他会话，空出来后切换）/);
   r.clock.now += 9 * MIN; await r.company.checkNow();
   assert.equal(r.company.thread(res.thread).state, 'queued', '10 分钟内继续等');
   r.clock.now += 2 * MIN; await r.company.checkNow(); await r.home.checkNow();
   assert.equal(created(r).length, 0);
-  assert.match(r.home.thread(res.thread).rounds[0].error, /能跑它的号一直在用别的模型跑会话，等了 10 分钟仍切不过去；没有开会话。现在可直接用的模型：GLM-5\.2-WX-Auto/);
+  assert.match(r.home.thread(res.thread).rounds[0].error, /有它权限的号这段时间都在处理其他会话，等了 10 分钟没能空出来切换；没有开会话。现在可直接用的模型：GLM-5\.2-WX-Auto/);
 });
 
 test('不指定模型：避开为通道切过模型且还有会话的号；只剩它时照用，回执写明实际模型', async t => {
@@ -394,4 +394,31 @@ test('家里提示：模型表未知时指定模型会提醒可能不生效；�
   assert.match(replyMessage(t0, { round: 1, reply: 'x', meta: { model: GLM } }), /指定了模型 deepseek-v4-0731，但公司 Hub 没有确认按它作答（可能是旧版，不认指定模型），公司会话模型 GLM-5\.2-WX-Auto/);
   assert.match(replyMessage(t0, { round: 1, reply: 'x', meta: { model: DS, requestedModel: DS, actualModel: null } }), /指定模型 deepseek-v4-0731，未从回答里确认实际模型/);
   assert.match(replyMessage({ id: 'Q-1', model: null }, { round: 1, reply: 'x', meta: { model: GLM } }), /公司模型 GLM-5\.2-WX-Auto）/);
+});
+
+test('等切模型时：号上只剩答完保温的通道会话就先让它休眠，号空出来后切过去开会话；人自己的会话、在干活的不动', async t => {
+  const r = setup(t, { accounts: null });
+  r.box.accounts = () => [r.fake('both', [GLM, DS], GLM)];
+  r.box.active.both = 1;
+  const suspended = [];
+  Object.assign(r.company.deps, {
+    listSessionIds: () => [...r.cs.map.keys()],
+    suspendSession: (id) => { suspended.push(id); const s = r.cs.map.get(id); if (s) s.status = 'dormant'; r.box.active.both = 0; return { ok: true }; },
+  });
+  await pair(r);
+  // 号上一个人自己开的会话（不是通道的）：不休眠，只能等
+  r.cs.map.set('mine', { id: 'mine', kind: 'codeagent', status: 'idle', codeagentPoolAccount: 'both' });
+  const res = await r.home.invoke({ name: 'ask_company', callerSessionId: 'home-s', arguments: { question: '帮我查一下 AirView 里 RSRP 统计的入口文件', model: DS } });
+  await r.company.checkNow(); await r.company.checkNow();
+  assert.deepEqual(suspended, []); assert.equal(created(r).length, 0);
+  // 换成一个答完保温的通道会话
+  r.cs.map.delete('mine');
+  r.cs.map.set('warm', { id: 'warm', kind: 'codeagent', status: 'idle', codeagentPoolAccount: 'both' });
+  r.company.saveThread({ id: 'Q-1018-90', gen: r.company.link.gen(), title: '旧题', sessionId: 'warm', createdAt: r.clock.now, rounds: [{ round: 1, question: 'q', receivedAt: r.clock.now, sentAt: r.clock.now, reply: 'a', replyAt: r.clock.now }] });
+  r.clock.now += MIN + 1000; await r.company.checkNow();
+  assert.deepEqual(suspended, ['warm'], '保温的通道会话先休眠');
+  await r.company.checkNow();
+  assert.equal(created(r).length, 1, '号空出来后切到 DS 开会话');
+  assert.equal(created(r)[0].codeagentRouteModel, DS); assert.equal(created(r)[0].codeagentPoolPick, 'both');
+  assert.ok(res.thread);
 });
