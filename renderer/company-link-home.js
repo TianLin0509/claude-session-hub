@@ -3,6 +3,8 @@
 // 问答本身由 Agent 通过「问公司」工具或 company-ask 命令发起，这里只看进度、管配对和挂载范围。
 function createCompanyLinkSection({ document, ipcRenderer, openSession, showMessage }) {
   let root = null, data = null, images = null;
+  // 「公司电脑状态」（2026-10-18 直查）：弹出卡片，等公司 Hub 直接采集回报。
+  const diagCard = require('./company-diag-card').createCompanyDiagCard({ document, ipcRenderer, showMessage });
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const clock = at => at ? new Date(at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke(channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
@@ -27,7 +29,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
     const h = data.companyHub || {}, last = (h.recent || [])[0];
     const ver = h.version ? 'v' + esc(h.version) : '版本未知（公司 Hub 升到 2.1.8 后会自动报）';
     return `<div class="wp-row cl-hub"><span class="k">公司 Hub</span><span class="v">${ver} · 上次在线 ${esc((data.peer || {}).companyLastSeen || '')}${last && last.phase !== 'online' ? ` · 最近：${esc(last.note)}（${clock(last.at)}）` : ''}${h.pending?.length ? ' · 指令执行中' : ''}</span>
-      <span class="r"><button type="button" class="wp-btn" data-cl="hub-update">让公司 Hub 更新</button><button type="button" class="wp-link" data-cl="hub-status">查状态</button></span></div>`;
+      <span class="r"><button type="button" class="wp-btn" data-cl="diag" title="公司 Hub 直接读取电脑和自身状态后回报：秒级、不经 CodeAgent、不排队">公司电脑状态</button><button type="button" class="wp-btn" data-cl="hub-update">让公司 Hub 更新</button><button type="button" class="wp-link" data-cl="hub-status">查状态</button></span></div>`;
   }
   function threads() {
     const list = (data.threads || []).slice(0, 30);
@@ -77,6 +79,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
       return;
     }
     if (verb === 'copy') { const box = root.querySelector('.cl-code'); box.select(); document.execCommand('copy'); showMessage?.('配对码已复制'); return; }
+    if (verb === 'diag') { diagCard.open(); return; }
     if (verb === 'attach') return;
     el.disabled = true;
     try {

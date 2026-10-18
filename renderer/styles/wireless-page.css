@@ -67,3 +67,18 @@
 .cl-round pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;background:#f7f9fc;border:1px solid #edf1f7;border-radius:8px;padding:8px 10px;margin:4px 0;font:12.5px/1.6 var(--font-ui,"Microsoft YaHei",system-ui,sans-serif)}
 .cl-round pre.ans{background:#f3f8f4;border-color:#e1efe5}
 .cl-sub{font-size:13px;margin:16px 0 4px;color:#1b2942}
+/* 公司电脑状态卡片（2026-10-18 直查，renderer/company-diag-card.js）：和无线页同一套浅色行与表格 */
+.hub-dialog.cl-diag{width:min(1080px,calc(100vw - 48px));max-height:calc(100vh - 40px);padding:22px 26px;background:#f7f9fc;color:#1b2942}
+.cl-diag h2{font-size:18px;margin:0 0 4px}
+.cl-diag-body{min-height:120px}
+.cl-diag-wait{display:flex;align-items:center;gap:8px;font-size:13px;color:#33435c;margin:10px 0}
+.cl-diag-block{margin-top:14px}
+.cl-diag-block h3{font-size:14px;margin:0 0 6px;color:#1b2942}
+.cl-diag-block h4{font-size:12.5px;margin:10px 0 4px;color:#4b5a70;font-weight:600}
+.cl-diag .wp-strip{margin-bottom:8px}
+.cl-diag .wp-row{grid-template-columns:84px 1fr auto}
+.cl-diag .wp-row .bad,.cl-diag-table .bad{color:#b42318}
+.cl-diag-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e3e9f2;border-radius:10px;overflow:hidden;font-size:12px;margin:4px 0 6px}
+.cl-diag-table th{background:#f2f5fa;color:#63728a;font-weight:500;text-align:left;padding:5px 8px;white-space:nowrap}
+.cl-diag-table td{padding:5px 8px;border-top:1px solid #f0f3f8;color:#1b2942;vertical-align:top;overflow-wrap:anywhere}
+.cl-diag-log{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;background:#fff;border:1px solid #edf1f7;border-radius:8px;padding:8px 10px;margin:4px 0;font:11.5px/1.6 Consolas,"Microsoft YaHei",monospace}
