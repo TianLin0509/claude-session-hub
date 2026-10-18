@@ -50,8 +50,11 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
       renderSessionList();
     })()`);
     await _waitMs(300);
-    const titles = () => cdp.eval('Array.from(document.querySelectorAll("#session-list .sl-title")).map(e => e.textContent.trim())');
+    // 2026-10-18 起公司助理常驻最上面的「助理」一栏、不受筛选影响：数普通分组时不算它，另外核对它一直在。
+    const titles = () => cdp.eval('Array.from(document.querySelectorAll("#session-list .session-item:not(.resident-placeholder) .sl-title")).map(e => e.textContent.trim())');
+    const resident = () => cdp.eval('!!document.querySelector("#session-list .sec-resident") && /公司助理/.test(document.querySelector("#session-list .resident-placeholder")?.innerText || "")');
     let list = await titles();
+    assert.ok(await resident(), '平时最上面有常驻的「助理」一栏');
     assert.ok(list.some(t => /我自己的周报整理/.test(t)) && list.some(t => /L2 调度单测排查/.test(t)), JSON.stringify(list));
     assert.ok(!list.some(t => /特战|AI特战队|调度器入口查询/.test(t)), '平时不显示通道会话：' + JSON.stringify(list));
     let shot = await cdp.send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: 520, height: 520, scale: 1 } });
@@ -61,6 +64,7 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
     await click('#btn-sidebar-wireless');
     assert.equal(await cdp.eval('document.getElementById("btn-sidebar-wireless").getAttribute("aria-pressed")'), 'true');
     list = await titles();
+    assert.ok(await resident(), '只看特战时「助理」一栏也还在');
     assert.equal(list.length, 3, JSON.stringify(list));
     assert.ok(list.includes('特战 · AirView 下行调度与 AMC') && list.includes('特战 · OLLA 步长核对') && list.some(t => /调度器入口查询/.test(t)), JSON.stringify(list));
     assert.ok(!list.some(t => /AI特战队|家里/.test(t)), JSON.stringify(list));
