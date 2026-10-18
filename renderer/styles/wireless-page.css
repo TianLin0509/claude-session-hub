@@ -60,6 +60,8 @@
 .cl-section[hidden]{display:none}
 .cl-code{display:block;width:100%;margin-top:6px;word-break:break-all;font:12px/1.5 Consolas,"Microsoft YaHei",monospace;border:1px solid #dfe6f1;border-radius:8px;padding:6px 8px;resize:none;color:#1b2942;background:#f7f9fc;box-sizing:border-box}
 .cl-col{display:flex;flex-direction:column;gap:6px;align-items:stretch}
+.cl-label{width:100%;max-width:260px;border:1px solid #dfe6f1;border-radius:8px;padding:5px 8px;font:inherit;font-size:13px;color:#1b2942;background:#fff;box-sizing:border-box}
+.wp-pill.mute{background:#eef1f6;color:#77859b}
 .cl-section select{padding:4px 6px;border:1px solid #dfe6f1;border-radius:6px;background:#fff;color:#1b2942;font:inherit;font-size:13px;max-width:100%}
 .cl-details{margin-top:6px}
 .cl-details summary{cursor:pointer;color:#315acb;font-size:12px}
