@@ -560,8 +560,21 @@ if (process.env.CLAUDE_HUB_E2E === '1' && process.env.CLAUDE_HUB_EGRESS_FIXTURE)
   }
 }
 const windowsNetworkContext = require('./core/windows-network-context').createWindowsNetworkContext();
+// 系统代理出口的后备探测（2026-10-18）：独立的会话分区，代理模式固定为「系统设置」，不受 Hub 其他会话的代理影响。
+let egressProbeSession = null;
+async function systemProxyFetch(url, { timeoutMs = 12000 } = {}) {
+  const { session } = require('electron');
+  if (!egressProbeSession) {
+    egressProbeSession = session.fromPartition('egress-probe');
+    await egressProbeSession.setProxy({ mode: 'system' });
+  }
+  const response = await egressProbeSession.fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'AI-Hub-Network-Monitor/1.0' }, signal: AbortSignal.timeout(timeoutMs), bypassCustomProtocolHandlers: true });
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  return response.text();
+}
 const networkEgressMonitor = createNetworkEgressMonitor({
   getProxy: () => getHubConfig().proxy,
+  systemFetch: (url, opts) => systemProxyFetch(url, opts),
   getSystemProxy: () => windowsNetworkContext.systemProxy(),
   getTunnel: () => windowsNetworkContext.tunnel(),
   statePath: path.join(getHubDataDir(), 'network-egress-state.json'),

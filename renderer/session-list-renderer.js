@@ -389,7 +389,8 @@ function _sessionWarningText(session) {
     const routeLabel = vpnNic ? 'VPN' : xgate ? 'xGate' : systemProxy ? '代理' : proxyShort ? 'VPN' : '直连';
     const foreign = egress && egress.foreign;
     const domestic = egress && egress.domestic;
-    const displayRoute = proxyShort ? foreign : domestic;
+    // 读不出代理地址（自动配置脚本）但 xGate 开着时，主进程照样按系统代理探了出口：探到了就显示它（公司直连本来就出不去）。
+    const displayRoute = proxyShort || (xgate && foreign && foreign.ok) ? foreign : domestic;
     const alert = egress && egress.alert;
     const clashDelay = proxyShort && proxy?.clashDelay?.status === 'ok' ? proxy.clashDelay : null;
 
