@@ -8,7 +8,7 @@ const { MODES, ROLES } = require('./state');
 const FILE = 'hub-pet.json';
 
 function defaults({ company = false } = {}) {
-  return { enabled: !!company, role: '01-cat', mode: 'gentle', position: null, quietUntil: 0, silentDate: '', peekOnFullscreen: true };
+  return { enabled: !!company, role: '01-cat', mode: 'gentle', position: null, quietUntil: 0, silentDate: '', peekOnFullscreen: true, scale: 1 };
 }
 
 // 以 base 为底，只采纳 raw 里合法的字段。
@@ -21,6 +21,8 @@ function normalize(raw, base, roleOk = builtinRole) {
   if (typeof raw.role === 'string' && roleOk(raw.role)) out.role = raw.role;
   if (MODES.includes(raw.mode)) out.mode = raw.mode;
   if (typeof raw.peekOnFullscreen === 'boolean') out.peekOnFullscreen = raw.peekOnFullscreen;
+  // 大小（2026-10-18）：身体是原大小的 0.6–1.6 倍，设置里滑动条连续调。
+  if (Number.isFinite(raw.scale)) out.scale = Math.round(Math.min(1.6, Math.max(0.6, raw.scale)) * 100) / 100;
   const p = raw.position;
   if (p === null) out.position = null;
   else if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) out.position = { x: Math.round(p.x), y: Math.round(p.y) };

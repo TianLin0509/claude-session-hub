@@ -22,7 +22,7 @@ test('写盘再读；非法角色、档位、位置被忽略；坏文件回落�
   s.update({ enabled: true, role: '07-shiba', mode: 'lively', position: { x: 100.4, y: 200.6 }, silentDate: '2026-10-16' });
   s.update({ role: 'dragon', mode: 'loud', position: { x: 'a' } });
   const again = createSettingsStore({ dataDir: dir }).get();
-  assert.deepEqual(again, { enabled: true, role: '07-shiba', mode: 'lively', position: { x: 100, y: 201 }, quietUntil: 0, silentDate: '2026-10-16', peekOnFullscreen: true });
+  assert.deepEqual(again, { enabled: true, role: '07-shiba', mode: 'lively', position: { x: 100, y: 201 }, quietUntil: 0, silentDate: '2026-10-16', peekOnFullscreen: true, scale: 1 });
   fs.writeFileSync(path.join(dir, 'hub-pet.json'), '{broken');
   assert.equal(createSettingsStore({ dataDir: dir, company: true, logger: { warn() {} } }).get().enabled, true);
 });

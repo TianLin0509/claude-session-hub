@@ -62,7 +62,8 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
     };
 
     await wait('!!document.getElementById("btn-company-assistant")', '助理入口');
-    const before = await (async () => { for (let i = 0; i < 80; i++) { const v = await petView(); if (v && v.bg) return v; await _waitMs(150); } return null; })();
+    // 'none' 是图还没解码画上（2026-10-18 起渲染端启动时还要量一次透明边，稍晚一点），等到真有图再判断
+    const before = await (async () => { for (let i = 0; i < 80; i++) { const v = await petView(); if (v && /url\(/.test(v.bg)) return v; await _waitMs(150); } return null; })();
     assert.match(before.bg, /hub-pet\/01-cat\/[a-z-]+\.webp/, '起始是小猫：' + JSON.stringify(before));
     await click('#btn-company-assistant');
     await wait('!document.getElementById("company-assistant-page")?.hidden', '助理页');

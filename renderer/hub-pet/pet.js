@@ -413,6 +413,45 @@
     if (hitTarget(e.clientX, e.clientY) === 'pet') api.menu();
   });
 
+  // ---------- 大小与身体透明边（2026-10-18） ----------
+  // 形象图四周有一圈透明边：量出看得见的身体占多大，告诉主进程按真身体贴屏幕边（不然离边还有二三十像素就停住），
+  // 脚下那段透明边用来把身体往下挪，让脚踩在任务栏上沿。图是本地文件，画到画布上读透明度。
+  let box = { left: 0, right: 0, top: 0, bottom: 0 };
+  let sizeKey = '';
+  function applySize() {
+    const body = Math.round(150 * (Number(state.scale) || 1));
+    const key = body + ':' + box.bottom;
+    if (key === sizeKey) return;
+    sizeKey = key;
+    document.documentElement.style.setProperty('--body', body + 'px');
+    document.documentElement.style.setProperty('--feet', Math.round(box.bottom * body) + 'px');
+  }
+  function measureBody(url) {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        if (!w || !h) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const g = canvas.getContext('2d');
+        g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, w, h).data;
+        let minX = w, maxX = -1, minY = h, maxY = -1;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          if (d[(y * w + x) * 4 + 3] <= 24) continue;
+          if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+        if (maxX < 0) return;
+        box = { left: minX / w, right: (w - 1 - maxX) / w, top: minY / h, bottom: (h - 1 - maxY) / h };
+        sizeKey = '';
+        applySize();
+        api.bodyBox?.(box);
+      } catch (_) { /* 量不出来就按整张图算，和以前一样 */ }
+    };
+    img.src = url;
+  }
+
   // ---------- 主进程消息 ----------
   api.onState(next => {
     const roleChanged = next.role !== state.role;
@@ -422,7 +461,9 @@
       document.body.classList.toggle('dock-right', state.dock === 'right');
       document.body.classList.toggle('dock-left', state.dock === 'left');
     }
+    applySize();
     if (roleChanged) {
+      measureBody(asset('idle'));
       preloadRole();
       const first = !pose;
       if (first) applyPose(state.pose, true);
@@ -443,6 +484,6 @@
   });
   api.onPanel(p => { showPanel(p && p.items); wake(); });
 
-  window.__hubPetDebug = () => ({ pose, layers: visual ? [visual.key] : [], opacities: visual ? [1] : [], domLayers: layersEl.children.length, frame: visual ? visual.shown : -1, swapping: !!pendingSwap, fps: raf ? 'raf' : timer ? 'timer' : 'stopped', bubble: bubbleId, dots: lastDots, transform: bodyEl.style.transform });
+  window.__hubPetDebug = () => ({ box, size: getComputedStyle(document.documentElement).getPropertyValue('--body').trim(), pose, layers: visual ? [visual.key] : [], opacities: visual ? [1] : [], domLayers: layersEl.children.length, frame: visual ? visual.shown : -1, swapping: !!pendingSwap, fps: raf ? 'raf' : timer ? 'timer' : 'stopped', bubble: bubbleId, dots: lastDots, transform: bodyEl.style.transform });
   api.ready();
 })();

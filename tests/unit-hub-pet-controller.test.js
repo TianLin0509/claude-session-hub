@@ -47,7 +47,7 @@ class FakeIpc extends EventEmitter {
 const display = { workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 const screen = { getPrimaryDisplay: () => display, getDisplayNearestPoint: () => display, getCursorScreenPoint: () => ({ x: 900, y: 900 }) };
 
-function setup({ company = true, settings = null, now = () => new Date(2026, 9, 16, 10, 0).getTime() } = {}) {
+function setup({ company = true, settings = null, now = () => new Date(2026, 9, 16, 10, 0).getTime(), screen: scr = screen } = {}) {
   FakeWindow.all = [];
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-pet-'));
   if (settings) fs.writeFileSync(path.join(dataDir, 'hub-pet.json'), JSON.stringify(settings));
@@ -57,7 +57,7 @@ function setup({ company = true, settings = null, now = () => new Date(2026, 9, 
   const sent = [];
   const bus = new NoticeBus({ now });
   const ctl = createHubPetController({
-    BrowserWindow: FakeWindow, screen, ipcMain, powerMonitor: { getSystemIdleTime: () => 0 }, app: { getAppMetrics: () => [] },
+    BrowserWindow: FakeWindow, screen: scr, ipcMain, powerMonitor: { getSystemIdleTime: () => 0 }, app: { getAppMetrics: () => [] },
     htmlPath: 'pet.html', preloadPath: 'pet-preload.js', assetsDir: path.join(ROOT, 'renderer', 'assets', 'hub-pet'), dataDir,
     company, getMainWindow: () => mainWindow, focusPrimaryWindow: () => sent.push(['focus']), sendToRenderer: (ch, p) => sent.push([ch, p]),
     noticeBus: bus, debug: true, watchFullscreen: false, logger: { warn() {} }, now,
@@ -221,4 +221,74 @@ test('接线：main.js 创建并在退出时释放；配置页挂载；渲染端
     for (const p of info.poses) assert.ok(fs.existsSync(path.join(ROOT, 'renderer', 'assets', 'hub-pet', role, p + '.webp')), role + '/' + p);
     for (const s of info.sequences) assert.ok(fs.existsSync(path.join(ROOT, 'renderer', 'assets', 'hub-pet', role, 'seq-' + s + '.webp')), role + '/seq-' + s);
   }
+});
+
+// 2026-10-18 田哥在公司 2.1.10 上反馈：双屏拖不到另一块屏；离屏幕边还有一段距离就像撞到空气墙；想要大小滑动条。
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function dragTo(ipcMain, petEvent, debug, mainWc, from, to) {
+  await debug({ sender: mainWc }, { op: 'cursor', pos: from });
+  ipcMain.emit('hub-pet:press', petEvent(), { target: 'pet' });
+  for (let i = 1; i <= 6; i++) { await debug({ sender: mainWc }, { op: 'cursor', pos: { x: from.x + (to.x - from.x) * i / 6, y: from.y + (to.y - from.y) * i / 6 } }); await wait(40); }
+  await wait(250); // 停一会儿再松手：不带速度，不滑行
+  ipcMain.emit('hub-pet:release', petEvent());
+  await wait(500);
+}
+
+test('双屏：能从主屏拖到右边那块屏，停在第二块屏上', async () => {
+  const left = { workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  const right = { workArea: { x: 1920, y: 0, width: 2560, height: 1400 } };
+  const twoScreens = { getPrimaryDisplay: () => left, getDisplayNearestPoint: p => (p.x >= 1920 ? right : left), getCursorScreenPoint: () => ({ x: 0, y: 0 }) };
+  const { ctl, ipcMain, petEvent, mainWc } = setup({ screen: twoScreens, settings: { enabled: true, position: { x: 1500, y: 700 } } });
+  ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  const debug = ipcMain.handlers.get('hub-pet:debug');
+  const b = w.getBounds(), grab = { x: b.x + 140, y: b.y + b.height - 60 };
+  await dragTo(ipcMain, petEvent, debug, mainWc, grab, { x: 2800, y: 900 });
+  const after = w.getBounds();
+  assert.ok(after.x > 1920, '宠物到了第二块屏：x=' + after.x);
+  assert.equal(after.x, 2800 - 140, '跟着鼠标走，没被主屏右边挡住');
+  assert.ok(after.y + after.height - 6 <= 1400, '在第二块屏里面');
+});
+
+test('贴边按看得见的身体算：量出图里的透明边后，身体正好贴到屏幕边，不再隔一段距离', async () => {
+  const { ctl, ipcMain, petEvent, mainWc } = setup({ settings: { enabled: true, position: { x: 800, y: 700 } } });
+  ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  const debug = ipcMain.handlers.get('hub-pet:debug');
+  let st = await debug({ sender: mainWc }, { op: 'state' });
+  assert.deepEqual([st.inset.left, st.inset.right], [65, 65], '没量出来前和以前一样');
+  // 小猫的实测透明边：左 15%、右 20%、脚下 14%（renderer 量出 idle.webp：320 宽里 minX 49、maxX 254、maxY 275）
+  ipcMain.emit('hub-pet:body-box', petEvent(), { left: 49 / 320, right: 65 / 320, top: 0.1, bottom: 44 / 320 });
+  st = await debug({ sender: mainWc }, { op: 'state' });
+  assert.deepEqual([st.inset.left, st.inset.right], [65 + 23, 65 + 30]);
+  const b = w.getBounds();
+  await dragTo(ipcMain, petEvent, debug, mainWc, { x: b.x + 140, y: b.y + 300 }, { x: 4000, y: b.y + 300 });
+  const after = w.getBounds();
+  assert.equal(after.x + WIN_W - (65 + 30), 1920, '看得见的身体右边正好在屏幕右边');
+  assert.equal((await debug({ sender: mainWc }, { op: 'state' })).dock, 'right');
+  ipcMain.emit('hub-pet:body-box', petEvent(), { left: 3, right: -1, top: 0, bottom: 0 });
+  st = await debug({ sender: mainWc }, { op: 'state' });
+  assert.deepEqual([st.bodyBox.left, st.bodyBox.right], [0.45, 0], '奇怪的数被限住');
+});
+
+test('大小：0.6–1.6 倍连续调；放大时脚的位置不动、窗口往上长；贴着右边的继续贴着', async () => {
+  const { ctl, ipcMain, mainWc, dataDir } = setup({ settings: { enabled: true, position: { x: 1920 - WIN_W + 65, y: 600 } } });
+  ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  const set = ipcMain.handlers.get('hub-pet:set-settings');
+  const before = w.getBounds();
+  assert.equal(before.height, WIN_H);
+  await set({ sender: mainWc }, { scale: 1.6 });
+  const big = w.getBounds();
+  assert.equal(big.height, 190 + 240, '身体 240、上面照样留 190 给气泡');
+  assert.equal(big.y + big.height, before.y + before.height, '脚的位置不动');
+  assert.equal(big.x + WIN_W - (WIN_W - 240) / 2, 1920, '原来贴右边，放大后身体右边还在屏幕边');
+  assert.equal(w.webContents.last('hub-pet:state').scale, 1.6, '告诉渲染端');
+  await set({ sender: mainWc }, { scale: 0.83 });
+  assert.equal(w.getBounds().height, WIN_H, '缩小时窗口不比原来矮（气泡要有地方）');
+  assert.equal((await set({ sender: mainWc }, { scale: 5 })).settings.scale, 1.6, '超出范围按上限');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'hub-pet.json'), 'utf8')).scale, 1.6, '记住大小');
 });
