@@ -32,6 +32,8 @@ const Q = require('../codeagent-quota');
 const { QuotaWatch } = require('./quota-watch');
 // 一轮因额度中断后最多换号重做几次（只重做一次，不循环）。
 const MAX_REHOME = 1;
+// 撞额度后旧会话还在忙（多半在自己重试）时，最多等多久再换号（审核 2026-10-18）。
+const REHOME_GRACE_MS = 60000;
 // 换号重做时带给新会话的上下文：上一会话的进展、此前各轮回答，各自的上限。
 const REHOME_PROGRESS_CHARS = 1500;
 const REHOME_CONTEXT_CHARS = 12000;
@@ -858,6 +860,26 @@ class CompanyBridge {
       catch (error) { result = { ok: false, message: error.message }; }
       this.careLog(`${result?.ok ? 'suspend' : 'skip'} ${p.threadId} session=${String(p.sessionId).slice(0, 8)} ${p.reason}${result?.ok ? '' : '；跳过：' + (result?.message || result?.error || '未知')}`);
     }
+    this.suspendRehomed(all, bySession);
+  }
+  // 因额度换号后留下的旧会话（prevSessions）：不再有问题指向它，停下来（不在干活）就让它休眠，不占内存（审核 2026-10-18）。
+  // 仍是某个问题的当前会话、或在忙的不动；人在里面打过字的（sessionInputAt 晚于换号时间）不动。
+  suspendRehomed(all, current) {
+    const seen = new Set();
+    for (const t of all) {
+      for (const p of t.prevSessions || []) {
+        const id = p && p.sessionId;
+        if (!id || seen.has(id) || current.has(id)) continue;
+        seen.add(id);
+        const s = this.deps.getSession(id);
+        if (!s || s.status === 'dormant' || s.status === 'closed' || this.sessionBusy(id)) continue;
+        if ((Number(this.deps.sessionInputAt?.(id)) || 0) > (p.at || 0) + 5000) continue;
+        let result;
+        try { result = this.deps.suspendSession(id, { reason: 'company-bridge-rehomed', minIdleMs: 60000, excludePinned: true, excludeFocused: true, excludeMeeting: true }); }
+        catch (error) { result = { ok: false, message: error.message }; }
+        this.careLog(`${result?.ok ? 'suspend' : 'skip'} ${t.id} session=${String(id).slice(0, 8)} 换号后的旧会话${result?.ok ? '' : '；跳过：' + (result?.message || result?.error || '未知')}`);
+      }
+    }
   }
   careLog(line) { this.appendLog('company-session-care.log', line); }
   appendLog(name, line) {
@@ -991,13 +1013,24 @@ class CompanyBridge {
     if (r.resumePending) return;
     // 额度感知（2026-10-18）：这一轮发出后，会话所在的号撞到额度 / 限流报错 → 不判失败，换号新开会话重做一次；
     // 重做的那次又撞到就不再换（不循环），如实报回。会话还在自己重试也不等它（旧会话不动，保温规则照常收）。
+    // 换号前先确认旧会话停下了（审核 2026-10-18）：还在忙（CodeAgent 可能在自己重试）就等 REHOME_GRACE_MS；
+    // 等的过程中它自己重试成功、写出了回答，就不换号，照常收这份回答（避免两个号同时答同一题）。
     const hit = this.settings().quotaGuard !== false ? this.quota.hitFor(t.sessionId, activeSince(r)) : null;
-    if (hit) {
-      if ((Number(r.rehomed) || 0) >= MAX_REHOME) {
-        return this.failRound(t, r, this.scrubText(`换号重做后，在${this.aliasOf(hit.key)}上又撞到${Q.KINDS[hit.kind] || '额度上限'}（${hit.text}）；这一轮不再换号。号恢复后可在「AI特战队专用功能」里点重试，或追问重问`));
+    if (hit && !(r.quotaHitIgnored && r.quotaHitIgnored >= hit.at)) {
+      const after = this.lastFinal(t.sessionId);
+      const recovered = after && after.id !== r.baseline && (!after.timestamp || after.timestamp > hit.at) && String(after.text || '').trim() && !/^\s*API\s*Error/i.test(String(after.text || ''));
+      if (recovered) {
+        t = this.patchRound(t, r.round, { quotaHitIgnored: hit.at });
+        this.bridgeLog(`rehome-skip ${t.id}#${r.round} 撞额度后原会话自己答出来了，不换号`);
+      } else {
+        if (this.sessionBusy(t.sessionId) && this.now() - hit.at < REHOME_GRACE_MS) return;
+        if ((Number(r.rehomed) || 0) >= MAX_REHOME) {
+          const alias = this.aliasOf(hit.key);
+          return this.failRound(t, r, this.scrubText(`这一轮已经因额度换过一次号，换到${alias}重做后，${alias}也撞到了${Q.KINDS[hit.kind] || '额度上限'}（${hit.text}）；按规则只换号重做一次，这一轮不再换号。等号恢复后可在「AI特战队专用功能」里点重试，或追问重问`));
+        }
+        this.rehome(t, r, { why: Q.KINDS[hit.kind] || '额度上限', fromKey: hit.key, hit });
+        return;
       }
-      this.rehome(t, r, { why: Q.KINDS[hit.kind] || '额度上限', fromKey: hit.key, hit });
-      return;
     }
     if (this.sessionBusy(t.sessionId)) return;
     const since = activeSince(r);

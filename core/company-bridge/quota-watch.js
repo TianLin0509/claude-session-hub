@@ -3,11 +3,13 @@
 // 识别「额度用完 / 限流 / 余额不足」类报错，把对应的号标「避让中」（core/codeagent-quota.js）；顺带读 Stats 面板的 Credit。
 //
 // 来源（田哥 2026-10-18：卡片视图读的是原生记录，报错就在原生记录里）：
-//   1. 原生记录（为主）：只看 API 错误消息——结构化标记（isApiErrorMessage、带 error 字段、模型是 <synthetic> 的回答）
-//      或正文以「API Error」开头的回答/系统消息。用户消息（问题里可能引用报错原文）和普通回答正文不看。
-//   2. 终端屏幕（补充）：同 diag.js 读法（会话缓冲 → @xterm/headless 渲染），只看去掉框线、圆点后以「API Error」开头的行；
-//      同一行一直留在屏幕上只算一次，滚走后再出现才再算。Credit 读数也从这里来（codeagent-screen-stats.js）。
-// 底线：只读缓冲和记录文件，绝不往会话发按键或命令；识别到的报错原文脱敏后留最近 50 条，供直查 errors 段取回核对规则。
+//   1. 原生记录——唯一能触发避让的来源：只看 API 错误消息（结构化标记 isApiErrorMessage、带 error 字段、模型是 <synthetic> 的回答，
+//      或正文以「API Error」开头的回答 / 系统消息）。用户消息（问题里可能引用报错原文）和普通回答正文不看。
+//   2. 终端屏幕——只留样本、读 Credit，不触发避让（审核 2026-10-18：屏幕上用户回显的「> API Error…」、回答里的「- API Error…」列表行
+//      都长得像报错，田哥把报错贴给 CodeAgent 问原因就会误停一个号）。只认以 ⎿ 开头或没有前缀的行；每个会话第一次读屏只记基线；
+//      同一行一直留在屏幕上只算一次，滚走后再出现才再算。
+// 样本（直查 errors 段）：命中规则的都留；没命中的「疑似」只收通道会话里以「API Error」开头的，个人会话里的编译错误一类不收。
+// 底线：只读缓冲和记录文件，绝不往会话发按键或命令；样本脱敏后留最近 50 条。
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const Q = require('../codeagent-quota');
@@ -17,8 +19,11 @@ const MAX_SESSIONS = 16;
 const FIRST_TAIL_BYTES = 128 * 1024;
 const READ_MAX_BYTES = 2 * 1024 * 1024;
 const KEEP_ERRORS = 50;
-const API_ERROR_HEAD = /^\s*(?:[│┃|⎿●•*>·-]\s*)*API\s*Error/i;
-const ERROR_HEAD = /^\s*(?:[│┃|⎿●•*>·-]\s*)*(?:API\s*Error|Error\b|错误|请求失败)/i;
+const HIT_KEEP_MS = 3600000;
+// 原生记录里的正文：以 API Error 开头
+const TEXT_HEAD = /^\s*API\s*Error/i;
+// 屏幕行：去掉 ⎿（CodeAgent 输出块的引线）或不带前缀后以 API Error 开头；行首的 >、-、*、●、│ 这类回显 / 列表前缀一律不认
+const SCREEN_HEAD = /^\s*(?:⎿\s*)?API\s*Error/i;
 const hash = s => crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 16);
 
 // 一条原生记录（Claude 格式 jsonl 的一行）是不是 API 错误消息；是就返回 { text, structured, at }。
@@ -27,19 +32,29 @@ function apiErrorEntry(o) {
   const c = o.message && o.message.content;
   const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter(b => b && b.type === 'text').map(b => String(b.text || '')).join('\n')
     : typeof o.content === 'string' ? o.content : typeof o.error === 'string' && !o.message ? o.error : '';
-  const structured = o.isApiErrorMessage === true || (o.type === 'assistant' && !!o.error) || (o.message && o.message.model === '<synthetic>' && API_ERROR_HEAD.test(text))
+  const structured = o.isApiErrorMessage === true || (o.type === 'assistant' && !!o.error) || (o.message && o.message.model === '<synthetic>' && TEXT_HEAD.test(text))
     || (o.type === 'system' && /error/i.test(String(o.level || o.subtype || '')));
-  if (!structured && !((o.type === 'assistant' || o.type === 'system') && API_ERROR_HEAD.test(text))) return null;
+  if (!structured && !((o.type === 'assistant' || o.type === 'system') && TEXT_HEAD.test(text))) return null;
   if (!String(text).trim()) return null;
   return { text: String(text), structured, at: Date.parse(o.timestamp) || 0, uuid: o.uuid || null };
+}
+
+// 从字节缓冲里取完整的行：fromBoundary=false 时先跳过第一个换行之前的半行（按字节找，不会把多字节字符切坏）。
+// 返回 { text, consumed（用掉的字节数，到最后一个换行为止） }。
+function completeLines(buf, fromBoundary) {
+  let start = 0;
+  if (!fromBoundary) { const nl = buf.indexOf(0x0a); if (nl < 0) return { text: '', consumed: 0 }; start = nl + 1; }
+  const last = buf.lastIndexOf(0x0a);
+  if (last < start) return { text: '', consumed: start };
+  return { text: buf.subarray(start, last).toString('utf8'), consumed: last + 1 };
 }
 
 class QuotaWatch {
   constructor(bridge) {
     this.bridge = bridge;
     this.lastScanAt = 0;
-    this.offsets = new Map();   // 会话 → 原生记录已读到的位置
-    this.visible = new Map();   // 会话 → 上一次屏幕上命中的行（同一行留在屏幕上只算一次）
+    this.offsets = new Map();   // 会话 → 原生记录已读到的字节位置
+    this.visible = new Map();   // 会话 → 上一次屏幕上的报错行（同一行留在屏幕上只算一次；第一次读屏只记基线）
     this.screenSig = new Map(); // 会话 → 上一次缓冲的指纹（没变就不重新渲染）
     this.hits = new Map();      // 会话 → 最近一次识别到的额度报错 { at, key, ruleId, kind, text, resetAt }
   }
@@ -63,6 +78,7 @@ class QuotaWatch {
     try {
       const { rules } = Q.loadRules(this.dataDir);
       const ids = (() => { try { return this.deps.listSessionIds?.() || []; } catch { return []; } })();
+      this.forget(ids);
       const live = ids.map(id => ({ id, s: this.deps.getSession?.(id) }))
         .filter(x => x.s && /^codeagent/.test(String(x.s.kind || '')) && x.s.status !== 'dormant' && x.s.status !== 'closed')
         .map(x => ({ ...x, at: Math.max(Number(x.s.lastMessageTime) || 0, Number(x.s.lastCompletedAt) || 0, Number(this.deps.sessionInputAt?.(x.id)) || 0) }))
@@ -71,12 +87,17 @@ class QuotaWatch {
       for (const x of live) {
         const key = this.sessionKey(x.s);
         try { this.scanTranscript(x.id, x.s, key, rules, cfg, marked); } catch (error) { this.bridge.bridgeLog?.(`quota transcript ${String(x.id).slice(0, 8)} 读不了：${error.message}`); }
-        try { await this.scanScreen(x.id, x.s, key, rules, cfg, marked, cleared, creditSeen); } catch { /* 这个会话的屏幕读不了，看下一个 */ }
+        try { await this.scanScreen(x, key, rules, cfg, marked, cleared, creditSeen); } catch { /* 这个会话的屏幕读不了，看下一个 */ }
       }
-      // 所有会话都关了时，到点的自动避让由 activeAvoid 按时间过期，不用这里处理。
     } finally { this.scanning = false; }
     if (marked.length || cleared.length) this.bridge.avoidChanged?.({ marked, cleared });
     return { marked, cleared };
+  }
+  // 已关闭的会话（不在 Hub 的会话表里了）：清掉读到哪、屏幕基线、指纹；撞额度记录过一小时再清。
+  forget(ids) {
+    const alive = new Set(ids);
+    for (const map of [this.offsets, this.visible, this.screenSig]) for (const id of [...map.keys()]) if (!alive.has(id)) map.delete(id);
+    for (const [id, h] of [...this.hits]) if (!alive.has(id) && this.now() - h.at > HIT_KEEP_MS) this.hits.delete(id);
   }
 
   scanTranscript(id, s, key, rules, cfg, marked) {
@@ -84,33 +105,37 @@ class QuotaWatch {
     if (!file) return;
     let size;
     try { size = (this.deps.statSize || (f => fs.statSync(f).size))(file); } catch { return; }
-    let from = this.offsets.has(id) ? this.offsets.get(id) : Math.max(0, size - FIRST_TAIL_BYTES);
+    const known = this.offsets.has(id);
+    let from = known ? this.offsets.get(id) : Math.max(0, size - FIRST_TAIL_BYTES);
     if (size < from) from = 0; // 记录被重写
     if (size === from) return;
-    const len = Math.min(size - from, READ_MAX_BYTES);
-    const start = size - len > from ? size - len : from;
-    const text = (this.deps.readRange || ((f, pos, n) => { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(n); fs.readSync(fd, b, 0, n, pos); return b.toString('utf8'); } finally { fs.closeSync(fd); } }))(file, start, size - start);
-    // 只处理完整的行：最后一行没写完的留到下次
-    const lastNl = text.lastIndexOf('\n');
-    if (lastNl < 0) return;
-    const atBoundary = start === 0 || (this.offsets.has(id) && start === from); // 接着上次读到的行尾，或从文件头读
-    this.offsets.set(id, start + Buffer.byteLength(text.slice(0, lastNl + 1), 'utf8'));
-    const lines = text.slice(0, lastNl).split('\n');
-    if (!atBoundary) lines.shift(); // 从中间截的第一行不完整
-    for (const line of lines) {
+    const start = size - from > READ_MAX_BYTES ? size - READ_MAX_BYTES : from;
+    const buf = (this.deps.readRange || ((f, pos, n) => { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(n); const got = fs.readSync(fd, b, 0, n, pos); return b.subarray(0, got); } finally { fs.closeSync(fd); } }))(file, start, size - start);
+    // 接着上次读到的行尾，或从文件头读：第一行是完整的；否则（第一次只读尾部、或积压太多跳过了一段）先跳过半行
+    const { text, consumed } = completeLines(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf), 'utf8'), start === 0 || (known && start === from));
+    if (!consumed) return;
+    for (const line of text ? text.split('\n') : []) {
       if (!line.includes('rror')) continue; // 快速跳过：API Error / isApiErrorMessage / error 都含它
       let o = null; try { o = JSON.parse(line); } catch { continue; }
       const e = apiErrorEntry(o);
       if (!e) continue;
       const at = e.at || this.now();
       const hit = Q.matchText(e.text, rules, 'transcript', this.now());
-      this.record({ id, s, key, source: 'transcript', structured: e.structured, text: hit ? hit.text : firstLines(e.text), hit, at, dedupe: e.uuid || hash(line) });
-      // 太久以前的报错（超过一个重试周期）只留作样本，不再避让
-      if (hit && this.now() - at < cfg.retryMs) this.applyHit({ id, key, hit, at, cfg, marked });
+      // 样本：命中规则的都留；没命中的只留通道会话里以 API Error 开头的
+      if (hit || (s.purpose === 'company-bridge' && TEXT_HEAD.test(e.text))) {
+        this.record({ id, s, key, source: 'transcript', structured: e.structured, text: hit ? hit.text : firstLines(e.text), hit, at, dedupe: e.uuid || hash(line) });
+      }
+      // 太久以前的报错（超过一个重试周期）只留作样本，不再避让。写避让状态失败就不前进读取位置，下一轮再读一次（不丢这次命中）。
+      if (hit && this.now() - at < cfg.retryMs) {
+        try { this.applyHit({ id, key, hit, at, cfg, marked }); }
+        catch (error) { this.bridge.bridgeLog?.(`quota hit ${String(id).slice(0, 8)} 记不下避让状态：${error.message}，下一轮重读`); return; }
+      }
     }
+    this.offsets.set(id, start + consumed);
   }
 
-  async scanScreen(id, s, key, rules, cfg, marked, cleared, creditSeen) {
+  async scanScreen(x, key, rules, cfg, marked, cleared, creditSeen) {
+    const { id, s } = x;
     if (!this.deps.readTerminalScreen) return;
     const raw = await this.deps.readTerminalScreen(id);
     if (!raw || !raw.text) return;
@@ -119,29 +144,30 @@ class QuotaWatch {
     this.screenSig.set(id, sig);
     if (unchanged && creditSeen.has(key)) return;
     const rows = await (this.deps.renderRows || require('../hub-phone/session-chat').renderRows)(raw);
-    // Credit：每个号取最近活动的那个会话的读数
+    // Credit：同一个号有多个会话时，取最近活动的那个会话的读数（codeagent-quota.js recordCredit 按活动时间再核一遍）
     if (!creditSeen.has(key)) {
       const reading = require('../codeagent-screen-stats').parseCodeAgentCredit(rows);
       if (reading) {
         creditSeen.add(key);
-        const r = Q.recordCredit(this.dataDir, key, reading, { floor: cfg.floor, retryMs: cfg.retryMs, session: id }, this.now());
+        const r = Q.recordCredit(this.dataDir, key, reading, { floor: cfg.floor, retryMs: cfg.retryMs, session: id, observedAt: x.at || this.now() }, this.now());
         if (r.marked) { marked.push(key); this.bridge.bridgeLog?.(`quota credit ${key === 'personal' ? 'personal' : 'pool'} session=${String(id).slice(0, 8)} 剩 ${reading.remaining}，标避让`); }
-        if (r.cleared) { cleared.push(key); this.bridge.bridgeLog?.(`quota credit ${key === 'personal' ? 'personal' : 'pool'} 剩 ${reading.remaining}，解除避让`); }
+        if (r.cleared) { cleared.push(key); this.bridge.bridgeLog?.(`quota credit ${key === 'personal' ? 'personal' : 'pool'} 剩 ${reading.remaining}，比标记时回升，解除避让`); }
       }
     }
     if (unchanged) return;
+    const baseline = !this.visible.has(id);
     const prev = this.visible.get(id) || new Set();
     const now = new Set();
     for (const row of rows) {
-      if (!ERROR_HEAD.test(row)) continue;
-      const line = row.replace(/^\s*(?:[│┃|⎿●•*>·-]\s*)*/, '').replace(/\s*[│┃|]\s*$/, '').trim();
+      if (!SCREEN_HEAD.test(row)) continue;
+      const line = row.replace(/^\s*(?:⎿\s*)?/, '').replace(/\s*[│┃|]\s*$/, '').trim();
       const k = hash(line);
       now.add(k);
-      if (prev.has(k)) continue;
-      const hit = API_ERROR_HEAD.test(row) ? Q.matchText(line, rules, 'screen', this.now()) : null;
-      if (!hit && !Q.isSuspect(line) && !API_ERROR_HEAD.test(row)) continue;
+      if (baseline || prev.has(k)) continue; // 第一次读屏只记基线；一直留在屏幕上的只算一次
+      const hit = Q.matchText(line, rules, 'screen', this.now());
+      // 屏幕只留样本、不避让：命中规则的都留；没命中的只留通道会话的
+      if (!hit && s.purpose !== 'company-bridge') continue;
       this.record({ id, s, key, source: 'screen', structured: false, text: hit ? hit.text : line, hit, at: this.now(), dedupe: 'screen:' + id + ':' + k + ':' + this.now() });
-      if (hit) this.applyHit({ id, key, hit, at: this.now(), cfg, marked });
     }
     this.visible.set(id, now);
   }
@@ -158,7 +184,7 @@ class QuotaWatch {
     }
   }
 
-  // 识别到的报错（命中规则的、疑似的）留最近 50 条：直查 errors 段据此把原文带回去核对规则。
+  // 识别到的报错样本留最近 50 条：直查 errors 段据此把原文带回去核对规则。
   record({ id, s, key, source, structured, text, hit, at, dedupe }) {
     const store = this.bridge.store;
     const list = store.get('quotaErrors') || [];
@@ -176,4 +202,4 @@ class QuotaWatch {
 }
 function firstLines(text) { return String(text || '').split('\n').filter(l => l.trim()).slice(0, 3).join(' / '); }
 
-module.exports = { QuotaWatch, apiErrorEntry, SCAN_MS, KEEP_ERRORS };
+module.exports = { QuotaWatch, apiErrorEntry, completeLines, SCAN_MS, KEEP_ERRORS, SCREEN_HEAD };

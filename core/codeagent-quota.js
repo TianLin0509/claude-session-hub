@@ -6,7 +6,7 @@
 //   1. 识别规则：内置一组（必须来自真实样本，带原文 sample）+ 数据文件 <Hub 数据目录>/codeagent-pool/quota-rules.json（公司可自己加、可停用内置的）；
 //   2. 避让状态：<Hub 数据目录>/codeagent-pool/quota-avoid.json，键是 personal / 号池编号，记原因、首次时间、预计恢复时间、来源；
 //   3. 额度读数：各号最近一次在 Stats 面板读到的 Credit（同一个文件），用于「Credit ≤ 阈值也避让」和「Credit 恢复为正提前解除」；
-//   4. 代称：个人 / 号 1 / 号 2（号池登记顺序，与直查 diag.js poolAliases 一致），家里只见代称。
+//   4. 代称：个人 / 号 1 / 号 2（每个号固定一个序号、落盘、删号不复用，与直查 diag.js poolAliases 一致），家里只见代称。
 // 新增输出匹配须真实样本（项目规则）：内置规则每条都写明样本出处；没有样本的格式不写进内置表。
 const fs = require('fs');
 const path = require('path');
@@ -41,6 +41,11 @@ function poolRoot(dataDir) { return path.join(dataDir, 'codeagent-pool'); }
 function rulesFile(dataDir) { return path.join(poolRoot(dataDir), RULES_FILE); }
 function stateFile(dataDir) { return path.join(poolRoot(dataDir), STATE_FILE); }
 
+// 自定义规则的防护（审核 2026-10-18）：匹配前把文字截到 2000 字；拒绝嵌套量词（(a+)+、(\w*)* 这类会回溯爆炸的写法）；
+// reset 正则限长；读出的恢复时间最多 24 小时后。
+const MATCH_INPUT_CHARS = 2000;
+const MAX_RESET_MS = 24 * 3600000;
+const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[+*}]\)\s*(?:[+*]|\{\d)/;
 // 把一条规则编成可用的形式；不合格的返回 { error }。
 function compileRule(raw, origin = 'file') {
   if (!raw || typeof raw !== 'object') return { error: '不是对象' };
@@ -51,6 +56,8 @@ function compileRule(raw, origin = 'file') {
   if (!where.length) return { error: `${id}：where 只能是 transcript / screen` };
   const pattern = String(raw.pattern || '');
   if (!pattern || pattern.length > 600) return { error: `${id}：pattern 为空或太长` };
+  if (origin !== 'builtin' && NESTED_QUANTIFIER.test(pattern)) return { error: `${id}：pattern 里有嵌套量词（如 (a+)+），可能卡死匹配，没用` };
+  if (raw.reset && raw.reset.pattern && (String(raw.reset.pattern).length > 300 || NESTED_QUANTIFIER.test(String(raw.reset.pattern)))) return { error: `${id}：reset 正则太长或有嵌套量词，没用` };
   let re;
   try { re = new RegExp(pattern, String(raw.flags || 'i').replace(/[^imsu]/g, '')); } catch (error) { return { error: `${id}：正则写错了（${error.message}）` }; }
   let reset = null;
@@ -88,7 +95,7 @@ function loadRules(dataDir, { fsModule = fs } = {}) {
 
 // 对一段文字套规则；返回第一条命中 { rule, text（命中的那一段，≤300 字）, resetAt } 或 null。
 function matchText(text, rules, where, now = Date.now()) {
-  const s = String(text || '');
+  const s = String(text || '').slice(0, MATCH_INPUT_CHARS);
   if (!s) return null;
   for (const rule of rules || []) {
     if (!rule.where.includes(where)) continue;
@@ -106,7 +113,11 @@ function isSuspect(text) { return SUSPECT.test(String(text || '')); }
 // 从报错里读重置时间（只按规则写明的方式读，不猜）：
 //   clock：HH:MM（本地时间，已过就算明天）；datetime：YYYY-MM-DD HH:MM；epoch：秒或毫秒；duration：N 秒/分/小时（中英文）。
 function parseReset(text, reset, now = Date.now()) {
-  const m = reset.re.exec(String(text || ''));
+  const at = parseResetRaw(text, reset, now);
+  return at && at > now ? Math.min(at, now + MAX_RESET_MS) : null;
+}
+function parseResetRaw(text, reset, now) {
+  const m = reset.re.exec(String(text || '').slice(0, MATCH_INPUT_CHARS));
   if (!m) return null;
   // 时长按整段匹配读（单位常在捕获组外，如「(\d+) 分钟后」）；其余类型优先读第一个捕获组
   const v = String(reset.type !== 'duration' && m[1] != null ? m[1] : m[0]).trim();
@@ -134,6 +145,9 @@ function redactSnippet(text, { scrub = s => s } = {}) {
   let s = String(text || '').replace(/\s+/g, ' ').trim();
   try { s = scrub(s); } catch { /* 号身份换不了时按样式规则换 */ }
   return s.replace(/https?:\/\/[^\s'"<>]+/gi, '<网址>')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<邮箱>')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '<IP>')
+    .replace(/\b(?:[A-Za-z0-9-]+\.)+(?:com|cn|net|org|io|tech|xyz|top|info|biz|cc|co|ai|app|dev|cloud|site|online|edu|gov|int|local|internal|corp|lan)(?::\d+)?\b(?:\/[^\s'"<>]*)?/gi, '<域名>')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 <已隐去>')
     .replace(/\b(?:sk|ghp|gho|ghs|github_pat|xox[abpr])[-_][A-Za-z0-9_-]{10,}/g, '<已隐去>')
     .replace(/[A-Za-z0-9_+-]{32,}={0,2}/g, m => (/[0-9]/.test(m) && /[A-Za-z]/.test(m) ? '<已隐去>' : m))
@@ -154,7 +168,9 @@ function writeState(dataDir, state, fsModule = fs) {
   fsModule.mkdirSync(root, { recursive: true });
   const file = stateFile(dataDir), tmp = `${file}.${process.pid}.tmp`;
   fsModule.writeFileSync(tmp, JSON.stringify({ schema: 1, accounts: state.accounts || {}, credit: state.credit || {} }, null, 1) + '\n', 'utf8');
-  fsModule.renameSync(tmp, file);
+  // Windows 上目标文件正被别处读（杀毒、另一个读者）时 rename 偶尔失败：重试一次，仍失败就抛给调用方（识别那边不前进读取位置，下一轮重来）
+  try { fsModule.renameSync(tmp, file); }
+  catch { fsModule.renameSync(tmp, file); }
 }
 const validKey = key => key === 'personal' || /^[a-z0-9]{2,16}$/.test(String(key || ''));
 function isActive(entry, now = Date.now()) { return !!entry && (entry.until == null ? entry.source === 'manual' : Number(entry.until) > now); }
@@ -204,14 +220,21 @@ function prune(state, now) { for (const [k, e] of Object.entries(state.accounts)
 
 // 记一次 Credit 读数，并按读数决定避让：
 //   读数 ≤ 阈值 → 标避让（source credit，默认 1 小时后再看）；
-//   读数 > 阈值、且和标记时的读数不同 → 解除 credit 来源的避让、以及额度类（quota / balance）报错的避让（限流和手动暂停不解除）。
+//   读数比标记时回升、且高于阈值（含从「≤ 阈值」回到「> 阈值」）→ 解除 credit 来源的避让、以及额度类（quota / balance）报错的避让；
+//   读数下降、没变，或标记时没有读数（creditAtMark 为空）都不解除；限流和手动暂停不因读数解除（审核 2026-10-18）。
+// observedAt：读数来自的会话最近活动时间。同一个号有多个会话时，比已记下的读数（另一个会话的）更旧就不用。
 // 返回 { marked, cleared, entry }。
-function recordCredit(dataDir, key, reading, { floor = 0, retryMs = DEFAULT_RETRY_MS, session = null } = {}, now = Date.now(), fsModule = fs) {
+function recordCredit(dataDir, key, reading, { floor = 0, retryMs = DEFAULT_RETRY_MS, session = null, observedAt = null } = {}, now = Date.now(), fsModule = fs) {
   if (!validKey(key) || !reading || !Number.isFinite(Number(reading.remaining))) return { marked: false, cleared: false };
   const state = readState(dataDir, fsModule);
   const prevReading = state.credit[key];
+  const sid = session ? String(session).slice(0, 8) : null;
+  const seenAt = Number(observedAt) || now;
+  if (prevReading && prevReading.session && sid && prevReading.session !== sid && Number(prevReading.observedAt) > seenAt) {
+    return { marked: false, cleared: false, entry: state.accounts[key] || null, stale: true };
+  }
   const remaining = Number(reading.remaining);
-  state.credit[key] = { remaining, pct: Number(reading.pct), bucket: reading.bucket || '', total: reading.total || null, at: now, ...(session ? { session: String(session).slice(0, 8) } : {}) };
+  state.credit[key] = { remaining, pct: Number(reading.pct), bucket: reading.bucket || '', total: reading.total || null, at: now, observedAt: seenAt, ...(sid ? { session: sid } : {}) };
   const entry = state.accounts[key];
   if (remaining <= Number(floor)) {
     writeState(dataDir, state, fsModule);
@@ -221,19 +244,41 @@ function recordCredit(dataDir, key, reading, { floor = 0, retryMs = DEFAULT_RETR
   }
   let cleared = false;
   if (entry && isActive(entry, now) && entry.source !== 'manual' && (entry.source === 'credit' || entry.kind !== 'rate-limit')) {
-    const moved = entry.creditAtMark == null ? !prevReading || Number(prevReading.remaining) !== remaining : Number(entry.creditAtMark) !== remaining;
-    if (moved) { delete state.accounts[key]; cleared = true; }
+    const rose = entry.creditAtMark != null && Number.isFinite(Number(entry.creditAtMark)) && remaining > Number(entry.creditAtMark);
+    if (rose) { delete state.accounts[key]; cleared = true; }
   }
   writeState(dataDir, state, fsModule);
   return { marked: false, cleared, entry: cleared ? null : entry || null };
 }
 
-// ---- 代称：个人 / 号 1 / 号 2（号池登记顺序，与 diag.js poolAliases 一致） ----
-function aliasMap(dataDir, extraKeys = []) {
+// ---- 代称：个人 / 号 1 / 号 2（审核 2026-10-18：固定序号） ----
+// 每个号第一次出现时按号池登记顺序分一个序号，落盘在 codeagent-pool/quota-aliases.json；移出号池的号序号不回收、不复用，
+// 「号 2」永远指同一个号（家里记下的代称、远程暂停的对象不会因为删号而错位）。直查 diag.js 用同一份。
+const ALIAS_FILE = 'quota-aliases.json';
+function aliasMap(dataDir, extraKeys = [], { fsModule = fs } = {}) {
   const map = new Map([['personal', '个人']]);
-  let n = 0;
-  try { for (const a of require('./codeagent-pool').readRegistry(dataDir).accounts) { n += 1; map.set(a.id, `号 ${n}`); } } catch { /* 没有号池 */ }
-  for (const k of extraKeys) if (k && !map.has(k)) { n += 1; map.set(k, `号 ${n}`); }
+  let ids = [];
+  try { ids = require('./codeagent-pool').readRegistry(dataDir).accounts.map(a => a.id); } catch { ids = []; }
+  for (const k of extraKeys) if (k && k !== 'personal' && !ids.includes(k)) ids.push(k);
+  if (!dataDir) { ids.forEach((id, i) => map.set(id, `号 ${i + 1}`)); return map; }
+  const file = path.join(poolRoot(dataDir), ALIAS_FILE);
+  let saved = { next: 1, map: {} };
+  try { const raw = JSON.parse(fsModule.readFileSync(file, 'utf8')); if (raw && raw.map && typeof raw.map === 'object') saved = { next: Math.max(1, Number(raw.next) || 1), map: raw.map }; } catch { /* 第一次 */ }
+  let changed = false;
+  for (const id of ids) {
+    if (!validKey(id)) continue;
+    if (!Number.isInteger(saved.map[id])) { saved.map[id] = saved.next; saved.next += 1; changed = true; }
+  }
+  if (changed) {
+    try {
+      fsModule.mkdirSync(poolRoot(dataDir), { recursive: true });
+      const tmp = `${file}.${process.pid}.tmp`;
+      fsModule.writeFileSync(tmp, JSON.stringify({ schema: 1, next: saved.next, map: saved.map }, null, 1) + '\n', 'utf8');
+      try { fsModule.renameSync(tmp, file); } catch { fsModule.renameSync(tmp, file); }
+    } catch { /* 写不下：这次照算出的序号用，下次再写 */ }
+  }
+  // 已移出号池的号也留着它的代称（旧会话、旧记录里还会提到它），只是不再出现在挑号里
+  for (const [id, n] of Object.entries(saved.map)) if (validKey(id) && Number.isInteger(n)) map.set(id, `号 ${n}`);
   return map;
 }
 // 家里写的代称 → 统一写法：「个人」「personal」→ 个人；「号1」「号 1」「1」「pool-1」→ 号 1。认不出返回空串。
@@ -264,5 +309,5 @@ module.exports = {
   BUILTIN_RULES, KINDS, SOURCES, DEFAULT_RETRY_MS, RULES_FILE, STATE_FILE,
   rulesFile, stateFile, compileRule, loadRules, matchText, isSuspect, parseReset, redactSnippet,
   readState, activeAvoid, creditReadings, markAvoid, clearAvoid, recordCredit, isActive,
-  aliasMap, normalizeAlias, keyForAlias, describeAvoid, clock,
+  aliasMap, normalizeAlias, keyForAlias, describeAvoid, clock, ALIAS_FILE, MATCH_INPUT_CHARS, MAX_RESET_MS,
 };

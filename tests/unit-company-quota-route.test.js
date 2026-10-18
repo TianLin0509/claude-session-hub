@@ -54,10 +54,14 @@ test('识别规则可配置：数据文件里加规则、停用内置规则；�
   fs.mkdirSync(path.join(dataDir, 'codeagent-pool'), { recursive: true });
   fs.writeFileSync(Q.rulesFile(dataDir), JSON.stringify({ disabled: ['codeagent-token-cap-v1'], rules: [
     { id: 'my-rate', kind: 'rate-limit', where: ['transcript'], pattern: 'API Error.*请求过于频繁', reset: { pattern: '(\\d+)\\s*分钟后', type: 'duration' } },
-    { id: 'bad', pattern: '(' }, { id: 'off', pattern: 'x', enabled: false }] }));
+    { id: 'bad', pattern: '(' }, { id: 'off', pattern: 'x', enabled: false }, { id: 'redos', pattern: 'API Error (a+)+$' },
+    { id: 'redos2', pattern: 'API Error', reset: { pattern: '(\\d*)*分钟', type: 'duration' } }] }));
   const loaded = Q.loadRules(dataDir);
   assert.deepEqual(loaded.rules.map(r => r.id), ['my-rate']);
   assert.match(loaded.errors.join(), /bad：正则写错了/);
+  assert.match(loaded.errors.join(), /redos：pattern 里有嵌套量词/);
+  assert.match(loaded.errors.join(), /redos2：reset 正则太长或有嵌套量词/);
+  assert.equal(Q.parseReset('API Error 请 999 小时后再试', { re: /(\d+)\s*小时后/, type: 'duration' }, 1000), 1000 + Q.MAX_RESET_MS, '恢复时间最多 24 小时后');
   assert.equal(Q.matchText(SAMPLE, loaded.rules, 'transcript'), null, '内置规则已停用');
   const now = 1_800_000_000_000;
   const hit = Q.matchText('API Error 请求过于频繁，请 5 分钟后再试', loaded.rules, 'transcript', now);
@@ -84,7 +88,16 @@ test('避让标记与过期：默认 1 小时；手动暂停不被自动标记�
   Q.markAvoid(dataDir, 'ds01', { source: 'error', kind: 'quota', reason: '额度上限', sample: SAMPLE }, now);
   assert.equal(Q.activeAvoid(dataDir, now).ds01.until, now + HOUR);
   assert.equal(Q.recordCredit(dataDir, 'ds01', { remaining: 1500, pct: 60 }, { floor: 0 }, now + MIN).cleared, false);
-  assert.equal(Q.recordCredit(dataDir, 'ds01', { remaining: 1800, pct: 70 }, { floor: 0 }, now + 2 * MIN).cleared, true);
+  assert.equal(Q.recordCredit(dataDir, 'ds01', { remaining: 1200, pct: 48 }, { floor: 0 }, now + MIN).cleared, false, '读数下降不解除');
+  assert.equal(Q.recordCredit(dataDir, 'ds01', { remaining: 1800, pct: 70 }, { floor: 0 }, now + 2 * MIN).cleared, true, '比标记时回升才解除');
+  // 标记时没有读数（creditAtMark 为空）：首次读到正数也不解除
+  Q.markAvoid(dataDir, 'nocredit', { source: 'error', kind: 'quota' }, now);
+  assert.equal(Q.recordCredit(dataDir, 'nocredit', { remaining: 2000, pct: 80 }, { floor: 0 }, now + MIN).cleared, false);
+  assert.ok(Q.activeAvoid(dataDir, now + MIN).nocredit);
+  // 同一个号多个会话：比已记下的（另一个会话、活动更晚的）读数更旧的不用
+  Q.recordCredit(dataDir, 'multi', { remaining: 0, pct: 0 }, { floor: 0, session: 'sessionA1', observedAt: now + 5000 }, now);
+  const stale = Q.recordCredit(dataDir, 'multi', { remaining: 3000, pct: 90 }, { floor: 0, session: 'sessionB1', observedAt: now + 1000 }, now + MIN);
+  assert.equal(stale.stale, true); assert.ok(Q.activeAvoid(dataDir, now + MIN).multi, '旧会话屏幕上的高读数不解除');
   // 限流：Credit 为正也不解除，到点过期
   Q.markAvoid(dataDir, 'personal', { source: 'error', kind: 'rate-limit', reason: '限流' }, now);
   Q.recordCredit(dataDir, 'personal', { remaining: 99, pct: 50 }, { floor: 0 }, now + MIN);
@@ -130,6 +143,7 @@ function setup(t) {
   r.company.deps.createSession = async (kind, opts) => {
     const x = await create(kind, opts);
     if (opts.codeagentPoolPick) x.codeagentPoolAccount = opts.codeagentPoolPick;
+    x.purpose = opts.purpose;
     x.transcriptPath = path.join(r.root, 'tx-' + opts.id + '.jsonl');
     return x;
   };
@@ -191,7 +205,7 @@ test('只换号重做一次：重做的那次又撞到额度就如实报失败�
   await step(r, 2000);
   assert.equal(r.created().length, 2, '没有第三个会话');
   const hr = r.home.thread(asked.thread).rounds[0];
-  assert.match(hr.error, /换号重做后，在个人上又撞到额度上限.*不再换号/);
+  assert.match(hr.error, /已经因额度换过一次号，换到个人重做后，个人也撞到了额度上限.*只换号重做一次，这一轮不再换号/);
 });
 
 test('所有号都在避让：新问题排队、回执写明预计恢复时间，不硬派；远程 resume-account 后照常派活', async t => {
@@ -291,25 +305,35 @@ test('隐私：模型表、回执、排队说明里只有代称，不含号池�
   for (const s of ['ds01', 'w00111111', 'w001****11', '同事张三']) assert.ok(!text.includes(s), '家里看不到 ' + s);
 });
 
-test('终端屏幕补充：API Error 行命中就避让（同一行留在屏幕上只算一次）；Credit 不高于阈值避让、读数恢复后解除', async t => {
+test('终端屏幕只留样本、不避让：第一次读屏只记基线；用户回显「> API Error…」、列表行「- API Error…」不算；Credit 不高于阈值避让、回升后解除', async t => {
   const r = setup(t); await pair(r);
   await r.home.ask('home-s', { question: '屏幕识别测试：随便回答一句' });
   await r.company.checkNow(); await r.company.checkNow();
   const sid = r.created()[0].id;
   let rows = ['● 正在读取', '  ⎿  API Error：token 消耗过快，已达到 4 亿上限', 'Credit 1,954.7 (78.2%)'];
-  r.company.deps.readTerminalScreen = async id => (id === sid ? { text: id + rows.join('\n'), cols: 120, rows: 30 } : null);
+  let n = 0;
+  r.company.deps.readTerminalScreen = async id => (id === sid ? { text: id + (n++) + rows.join('\n'), cols: 120, rows: 30 } : null);
   r.company.deps.renderRows = async () => rows;
   await step(r, 2000);
   const dataDir = path.join(r.root, 'company');
-  assert.equal(Q.activeAvoid(dataDir, r.clock.now).ds01.source, 'error');
-  assert.ok(r.created()[1], '这一轮换号重做');
+  assert.equal(r.company.quota.errors().length, 0, '第一次读屏只记基线');
+  // 田哥把报错贴给 CodeAgent 问原因：回显行、回答里的列表行都不算；新出现的 ⎿ 报错行只留样本
+  rows = ['> API Error token消耗过快，已达到4亿上限 这是什么意思？', '- API Error token消耗过快：额度用完', '* API Error 已达到 4 亿上限',
+    '  ⎿  API Error：token 消耗过快，已达到 4 亿上限', '⎿  API Error 已达到 4.0 亿上限', 'Credit 1,954.7 (78.2%)'];
+  await step(r, 21000);
   const errors = r.company.quota.errors();
-  assert.equal(errors.filter(e => e.source === 'screen' && e.ruleId).length, 1);
-  await step(r, 2000);
-  assert.equal(r.company.quota.errors().filter(e => e.source === 'screen').length, 1, '同一行留在屏幕上不重复记');
-  // Credit：个人账号的会话屏幕读到 0 → 避让；读数变正 → 解除
-  Q.clearAvoid(dataDir, 'ds01');
+  assert.deepEqual(errors.map(e => [e.source, e.ruleId, /已达到 4\.0 亿上限/.test(e.text)]), [['screen', 'codeagent-token-cap-v1', true]], JSON.stringify(errors));
+  assert.equal(Q.activeAvoid(dataDir, r.clock.now).ds01, undefined, '屏幕命中不避让');
+  assert.equal(r.created().length, 1, '不换号');
+  await step(r, 21000);
+  assert.equal(r.company.quota.errors().length, 1, '同一行留在屏幕上不重复记');
+  // Credit：个人账号的会话屏幕读到 0 → 避让；读数回升 → 解除
+  r.cs.answer(sid, '好的。'); await step(r);
+  r.box.active.ds01 = 1;
+  await r.home.ask('home-s', { question: '第二个问题：随便回答一句' });
+  await r.company.checkNow(); await r.company.checkNow();
   const psid = r.created()[1].id;
+  assert.equal(r.account(r.created()[1]), 'personal');
   r.company.deps.readTerminalScreen = async id => ({ text: id + (id === psid ? 'p' : 'd') + rows.join('|'), cols: 120, rows: 30 });
   r.company.deps.renderRows = async raw => (raw.text.startsWith(psid) ? ['Credit 0.0 (0%)'] : ['Credit 2,000.0 (80.0%)']);
   await step(r, 21000);
@@ -325,18 +349,86 @@ test('直查 errors 段：最近 N 条、号换成代称、令牌 / 路径 / 工
   await r.home.ask('home-s', { question: '直查 errors 段测试：随便回答一句' });
   await r.company.checkNow(); await r.company.checkNow();
   const sid = r.created()[0].id;
-  r.inject(sid, 'API Error: 401 token sk-abcdefghijklmnopqrstuvwxyz0123 无效 C:\\Users\\someone\\proj\\a.txt w00123456');
+  r.inject(sid, 'API Error: 401 token sk-abcdefghijklmnopqrstuvwxyz0123 无效 C:\\Users\\someone\\proj\\a.txt w00123456 zhang.san@corp-mail.cn 10.12.34.56:8080 api.intra-gw.example.com/v1');
   r.inject(sid);
+  // 人自己开的会话（不是通道会话）里的报错：没命中规则的不收（编译错误一类）
+  const own = path.join(r.root, 'tx-own.jsonl');
+  fs.writeFileSync(own, apiErrorLine('API Error: 500 编译失败 src/main.cpp:12', r.clock.now));
+  r.cs.map.set('own-1', { id: 'own-1', kind: 'codeagent', status: 'idle', transcriptPath: own });
   await step(r, 2000);
+  assert.ok(!r.company.quota.errors().some(e => /编译失败/.test(e.text)), '个人会话里没命中规则的报错不收');
   const D = require('../core/company-bridge/diag');
   const out = await D.collect({ bridge: r.company, sections: ['errors', 'pool'], errorsLimit: 1, sys: { ...D.defaultSys(), clock: () => r.clock.now } });
   assert.equal(out.errors.list.length, 1, '条数上限');
   const all = await D.collect({ bridge: r.company, sections: ['errors'], errorsLimit: 50, sys: { ...D.defaultSys(), clock: () => r.clock.now } });
   assert.equal(all.errors.list.length, 2);
   const text = JSON.stringify(all.errors);
-  assert.ok(!/sk-abcdefghij|someone|w00123456|ds01/.test(text), text);
-  assert.match(text, /<路径>/); assert.match(text, /<工号>/);
+  assert.ok(!/sk-abcdefghij|someone|w00123456|ds01|zhang\.san|corp-mail|10\.12\.34|intra-gw/.test(text), text);
+  assert.match(text, /<路径>/); assert.match(text, /<工号>/); assert.match(text, /<邮箱>/); assert.match(text, /<IP>/); assert.match(text, /<域名>/);
   assert.ok(all.errors.list.some(e => e.matched === 'codeagent-token-cap-v1' && e.structured && e.source === '原生记录'));
   assert.equal(D.parseErrorsLimit(500), 50); assert.equal(D.parseErrorsLimit(undefined), 20);
   assert.ok(D.SECTIONS.includes('errors'));
+});
+
+test('换号前确认旧会话停下：还在忙就等宽限期；等的时候它自己答出来就不换号；换号后旧会话停下来就被休眠', async t => {
+  const r = setup(t); await pair(r);
+  const suspended = [];
+  r.company.deps.suspendSession = (id, opts) => { suspended.push({ id, reason: opts.reason }); return { ok: true }; };
+  // A：撞额度时旧会话还在忙（CodeAgent 在自己重试）→ 宽限期内不换号；它重试成功写出回答 → 不换号，照常回执
+  const a = await r.home.ask('home-s', { question: 'A：旧会话撞额度后自己重试成功的情况' });
+  await r.company.checkNow(); await r.company.checkNow();
+  const sa = r.created()[0].id;
+  r.cs.busy.add(sa);
+  r.inject(sa);
+  await step(r, 2000); await step(r, 20000);
+  assert.equal(r.created().length, 1, '旧会话还在忙：宽限期内不换号');
+  r.cs.answer(sa, 'A 的回答：重试后成功。'); r.cs.finals.get(sa).at(-1).timestamp = r.clock.now + 1000;
+  r.cs.busy.delete(sa);
+  await step(r); await step(r, 1000);
+  assert.equal(r.created().length, 1, '旧会话自己答出来了：不换号');
+  assert.match(r.home.thread(a.thread).rounds[0].reply, /重试后成功/);
+  // B：撞额度、旧会话一直忙过了宽限期 → 换号；旧会话停下后被休眠
+  Q.clearAvoid(path.join(r.root, 'company'), 'ds01');
+  const b = await r.home.ask('home-s', { question: 'B：旧会话撞额度后一直在忙的情况' });
+  await r.company.checkNow(); await r.company.checkNow();
+  const sb = r.created()[1].id;
+  assert.equal(r.account(r.created()[1]), 'ds01');
+  r.cs.busy.add(sb);
+  r.inject(sb);
+  await step(r, 2000);
+  assert.equal(r.created().length, 2);
+  await step(r, 61000);
+  assert.equal(r.created().length, 3, '过了宽限期仍在忙：换号');
+  assert.equal(r.company.thread(b.thread).prevSessions[0].sessionId, sb);
+  assert.ok(!suspended.some(x => x.id === sb), '旧会话还在忙：不休眠');
+  r.cs.busy.delete(sb);
+  await step(r, 61000);
+  assert.ok(suspended.some(x => x.id === sb && x.reason === 'company-bridge-rehomed'), '旧会话停下后被休眠');
+  assert.ok(!suspended.some(x => x.id === r.created()[2].id), '新会话不动');
+});
+
+test('代称固定：删掉一个号后，其余号的代称不变；新号不复用旧序号', t => {
+  const dataDir = tmp(t);
+  const pool = require('../core/codeagent-pool');
+  const a = pool.addAccount(dataDir, { note: 'a' }), b = pool.addAccount(dataDir, { note: 'b' });
+  assert.deepEqual([...Q.aliasMap(dataDir)].filter(([k]) => k !== 'personal').map(([k, v]) => [k === a ? 'a' : 'b', v]), [['a', '号 1'], ['b', '号 2']]);
+  pool.removeAccount(dataDir, a);
+  const c = pool.addAccount(dataDir, { note: 'c' });
+  const m = Q.aliasMap(dataDir);
+  assert.equal(m.get(b), '号 2', '删号后「号 2」仍指同一个号');
+  assert.equal(m.get(c), '号 3', '新号不复用「号 1」');
+  assert.equal(Q.keyForAlias(m, '号2'), b);
+  const D = require('../core/company-bridge/diag');
+  assert.equal(D.poolAliases({ accounts: [{ id: b }, { id: c }] }, dataDir).get(c), '号 3', '直查用同一份固定代称');
+});
+
+test('原生记录尾部读取按字节找行：第一次只读尾部时多字节字符被切开也不丢下一行', () => {
+  const { completeLines } = require('../core/company-bridge/quota-watch');
+  const lines = ['{"a":"甲乙丙"}', '{"b":"丁"}', '{"c":"戊"}'];
+  const buf = Buffer.from(lines.join('\n') + '\n', 'utf8');
+  const cut = buf.subarray(5); // 从「甲」的中间切开
+  const r = completeLines(cut, false);
+  assert.equal(r.text, lines.slice(1).join('\n'));
+  assert.equal(r.consumed, cut.length);
+  assert.equal(completeLines(buf, true).text, lines.join('\n'));
 });

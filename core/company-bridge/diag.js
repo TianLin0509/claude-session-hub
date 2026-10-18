@@ -379,10 +379,14 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
   };
 }
 
-// ---- 号池代称：个人 / 号 1 / 号 2（号池登记顺序），不带编号、工号掩码、备注 ----
-function poolAliases(raw) {
+// ---- 号池代称：个人 / 号 1 / 号 2，不带编号、工号掩码、备注 ----
+// 有数据目录时用落盘的固定序号（core/codeagent-quota.js aliasMap，额度感知 2026-10-18：删号后其余号的代称不变），和通道、家里号表一致；
+// 没有时（单测夹具）按号池登记顺序。
+function poolAliases(raw, dataDir = null) {
+  const ids = (raw?.accounts || []).map(a => a && a.id).filter(Boolean);
+  if (dataDir) { try { return require('../codeagent-quota').aliasMap(dataDir, ids); } catch { /* 读写不了就按登记顺序 */ } }
   const map = new Map([['personal', '个人']]);
-  (raw?.accounts || []).forEach((a, i) => { if (a && a.id) map.set(a.id, `号 ${i + 1}`); });
+  ids.forEach((id, i) => map.set(id, `号 ${i + 1}`));
   return map;
 }
 // 每个号的避让状态（额度感知，core/codeagent-quota.js）：来源、种类、原因（已脱敏的报错片段）、首次时间、预计恢复。
@@ -392,9 +396,9 @@ function avoidView(e) {
   return { source: e.source, kind: e.kind, label: Q.describeAvoid(e), since: e.since || null, until: e.until == null ? null : Number(e.until), sample: e.sample || '', hits: Number(e.hits) || 1 };
 }
 function creditView(c) { return c && Number.isFinite(Number(c.remaining)) ? { remaining: Number(c.remaining), pct: Number(c.pct), bucket: c.bucket || '', at: c.at || null } : null; }
-function pool(raw, { avoid = {}, credit = {}, ...extra } = {}) {
+function pool(raw, { avoid = {}, credit = {}, aliases: given = null, ...extra } = {}) {
   if (!raw) throw new Error('这台 Hub 读不到号池');
-  const aliases = poolAliases(raw);
+  const aliases = given || poolAliases(raw);
   const pick = (a, alias, key) => ({ alias, state: POOL_STATE[a.state] || String(a.state || '未知'), ready: a.state === 'ready',
     activeSessions: Number(a.activeSessions) || 0, defaultModel: a.defaultModel ? String(a.defaultModel) : '', models: (Array.isArray(a.models) ? a.models : []).map(String).slice(0, 20),
     ...(a.modelsProbedAt ? { modelsProbedAt: a.modelsProbedAt } : {}), ...(a.duplicateOf ? { duplicate: true } : {}), ...(a.sameAsPersonal ? { sameAsPersonal: true } : {}),
@@ -658,7 +662,7 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
   ctx.ptyPids = new Map(ptyPids.map(x => [x.id, Number(x.pid)]));
   let poolRaw = null, poolError = null;
   if (sections.includes('pool') || sections.includes('hub') || sections.includes('codeagent') || sections.includes('errors')) { try { poolRaw = deps.poolDiag ? deps.poolDiag() : null; } catch (error) { poolError = error; } }
-  ctx.aliases = poolAliases(poolRaw);
+  ctx.aliases = poolAliases(poolRaw, deps.dataDir || null);
   const out = { schema: 1, sections, at: bridge.now(), timings: {} };
   const run = async (name, fn) => {
     const s = sys.clock();
@@ -693,7 +697,7 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
     if (poolError) throw poolError;
     let avoid = {}, credit = {};
     try { avoid = bridge.avoidMap ? bridge.avoidMap() : {}; credit = require('../codeagent-quota').creditReadings(deps.dataDir); } catch { /* 读不到避让状态不挡号池段 */ }
-    return pool(poolRaw, { usePool: !!bridge.settings().usePool, models: bridge.modelTableSafe?.() || null, avoid, credit });
+    return pool(poolRaw, { usePool: !!bridge.settings().usePool, models: bridge.modelTableSafe?.() || null, avoid, credit, aliases: ctx.aliases });
   });
   if (sections.includes('errors')) await run('errors', () => errorsSection(bridge, ctx.aliases, errorsLimit));
   if (sections.includes('logs')) await run('logs', () => logs(sys, path.join(deps.dataDir, 'logs'), lines));
