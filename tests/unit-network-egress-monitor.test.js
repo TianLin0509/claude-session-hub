@@ -213,3 +213,49 @@ test('公司 VPN 网卡：只认 Up 且拿到真实 IPv4 的（169.254 自动地
   assert.deepEqual(parseVpnAdapters(''), []);
   assert.deepEqual(parseVpnAdapters('乱码一行'), []);
 });
+
+// 2026-10-18 田哥：公司 2.1.10 底栏一直「出口未知」，同一个办公代理用 PowerShell 能通（Q-1017-20）。
+test('走系统代理时 curl 不查证书吊销、用 Windows 登录做代理认证；curl 不通时改用系统网络栈探', async () => {
+  const sg = { ip: '203.0.113.20', country_code: 'SG', country: 'Singapore', city: 'Singapore' };
+  const calls = [];
+  const fetched = [];
+  const probe = createCurlGeoProbe({
+    platform: 'win32',
+    execFile: (_file, args, _options, callback) => { calls.push(args); callback(Object.assign(new Error('curl: (35) schannel: CRYPT_E_NO_REVOCATION_CHECK'), { code: 35 }), '', ''); },
+    systemFetch: async url => { fetched.push(url); return JSON.stringify(sg); },
+    endpoints: [{ name: 'fixture', url: 'https://geo.example/json' }],
+  });
+  const viaSystem = await probe({ route: 'proxy', proxy: 'http://proxy.corp:8080', systemProxy: true });
+  assert.ok(calls[0].includes('--ssl-no-revoke') && calls[0].includes('--proxy-anyauth'));
+  assert.equal(calls[0][calls[0].indexOf('--proxy-user') + 1], ':', '用当前 Windows 登录身份');
+  assert.equal(viaSystem.ok, true);
+  assert.match(viaSystem.locationLabel, /新加坡/);
+  assert.equal(viaSystem.via, 'system-fetch');
+  assert.deepEqual(fetched, ['https://geo.example/json']);
+
+  calls.length = 0; fetched.length = 0;
+  const own = await probe({ route: 'proxy', proxy: 'http://127.0.0.1:7890' });
+  assert.ok(!calls[0].includes('--ssl-no-revoke') && !calls[0].includes('--proxy-user'), 'Hub 自己配的代理（家里 Clash）照旧');
+  assert.equal(own.ok, false);
+  assert.deepEqual(fetched, [], '不是系统代理不走系统网络栈');
+
+  // 系统代理是自动配置脚本、读不出地址：不跑 curl，直接走系统网络栈
+  calls.length = 0;
+  const pac = await probe({ route: 'proxy', proxy: '', systemProxy: true });
+  assert.equal(calls.length, 0);
+  assert.equal(pac.ok, true);
+});
+
+test('读不出代理地址但 xGate 开着：照样按系统代理探出口；xGate 没开时仍是「未配置代理」', async () => {
+  const sg = route('203.0.113.20', 'SG', 'Singapore', 'Singapore');
+  const seen = [];
+  const make = xgate => createNetworkEgressMonitor({ getProxy: () => '', getSystemProxy: async () => '', getTunnel: async () => ({ xgate }), cacheMs: 0,
+    probe: async args => { seen.push(args); return args.route === 'proxy' ? sg : { ok: false, route: 'direct', error: '直连出口不可用' }; } });
+  const on = await make(true).getStatus({ force: true });
+  assert.equal(on.foreign.ok, true);
+  assert.deepEqual(seen.find(a => a.route === 'proxy'), { route: 'proxy', proxy: '', systemProxy: true });
+  seen.length = 0;
+  const off = await make(false).getStatus({ force: true });
+  assert.equal(off.foreign.errorCode, 'proxy_not_configured');
+  assert.equal(seen.some(a => a.route === 'proxy'), false);
+});
