@@ -16,9 +16,19 @@ const [group, sub] = args;
 const arg = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const exchangeFile = stateFile ? require('node:path').join(require('node:path').dirname(stateFile), 'welink-exchange') : null;
 const exchangeReady = () => !!exchangeFile && fs.existsSync(exchangeFile);
+const phoneFile = stateFile ? require('node:path').join(require('node:path').dirname(stateFile), 'welink-phone-group.jsonl') : null;
+const phoneGroup = () => (phoneFile && fs.existsSync(phoneFile) ? fs.readFileSync(phoneFile, 'utf8').split(/\r?\n/).filter(Boolean).map(l => JSON.parse(l)) : []);
+function addPhoneMessage(sender, content, at = Date.now()) {
+  const all = phoneGroup();
+  const last = all.length ? BigInt(all[all.length - 1].msgId) : 7300000000000000000n;
+  fs.appendFileSync(phoneFile, JSON.stringify({ msgId: String(last + 7n), sender, content, serverSendTime: at }) + '\n');
+}
 const needExchange = () => { process.stderr.write('Error: Exchange server domain not found. Please run first: welink-cli mail autodiscover --email <your-email>\n'); process.exitCode = 1; };
 
-if (group === 'auth' && sub === 'status') {
+if (group === '__test' && sub === 'say') {
+  // 测试用：模拟在手机上往专用群里发一句（发件人默认本人 user001）。
+  addPhoneMessage(arg('--sender') || 'user001', arg('--text') || '', arg('--at') ? Number(arg('--at')) : Date.now()); // --at：模拟旧消息
+} else if (group === 'auth' && sub === 'status') {
   out(loggedIn() ? 'UID: user001\nUser Token: VALID\n' : 'UID: user001\nUser Token: EXPIRED\n');
 } else if (group === 'auth' && sub === 'login') {
   // 1x1 像素的 PNG，当作二维码图片
@@ -47,7 +57,24 @@ if (group === 'auth' && sub === 'status') {
   out({ conversation_info: [
     { group_id: '', group_name: '', group_type: 0, native_name: '同事甲', recent_conversation_type: 'CHAT_TYPE_P2P_MSG', staff_name: '同事甲', target_account: 'colleague_a' },
     { group_id: 'g-100', group_name: '项目群A', group_type: 1, native_name: '项目群A', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' },
+    { group_id: 'g-phone', group_name: '助理 CodeAgent', group_type: 0, native_name: '助理 CodeAgent', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' },
   ] });
+} else if (group === 'im' && sub === 'query-history-message' && arg('--group-id') === 'g-phone') {
+  // 手机对话的专用群：消息存在 WELINK_STANDIN_STATE 同目录的 welink-phone-group.jsonl（测试往里写「手机发的」消息）。
+  // 和真机一样：msgId 是超过 JS 安全整数的长整数；--query-direction 1 取比 --message-id 更新的（help 写反了）。
+  const all = phoneGroup();
+  const from = arg('--message-id'), dir = arg('--query-direction'), count = Number(arg('--query-count') || 20);
+  let list = from ? all.filter(m => dir === '1' ? BigInt(m.msgId) > BigInt(from) : BigInt(m.msgId) < BigInt(from)) : all.slice(-count);
+  list = dir === '1' ? list.slice(0, count) : list.slice(-count);
+  const body = list.map(m => `{"at":"","atAccountList":[],"content":${JSON.stringify(m.content)},"contentType":"TEXT_MSG","groupId":"g-phone","groupType":0,"msgId":${m.msgId},"receiver":"g-phone","sender":${JSON.stringify(m.sender)},"serverSendTime":${m.serverSendTime}}`);
+  out(`{"code":0,"data":{"msgTotalCount":${list.length},"msgList":[${body.join(',')}]}}`);
+} else if (group === 'im' && sub === 'send-to-group') {
+  if (arg('--group-id') !== 'g-phone') { process.stderr.write('group not found\n'); process.exitCode = 1; }
+  else { addPhoneMessage('user001', arg('--text') || ''); out('{"code":0,"message":"success"}'); }
+} else if (group === 'im' && sub === 'query-group-member') {
+  out({ code: 0, data: { memberList: arg('--group-id') === 'g-phone'
+    ? [{ account: 'user001', name: '用户甲' }, { account: 'xiaowei_bot', name: '小微助手' }]
+    : [{ account: 'user001', name: '用户甲' }, { account: 'colleague_b', name: '同事乙' }, { account: 'colleague_c', name: '同事丙' }] } });
 } else if (group === 'im' && sub === 'query-history-message') {
   if (arg('--user-account') === 'colleague_a') {
     out({ messages: [
