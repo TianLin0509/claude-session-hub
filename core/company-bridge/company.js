@@ -92,6 +92,9 @@ const CARE_EVERY_MS = 60000;
 // 收回答前核对：CodeAgent 收到的那条消息里得有本题编号。剪贴板里的图片会顶掉粘贴进去的问题（2026-10-15 公司真机），
 // 这时它答的是图片，不能发回家；自动重发，连着被顶掉 2 次就报错让人清空剪贴板后重试。
 const MAX_HIJACK = 2;
+// CLI 还没就绪时（发送入口报 cli-not-ready，明确没发）重试的间隔和最长等待；重启后恢复发「继续」同样适用（hub-admin.js）。
+const NOT_READY_RETRY_MS = 15000;
+const NOT_READY_MAX_MS = 5 * 60000;
 // 从 CodeAgent 的原生记录（Claude 格式 jsonl）里取用户发出的消息：时间、文字、图片张数（工具结果不算）。
 function userTurnsFromTranscript(file) {
   let raw = '';
@@ -422,6 +425,7 @@ class CompanyBridge {
     if (this.hubAdmin.holdingDispatch()) { this.careSessions(); return; }
     for (const t of queue) {
       if (t.sessionId && this.sessionBusy(t.sessionId)) continue; // 追问时原会话还在忙（例如改写上一轮），等它停下
+      if (t.rounds.some(x => roundPhase(x) === 'queued' && x.retryAt > this.now())) continue; // CLI 还没就绪，到点再发
       if (free > 0) { await this.dispatch(t); free -= 1; continue; }
       waiting += 1;
       this.reportQueue(t, waiting, limit, working);
@@ -552,6 +556,20 @@ class CompanyBridge {
       t = this.patchRound(t, r.round, { sentAt: this.now(), firstSentAt: r.firstSentAt || this.now(), baseline: before ? before.id : null,
         promptFingerprint: receiptPromptFingerprint(prompt), receiptIssue: null, error: null, sendUncertain: null });
       const receipt = await this.deps.sendPrompt(sessionId, prompt, randomUUID());
+      // CLI 还没就绪（发送入口等了 60 秒没见到输入框，明确没发）：不判失败，退回排队，隔 15 秒再发，最多等 5 分钟。
+      // 2026-10-18 v2.1.10 真机 Q-1017-23 第 13 轮：远程重启后恢复出来的会话启动慢，派发直接报「cli-not-ready」判了失败。
+      if (receipt && receipt.notSent && receipt.error === 'cli-not-ready') {
+        const since = r.notReadySince || this.now();
+        if (this.now() - since < NOT_READY_MAX_MS) {
+          this.bridgeLog(`cli-not-ready ${t.id}#${r.round} session=${String(sessionId).slice(0, 8)} 已等 ${Math.round((this.now() - since) / 1000)} 秒，${NOT_READY_RETRY_MS / 1000} 秒后再发`);
+          this.patchRound(this.thread(t.id) || t, r.round, { sentAt: null, notReadySince: since, retryAt: this.now() + NOT_READY_RETRY_MS });
+          if (!r.notReadySince) void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'received', note: '公司会话的 CodeAgent 还没启动就绪（刚重启或启动慢），就绪后自动发出' }).catch(() => {});
+          this.changed();
+          return;
+        }
+        throw new Error(`公司会话的 CodeAgent 等了 ${Math.round((this.now() - since) / 60000)} 分钟仍没启动就绪（cli-not-ready），问题没有发出`);
+      }
+      if (r.notReadySince) this.patchRound(this.thread(t.id) || t, r.round, { notReadySince: null, retryAt: null });
       if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) {
         throw Object.assign(new Error(receipt?.error || '问题没有发进会话'), { notSent: true });
       }
@@ -686,6 +704,12 @@ class CompanyBridge {
     const r = t.rounds.find(x => x.round === Number(message.round));
     if (!r) return;
     if (r.reply) return this.sendReply(t, r, r.reply, { ...(r.meta || {}), resentReply: true });
+    // 公司 Hub 刚重启、这一轮正在自动接着做（2026-10-18 v2.1.10 真机 Q-1017-23 第 12 轮）：补收不判失败、轮次保持在途。
+    // 以前回「补收不到」，家里把这一轮判成没答上、整题重发一遍，和恢复后的「继续」撞在同一个会话里。
+    if (this.roundResuming(t, r)) {
+      void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'running', note: '公司 Hub 刚重启，这一轮正在自动接着做，回执到了会照常发回，不用重问' }).catch(() => {});
+      return;
+    }
     if (t.sessionId && this.sessionBusy(t.sessionId)) {
       void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'running', note: '补收：公司会话还在作答，答完会照常回执' }).catch(() => {});
       return;
@@ -701,6 +725,23 @@ class CompanyBridge {
     const note = '（补收：这是公司会话在这一轮发出之后写下的最新回答，按家里要求直接取回，没有逐条核对它对应哪条提问。）';
     this.notify('补收', `${t.id} 第 ${r.round} 轮：已从公司会话取回最新回答`, t.sessionId);
     return this.sendReply(this.thread(t.id) || t, r, note + '\n\n' + String(latest.text || '').trim(), { recollected: true });
+  }
+  // 这一轮是不是「重启中断、正在自动接着做」（hub-admin.js）：还没恢复（标着待恢复，或恢复清单里待处理 / 恢复中），
+  // 或已恢复并发了「继续」、之后还没写出新回答，且仍在收回执的等待窗口里（原生记录还在写最多 LONG_RUN_MS，否则同 collect 的 NO_ANSWER_MS×3）。
+  // 恢复失败的轮次已按失败流程落了 error，不算。
+  roundResuming(t, r) {
+    if (!r || r.reply || r.error) return false;
+    if (r.resumePending) return true;
+    let plan = null; try { plan = this.hubAdmin.state().resumeAfterRestart; } catch { plan = null; }
+    if (plan && (plan.items || []).some(x => x.kind === 'bridge' && x.thread === t.id && x.round === r.round && x.state !== 'failed' && x.state !== 'resumed')) return true;
+    if (!r.resumedAt) return false;
+    const meta = t.sessionId && (this.deps.getSession(t.sessionId) || this.deps.getSessionMetadata?.(t.sessionId));
+    let finals = [];
+    try { finals = meta && this.deps.readFinals ? this.deps.readFinals(meta) || [] : []; } catch { finals = []; }
+    if (finals.some(f => (f.timestamp || 0) >= r.resumedAt - 5000 && f.id !== r.baseline)) return false; // 恢复后已写出回答：照常补收
+    const since = this.now() - r.resumedAt;
+    if (since < NO_ANSWER_MS * 3) return true;
+    return since < LONG_RUN_MS && (this.sessionBusy(t.sessionId) || this.transcriptFresh(t.sessionId));
   }
   // 提问是否已落进 CodeAgent 的原生记录：true / false / null（不知道记录在哪，不下结论）。
   requestLanded(t, r) {
@@ -727,7 +768,7 @@ class CompanyBridge {
     const t = this.thread(id);
     if (!t) throw new Error('找不到这个问题');
     if (t.state === 'cancelled' || t.gen !== this.link.gen()) throw new Error('这个问题属于上一次配对，已作废');
-    const rounds = t.rounds.map(x => x.error && !x.reply ? { ...x, error: null, sentAt: null, failedAt: null, baseline: null, hijacked: 0 } : x);
+    const rounds = t.rounds.map(x => x.error && !x.reply ? { ...x, error: null, sentAt: null, failedAt: null, baseline: null, hijacked: 0, notReadySince: null, retryAt: null } : x);
     this.saveThread({ ...t, rounds }); this.changed();
     void this.tick({ force: true });
     return this.status();
@@ -752,4 +793,4 @@ class CompanyBridge {
   close() { clearInterval(this.timer); this.timer = null; this.askHome.close(); try { this.store.close(); } catch {} }
 }
 
-module.exports = { CompanyBridge, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS, V2_INSTRUCTIONS, V3_INSTRUCTIONS, PURPOSE, userTurnsFromTranscript, sourceVerdict, stripCode, deriveState };
+module.exports = { NOT_READY_RETRY_MS, NOT_READY_MAX_MS, CompanyBridge, DEFAULT_INSTRUCTIONS, V1_INSTRUCTIONS, V2_INSTRUCTIONS, V3_INSTRUCTIONS, PURPOSE, userTurnsFromTranscript, sourceVerdict, stripCode, deriveState };
