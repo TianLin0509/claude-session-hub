@@ -78,9 +78,27 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   function pool(p) {
     if (!p) return '';
     if (p.error) return block('号池', failed(p));
-    const rows = (p.accounts || []).map(a => [esc(a.alias), a.ready ? esc(a.state) : `<span class="bad">${esc(a.state)}</span>`, esc(a.activeSessions ?? '—'), esc(a.defaultModel || '—'),
+    // 派活状态（额度感知，2026-10-18）：可用 / 避让中·原因·预计恢复，Credit；可远程暂停 / 恢复（二次确认）
+    const dispatchCell = a => {
+      const credit = a.credit ? `<div class="wp-meta">Credit 剩 ${esc(a.credit.remaining)}（${esc(a.credit.pct)}%${a.credit.bucket ? '，' + esc(a.credit.bucket) : ''}）</div>` : '';
+      if (a.avoid) return `<span class="bad">避让中</span><div class="wp-meta">${esc(a.avoid.label || '')}${a.avoid.sample ? '：' + esc(a.avoid.sample) : ''}</div>${credit}`
+        + `<button type="button" class="wp-link" data-diag-act="resume-account" data-account="${esc(a.alias)}">恢复派活</button>`;
+      return `${a.ready ? '可用' : '—'}${credit}${a.ready ? `<button type="button" class="wp-link" data-diag-act="pause-account" data-account="${esc(a.alias)}">暂停派活</button>` : ''}`;
+    };
+    const rows = (p.accounts || []).map(a => [esc(a.alias), a.ready ? esc(a.state) : `<span class="bad">${esc(a.state)}</span>`, dispatchCell(a), esc(a.activeSessions ?? '—'), esc(a.defaultModel || '—'),
       esc((a.models || []).length ? (a.models || []).join('、') : '—') + (a.duplicate ? '（和别的号重复）' : '') + (a.sameAsPersonal ? '（和个人账号是同一个号）' : '')]);
-    return block('号池', `<p class="wp-meta">${p.usePool ? '通道开会话走号池' : '通道只用个人账号'} · 可用 ${esc(p.ready)} 个号</p>` + table(['号', '状态', '进行中', '默认模型', '模型'], rows));
+    const pauseSel = `<span class="cl-diag-par">暂停时长 <select data-diag-p="pauseHours"><option value="1">1 小时</option><option value="2" selected>2 小时</option><option value="4">4 小时</option><option value="24">24 小时</option><option value="">直到手动恢复</option></select></span>`;
+    return block('号池', `<p class="wp-meta">${p.usePool ? '通道开会话走号池' : '通道只用个人账号'} · 可用 ${esc(p.ready)} 个号${p.avoiding ? ` · <span class="bad">避让中 ${esc(p.avoiding)} 个</span>` : ''} · 通道挑号时跳过避让中的号</p>`
+      + table(['号', '登录', '派活', '进行中', '默认模型', '模型'], rows) + `<div class="cl-diag-actions">${pauseSel}</div>`);
+  }
+  // 最近的 API 报错原文（errors 段，已脱敏）：核对额度报错的识别规则用
+  function errorsBlock(e) {
+    if (!e) return '';
+    if (e.error) return block('API 报错', failed(e));
+    const rows = table(['时间', '号', '来源', '会话', '命中规则', '原文（已脱敏）'], (e.list || []).map(x => [ago(x.at || x.seenAt), esc(x.account), esc(x.source) + (x.structured ? '（结构化）' : ''),
+      esc(x.purpose) + ' ' + esc(x.session || ''), x.matched ? `<span class="bad">${esc(x.matched)}</span>` : '疑似', `<code>${esc(x.text)}</code>`]));
+    return block('API 报错', `<p class="wp-meta">最近 ${esc((e.list || []).length)} 条（共记 ${esc(e.total)} 条）· 识别规则 ${esc((e.rules || []).map(r => r.id).join('、') || '无')}${e.guard === false ? ' · <span class="bad">公司关了额度识别</span>' : ''}${(e.ruleErrors || []).length ? ` · <span class="bad">写错的规则：${esc(e.ruleErrors.join('；'))}</span>` : ''}</p>`
+      + (rows || '<p class="wp-empty">还没识别到 API 报错。</p>'));
   }
   // ---- 二期：CodeAgent、仿真、功能 ----
   const okErr = (okAt, err) => `${okAt ? '最近成功 ' + time(okAt) : '还没成功过'}${err ? ` · <span class="bad">最近错误：${esc(err)}</span>` : ''}`;
@@ -92,7 +110,8 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     return block('CodeAgent', `<div class="wp-strip">${row('版本', c.version ? 'v' + esc(c.version) : `<span class="bad">没读到：${esc(c.versionError || '')}</span>`)}
       ${row('个人账号', p ? `${p.ready ? esc(p.state) : `<span class="bad">${esc(p.state)}</span>`}${p.expiresAt ? ' · 登录到期 ' + time(p.expiresAt) : ''}${p.defaultModel ? ' · 默认模型 ' + esc(p.defaultModel) : ''}` : esc(c.loginError || '读不到'))}
       ${row('号池', `${esc(c.pool.total)} 个号，可用 ${esc(c.pool.ready)} 个${c.pool.needLogin ? `，<span class="bad">${esc(c.pool.needLogin)} 个需要重新登录</span>` : ''}`)}
-      ${row('额度', (c.quota || []).length ? `读了 ${esc(c.quotaScreens.read)} 个会话屏幕` : esc(c.quotaNote || '没读到'))}</div>${quota}`);
+      ${row('额度', (c.quota || []).length ? `读了 ${esc(c.quotaScreens.read)} 个会话屏幕` : esc(c.quotaNote || '没读到'))}
+      ${Array.isArray(c.avoid) ? row('避让中', c.avoid.length ? c.avoid.map(a => `<span class="bad">${esc(a.account)}</span> ${esc(a.label || '')}`).join('；') : '没有') : ''}</div>${quota}`);
   }
   function airview(a) {
     if (!a) return '';
@@ -130,7 +149,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       + (view.summary ? `<p class="wp-note">${esc(view.summary)}</p>` : '')
       + (view.degraded?.length ? `<p class="wp-note warn">回报超过单条消息上限，已精简：${esc(view.degraded.join('；'))}</p>` : '')
       + (d.note ? `<p class="wp-note warn">${esc(d.note)}</p>` : '');
-    return head + machine(d.machine) + processes(d.processes) + hub(d.hub) + codeagent(d.codeagent) + pool(d.pool) + airview(d.airview) + features(d.features) + logs(d.logs);
+    return head + machine(d.machine) + processes(d.processes) + hub(d.hub) + codeagent(d.codeagent) + pool(d.pool) + errorsBlock(d.errors) + airview(d.airview) + features(d.features) + logs(d.logs);
   }
   function paint(html, { busy = false } = {}) {
     if (!dialog) return;
@@ -166,7 +185,8 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     }, 2500);
   }
   // ---- 远程维护（三期）：按钮 → 二次确认 → hub-admin op:'act' → 等回报 → 顶部横条显示结果和前后对比 ----
-  const ACT_LABEL = { 'suspend-idle': '让空闲的通道会话休眠', 'kill-orphans': '结束残留进程', 'set-parallel': '临时调整并行档位', 'cancel-queued': '取消排队中的问题', retry: '重试失败的问题' };
+  const ACT_LABEL = { 'suspend-idle': '让空闲的通道会话休眠', 'kill-orphans': '结束残留进程', 'set-parallel': '临时调整并行档位', 'cancel-queued': '取消排队中的问题', retry: '重试失败的问题',
+    'pause-account': '暂停派活给一个号', 'resume-account': '恢复派活给一个号' };
   function banner(html, tone = '') {
     const el = dialog?.querySelector('.cl-diag-act-result');
     if (!el) return;
@@ -194,6 +214,13 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       // 闲时上限取「忙时、闲时」两者较大的：只改忙时，晚上和周末不生效，所以两个一起改
       if (params.maxParallel) params.maxParallelIdle = params.maxParallel;
       confirmText = `临时把公司「内存保底」改成 ${params.memFloorPct}%${params.maxParallel ? `、同时处理改成 ${params.maxParallel} 个（忙时、闲时都改）` : ''}，${params.restoreAfterHours ? params.restoreAfterHours + ' 小时后自动恢复原值' : '不自动恢复'}？`;
+    } else if (action === 'pause-account' || action === 'resume-account') {
+      params.account = el?.dataset.account || '';
+      const hours = dialog.querySelector('[data-diag-p=pauseHours]')?.value;
+      if (action === 'pause-account' && hours) params.hours = Number(hours);
+      confirmText = action === 'pause-account'
+        ? `暂停公司把新问题派给「${params.account}」${params.hours ? `，${params.hours} 小时后自动恢复` : '，直到手动恢复'}？通道新开会话和换号重做都不再挑它；已在跑的会话不受影响。`
+        : `恢复公司派活给「${params.account}」？如果它的额度其实还没恢复，撞到报错会再自动避让。`;
     } else {
       params.thread = el?.dataset.thread || '';
       confirmText = action === 'cancel-queued' ? `取消排队中的问题 ${params.thread}？提问的会话会收到「被对端取消」。` : `重试问题 ${params.thread}？`;
