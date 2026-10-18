@@ -8,7 +8,8 @@
 //   kill-orphans   只结束最近一次（5 分钟内）直查列为「可结束」的残留进程：对端传来的 PID + 启动时间必须和那次直查一致；
 //                  动手前重新枚举进程、按同一套规则再判一次，仍是「可结束」、仍不在任何 Hub 进程树（当前的和别的）里才结束。
 //                  只按 PID 结束，绝不按命令行匹配；永不结束 Hub 主进程、Hub 后台脚本和任何活着的 Hub 进程树里的进程。前后各记一次内存。
-//   set-parallel   临时改 memFloorPct / maxParallel / maxParallelIdle（复用设置校验与上下限），可带「N 小时后恢复原值」。
+//   set-parallel   临时改 memFloorPct / maxParallel / maxParallelIdle / usePool（复用设置校验与上下限），可带「N 小时后恢复原值」。
+//                  usePool=false：通道新开的会话只用个人账号（号池的号额度用完时从对端切走，2026-10-18 田哥）。
 //   cancel-queued  取消一个还在排队（没开会话、没在答）的问题，回执写明「被对端取消」。
 //   retry          重试一个失败的问题（同页面上的「重试」按钮）。
 //   pause-account  手动让一个号避让（代称：个人 / 号 1…），可带「N 小时后自动恢复」；通道新开会话、换号重做都不再挑它（额度感知，2026-10-18）。
@@ -43,7 +44,8 @@ function parseParams(action, raw = {}) {
   if (action === 'set-parallel') {
     const out = {};
     for (const k of PARALLEL_KEYS) if (p[k] != null) { const n = Number(p[k]); if (!Number.isInteger(n)) throw new Error(k + ' 要是整数'); out[k] = n; }
-    if (!Object.keys(out).length) throw new Error('要给出 memFloorPct / maxParallel / maxParallelIdle 里至少一项');
+    if (p.usePool != null) { if (typeof p.usePool !== 'boolean') throw new Error('usePool 要是 true / false'); out.usePool = p.usePool; }
+    if (!Object.keys(out).length) throw new Error('要给出 memFloorPct / maxParallel / maxParallelIdle / usePool 里至少一项');
     if (p.restoreAfterHours != null) {
       const h = Number(p.restoreAfterHours);
       if (!Number.isFinite(h) || h < 0.25 || h > 24) throw new Error('restoreAfterHours 只能是 0.25–24 小时');
@@ -195,7 +197,7 @@ class RemoteAct {
   async setParallel(p) {
     const b = this.bridge, s = b.settings();
     const values = {}, prev = {};
-    for (const k of PARALLEL_KEYS) if (k in p) { values[k] = p[k]; prev[k] = s[k]; }
+    for (const k of [...PARALLEL_KEYS, 'usePool']) if (k in p) { values[k] = p[k]; prev[k] = s[k]; }
     const before = b.parallelLimitSafe();
     b.setSettings(values); // 超出上下限会抛错，原样回报
     const after = b.parallelLimitSafe();
