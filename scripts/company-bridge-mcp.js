@@ -22,15 +22,18 @@ const tools = [
       + '调用后立即返回编号；公司一个来回通常 10 分钟以上，回执到达后 Hub 会把它作为一条新消息自动发到本会话。发出后请结束本轮，或先做不依赖回执的工作，不要循环等待或反复查询。',
     annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: schema({ question: { type: 'string', description: 'Markdown 格式的完整问题' }, title: { type: 'string', description: '一句话标题（可选，20 字内）' },
-      model: { type: 'string', description: '公司那边用哪个模型（可选，按工具描述里的模型表选；不填 = 公司默认）' } }, ['question']),
+      model: { type: 'string', description: '公司那边用哪个模型（可选，按工具描述里的模型表选；不填 = 公司默认）' },
+      account: { type: 'string', description: '公司那边用哪个号（可选，代称如「个人」「号 1」，见工具描述里的各号；默认不填，交给自动路由避开额度用完的号，有明确理由才指定）' } }, ['question']),
   },
   {
     name: 'followup_company',
     description: '对同一编号追问。公司那边是同一个 CodeAgent 会话，记得上一轮做过、读过的内容。'
       + '回执存疑时使用：把握程度低、没读到关键部分、与家里的证据矛盾、或需要更细的细节。指出哪里不可信、请它再读哪里。'
-      + '次数不限，由你判断信息是否已经足够。上一轮回执到达前不能追问。',
+      + '次数不限，由你判断信息是否已经足够。上一轮回执到达前不能追问。'
+      + '原会话所在的号额度用完时，公司会自动换号新开会话并带上前几轮问答，不用你处理；account（可选）指定换到哪个号，同样新开会话带上下文。',
     annotations: { readOnlyHint: false, openWorldHint: true },
-    inputSchema: schema({ thread: { type: 'string', description: '编号，如 Q-1015-01' }, question: string }, ['thread', 'question']),
+    inputSchema: schema({ thread: { type: 'string', description: '编号，如 Q-1015-01' }, question: string,
+      account: { type: 'string', description: '可选：换到这个号（代称）新开会话追问；默认不填，沿用原会话' } }, ['thread', 'question']),
   },
   {
     name: 'recollect_company',
@@ -55,13 +58,15 @@ const tools = [
     description: '直查公司电脑和公司 AI Hub 的状态：秒级、不排队、不占公司 CodeAgent（公司 Hub 主进程直接读系统信息和自身状态，压缩后经加密通道回报，不开会话）。'
       + '适合查：内存为什么紧、谁占了内存（按内存排的进程、CodeAgent 进程数与总内存、Hub 自身占用、不在 Hub 进程树里的 CodeAgent/node/electron 残留进程）、'
       + '通道队列为什么排队（并行上限及受什么限制、每个问题在跑还是排队、排队原因、会话在不在、记录最后写入时间）、Hub 里的会话、号池各号状态与模型、通道与 Hub 日志尾部。'
-      + 'sections 可选 machine（内存/CPU/开机时长/磁盘）、processes、hub、pool、logs、codeagent（版本、登录、额度）、airview（Python/MATLAB/AirView 进程与结果目录里最近更新的文件名）、features（论坛、简报、手机对话、桌宠下载最近一次成功/错误），不填 = 全部。调用后最多等约 45 秒、拿到就直接返回结果；'
+      + 'sections 可选 machine（内存/CPU/开机时长/磁盘）、processes、hub、pool（含每个号的避让状态与 Credit）、logs、codeagent（版本、登录、额度、避让中的号）、airview（Python/MATLAB/AirView 进程与结果目录里最近更新的文件名）、features（论坛、简报、手机对话、桌宠下载最近一次成功/错误）、'
+      + 'errors（最近 N 条 CodeAgent 会话里识别到 / 疑似的 API 报错原文片段，已脱敏，用来核对额度报错的识别规则），不填 = 全部。调用后最多等约 45 秒、拿到就直接返回结果；'
       + '公司检查通道的间隔是 10 秒，空闲时按公司设置（默认 30 秒），等不到会返回编号，稍后带 id 再调一次取结果（不要反复发新的直查，公司 30 秒内只处理一次）。'
       + '只读：不改动公司电脑、不读源码；号身份已换成「个人 / 号 1 / 号 2」，日志已脱敏。要读公司代码或文件内容仍用 ask_company。',
     annotations: { readOnlyHint: true, openWorldHint: true },
     inputSchema: schema({
-      sections: { type: 'array', items: { type: 'string', enum: ['machine', 'processes', 'hub', 'pool', 'logs', 'codeagent', 'airview', 'features'] }, description: '要查的段落，不填 = 全部' },
+      sections: { type: 'array', items: { type: 'string', enum: ['machine', 'processes', 'hub', 'pool', 'logs', 'codeagent', 'airview', 'features', 'errors'] }, description: '要查的段落，不填 = 全部' },
       lines: { type: 'integer', minimum: 1, maximum: 200, description: '日志每份取最后几行（默认 80）' },
+      errors: { type: 'integer', minimum: 1, maximum: 50, description: 'errors 段取最近几条（默认 20）' },
       id: { type: 'string', description: '取之前那次直查的结果（不发新的）' },
     }),
   },
@@ -69,11 +74,15 @@ const tools = [
     name: 'company_act',
     description: '远程维护公司电脑上的 AI Hub：会改动公司电脑状态，仅在用户要求或诊断明确指向时使用，先用 company_diag 看清楚再 act。'
       + 'action：suspend-idle（让答完空着的通道会话休眠，人自己开的会话不动）；kill-orphans（结束最近一次 company_diag 列为「可结束」的残留进程，targets 填那次结果里的 pid 和 startedAt，5 分钟内有效，只按 PID 结束，Hub 进程树永远不动）；'
-      + 'set-parallel（临时改 memFloorPct 5–50 / maxParallel 1–8 / maxParallelIdle 1–12，usePool true/false：false = 通道新开的会话只用公司个人账号、不用号池（号池的号额度用完或报错时用），restoreAfterHours 0.25–24 小时后恢复原值；maxParallel 只管工作日忙时，闲时上限取两者较大的，要整体收紧就两个一起改）；cancel-queued（取消还在排队的问题，thread 填编号）；retry（重试失败的问题）。'
+      + 'set-parallel（临时改 memFloorPct 5–50 / maxParallel 1–8 / maxParallelIdle 1–12，usePool true/false：false = 通道新开的会话只用公司个人账号、不用号池，restoreAfterHours 0.25–24 小时后恢复原值；maxParallel 只管工作日忙时，闲时上限取两者较大的，要整体收紧就两个一起改）；cancel-queued（取消还在排队的问题，thread 填编号）；retry（重试失败的问题）；'
+      + 'pause-account（手动让一个号避让，account 填代称如「号 1」，hours 0.25–72 小时后自动恢复、不填 = 直到手动恢复；单个号额度用完时优先用它，比整体停用号池更细）；resume-account（解除一个号的避让，含自动识别到额度报错的，之后照常派活）。'
       + '公司端可在设置里关掉「远程维护」，关了回 refused；每个动作有限频。调用后最多等约 45 秒直接返回结果和前后对比（如内存释放多少）；等不到就返回编号，稍后带 id 再取，不要重复发同一个动作。',
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     inputSchema: schema({
-      action: { type: 'string', enum: ['suspend-idle', 'kill-orphans', 'set-parallel', 'cancel-queued', 'retry'] },
+      action: { type: 'string', enum: ['suspend-idle', 'kill-orphans', 'set-parallel', 'cancel-queued', 'retry', 'pause-account', 'resume-account'] },
+      account: { type: 'string', description: 'pause-account / resume-account：号的代称，如「个人」「号 1」（company_diag 的 pool 段里看）' },
+      hours: { type: 'number', minimum: 0.25, maximum: 72, description: 'pause-account：多少小时后自动恢复（不填 = 直到手动恢复）' },
+      reason: { type: 'string', description: 'pause-account：原因（可选，60 字内）' },
       targets: { type: 'array', items: schema({ pid: { type: 'integer' }, startedAt: { type: 'integer' } }, ['pid', 'startedAt']), description: 'kill-orphans：要结束的进程（取自 company_diag 的 processes.leftovers 里 killable 为 true 的项）' },
       thread: { type: 'string', description: 'cancel-queued / retry：问题编号，如 Q-1018-03' },
       memFloorPct: { type: 'integer', minimum: 5, maximum: 50 }, maxParallel: { type: 'integer', minimum: 1, maximum: 8 }, maxParallelIdle: { type: 'integer', minimum: 1, maximum: 12 },

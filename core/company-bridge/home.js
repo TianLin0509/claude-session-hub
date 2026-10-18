@@ -16,6 +16,7 @@ const { BridgeLink } = require('./link');
 const { HomeConsult, PURPOSE: CONSULT_PURPOSE } = require('./home-consult');
 const { MODEL_ID, sanitizeModelTable, describeModels } = require('./model-table-text');
 const guard = require('./delivery-guard');
+const Q = require('../codeagent-quota');
 
 const ACTIVE_POLL_MS = 10000;
 // 空闲也每分钟看一次：公司的求助（ask_home）靠它及时收到（2026-10-15 起，原来 3 分钟）。
@@ -39,12 +40,24 @@ function modelNote(t, r) {
   if (asked && !meta.actualModel) return `；指定模型 ${asked}，未从回答里确认实际模型`;
   return used ? `；公司模型 ${used}` : '';
 }
+// 回执里注明公司用的号（代称）与换号（2026-10-18 额度感知）：撞到额度自动换号重做的，明说从哪个号换过来。
+function accountNote(t, r) {
+  const meta = r.meta || {};
+  const asked = r.account || '';
+  const parts = [];
+  if (meta.rehomedFrom && meta.rehomeKind === 'quota') parts.push(`原先的号（${meta.rehomedFrom}）撞到额度上限，公司自动换到${meta.accountAlias || '另一个号'}新开会话重做了这一轮`);
+  else if (meta.rehomedFrom) parts.push(`这一轮从${meta.rehomedFrom}换到${meta.accountAlias || '另一个号'}的新会话作答（带上了前几轮问答）`);
+  else if (meta.accountAlias) parts.push(`公司用的号：${meta.accountAlias}`);
+  if (asked && !meta.accountAlias) parts.push(`指定了号 ${asked}，但公司 Hub 没有确认（可能是旧版，不认指定号）`);
+  else if (asked && meta.accountAlias && meta.accountAlias !== asked) parts.push(`指定的是${asked}`);
+  return parts.length ? '；' + parts.join('；') : '';
+}
 function replyMessage(t, r) {
   if (r.error) {
     return [`【公司回执 ${t.id} · 第 ${r.round} 轮 · 没答上】`, '', r.error, '', '——', '公司那边这一轮没有给出回答。可以用 followup_company 换个问法重问，或先按现有证据继续，并在汇报里写明待公司核实的点。'].join('\n');
   }
   return [`【公司回执 ${t.id} · 第 ${r.round} 轮】`, '', r.reply, '', '——',
-    `以上是公司 CodeAgent 的回执（不含源码${modelNote(t, r)}）。请核对：可信就据此继续；把握程度低、没读到关键部分或与家里证据矛盾时，用 followup_company 追问（同一个公司会话，它记得上一轮读过的内容），次数不限。`].join('\n');
+    `以上是公司 CodeAgent 的回执（不含源码${modelNote(t, r)}${accountNote(t, r)}）。请核对：可信就据此继续；把握程度低、没读到关键部分或与家里证据矛盾时，用 followup_company 追问（同一个公司会话，它记得上一轮读过的内容），次数不限。`].join('\n');
 }
 // 线程状态由各轮推导：最后一轮决定结果。
 function deriveState(t) {
@@ -184,7 +197,7 @@ class HomeBridge {
     if (request.name === 'send_image_company') return this.images.send(sessionId, args);
     if (request.name === 'company_images') return { images: this.images.view(sessionId, args.thread) };
     if (request.name === 'company_hub_update') return this.hubAdmin(args);
-    if (request.name === 'company_diag') return this.diag({ sections: args.sections, lines: args.lines, id: args.id });
+    if (request.name === 'company_diag') return this.diag({ sections: args.sections, lines: args.lines, errors: args.errors, id: args.id });
     if (request.name === 'company_act') {
       const { action, id, ...params } = args;
       return this.act({ action, id, params });
@@ -233,25 +246,52 @@ class HomeBridge {
     return model;
   }
 
-  async ask(sessionId, { question, title, model }) {
+  // 家里 Agent 填的号（2026-10-18 额度感知）：只认代称（个人 / 号 1…）。公司报过「号 + 模型」表时核对：没有这个号、或它在避让中，
+  // 直接报原因和现在可用的号，不发出；没报过时只核对写法，由公司核对（公司那边同样拒绝避让中的号）。
+  resolveAccount(value) {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    if (!raw) return '';
+    const alias = Q.normalizeAlias(raw);
+    if (!alias) throw new Error('account 只认代称：「个人」或「号 1」这样的写法；不填 = 交给公司自动路由（会避开额度用完或限流的号）');
+    const rows = this.companyModels()?.table?.accountRows;
+    if (Array.isArray(rows) && rows.length) {
+      const row = rows.find(x => x.alias === alias);
+      const free = rows.filter(x => !this.rowAvoided(x)).map(x => x.alias);
+      const options = free.length ? `现在可用：${free.join('、')}` : '现在所有号都在避让中';
+      if (!row) throw new Error(`公司号表里没有「${alias}」（有：${rows.map(x => x.alias).join('、')}）；没有发出。${options}，或不填 account 交给自动路由`);
+      if (this.rowAvoided(row)) throw Object.assign(new Error(`${alias} 在避让中：${row.avoid.reason || '额度用完或限流'}；没有发出。${options}，或不填 account 交给自动路由`), { code: 'account-avoided' });
+    }
+    return alias;
+  }
+  rowAvoided(row) { return !!(row && row.avoid && (row.avoid.until == null || row.avoid.until > this.now())); }
+  accountCaution(account) {
+    if (!account) return {};
+    const company = this.adminState().company || {};
+    if (company.current && !(company.caps || []).includes('quota')) return { accountNote: `公司 Hub 版本较旧（v${company.current}），不认指定号，会按它自己的方式挑号；回执末尾会注明` };
+    if (!this.companyModels()?.table?.accountRows) return { accountNote: '公司号表未知，指定的号由公司核对；回执末尾会注明公司用的号' };
+    return {};
+  }
+
+  async ask(sessionId, { question, title, model, account }) {
     question = String(question || '').trim();
     if (question.length < 10) throw new Error('问题太短：请写清目的、要它做的事或要问的点、已知的线索和回复要求');
     if (question.length > 50000) throw new Error('问题超过 5 万字，请精简');
     model = this.resolveModel(model);
+    account = this.resolveAccount(account);
     const id = this.nextThreadId(), m = this.meta(sessionId), gen = this.link.gen();
     const t = { id, sessionId, sessionTitle: m.title || null, title: short(title || question, 40), gen, createdAt: this.now(),
-      ...(model ? { model } : {}), rounds: [{ round: 1, question, sentAt: this.now(), status: 'sent' }] };
-    // 老版本的公司 Hub 不认 model：忽略它，照旧用默认模型（回执里会写实际用的模型）。
-    await this.link.send('ask', { thread: id, gen, round: 1, title: t.title, question, from: { title: m.title || null, kind: m.kind || null }, ...(model ? { model } : {}) });
+      ...(model ? { model } : {}), rounds: [{ round: 1, question, sentAt: this.now(), status: 'sent', ...(account ? { account } : {}) }] };
+    // 老版本的公司 Hub 不认 model / account：忽略它们，照旧用默认模型、自己挑号（回执里会写实际用的模型和号）。
+    await this.link.send('ask', { thread: id, gen, round: 1, title: t.title, question, from: { title: m.title || null, kind: m.kind || null }, ...(model ? { model } : {}), ...(account ? { account } : {}) });
     this.saveThread(t);
     this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
     this.changed();
     // 模型表未知（公司 Hub 还没报过，多半是旧版）时指定了模型：如实提醒可能不生效（旧版公司忽略 model，照旧用默认）。
     const caution = model && !this.companyModels() ? { modelNote: '公司模型表未知（公司 Hub 可能是旧版），指定的模型可能不生效；回执末尾会注明公司是否按它作答' } : {};
-    return { thread: id, status: '已发出', model: model || '公司默认', ...caution, ...this.peer(),
+    return { thread: id, status: '已发出', model: model || '公司默认', account: account || '自动路由', ...caution, ...this.accountCaution(account), ...this.peer(),
       next: '等待回执时每 10 秒检查一次，处理时长取决于公司 Agent 的任务。回执到了会作为一条新消息自动发到本会话，现在请结束本轮（或先做不依赖回执的工作），不要循环等待。' };
   }
-  async followup(sessionId, { thread, question }) {
+  async followup(sessionId, { thread, question, account }) {
     const t = this.thread(String(thread || ''));
     if (!t || t.sessionId !== sessionId) throw new Error(t ? '这个编号属于另一个会话，不能在这里追问' : '找不到编号 ' + thread);
     if (t.state === 'cancelled' || t.gen !== this.link.gen()) throw new Error('这个编号属于上一次配对，已作废；请用 ask_company 重新提问');
@@ -260,12 +300,14 @@ class HomeBridge {
     if (question.length > 50000) throw new Error('追问超过 5 万字，请精简');
     const pending = t.rounds.find(r => !r.reply && !r.error);
     if (pending) throw new Error(`第 ${pending.round} 轮还没回执，等它回来再追问`);
+    // 指定号（可选）：和原会话不是同一个号时，公司换到那个号新开会话、带上前几轮问答作上下文
+    account = this.resolveAccount(account);
     const round = t.rounds.length + 1;
-    await this.link.send('followup', { thread: t.id, gen: t.gen, round, question });
-    this.saveThread({ ...t, rounds: [...t.rounds, { round, question, sentAt: this.now(), status: 'sent' }] });
+    await this.link.send('followup', { thread: t.id, gen: t.gen, round, question, ...(account ? { account } : {}) });
+    this.saveThread({ ...t, rounds: [...t.rounds, { round, question, sentAt: this.now(), status: 'sent', ...(account ? { account } : {}) }] });
     this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
     this.changed();
-    return { thread: t.id, round, status: '已发出', ...this.peer(), next: '回执到了会作为新消息自动发到本会话，现在请结束本轮。' };
+    return { thread: t.id, round, status: '已发出', ...(account ? { account } : {}), ...this.accountCaution(account), ...this.peer(), next: '回执到了会作为新消息自动发到本会话，现在请结束本轮。' };
   }
   // 补收（2026-10-16）：上一轮报「没答上」或迟迟没有回执，但公司会话里其实写了回答——请公司直接把它取回，不重答。
   // 今天 Q-1016-02 第 4 轮就是答完了却没送回，只能人去公司电脑上抄。
@@ -293,7 +335,7 @@ class HomeBridge {
   // ---- 远程更新 / 重启公司 Hub（2026-10-17，公司一端见 hub-admin.js）----
   // 只发指令编号和动作；更新到哪个版本由公司 Hub 从发行源自己查（清单校验 + sha256），通道里不带文件或网址。
   adminState() { return this.store.get('hubAdmin') || {}; }
-  async hubAdmin({ op = 'update', force = false, sections, lines, action, params } = {}) {
+  async hubAdmin({ op = 'update', force = false, sections, lines, errors, action, params } = {}) {
     if (!this.link.paired()) throw new Error('家里和公司还没配对');
     if (!['update', 'restart', 'status', 'diag', 'act'].includes(op)) throw new Error('op 只能是 update / restart / status / diag / act');
     let extra = {};
@@ -303,7 +345,7 @@ class HomeBridge {
       const asked = Array.isArray(sections) ? sections : typeof sections === 'string' && sections.trim() ? sections.split(/[,，\s]+/) : [];
       const bad = asked.map(s => String(s).trim().toLowerCase()).filter(s => s && !D.SECTIONS.includes(s));
       if (bad.length) throw new Error(`sections 只能是 ${D.SECTIONS.join(' / ')}，不认识：${bad.join('、')}`);
-      extra = { sections: D.parseSections(asked).sections, ...(lines != null ? { lines: D.parseLines(lines) } : {}) };
+      extra = { sections: D.parseSections(asked).sections, ...(lines != null ? { lines: D.parseLines(lines) } : {}), ...(errors != null ? { errors: D.parseErrorsLimit(errors) } : {}) };
       // 公司报过版本、却没报「认得直查」：老版本会把指令静默丢掉，直接说明，不白等（2026-10-18 审核）。
       const company = this.adminState().company || {};
       if (company.current && !(company.caps || []).includes('diag')) {
@@ -317,6 +359,9 @@ class HomeBridge {
       const checked = A.parseParams(action, params || {});
       const company = this.adminState().company || {};
       if (company.current && !(company.caps || []).includes('act')) throw Object.assign(new Error(`公司 Hub 版本过旧（v${company.current}），不支持远程维护；先让它更新（company_hub_update op=update）`), { code: 'act-unsupported' });
+      if (['pause-account', 'resume-account'].includes(action) && company.current && !(company.caps || []).includes('quota')) {
+        throw Object.assign(new Error(`公司 Hub 版本过旧（v${company.current}），不支持按号暂停 / 恢复；先让它更新（company_hub_update op=update）`), { code: 'act-unsupported' });
+      }
       extra = { action, params: checked };
     }
     const d = new Date(this.now() + 8 * 3600000);
@@ -376,9 +421,9 @@ class HomeBridge {
 
   // ---- 直查公司电脑与公司 Hub（2026-10-18；公司一端 hub-admin.js diag、diag.js）----
   // MCP / 命令行默认等回报（最多约 45 秒，期间每 2.5 秒看一次通道），到了直接返回结果；超时返回编号，之后带 id 再取。
-  async diag({ sections, id, lines, wait = true, waitMs = DIAG_WAIT_MS } = {}) {
+  async diag({ sections, id, lines, errors, wait = true, waitMs = DIAG_WAIT_MS } = {}) {
     if (id) return this.diagView(String(id));
-    const sent = await this.hubAdmin({ op: 'diag', sections, lines });
+    const sent = await this.hubAdmin({ op: 'diag', sections, lines, errors });
     if (!wait) return sent;
     const sleep = this.deps.sleep || (ms => new Promise(r => setTimeout(r, ms)));
     const until = Date.now() + Math.max(0, Number(waitMs) || 0);
@@ -471,6 +516,7 @@ class HomeBridge {
     return { ...this.peer(), companyModels: this.modelsBrief(), threads: list.map(t => ({ thread: t.id, title: t.title, state: STATE_LABEL[t.state] || t.state, model: t.model || '公司默认',
       rounds: t.rounds.map(r => ({ round: r.round, question: r.question, status: STATE_LABEL[r.status] || r.status,
         ...(r.note && !r.reply && !r.error ? { note: r.note } : {}), ...(r.meta?.actualModel || r.meta?.model ? { usedModel: r.meta.actualModel || r.meta.model } : {}),
+        ...(r.meta?.accountAlias ? { usedAccount: r.meta.accountAlias } : {}), ...(r.account ? { account: r.account } : {}), ...(r.meta?.rehomedFrom ? { rehomedFrom: r.meta.rehomedFrom } : {}),
         reply: r.reply || null, error: r.error || null })) })) };
   }
   peer() {

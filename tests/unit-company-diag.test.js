@@ -272,7 +272,7 @@ test('代次不符、编号格式不对：不处理、不回报；段落白名�
   assert.equal(r.company.hubAdmin.receive({ type: 'hub-admin', op: 'diag', id: 'HA-1018-aaaaaa', gen: 'old-gen' }), true);
   assert.equal(r.company.hubAdmin.receive({ type: 'hub-admin', op: 'diag', id: 'bad id!', gen: r.company.link.gen() }), true);
   assert.equal(r.company.hubAdmin.diagTask, undefined); assert.equal(outbox(), 0); assert.equal(r.company.hubAdmin.state().lastDiagAt, undefined);
-  await assert.rejects(r.home.hubAdmin({ op: 'diag', sections: ['machine', 'shell'] }), /sections 只能是 machine \/ processes \/ hub \/ pool \/ logs \/ codeagent \/ airview \/ features，不认识：shell/);
+  await assert.rejects(r.home.hubAdmin({ op: 'diag', sections: ['machine', 'shell'] }), /sections 只能是 machine \/ processes \/ hub \/ pool \/ logs \/ codeagent \/ airview \/ features \/ errors，不认识：shell/);
   // 绕过家里直接塞：公司只采白名单段落，其余记为 ignored
   r.company.hubAdmin.receive({ type: 'hub-admin', op: 'diag', id: 'HA-1018-bbbbbb', gen: r.company.link.gen(), sections: ['machine', 'Get-Process | Stop-Process'] });
   await r.company.hubAdmin.diagTask;
@@ -301,7 +301,7 @@ test('大小降级：先截日志、再截进程……整条消息始终小于 6
   const huge = { schema: 1, sections: ['logs'], at: NOW, elapsedMs: 5, logs: { files: [{ key: 'x', lines: [rand(30000)] }] } };
   const tried = [];
   const fitted = D.fit(huge, data => { const d = D.decode(data); tried.push(d.degraded.at(-1) || '原样'); return d.note ? 900 : 70000; });
-  assert.deepEqual(tried, ['原样', '日志每份截到 40 行', '日志每份截到 15 行', '进程只留前 10，残留嫌疑只留前 15', '日志省略', '会话列表只留 20 个', '进程只留前 5，残留嫌疑只留前 5，会话列表省略', '只留各段汇总', '全部省略']);
+  assert.deepEqual(tried, ['原样', '日志每份截到 40 行', '日志每份截到 15 行', 'API 报错只留最近 10 条', '进程只留前 10，残留嫌疑只留前 15', '日志省略', '会话列表只留 20 个', '进程只留前 5，残留嫌疑只留前 5，会话列表省略', '只留各段汇总', '全部省略']);
   assert.equal(fitted.result.degraded.at(-1), '全部省略'); assert.ok(fitted.bytes < 60000);
   assert.deepEqual(D.decode(fitted.data).degraded, fitted.result.degraded);
 });
