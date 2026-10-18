@@ -91,6 +91,15 @@ test('launch never passes --session-id or --settings and always disables the upd
     { ...config, command: 'D:\\stand in\\codeagent.cmd' });
   assert.ok(spaced.cmd.startsWith(" & 'D:\\stand in\\codeagent.cmd' "), 'a configured path is invoked with the call operator');
   assert.ok(spaced.cmd.includes("--append-system-prompt-file 'C:\\a b\\it''s.md'"));
+
+  // 2026-10-18：公司助理会话带上 Hub 给它的会话工具（额外配置），论坛、家里联动会话照旧不带。
+  const extra = path.join(cwd, 'extra-mcp.json');
+  const assistant = buildCodeAgentPtyLaunch('hub-6', 'codeagent', { purpose: 'company-assistant', mcpConfigFile: extra }, cwd, env, config);
+  assert.ok(assistant.cmd.includes(extra), 'company assistant loads its tool config');
+  for (const purpose of ['company-forum', 'company-bridge']) {
+    const other = buildCodeAgentPtyLaunch('hub-7', 'codeagent', { purpose, mcpConfigFile: extra }, cwd, env, config);
+    assert.ok(!other.cmd.includes(extra), purpose + ' stays without Hub MCP');
+  }
 });
 
 test('hook deployment for codeagent keeps foreign hooks and leaves status line and permissions alone', t => {

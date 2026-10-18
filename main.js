@@ -2462,6 +2462,29 @@ try {
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
       nodeExecutable: process.execPath,
       onChanged: () => sendToRenderer('company-assistant:changed', {}),
+      // 手机对话（2026-10-18，core/company-assistant/phone.js 与 hub-tools.js）：助理用这些看会话、推进会话、卡住时替用户按键。
+      getAllSessions: () => sessionManager.getAllSessions(),
+      listKnownSessions: () => lastPersistedSessions.map(meta => ({ ...meta, id: meta.hubId || meta.id })),
+      readTerminalScreen: id => {
+        const entry = sessionManager.sessions?.get?.(id);
+        const text = sessionManager.getSessionBuffer(id);
+        if (text == null) return null;
+        return { text, cols: Number(entry?.pty?.cols) || 120, rows: Number(entry?.pty?.rows) || 30 };
+      },
+      sessionKeys: (id, data) => {
+        if (!sessionManager.getSession(id)) throw new Error('会话未打开');
+        if (sessionManager.getNativeSession?.(id) || sessionManager.getNativeClaude?.(id)) throw new Error('原生会话不支持终端按键');
+        sessionManager.writeToSession(id, data);
+      },
+      // 与电脑上的停止键同一规则（renderer/pty-interrupt.js）：终端会话按 Esc。
+      interruptSession: async id => {
+        if (!sessionManager.getSession(id)) throw new Error('会话未打开');
+        const native = sessionManager.getNativeSession?.(id) || sessionManager.getNativeCodex?.(id);
+        if (native?.interrupt) { await native.interrupt(); return; }
+        sessionManager.writeToSession(id, sessionManager.getNativeClaude?.(id) ? '\u0003' : '\x1b');
+      },
+      // 电脑前有没有人：键盘鼠标多少秒没动（「其他会话卡住」只在人不在电脑前时推到手机）。
+      systemIdleSeconds: () => require('electron').powerMonitor.getSystemIdleTime(),
     });
     require('./core/company-assistant/notice-bus').noticeBus().on('notice', notice => {
       sendToRenderer('company-assistant:notice', notice);
@@ -2469,6 +2492,9 @@ try {
       try { void desktopNotificationController?.show({ sessionId: 'company-assistant', title: notice.title, body: notice.text, kind: 'assistant' }); } catch (error) { console.warn('[company-assistant] notification', error.message); }
     });
     companyAssistantService.start();
+    // 助理会话挂会话工具；其他会话照旧交给家里联动（配对过才有）决定挂不挂「问家里」。
+    const bridgeMcpPlan = sessionManager.extraMcpProvider;
+    sessionManager.setExtraMcpProvider(request => companyAssistantService.sessionPlan(request) || (bridgeMcpPlan ? bridgeMcpPlan(request) : null));
     require('./main/ipc/company-assistant-handlers').registerCompanyAssistantIpc(ipcMain, companyAssistantService);
   }
 } catch (error) { console.error('[company-assistant] 公司助理未启动：', error.message); }

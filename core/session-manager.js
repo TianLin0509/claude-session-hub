@@ -480,7 +480,9 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config) {
   const { normalizeCodeAgentModel, EFFORTS, commandHead } = require('./codeagent-config');
   const hubDataDir = getHubDataDir();
   const bridge = codeAgentReadOnly(opts); // 家里联动会话不挂 Hub 自己的 MCP
-  const mcp = buildClaudeMeetingMcpArgs({ cwd, hubDataDir, mcpConfigFile: bridge ? undefined : opts.mcpConfigFile,
+  // 公司助理例外（2026-10-18）：它的额外配置里只有 Hub 给它的会话工具（core/company-assistant/hub-tools.js），要带上。
+  const extraOnly = bridge && opts.purpose === 'company-assistant';
+  const mcp = buildClaudeMeetingMcpArgs({ cwd, hubDataDir, mcpConfigFile: bridge && !extraOnly ? undefined : opts.mcpConfigFile,
     mcpProfile: bridge ? 'none' : (opts.mcpProfile || 'full') });
   const args = ['--disable-update', '--skip-safe-check'];
   const inheritModel = !shouldPickCodeAgentModel(opts);
