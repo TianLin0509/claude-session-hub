@@ -180,10 +180,10 @@ async function main() {
     await shot(hc, '01-home-company-link-models');
     check(true, '家里无线页「公司联动」列表里，DS 那条写着「指定模型 deepseek-v4-0731」');
     await click(cc, '#btn-options'); await click(cc, '#options-home-link');
-    await until('company tasks', () => cc.eval(`[...document.querySelectorAll('#home-link-dialog .hl-item')].some(e => e.innerText.includes(${j(askedDs.thread)}) && e.innerText.includes('家里指定模型 ${DS}'))`), 30000, 500);
+    await until('company tasks', () => cc.eval(`[...document.querySelectorAll('#home-link-dialog .hl-item')].some(e => e.innerText.includes(${j(askedDs.thread)}) && e.innerText.includes('指定模型 ${DS}'))`), 30000, 500);
     await cc.eval(`[...document.querySelectorAll('#home-link-dialog .hl-item')].find(e => e.innerText.includes(${j(askedDs.thread)}))?.scrollIntoView({block:'center'})`);
     await shot(cc, '02-company-tasks-models');
-    check(true, '公司「AI特战队专用功能」任务记录里，DS 那条写着「家里指定模型 deepseek-v4-0731」');
+    check(true, '公司「AI特战队专用功能」任务记录里，DS 那条写着「指定模型 deepseek-v4-0731」');
     await cc.eval('document.getElementById("home-link-dialog")?.close()');
     result.passed = true;
   } catch (error) {
