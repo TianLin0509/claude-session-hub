@@ -20,8 +20,9 @@ const { BARE_CONTINUE, transcriptTurnFinished } = require('./receipt-reader');
 
 const HISTORY = 20;
 // diag（2026-10-18 直查通道，diag.js）：只读，直接采集电脑与 Hub 状态回报，不经 CodeAgent、不排队；和更新 / 重启互不影响。
-const OPS = ['update', 'restart', 'status', 'diag'];
-const CAPS = ['diag'];
+// act（2026-10-18 三期远程维护，remote-act.js）：休眠空闲通道会话、结束残留进程、临时调并行档位、取消排队 / 重试问题。
+const OPS = ['update', 'restart', 'status', 'diag', 'act'];
+const CAPS = ['diag', 'act'];
 // 执行中的阶段；其余都是结束态。
 const LIVE = ['checking', 'downloading', 'waiting', 'applying', 'restarting'];
 const GRACE_DEFAULT_MINUTES = 3;
@@ -101,6 +102,10 @@ class HubAdmin {
     if (seen.includes(id)) return true; // 发件箱重发、服务端重放
     this.save({ seen: [id, ...seen].slice(0, 50) });
     if (message.op === 'status') { void this.report(id, 'status', this.describe()); return true; }
+    if (message.op === 'act') {
+      this.actTask = this.act(id, message).catch(error => { try { return Promise.resolve(this.report(id, 'failed', '远程维护没做完：' + error.message)).catch(() => null); } catch { return null; } });
+      return true;
+    }
     if (message.op === 'diag') {
       // 回报本身也可能在 Hub 退出的瞬间失败（库已关）：一律兜住，不留未处理的 rejection（2026-10-18 审核）。
       this.diagTask = this.diag(id, message).catch(error => { try { this.auditDiag(`failed ${id} ${error.message}`); return Promise.resolve(this.report(id, 'failed', '直查没做完：' + error.message)).catch(() => null); } catch { return null; } });
@@ -162,6 +167,8 @@ class HubAdmin {
     b.notify('对端查看了这台电脑的状态', `编号 ${id} · ${sections.map(s => D.SECTION_LABEL[s]).join('、')}`, null, { quiet: true });
     try {
       const raw = await D.collect({ bridge: b, sections, lines });
+      // 记下这次直查认定「可结束」的残留（PID + 启动时间），远程维护 kill-orphans 只认 5 分钟内这份清单（remote-act.js）
+      if (raw.processes && Array.isArray(raw.processes.leftovers)) this.save({ lastDiagKillable: { at: this.now(), id, list: raw.processes.leftovers.filter(x => x.killable).map(x => ({ pid: x.pid, startedAt: x.startedAt, name: x.name })) } });
       if (ignored.length) raw.ignored = ignored;
       // 号身份取一次快照，整份结果共用（逐个字符串读盘会卡住主进程）。
       const secrets = b.accountSecrets();
@@ -192,6 +199,14 @@ class HubAdmin {
     return this.report(id, 'refused', '直查：' + why);
   }
   auditDiag(line) { try { this.bridge.appendLog?.('company-diag.log', line); } catch { /* 审计日志写不了不挡回报 */ } }
+
+  // ---- 远程维护（2026-10-18 三期，remote-act.js）----
+  remoteAct() { if (!this.actor) { const { RemoteAct } = require('./remote-act'); this.actor = new RemoteAct(this); } return this.actor; }
+  async act(id, message) {
+    const out = await this.remoteAct().run(id, message);
+    await this.report(id, out.phase, out.note, { act: out.act });
+    return out;
+  }
 
   async runUpdate(job) {
     const c = this.controller();
@@ -267,6 +282,8 @@ class HubAdmin {
   }
   // 由通道定时器调用：等待阶段看能不能重启了；重启阶段看进程是不是真的退出了（看门狗）。
   async advance() {
+    // 远程维护临时调的并行档位：到点恢复（remote-act.js）
+    if (this.state().parallelRestore) { try { await this.remoteAct().restoreDue(); } catch (e) { console.warn('[hub-admin] 恢复并行档位', e.message); } }
     const job = this.job();
     if (!job || !LIVE.includes(job.phase)) return;
     if (['applying', 'restarting'].includes(job.phase)) {
@@ -493,7 +510,7 @@ class HubAdmin {
   status() {
     const s = this.state();
     return { job: s.job || null, history: (s.history || []).slice(0, 5), current: this.current(), installed: !!this.controller(),
-      graceMinutes: this.graceMinutes(), resumeAfterRestart: s.resumeAfterRestart || null, resumeIssues: this.resumeIssues(), lastDiag: s.lastDiag || null };
+      graceMinutes: this.graceMinutes(), resumeAfterRestart: s.resumeAfterRestart || null, resumeIssues: this.resumeIssues(), lastDiag: s.lastDiag || null, parallelRestore: s.parallelRestore || null };
   }
 }
 

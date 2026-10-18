@@ -66,6 +66,21 @@ const tools = [
     }),
   },
   {
+    name: 'company_act',
+    description: '远程维护公司电脑上的 AI Hub：会改动公司电脑状态，仅在用户要求或诊断明确指向时使用，先用 company_diag 看清楚再 act。'
+      + 'action：suspend-idle（让答完空着的通道会话休眠，人自己开的会话不动）；kill-orphans（结束最近一次 company_diag 列为「可结束」的残留进程，targets 填那次结果里的 pid 和 startedAt，5 分钟内有效，只按 PID 结束，Hub 进程树永远不动）；'
+      + 'set-parallel（临时改 memFloorPct 5–50 / maxParallel 1–8 / maxParallelIdle 1–12，restoreAfterHours 0.25–24 小时后恢复原值；maxParallel 只管工作日忙时，闲时上限取两者较大的，要整体收紧就两个一起改）；cancel-queued（取消还在排队的问题，thread 填编号）；retry（重试失败的问题）。'
+      + '公司端可在设置里关掉「远程维护」，关了回 refused；每个动作有限频。调用后最多等约 45 秒直接返回结果和前后对比（如内存释放多少）；等不到就返回编号，稍后带 id 再取，不要重复发同一个动作。',
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    inputSchema: schema({
+      action: { type: 'string', enum: ['suspend-idle', 'kill-orphans', 'set-parallel', 'cancel-queued', 'retry'] },
+      targets: { type: 'array', items: schema({ pid: { type: 'integer' }, startedAt: { type: 'integer' } }, ['pid', 'startedAt']), description: 'kill-orphans：要结束的进程（取自 company_diag 的 processes.leftovers 里 killable 为 true 的项）' },
+      thread: { type: 'string', description: 'cancel-queued / retry：问题编号，如 Q-1018-03' },
+      memFloorPct: { type: 'integer', minimum: 5, maximum: 50 }, maxParallel: { type: 'integer', minimum: 1, maximum: 8 }, maxParallelIdle: { type: 'integer', minimum: 1, maximum: 12 },
+      restoreAfterHours: { type: 'number', minimum: 0.25, maximum: 24, description: 'set-parallel：多少小时后恢复原值（不填 = 不自动恢复）' },
+      id: { type: 'string', description: '取之前那次远程维护的结果（不发新的）' },
+    }),
+  },  {
     name: 'company_thread',
     description: '查看本会话向公司提过的问题和全部回执（不传 thread 时列出本会话最近 10 个），以及公司电脑是否在线。回执会自动送达，一般不需要调用。',
     annotations: { readOnlyHint: true, openWorldHint: false },
@@ -95,7 +110,7 @@ async function handle(request) {
     if (!tools.some(t => t.name === request.params?.name)) throw new Error('未知工具');
     const endpoint = JSON.parse(fs.readFileSync(process.env.HUB_BRIDGE_ENDPOINT_FILE, 'utf8'));
     const response = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + (process.env.HUB_BRIDGE_SESSION_PASS || ''), 'Content-Type': 'application/json', 'X-Hub-Bridge-Session': process.env.HUB_BRIDGE_SESSION_ID || '' },
-      body: JSON.stringify(request.params), signal: AbortSignal.timeout(request.params?.name === 'company_diag' ? 90000 : 60000) }); // 直查会等回报最多约 45 秒
+      body: JSON.stringify(request.params), signal: AbortSignal.timeout(['company_diag', 'company_act'].includes(request.params?.name) ? 90000 : 60000) }); // 直查会等回报最多约 45 秒
     const data = await response.json();
     return { content: [{ type: 'text', text: JSON.stringify(data.ok ? data.result : { error: data.error }, null, 1) }], isError: !data.ok };
   }

@@ -78,6 +78,23 @@
 - 时延：= 公司下一次检查通道（活跃 10 秒；空闲按公司设置，默认 30 秒）+ 采集（真机实测见 e2e）+ 家里检查（等回报时 5 秒，卡片与 MCP 等待时 2.5 秒）。
 - 测试：`tests/unit-company-diag.test.js`（夹具系统接口）；`tests/e2e-company-diag.js`（双 Electron + relay_server.py + 公司版导出 + 真实进程枚举）。
 
+## 远程维护（2026-10-18 三期，op:'act'）
+
+田哥 16:4x：「可以的，我建议都做」。先 diag 再 act；每个动作单独白名单（`core/company-bridge/remote-act.js`）。
+
+- 链路：家里 `HomeBridge.act({ action, params })`（MCP `company_act`、`company-ask.js --act …`、「公司电脑状态」卡片上的按钮，均二次确认）→ `{ type:'hub-admin', op:'act', id, gen, action, params }`
+  → 公司 `hub-admin.js act()` → `RemoteAct.run()` → `{ type:'hub-admin-status', phase:'act'|'refused', note, act:{ action, ok, … 前后对比 } }`。家里存最近 10 条，MCP / 命令行默认等约 45 秒直接返回。
+- 底线：只认当前配对代次；公司设置「远程维护」（`allowRemoteMaintain`，默认开，关了回 refused）；按动作限频（kill-orphans 60 秒，其余 10 秒）；同时只做一个；
+  参数家里先核、公司再核（`parseParams`）；每次写 `logs/company-act.log`，界面轻提示「对端执行了：…」（不弹系统通知）；公司每条回报带 `caps:['diag','act']`，旧版公司家里直接说明不支持。
+- suspend-idle：只动 purpose=company-bridge、不在干活、没有排队 / 在途问题的会话，走 `suspendSession` 现有底线（置顶、正看着、群聊成员不收；空闲不足 1 分钟不收）；人自己开的会话一律不动。回报休眠了哪些、跳过哪些及原因、可用内存前后。
+- kill-orphans：对端传 `targets:[{pid,startedAt}]`（最多 20 个），必须在 5 分钟内那次直查记下的「可结束」清单里（`hubAdmin.lastDiagKillable`，PID + 启动时间都一致）；
+  动手前重新枚举进程、用同一套参数（`diag.js analyzeOptions`）再判一次：仍是「可结束」、启动时间没变（PID 没被复用）、不在保护名单（当前 Hub 进程树、所有别的 Hub 主进程及其进程树、Hub 后台脚本、本进程）才结束。
+  只按 PID 结束（`process.kill(pid)`），绝不按命令行匹配；结束前后各记一次可用内存，结束过的从清单里划掉。
+- set-parallel：`memFloorPct` / `maxParallel` / `maxParallelIdle` 走 `setSettings` 的校验与上下限；`restoreAfterHours`（0.25–24）到点由通道定时器（`hubAdmin.advance`）恢复原值并告诉家里；连调两次恢复到第一次之前。
+- cancel-queued：只取消还在排队（没开会话）的问题，线程记为 cancelled，家里那一轮收到「被对端取消」；retry：复用 `CompanyBridge.retry`。
+- 隔离测试实例可用 `CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS`（残留最短存活时间）、`CLAUDE_HUB_ACT_HOUR_MS`（「1 小时」的长度）缩短等待，只在设了 `CLAUDE_HUB_DATA_DIR` 时生效。
+- 测试：`tests/unit-company-remote-act.test.js`；`tests/e2e-company-remote-act.js`（双 Electron + 通道服务 + CodeAgent 替身 = 真 Claude Code + Haiku 开出真的通道会话 + 人为制造的残留进程）。
+
 ## 测试
 
 - 单测：`tests/unit-company-hub-admin.test.js`（控制器替身 + 内存通道两端；含宽限、中断—恢复、恢复失败、只恢复一次、看门狗、配对代次、取代旧指令）。

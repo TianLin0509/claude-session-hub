@@ -108,6 +108,8 @@
     "renderer/company-diag-card.js",
     "tests/unit-company-diag.test.js",
     "tests/e2e-company-diag.js",
+    "tests/unit-company-remote-act.test.js",
+    "tests/e2e-company-remote-act.js",
     "tests/unit-writing-tab.test.js",
     "tests/e2e-writing-tab-cdp.js",
     "renderer/assets/ai-avatars/v1/**",

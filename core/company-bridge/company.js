@@ -86,7 +86,9 @@ const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructi
   // 允许对端直查这台电脑的状态（2026-10-18，只读，hub-admin.js diag；独立于远程更新开关，默认开）。
   allowRemoteDiag: true,
   // 直查 airview 段看这些目录下最近更新的结果文件（只看名字、大小、修改时间），连同代码位置一起（diag.js resultFiles）。
-  resultDirs: ['C:/AirView'] });
+  resultDirs: ['C:/AirView'],
+  // 允许对端远程维护（2026-10-18 三期，remote-act.js：休眠空闲通道会话、结束残留进程、临时调并行档位、取消排队 / 重试问题），默认开。
+  allowRemoteMaintain: true });
 const ACTIVE_POLL_MS = 10000;
 const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -294,6 +296,7 @@ class CompanyBridge {
     if ('autoGate' in patch) next.autoGate = patch.autoGate === true;
     if ('allowRemoteAdmin' in patch) next.allowRemoteAdmin = patch.allowRemoteAdmin === true;
     if ('allowRemoteDiag' in patch) next.allowRemoteDiag = patch.allowRemoteDiag === true;
+    if ('allowRemoteMaintain' in patch) next.allowRemoteMaintain = patch.allowRemoteMaintain === true;
     if ('resultDirs' in patch) {
       const list = (Array.isArray(patch.resultDirs) ? patch.resultDirs : String(patch.resultDirs || '').split(/\r?\n/)).map(s => String(s).trim()).filter(Boolean);
       if (list.length > 10) throw new Error('仿真结果目录最多 10 个');

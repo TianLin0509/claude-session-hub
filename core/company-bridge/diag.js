@@ -410,6 +410,8 @@ function hub(bridge, deps, sys, ctx) {
     holdingDispatch: (() => { try { return !!bridge.hubAdmin.holdingDispatch(); } catch { return null; } })(),
     adminJob: job ? { id: job.id, op: job.op, phase: job.phase, note: short(job.note, 120) } : null,
     queue: { running: queue.filter(q => q.phase === 'running').length, queued: queue.filter(q => q.phase === 'queued').length, threads: queue },
+    // 最近失败的问题（远程维护 retry 用）：当前配对代次、最近 10 个
+    failed: (() => { try { return bridge.threads(60).filter(t => t.state === 'failed' && t.gen === bridge.link.gen()).slice(0, 10).map(t => { const r = [...t.rounds].reverse().find(x => x.error) || {}; return { thread: t.id, title: short(t.title, 40), round: r.round ?? null, error: short(r.error, 120), failedAt: r.failedAt || null }; }); } catch { return []; } })(),
     sessions: { total: sessions.length, byState, list: sessions.slice(0, MAX_SESSIONS) },
   };
 }
@@ -557,6 +559,15 @@ function features(deps) {
   return out;
 }
 
+// 进程分类的参数：直查和远程维护（remote-act.js kill-orphans 动手前重新判定）用同一套。
+function analyzeOptions(bridge, sys, ptyPids = null) {
+  const deps = bridge.deps;
+  const pids = ptyPids || (() => { try { return (deps.sessionPtyPids?.() || []).filter(x => x && x.id && Number(x.pid) > 0); } catch { return []; } })();
+  const minAge = Number(deps.leftoverMinAgeMs);
+  return { hubPid: Number(deps.hubPid) || process.pid, hubExe: path.basename(String(deps.hubExecPath || process.execPath)), sessionPids: pids, now: bridge.now(), isHubAppDir: sys.isHubAppDir,
+    ...(deps.leftoverMinAgeMs != null && Number.isFinite(minAge) && minAge >= 0 ? { suspectMinAgeMs: minAge, killMinAgeMs: minAge } : {}) };
+}
+
 // ---- 汇总 ----
 async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_LOG_LINES, sys = { ...defaultSys(), ...(deps.diagSys || {}) } }) {
   const t0 = sys.clock();
@@ -583,9 +594,7 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
       let analyzed = null, error = null;
       try {
         const snap = await Promise.race([sys.processSnapshot(), new Promise((_, reject) => setTimeout(() => reject(new Error(`进程枚举超过 ${PROCESS_TIMEOUT_MS / 1000} 秒没返回`)), PROCESS_TIMEOUT_MS + 1000).unref?.())]);
-        const minAge = Number(deps.leftoverMinAgeMs);
-        analyzed = analyzeProcesses(snap, { hubPid, hubExe: path.basename(String(deps.hubExecPath || process.execPath)), sessionPids: ptyPids, now: bridge.now(), isHubAppDir: sys.isHubAppDir,
-          ...(Number.isFinite(minAge) && minAge >= 0 ? { suspectMinAgeMs: minAge, killMinAgeMs: minAge } : {}) });
+        analyzed = analyzeProcesses(snap, analyzeOptions(bridge, sys, ptyPids));
       } catch (e) { error = e; }
       if (analyzed) { ctx.sessionMem = analyzed.sessions; ctx.analyzed = analyzed; }
       if (error) ctx.processError = errText(error);
@@ -677,7 +686,7 @@ function fit(result, measure, limit = MESSAGE_LIMIT - MESSAGE_MARGIN) {
 
 const STEP_LABELS = STEPS.map(s => s[0]);
 module.exports = {
-  STEP_LABELS, cmdTokens, entryScript, isCodeAgentProc, isHubScript, SUSPECT_MIN_AGE_MS,
+  STEP_LABELS, analyzeOptions, cmdTokens, entryScript, isCodeAgentProc, isHubScript, SUSPECT_MIN_AGE_MS,
   SECTIONS, SECTION_LABEL, MIN_INTERVAL_MS, MESSAGE_LIMIT, PROCESS_TIMEOUT_MS, DEFAULT_LOG_LINES, MAX_LOG_LINES, LOGS,
   parseSections, parseLines, encode, decode, makeRedactor, deepRedact, analyzeProcesses, poolAliases, pool, machine, logs, hub, collect, summarize, fit, defaultSys,
 };

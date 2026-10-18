@@ -2427,6 +2427,8 @@ try {
       hubStartedAt: Math.round(Date.now() - process.uptime() * 1000),
       // 残留判定的最短存活时间（默认嫌疑 10 分钟、可结束 30 分钟）：只有隔离测试实例能改短（同 role.js 的做法）。
       leftoverMinAgeMs: process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS ? Number(process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS) : undefined,
+      // 远程维护「N 小时后恢复」的 1 小时：只有隔离测试实例能缩短（core/company-bridge/remote-act.js）。
+      actHourMs: process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_ACT_HOUR_MS ? Number(process.env.CLAUDE_HUB_ACT_HOUR_MS) : undefined,
       // 直查二期：CodeAgent 命令（跑 --version）、会话屏幕（读 Stats 面板的 Credit 额度）、各功能最近一次成功 / 错误。
       codeagentCommand: () => require('./core/codeagent-config').resolveCodeAgentConfig(process.env).command,
       readTerminalScreen: id => {

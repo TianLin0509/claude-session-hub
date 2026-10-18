@@ -108,6 +108,8 @@
         <div class="hl-muted">只更新到发行源上的正式版本；重启前先等手上的任务答完，到时还没答完的先记下、中断，重启后自动恢复会话发「继续」接着做，回执照常发回（家里带 force 时不等）。${data.hubAdmin?.history?.[0] ? '最近一次：' + esc(data.hubAdmin.history[0].note) + '（' + clock(data.hubAdmin.history[0].at) + '）' : ''}</div></div>` : ''}
       ${'allowRemoteDiag' in s ? `<label>状态查看</label><div><select data-hl-f="allowRemoteDiag"><option value="1"${s.allowRemoteDiag ? ' selected' : ''}>允许对端查看这台电脑的状态</option><option value="0"${s.allowRemoteDiag ? '' : ' selected'}>不允许</option></select>
         <div class="hl-muted">只读：内存、进程、任务队列、号池状态（不含账号）、日志尾部（已脱敏）；不读代码和文件内容。每次查看都会在这里轻提示并记入日志。${data.hubAdmin?.lastDiag ? '最近一次：' + clock(data.hubAdmin.lastDiag.at) : ''}</div></div>` : ''}
+      ${'allowRemoteMaintain' in s ? `<label>远程维护</label><div><select data-hl-f="allowRemoteMaintain"><option value="1"${s.allowRemoteMaintain ? ' selected' : ''}>允许对端远程维护这台 Hub</option><option value="0"${s.allowRemoteMaintain ? '' : ' selected'}>不允许</option></select>
+        <div class="hl-muted">能做的只有：让答完空着的通道会话休眠（你自己开的会话不动）、结束查看状态时认定为「可结束」的重启残留进程、临时调整同时处理的档位（可到点恢复）、取消排队中的问题、重试失败的问题。每次都会在这里轻提示并记入日志。${data.hubAdmin?.parallelRestore ? '临时档位将于 ' + clock(data.hubAdmin.parallelRestore.at) + ' 恢复' : ''}</div></div>` : ''}
       <label>网络放行</label><div><select data-hl-f="autoGate"><option value="0"${s.autoGate ? '' : ' selected'}>手动：被拦时提示我去点放行页</option><option value="1"${s.autoGate ? ' selected' : ''}>自动放行（我已知晓风险）</option></select>
         <div class="hl-muted">自动放行：公司网络弹出放行页时，Hub 在后台替你点「继续访问」并重新连接；连续 3 次没放行就停下提示你，30 分钟后再试。</div></div>
       <label>给 CodeAgent<br>的说明</label><div><textarea rows="8" data-hl-f="instructions">${esc(s.instructions)}</textarea>
@@ -283,6 +285,7 @@
           ...(field('autoGate') ? { autoGate: field('autoGate').value === '1' } : {}),
           ...(field('allowRemoteAdmin') ? { allowRemoteAdmin: field('allowRemoteAdmin').value === '1' } : {}),
           ...(field('allowRemoteDiag') ? { allowRemoteDiag: field('allowRemoteDiag').value === '1' } : {}),
+          ...(field('allowRemoteMaintain') ? { allowRemoteMaintain: field('allowRemoteMaintain').value === '1' } : {}),
           ...(field('restartGraceMinutes') ? { restartGraceMinutes: Number(field('restartGraceMinutes').value) } : {}) });
         editing = false; await load(); toast('AI特战队专用功能设置已保存');
       }
