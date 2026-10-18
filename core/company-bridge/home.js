@@ -15,6 +15,7 @@ const { claimTimers, ownsTimers } = require('../hub-assistant/timer-owner');
 const { BridgeLink } = require('./link');
 const { HomeConsult, PURPOSE: CONSULT_PURPOSE } = require('./home-consult');
 const { MODEL_ID, sanitizeModelTable, describeModels } = require('./model-table-text');
+const guard = require('./delivery-guard');
 
 const ACTIVE_POLL_MS = 10000;
 // 空闲也每分钟看一次：公司的求助（ask_home）靠它及时收到（2026-10-15 起，原来 3 分钟）。
@@ -480,12 +481,20 @@ class HomeBridge {
             if (!session) { this.markDelivery(t, r, { deliveryError: '提问的会话没能恢复，稍后重试' }, false); continue; }
           }
           if (this.sessionBusy(t.sessionId)) continue;
+          // 重投前核对（delivery-guard.js）：这一轮之后会话已经发出更晚的一轮，或原生记录里已有这条回执，就不再投。
+          const done = guard.alreadyDelivered(this.thread(t.id) || t, r, { meta: session, marker: `【公司回执 ${t.id} · 第 ${r.round} 轮`, now: this.now(),
+            ...(this.deps.transcriptHasText ? { hasText: this.deps.transcriptHasText } : {}) });
+          if (done) { this.markDelivery(t, r, done); continue; }
           const receipt = await this.deps.sendPrompt(t.sessionId, replyMessage(t, r), randomUUID());
           // 明确没发进去才算失败；确认迟到、结果未知都按已送达，不重发（重发会让 Agent 收到两遍）。
-          if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) throw new Error(receipt?.error || '没有发进会话');
-          this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null });
+          // 发送入口报「只差空白」（content-mismatch）也是内容已进会话（2026-10-18 Q-1018-07：制表符被换成空格，重投了 6 次）。
+          if (guard.explicitFailure(receipt)) throw new Error(receipt?.error || receipt?.message || '没有发进会话');
+          this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null,
+            ...(guard.contentArrivedWithDiff(receipt) ? { deliveryNote: guard.MISMATCH_NOTE } : {}) });
         } catch (error) {
-          this.markDelivery(t, r, { deliveryError: error.message }, false);
+          // 明确失败最多重投 3 次，之后停止并在「公司联动」列表里标「可能已送达，未能确认」。
+          const f = guard.failure(this.thread(t.id)?.rounds.find(x => x.round === r.round) || r, error.message);
+          this.markDelivery(t, r, f.patch, f.final);
         }
       }
     }

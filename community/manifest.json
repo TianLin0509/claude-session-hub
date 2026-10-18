@@ -103,6 +103,7 @@
     "tests/unit-company-restart-recovery.test.js",
     "tests/unit-company-model-route.test.js",
     "tests/e2e-company-model-route.js",
+    "tests/unit-bridge-delivery-guard.test.js",
     "tests/e2e-company-hub-remote-update.js",
     "tests/unit-writing-tab.test.js",
     "tests/e2e-writing-tab-cdp.js",

@@ -1,4 +1,5 @@
 'use strict';
+const guard = require('./delivery-guard');
 // 公司 CodeAgent 向家里求助，公司一端（2026-10-15 田哥拍板）：公司 Hub 打开的 CodeAgent 会话带上 ask_home 工具（MCP，另有命令行兜底），
 // 遇到难题时把问题交给家里 Hub；家里优先用 Claude、Claude 不行换 Codex 作答，必要时家里还会用「问公司」回来查证据，
 // 所以一个来回通常 5–20 分钟，有时更久。回答到了，作为一条新消息送进发起求助的会话：停着就发，在忙就等，关了就先恢复。
@@ -231,12 +232,19 @@ class AskHome {
             if (!session) { this.markDelivery(t, r, { deliveryError: '发起求助的会话没能恢复，稍后重试' }, false); continue; }
           }
           if (this.bridge.sessionBusy(t.sessionId)) continue;
+          // 和家里收公司回执同一套兜底（delivery-guard.js，2026-10-18 Q-1018-07）：已发出更晚一轮 / 原生记录里已有这条回复就不再投；
+          // 发送入口报「只差空白」按已进会话；明确失败最多重投 3 次。
+          const done = guard.alreadyDelivered(this.thread(t.id) || t, r, { meta: session, marker: `【家里回复 ${t.id} · 第 ${r.round} 轮`, now: this.now(),
+            ...(this.deps.transcriptHasText ? { hasText: this.deps.transcriptHasText } : {}) });
+          if (done) { this.markDelivery(t, r, done); continue; }
           const receipt = await this.deps.sendPrompt(t.sessionId, replyMessage(t, r), randomUUID());
           // 明确没发进去才算失败；确认迟到、结果未知都按已送达，不重发（重发会让 Agent 收到两遍）。
-          if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) throw new Error(receipt?.error || '没有发进会话');
-          this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null });
+          if (guard.explicitFailure(receipt)) throw new Error(receipt?.error || receipt?.message || '没有发进会话');
+          this.markDelivery(t, r, { delivered: true, deliveredAt: this.now(), deliveryError: null, deliveryUncertain: receipt.ok === false || null,
+            ...(guard.contentArrivedWithDiff(receipt) ? { deliveryNote: guard.MISMATCH_NOTE } : {}) });
         } catch (error) {
-          this.markDelivery(t, r, { deliveryError: error.message }, false);
+          const f = guard.failure(this.thread(t.id)?.rounds.find(x => x.round === r.round) || r, error.message);
+          this.markDelivery(t, r, f.patch, f.final);
         }
       }
     }
