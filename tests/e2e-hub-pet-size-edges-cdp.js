@@ -45,9 +45,11 @@ async function main() {
     // 贴边时气泡、提醒面板（含「在助理里打开 ›」和 ×）、小圆点都完全在屏幕工作区里，且点得到（2026-10-18 审核）。
     const day = new Date(); day.setHours(10, 0, 0, 0);
     await debug({ op: 'override', nowShift: day.getTime() - Date.now(), idleSec: 0, busy: false, fullscreen: false });
+    // 面板里的按钮先滚到看得见的地方（用户也会这样滚），记下是否需要滚动
     const rectsOf = sels => pet.eval(`(() => { const out = {}; for (const [k, sel] of Object.entries(${JSON.stringify(sels)})) { const el = document.querySelector(sel); if (!el || el.hidden) { out[k] = null; continue; }
+      let scrolled = false; const list = el.closest('.panel-list'); if (list) { const top = list.scrollTop; el.scrollIntoView({ block: 'nearest' }); scrolled = list.scrollTop !== top; }
       const b = el.getBoundingClientRect(); const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
-      out[k] = { left: b.left, right: b.right, top: b.top, bottom: b.bottom, hit: !!(hit && (hit === el || el.contains(hit))) }; } return out; })()`);
+      out[k] = { left: b.left, right: b.right, top: b.top, bottom: b.bottom, hit: !!(hit && (hit === el || el.contains(hit))), scrolled }; } return out; })()`);
     const inScreen = (st, rects, label) => {
       const a = st.area, bx = st.bounds.x, by = st.bounds.y;
       for (const [k, r] of Object.entries(rects)) {
@@ -80,7 +82,7 @@ async function main() {
       await pet.eval(`document.getElementById('panel-close').click()`);
       result.overlays = result.overlays || {};
       result.overlays[pct] = { edge: st.edge, bounds: st.bounds, area: st.area, bubble: bubble.bubble, panel: panel.panel, close: panel.close, open: panel.open };
-      result.checks.push(`${pct}% 贴右边（窗口伸出屏幕 ${st.edge.right}px）：气泡、提醒面板、「在助理里打开 ›」和 × 都在屏幕里且点得到`);
+      result.checks.push(`${pct}% 贴右边（窗口伸出屏幕 ${st.edge.right}px）：气泡、提醒面板、「在助理里打开 ›」和 × 都在屏幕里且点得到${panel.open.scrolled ? '（「在助理里打开」要在面板里往下滚一点）' : '（不用滚动）'}`);
     }
 
     // ① 渲染端量出小猫图的透明边（idle.webp：320 宽里身体在 49–254 列、脚到第 275 行）

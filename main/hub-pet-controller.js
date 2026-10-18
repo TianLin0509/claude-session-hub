@@ -18,6 +18,7 @@ const INSET = { left: (WIN_W - BODY) / 2, right: (WIN_W - BODY) / 2, top: 0, bot
 // 窗口宽不变（放到最大 240 也装得下），高度按身体加高。
 const HEAD_ROOM = WIN_H - BODY;          // 身体上方留给气泡、提醒列表的高度
 const MARGIN = 24;
+const EDGE_CUT_MAX = 120;                // 告诉渲染端「窗口伸出屏幕」的宽度上限，见 edgeCut
 const PEEK_VISIBLE = 0.42;               // 躲边时露出身体的比例
 const POLL_MS = 4000;                    // 看助理忙不忙、有没有离开电脑
 const DRAG_TICK_MS = 16;
@@ -151,11 +152,17 @@ function createHubPetController({
   }
   // 窗口伸出所在屏幕工作区的宽度（左、右）。告诉渲染端，气泡、提醒面板、小圆点都只放在看得见的那一段里（2026-10-18 审核：
   // 原来写死 65px，小猫 100% 贴右边时会被裁约 30px，60% 时约 48px）。
+  // 窗口和工作区完全不相交时（隔离测试把窗口停在屏幕外，或系统暂时没报对位置）按 0 算；每边最多 EDGE_CUT_MAX，
+  // 保证气泡和面板总有地方放（正常贴边最多伸出约 113px：60%、贴右边；躲边时本来就不冒气泡）。
   function edgeCut() {
     if (!alive()) return { left: 0, right: 0 };
     const b = placedBounds();
     const area = areaFor(b);
-    return { left: Math.max(0, Math.round(area.x - b.x)), right: Math.max(0, Math.round(b.x + WIN_W - (area.x + area.width))) };
+    const h = winH();
+    const apart = b.x + WIN_W <= area.x || b.x >= area.x + area.width || b.y + h <= area.y || b.y >= area.y + area.height;
+    if (apart) return { left: 0, right: 0 };
+    const cut = v => Math.min(EDGE_CUT_MAX, Math.max(0, Math.round(v)));
+    return { left: cut(area.x - b.x), right: cut(b.x + WIN_W - (area.x + area.width)) };
   }
 
   // 隐藏的宿主窗口（2026-10-17，公司 CI 39030602842）：桌宠是置顶窗，Windows 挑「进程主窗口」时（Get-Process 的

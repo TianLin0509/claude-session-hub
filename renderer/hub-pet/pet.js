@@ -387,6 +387,11 @@
     // 提醒面板：两边各留 10px，伸出屏幕的那边再让出伸出的宽度
     panelEl.style.left = Math.max(10, visL) + 'px';
     panelEl.style.right = Math.max(10, WIN_W - visR) + 'px';
+    // 贴边时面板变窄、字折行变多：高度用满身体上方的空间（顶上留 4px），一条提醒时「在助理里打开 ›」尽量不用滚动就看得到
+    if (!panelEl.hidden) {
+      const bottom = parseFloat(getComputedStyle(panelEl).bottom) || 0;
+      panelEl.style.maxHeight = Math.max(120, window.innerHeight - bottom - 4) + 'px';
+    }
   }
 
   function showPanel(items) {

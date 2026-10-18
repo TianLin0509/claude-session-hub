@@ -316,6 +316,7 @@ test('副屏在主屏左边（x 为负）、缩放不同：来回拖大小滑块
   const w = FakeWindow.all[0];
   const set = ipcMain.handlers.get('hub-pet:set-settings');
   assert.deepEqual([w.bounds.x, w.bounds.y], [-1500, 800]);
+  const before = fs.readFileSync(path.join(dataDir, 'hub-pet.json'), 'utf8');
   const writes = countWrites();
   try {
     const ramp = [];
@@ -332,7 +333,7 @@ test('副屏在主屏左边（x 为负）、缩放不同：来回拖大小滑块
       assert.equal(w.bounds.height, h);
     }
     assert.equal(writes.n, 0, '拖动中一次盘都不写');
-    assert.equal(readSaved(dataDir).scale, 1, '盘上还是原来的');
+    assert.equal(fs.readFileSync(path.join(dataDir, 'hub-pet.json'), 'utf8'), before, '盘上还是原来的');
     await wait(380);
     assert.equal(writes.n, 1, '停下 300ms 写一次');
     assert.deepEqual(readSaved(dataDir).position, { x: -1500, y: 800 });
@@ -417,6 +418,22 @@ test('存的位置在拔掉的副屏上：启动拉回现有屏幕，量出透�
   await dragTo(ipcMain, petEvent, debug, mainWc, { x: b.x + 140, y: b.y + b.height - 60 }, { x: b.x - 400, y: b.y + b.height - 60 });
   const now = readSaved(dataDir).position;
   assert.deepEqual(now, { x: w.getBounds().x, y: w.getBounds().y }, '用户拖过，写现在的位置');
+});
+
+test('告诉渲染端窗口伸出屏幕多少：贴右边时等于右边距；窗口整个在屏幕外（隔离测试停放）时按 0', async () => {
+  const { ctl, ipcMain, petEvent, mainWc } = setup({ settings: { enabled: true, position: { x: 1920 - WIN_W + 65, y: 600 } } });
+  ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  const debug = ipcMain.handlers.get('hub-pet:debug');
+  assert.deepEqual(w.webContents.last('hub-pet:state').edge, { left: 0, right: 65 });
+  ipcMain.emit('hub-pet:body-box', petEvent(), { ...CAT_BOX, role: '01-cat' });
+  assert.deepEqual(w.webContents.last('hub-pet:state').edge, { left: 0, right: 95 }, '量出透明边后贴得更靠外');
+  await ipcMain.handlers.get('hub-pet:set-settings')({ sender: mainWc }, { scale: 0.6 });
+  assert.deepEqual(w.webContents.last('hub-pet:state').edge, { left: 0, right: 95 + 18 }, '60% 贴右边伸出约 113px');
+  await debug({ sender: mainWc }, { op: 'move', pos: { x: -24000, y: -24000 } });
+  ctl._evaluate();
+  assert.deepEqual(w.webContents.last('hub-pet:state').edge, { left: 0, right: 0 });
 });
 
 test('跨屏拖动：鼠标在两屏中线附近来回时宠物跟着走，不在两块屏的边之间闪跳', async () => {
