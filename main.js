@@ -560,8 +560,21 @@ if (process.env.CLAUDE_HUB_E2E === '1' && process.env.CLAUDE_HUB_EGRESS_FIXTURE)
   }
 }
 const windowsNetworkContext = require('./core/windows-network-context').createWindowsNetworkContext();
+// 系统代理出口的后备探测（2026-10-18）：独立的会话分区，代理模式固定为「系统设置」，不受 Hub 其他会话的代理影响。
+let egressProbeSession = null;
+async function systemProxyFetch(url, { timeoutMs = 12000 } = {}) {
+  const { session } = require('electron');
+  if (!egressProbeSession) {
+    egressProbeSession = session.fromPartition('egress-probe');
+    await egressProbeSession.setProxy({ mode: 'system' });
+  }
+  const response = await egressProbeSession.fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'AI-Hub-Network-Monitor/1.0' }, signal: AbortSignal.timeout(timeoutMs), bypassCustomProtocolHandlers: true });
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  return response.text();
+}
 const networkEgressMonitor = createNetworkEgressMonitor({
   getProxy: () => getHubConfig().proxy,
+  systemFetch: (url, opts) => systemProxyFetch(url, opts),
   getSystemProxy: () => windowsNetworkContext.systemProxy(),
   getTunnel: () => windowsNetworkContext.tunnel(),
   statePath: path.join(getHubDataDir(), 'network-egress-state.json'),
@@ -2412,6 +2425,8 @@ try {
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
       readReceipt: (meta, round) => require('./core/company-bridge/receipt-reader').readCompanyReceipt(meta, round),
+      // 发回执前从原生记录读一次最后一条回答的模型（不等 observeCodeAgentModel 异步补记）。
+      lastAnswerModel: meta => require('./core/read-last-assistant').readLastAssistantModelSync(meta && meta.transcriptPath),
       // 「问家里」的 MCP 和命令行由 Hub 自己的程序以 Node 方式运行（公司版脚本在 app.asar 里，系统 node 读不到）。
       nodeExecutable: process.execPath,
       // 放行页自动点击（设置里打开后才用）：看不见的窗口，默认会话，和通道请求共用网络状态。
@@ -2470,11 +2485,12 @@ try {
         const pool = require('./core/codeagent-pool');
         const personalDir = require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
         const creds = pool.readCredentials(personalDir);
-        const known = pool.accountModels(personalDir, fs, pool.personalModelsFile(getHubDataDir()));
+        // 个人账号的模型清单和默认模型与模型表同一口径（core/codeagent-model-route.js personalModels，不确定时留空）。
+        const known = require('./core/codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir });
         const personalActive = sessionManager.getAllSessions().filter(s => /^codeagent(?:-resume)?$/.test(String(s.kind || ''))
           && !s.codeagentPoolAccount && s.status !== 'dormant' && s.status !== 'closed').length;
         return {
-          personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, models: known.models || [], defaultModel: pool.readSettingsModel(personalDir) || known.defaultModel || '', activeSessions: personalActive },
+          personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive },
           accounts: pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalAccountId: creds.accountId || '' }),
         };
       },

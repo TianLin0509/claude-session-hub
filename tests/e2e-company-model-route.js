@@ -68,7 +68,9 @@ async function main() {
     fs.writeFileSync(path.join(codeDir, 'README.md'), '# 端到端测试用的代码目录\n');
     const homeWork = path.join(root, 'home-work'); fs.mkdirSync(homeWork, { recursive: true });
     { const { AssistantStore } = require('../core/hub-assistant/store'); const s = new AssistantStore(path.join(cdata, 'company-bridge')); s.set('featureUnlock', { at: Date.now(), via: 'e2e' }); s.db.close(); }
-    const personal = standinConfig(path.join(root, 'company-cac'), { accountId: 'w00111111', model: GLM });
+    // 个人账号 settings.json 写的是分档名 GLM-5.2-WX（菜单里只有 GLM-5.2-WX-Auto）：2.1.11 因此把个人账号从模型表里整个去掉（田哥 2026-10-18 反馈）。
+    const PERSONAL_TIER = 'GLM-5.2-WX';
+    const personal = standinConfig(path.join(root, 'company-cac'), { accountId: 'w00111111', model: PERSONAL_TIER });
     probed(path.join(cdata, 'codeagent-pool', 'personal-models.json'), [GLM]);
     const poolDir = path.join(cdata, 'codeagent-pool', 'accounts', POOL_ID);
     standinConfig(poolDir, { accountId: 'z00222222', model: DS });
@@ -112,7 +114,7 @@ async function main() {
     // ---- 1. 模型表：公司推，家里收下；MCP 工具描述里能看到 ----
     const companyTable = (await status(cc)).models;
     result.companyTable = companyTable;
-    check(companyTable && companyTable.models.map(m => m.id).join(',') === `${GLM},${DS}` && companyTable.models[0].primary === true, '公司汇总出模型表：GLM（日常主力）、DeepSeek，各 1 个号');
+    check(companyTable && companyTable.models.map(m => m.id).join(',') === `${GLM},${DS}` && companyTable.models[0].primary === true, '公司汇总出模型表：GLM（日常主力）、DeepSeek，各 1 个号（个人账号 settings.json 写的是分档名也算 GLM）');
     check(!JSON.stringify(companyTable).match(/w00111111|z00222222|同事|ds0e2e01/), '模型表不含工号、备注、号池编号');
     const homeEntry = await until('home models', async () => { await hc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")'); return (await status(hc)).companyModels; }, 120000, 3000);
     check(homeEntry.table.models.map(m => m.id).join(',') === `${GLM},${DS}`, '家里收到模型表并存下');
@@ -156,7 +158,8 @@ async function main() {
     result.replyDs = { text: String(replyDs.reply).slice(0, 300), meta: replyDs.meta };
     check(new RegExp(tokenDs).test(replyDs.reply), '家里收到 DS 这一轮的回执');
     check(replyDs.meta && replyDs.meta.requestedModel === DS && replyDs.meta.model, `回执元数据带模型：指定 ${replyDs.meta.requestedModel}，会话模型 ${replyDs.meta.model}，回答里实际 ${replyDs.meta.actualModel || '（未记录）'}`);
-    check(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8').includes(GLM), '个人账号的默认模型没被改（仍是 GLM）');
+    // Hub 启动时会往个人账号 settings.json 补 hook 配置（原有行为），这里只核对模型没被改。
+    check(JSON.parse(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8')).model === PERSONAL_TIER, '个人账号 settings.json 的模型没被改写（仍是分档名 GLM-5.2-WX）');
 
     // ---- 3. 指定 GLM：开在个人账号 ----
     const tokenGlm = 'MODEL-ROUTE-GLM-' + nonce;
@@ -167,11 +170,33 @@ async function main() {
     const metaGlm = await until('company GLM meta', async () => (await sessions(cc)).find(x => x.id === ctGlm.sessionId), 60000, 1000);
     const launchGlm = await until('standin launch GLM', async () => readLines(launchLog).find(x => x.hubSession === ctGlm.sessionId), 60000, 1000);
     result.launchGlm = launchGlm;
-    check(!metaGlm.codeagentPoolAccount && metaGlm.codeagentRouteModel === GLM && path.resolve(launchGlm.configDir).toLowerCase() === path.resolve(personal).toLowerCase() && launchGlm.settingsModel === GLM,
-      '指定 GLM：开在个人账号（配置目录是个人账号，settings.json 的模型是 GLM）');
+    check(!metaGlm.codeagentPoolAccount && metaGlm.codeagentRouteModel === GLM && path.resolve(launchGlm.configDir).toLowerCase() === path.resolve(personal).toLowerCase() && launchGlm.settingsModel === PERSONAL_TIER,
+      '指定 GLM：开在个人账号（配置目录是个人账号，settings.json 原样是分档名 GLM-5.2-WX）');
     const replyGlm = await until('home GLM receipt', async () => { await hc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")'); const t = (await status(hc)).threads.find(x => x.id === askedGlm.thread); return t?.rounds[0]?.reply ? t.rounds[0] : (t?.rounds[0]?.error && 'ERR ' + t.rounds[0].error); }, 8 * 60000, 4000);
     check(new RegExp(tokenGlm).test(replyGlm.reply) && replyGlm.meta.requestedModel === GLM, '家里收到 GLM 这一轮的回执，元数据写明指定 GLM');
 
+    // ---- 3b. 不指定模型：个人账号和号池的号交替接活（2026-10-18 田哥反馈 v2.1.11：以前只开号池的号） ----
+    // 此刻两个号上各有一个会话（上面的 DS、GLM）；号池号上次分配更早 → 先给号池号；之后号池号会话多一个 → 轮到个人账号。
+    const plain = [];
+    for (const n of [1, 2]) {
+      const token = `MODEL-ROUTE-PLAIN${n}-${nonce}`;
+      const file = path.join(root, `q-plain-${n}.md`);
+      fs.writeFileSync(file, `这是 AI Hub「不指定模型轮转」的端到端测试。不需要读任何文件、不需要运行命令，只回答一行：${token}\n`);
+      const asked = cli(['ask', '--file', file, '--title', `轮转 ${n}`]);
+      result[`plainAsk${n}`] = asked;
+      const sentPlain = asked.ok && asked.model === '公司默认' && /^Q-/.test(asked.thread || '');
+      check(sentPlain, `家里不指定模型发出第 ${n} 个问题 ${asked.thread}（模型：公司默认）` + (sentPlain ? '' : ' ' + j(asked)));
+      const ct = await until(`company plain ${n}`, async () => (await status(cc)).threads.find(t => t.id === asked.thread && t.sessionId), 4 * 60000, 2000);
+      const launch = await until(`standin launch plain ${n}`, async () => readLines(launchLog).find(x => x.hubSession === ct.sessionId), 60000, 1000);
+      plain.push({ thread: asked.thread, token, configDir: path.resolve(launch.configDir).toLowerCase() });
+    }
+    result.plain = plain;
+    check(plain[0].configDir === path.resolve(poolDir).toLowerCase() && plain[1].configDir === path.resolve(personal).toLowerCase(),
+      '不指定模型的两个问题交替落在两个号上：第一个号池里同事的号，第二个个人账号');
+    for (const p of plain) {
+      const reply = await until('home plain receipt', async () => { await hc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")'); const t = (await status(hc)).threads.find(x => x.id === p.thread); return t?.rounds[0]?.reply ? t.rounds[0] : (t?.rounds[0]?.error && 'ERR ' + t.rounds[0].error); }, 8 * 60000, 4000);
+      check(new RegExp(p.token).test(reply.reply), `家里收到不指定模型的问题 ${p.thread} 的回执`);
+    }
     // ---- 4. 界面：家里「问公司」列表、公司「AI特战队专用功能」任务记录里看到指定的模型 ----
     if (await hc.eval('document.getElementById("app-container").classList.contains("rail-hidden")')) await click(hc, '#btn-toggle-navigation');
     await click(hc, '#btn-wireless');
