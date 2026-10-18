@@ -469,11 +469,38 @@ test('个人账号默认模型：settings.json 未写模型、写分档名、只
     const after = fs.existsSync(path.join(dir, 'settings.json')) ? fs.readFileSync(path.join(dir, 'settings.json'), 'utf8') : null;
     assert.equal(after, before, name + '：个人账号 settings.json 没被改写');
   }
-  // 分档规则单独核对：写了清单里没有、也没有 -Auto 的：按探测默认；清单为空时写什么就是什么
-  assert.equal(pool.personalDefaultModel('GLM-5.2-WX', { models: [GLM, DS], defaultModel: '' }), GLM);
-  assert.equal(pool.personalDefaultModel('foo-1', { models: [DS], defaultModel: DS }), DS);
-  assert.equal(pool.personalDefaultModel('GLM-5.2-WX', { models: [], defaultModel: '' }), 'GLM-5.2-WX');
+  // 规则单独核对：只有能确定的四种情况给出，其余留空（2026-10-18 独立审核：个人账号的配置不能改，猜错就开出跑不起来的会话）
+  assert.equal(pool.personalDefaultModel('GLM-5.2-WX', { models: [GLM, DS], defaultModel: '' }), GLM, '分档名归到 -Auto');
+  assert.equal(pool.personalDefaultModel('', { models: [DS, GLM], defaultModel: DS, probedAt: '2026-10-18' }), DS, '没写、探测文件标了默认');
+  assert.equal(pool.personalDefaultModel('', { models: [DS, GLM], defaultModel: '' }), GLM, '没写、清单里有 GLM-Auto');
+  assert.equal(pool.personalDefaultModel('foo-1', { models: [DS], defaultModel: DS, probedAt: '2026-10-18' }), '', '写了清单外的名字：不改判');
+  assert.equal(pool.personalDefaultModel('GLM-5.2-WX', { models: [], defaultModel: '' }), '', '不知道清单：分档名归不了');
   assert.equal(pool.personalDefaultModel('', { models: [], defaultModel: '' }), '');
+});
+
+test('个人账号默认模型不确定时留空、不进模型表（审核场景 A、B）；不指定模型时排到后面但仍可兜底，显示占位', t => {
+  const make = prepare => {
+    const dataDir = tmp(t), dir = path.join(dataDir, 'personal-cac');
+    login(dir, 'w00111111'); prepare(dataDir, dir);
+    const ds = pool.addAccount(dataDir, { note: '同事' }); login(pool.accountDir(dataDir, ds), 'w00222222');
+    probe.writeProbed(path.join(pool.accountDir(dataDir, ds), probe.MODELS_FILE), { models: [DS], defaultModel: DS });
+    return { dataDir, dir, ds, accounts: route.routeAccounts({ dataDir, personalDir: dir }) };
+  };
+  // A：settings.json 没写模型，账号清单里只有 DS、没有 GLM-Auto（CodeAgent 没定模型会退回 GLM 并报找不到）：不能判成清单第一个 DS
+  const a = make((dataDir, dir) => fs.writeFileSync(path.join(dir, '.cac.json'), JSON.stringify({ enterpriseModelOptionsCache: [{ value: DS }] })));
+  assert.equal(a.accounts.find(x => x.key === 'personal').defaultModel, '', 'A：留空');
+  assert.deepEqual(route.modelTable(a.accounts, { cap: 2 }).models.map(m => [m.id, m.accounts]), [[DS, 1]], 'A：个人账号不进模型表，DS 只算号池的号');
+  assert.equal(route.pickRoute(a.accounts, DS).account.key, a.ds, 'A：指定 DS 只派号池的号');
+  // B：settings.json 写的是菜单外的内部别名（CLI 实际按它跑 MiniMax）：不能改判成 GLM-Auto
+  const b = make((dataDir, dir) => { fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'MiniMax-M2.7-CodeAgentCLI' }));
+    probe.writeProbed(pool.personalModelsFile(dataDir), { models: [GLM, 'MiniMax-M2.7'], defaultModel: GLM }); });
+  assert.equal(b.accounts.find(x => x.key === 'personal').defaultModel, '', 'B：留空');
+  assert.deepEqual(route.modelTable(b.accounts, { cap: 2 }).models.map(m => m.id), [DS], 'B：个人账号不进模型表');
+  assert.equal(route.pickRoute(b.accounts, GLM).reason, 'none', 'B：指定 GLM 不派到个人账号');
+  // 不指定模型：默认不确定的个人账号排到后面（哪怕会话更少）；只剩它时照用
+  const ap = a.accounts.find(x => x.key === 'personal'), ad = a.accounts.find(x => x.key === a.ds);
+  assert.equal(route.pickAnyRoute([{ ...ap, activeSessions: 0 }, { ...ad, activeSessions: 3 }]).account.key, a.ds);
+  assert.equal(route.pickAnyRoute([{ ...ap, activeSessions: 0 }]).account.key, 'personal', '只剩它时兜底');
 });
 
 test('个人账号的上次分配时间持久化；routeAccounts 读出来参与轮转', t => {

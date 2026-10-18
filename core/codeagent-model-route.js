@@ -101,7 +101,8 @@ function pickRoute(accounts, model, { working = {}, cap = Infinity } = {}) {
 // 以前「号池有可用的号就开在号池，个人账号只在号池开会话失败时兜底」，并行上限却把个人账号算作 1 条通道。
 // 现在候选是个人账号 + 号池里能用的号（routeAccounts 已筛过），个人账号不要求默认模型已知。挑法依次：
 //   1. 每号上限：通道在这个号上处理的问题数没到上限的优先（都到了就不看上限，名额由通道整体上限管，dispatch 前已核过）；
-//   2. 避开：为通道切过模型、上面还有会话的号池号（它此刻跑的不是原来的默认模型），清单未知的号池号（可能落到没权限的默认模型）；只剩它们时照用；
+//   2. 避开：为通道切过模型、上面还有会话的号池号（它此刻跑的不是原来的默认模型），清单未知的号池号（可能落到没权限的默认模型），
+//      默认模型不确定的个人账号；只剩它们时照用；
 //   3. 进行中会话最少（个人账号的会话数含号主自己开的、助理和论坛的会话，号主自己忙时它少接活）；
 //   4. 上次分配时间早的优先（轮转；个人账号的时间另存，见 codeagent-pool.js markPersonalAssigned）；
 //   5. 全部相同时号池优先（个人账号留给号主自己）。
@@ -111,7 +112,8 @@ function pickAnyRoute(accounts, { working = {}, cap = Infinity } = {}) {
   if (!all.length) return { ok: false, reason: 'none' };
   const free = all.filter(a => (Number(working[a.key]) || 0) < cap);
   const candidates = free.length ? free : all;
-  const avoid = a => (a.pool && ((a.routeSwitched && a.activeSessions > 0) || !(a.models || []).length) ? 1 : 0);
+  // 个人账号默认模型不确定（personalDefaultModel 留空）时同样排到后面，仍可兜底（2026-10-18 独立审核）。
+  const avoid = a => (a.pool ? ((a.routeSwitched && a.activeSessions > 0) || !(a.models || []).length) : !a.defaultModel) ? 1 : 0;
   const account = candidates.slice().sort((x, y) => avoid(x) - avoid(y)
     || (Number(x.activeSessions) || 0) - (Number(y.activeSessions) || 0)
     || (Number(x.lastAssignedAt) || 0) - (Number(y.lastAssignedAt) || 0)

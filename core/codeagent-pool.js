@@ -217,19 +217,20 @@ function chooseAccountModel(own, known) {
 
 // 个人账号此刻启动会用的模型，只用于判定和显示，不改写个人账号的 settings.json（号主自己日常用的配置）。
 // 2026-10-18 田哥反馈 v2.1.11：个人账号 settings.json 没写模型且没探测过、或写的是不在菜单里的分档名 GLM-5.2-WX 时，
-// 以前判成「默认模型未知」，个人账号从模型表里整个消失，指定 GLM 被回「没有可用的号」。规则：
+// 以前判成「默认模型未知」，个人账号从模型表里整个消失，指定 GLM 被回「没有可用的号」。
+// 个人账号的配置不能改，猜错就会开出跑不起来的会话（2026-10-18 独立审核），所以只在能确定的四种情况下给出，其余留空：
 //   1. 写了、在清单里：就是它（按清单写法）；
 //   2. 写的是分档名、清单里有「名字-Auto」：归到 -Auto（分档只是 Auto 里的配置，菜单里只能选 Auto，2026-10-13 公司真机）；
-//   3. 没写或不在清单里：探测文件 / 配置标的默认 → CodeAgent 自己的默认（GLM-5.2-WX-Auto，2026-10-17 公司实测没定模型时退回它）→ 清单第一个；
-//   4. 清单为空：写了什么就是什么（不知道清单时不否定它），没写就留空。
+//   3. 没写、探测文件（CodeAgent 自己的 /model 菜单）标了默认：就是它；
+//   4. 没写、清单里有 GLM-5.2-WX-Auto：就是它（2026-10-17 公司实测没定模型时 CodeAgent 退回它自己的默认 GLM）。
+// 留空的例子：没写、清单里也没有 GLM-Auto（CodeAgent 仍会退回 GLM 并报找不到，不能判成清单第一个）；
+// 写的是菜单外的内部别名（例如 MiniMax-M2.7-CodeAgentCLI，CLI 实际按它跑，不能改判成别的）。
 function personalDefaultModel(own, known) {
   const models = (known && known.models) || [];
   const pick = m => models.find(x => x.toLowerCase() === String(m || '').toLowerCase()) || '';
   const written = typeof own === 'string' ? own.trim() : '';
-  if (!models.length) return written;
-  if (pick(written)) return pick(written);
-  if (written && pick(written + '-Auto')) return pick(written + '-Auto');
-  return pick(known.defaultModel) || pick(require('./codeagent-models').DEFAULT_MODEL) || models[0];
+  if (written) return pick(written) || pick(written + '-Auto');
+  return (known && known.probedAt ? pick(known.defaultModel) : '') || pick(require('./codeagent-models').DEFAULT_MODEL);
 }
 function readSettingsModel(dir, fsModule = fs) {
   try { const v = JSON.parse(fsModule.readFileSync(path.join(dir, 'settings.json'), 'utf8')); return v && typeof v.model === 'string' ? v.model.trim() : ''; }

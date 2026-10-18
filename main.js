@@ -2434,11 +2434,12 @@ try {
         const pool = require('./core/codeagent-pool');
         const personalDir = require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
         const creds = pool.readCredentials(personalDir);
-        const known = pool.accountModels(personalDir, fs, pool.personalModelsFile(getHubDataDir()));
+        // 个人账号的模型清单和默认模型与模型表同一口径（core/codeagent-model-route.js personalModels，不确定时留空）。
+        const known = require('./core/codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir });
         const personalActive = sessionManager.getAllSessions().filter(s => /^codeagent(?:-resume)?$/.test(String(s.kind || ''))
           && !s.codeagentPoolAccount && s.status !== 'dormant' && s.status !== 'closed').length;
         return {
-          personal: { state: pool.accountState(creds), models: known.models || [], defaultModel: pool.readSettingsModel(personalDir) || known.defaultModel || '', activeSessions: personalActive },
+          personal: { state: pool.accountState(creds), models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive },
           accounts: pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalAccountId: creds.accountId || '' }),
         };
       },

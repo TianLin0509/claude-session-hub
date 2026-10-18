@@ -72,6 +72,12 @@ test('_createSession 的显示名：号池号用同步配置定下的模型，�
   fs.writeFileSync(path.join(personal, 'settings.json'), '{}');
   const unknown = manager.getSession(manager.createSession('codeagent', { cwd }).id);
   assert.deepEqual(unknown.currentModel, { id: '', displayName: models.PLACEHOLDER_LABEL });
+  // 默认模型不确定（没写、清单里只有 DS 没有 GLM-Auto；或写了菜单外的别名）：不猜，显示占位（2026-10-18 独立审核）
+  fs.writeFileSync(path.join(personal, '.cac.json'), JSON.stringify({ enterpriseModelOptionsCache: [{ value: DS }] }));
+  assert.deepEqual(manager.getSession(manager.createSession('codeagent', { cwd }).id).currentModel, { id: '', displayName: models.PLACEHOLDER_LABEL }, '场景 A');
+  fs.writeFileSync(path.join(personal, 'settings.json'), JSON.stringify({ model: 'MiniMax-M2.7-CodeAgentCLI' }));
+  probe.writeProbed(pool.personalModelsFile(dataDir), { models: [GLM, 'MiniMax-M2.7'], defaultModel: GLM });
+  assert.deepEqual(manager.getSession(manager.createSession('codeagent', { cwd }).id).currentModel, { id: '', displayName: models.PLACEHOLDER_LABEL }, '场景 B');
 });
 
 test('休眠兜底：CodeAgent 不拿模型清单第一项顶，用上一轮实际模型，没有就占位；和实际模型不是一家的旧值以实际为准', () => {
