@@ -2425,6 +2425,8 @@ try {
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
       readReceipt: (meta, round) => require('./core/company-bridge/receipt-reader').readCompanyReceipt(meta, round),
+      // 发回执前从原生记录读一次最后一条回答的模型（不等 observeCodeAgentModel 异步补记）。
+      lastAnswerModel: meta => require('./core/read-last-assistant').readLastAssistantModelSync(meta && meta.transcriptPath),
       // 「问家里」的 MCP 和命令行由 Hub 自己的程序以 Node 方式运行（公司版脚本在 app.asar 里，系统 node 读不到）。
       nodeExecutable: process.execPath,
       // 放行页自动点击（设置里打开后才用）：看不见的窗口，默认会话，和通道请求共用网络状态。
@@ -2445,11 +2447,12 @@ try {
         const pool = require('./core/codeagent-pool');
         const personalDir = require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
         const creds = pool.readCredentials(personalDir);
-        const known = pool.accountModels(personalDir, fs, pool.personalModelsFile(getHubDataDir()));
+        // 个人账号的模型清单和默认模型与模型表同一口径（core/codeagent-model-route.js personalModels，不确定时留空）。
+        const known = require('./core/codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir });
         const personalActive = sessionManager.getAllSessions().filter(s => /^codeagent(?:-resume)?$/.test(String(s.kind || ''))
           && !s.codeagentPoolAccount && s.status !== 'dormant' && s.status !== 'closed').length;
         return {
-          personal: { state: pool.accountState(creds), models: known.models || [], defaultModel: pool.readSettingsModel(personalDir) || known.defaultModel || '', activeSessions: personalActive },
+          personal: { state: pool.accountState(creds), models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive },
           accounts: pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalAccountId: creds.accountId || '' }),
         };
       },
