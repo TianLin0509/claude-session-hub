@@ -2427,6 +2427,42 @@ try {
       hubStartedAt: Math.round(Date.now() - process.uptime() * 1000),
       // 残留判定的最短存活时间（默认嫌疑 10 分钟、可结束 30 分钟）：只有隔离测试实例能改短（同 role.js 的做法）。
       leftoverMinAgeMs: process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS ? Number(process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS) : undefined,
+      // 直查二期：CodeAgent 命令（跑 --version）、会话屏幕（读 Stats 面板的 Credit 额度）、各功能最近一次成功 / 错误。
+      codeagentCommand: () => require('./core/codeagent-config').resolveCodeAgentConfig(process.env).command,
+      readTerminalScreen: id => {
+        const entry = sessionManager.sessions?.get?.(id);
+        const text = sessionManager.getSessionBuffer(id);
+        if (text == null) return null;
+        return { text, cols: Number(entry?.pty?.cols) || 120, rows: Number(entry?.pty?.rows) || 30 };
+      },
+      featureStatus: () => {
+        const out = {};
+        try { out.forum = companyForumService ? companyForumService.status() : null; } catch (error) { out.forum = { error: error.message }; }
+        try {
+          if (!companyAssistantService) out.assistant = null;
+          else {
+            // 不调 status()（它要找 welink-cli、整理会话列表，慢）：只读设置、今天的简报、当天数据的登录与错误、手机通道状态
+            const a = companyAssistantService, snap = a.snapshot(), b = a.brief(), ph = a.phone?.status?.() || null;
+            out.assistant = { enabled: a.settings().enabled, login: snap?.login || null, refreshedAt: snap?.at || null, errors: snap?.errors || [], brief: b ? { generatedAt: b.generatedAt, by: b.by, total: b.total, organizing: b.organizing, note: b.note } : null,
+              phone: ph ? { active: ph.active, lastPollAt: ph.lastPollAt, lastOkAt: ph.lastOkAt, lastError: ph.lastError } : null };
+          }
+        } catch (error) { out.assistant = { error: error.message }; }
+        try {
+          const roles = hubPetController?._roles;
+          if (!roles) out.pet = null;
+          else {
+            const snap = roles.snapshot();
+            // 下载过的形象：包文件的修改时间就是最后一次下载成功的时间
+            let lastSuccessAt = null;
+            for (const r of snap.roles || []) {
+              if (!r.installed || r.bundled) continue;
+              try { const m = fs.statSync(path.join(roles.root || '', r.id, 'pack.json')).mtimeMs; if (!lastSuccessAt || m > lastSuccessAt) lastSuccessAt = Math.round(m); } catch { /* 没有包文件 */ }
+            }
+            out.pet = { state: snap.state, roles: snap.roles, lastSuccessAt };
+          }
+        } catch (error) { out.pet = { error: error.message }; }
+        return out;
+      },
       sessionPtyPids: () => [...(sessionManager.sessions?.entries?.() || [])].map(([id, s]) => ({ id, pid: Number(s?.pty?.pid) || 0 })),
       poolDiag: () => {
         const pool = require('./core/codeagent-pool');
@@ -2436,7 +2472,7 @@ try {
         const personalActive = sessionManager.getAllSessions().filter(s => /^codeagent(?:-resume)?$/.test(String(s.kind || ''))
           && !s.codeagentPoolAccount && s.status !== 'dormant' && s.status !== 'closed').length;
         return {
-          personal: { state: pool.accountState(creds), models: known.models || [], defaultModel: pool.readSettingsModel(personalDir) || known.defaultModel || '', activeSessions: personalActive },
+          personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, models: known.models || [], defaultModel: pool.readSettingsModel(personalDir) || known.defaultModel || '', activeSessions: personalActive },
           accounts: pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalAccountId: creds.accountId || '' }),
         };
       },

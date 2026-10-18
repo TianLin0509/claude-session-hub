@@ -11,7 +11,7 @@
 //   node company-ask.js images [--thread Q-1017-01]
 //   node company-ask.js recollect --thread Q-1015-01   （补收：上一轮没答上时，取回公司会话里已经写好的回答）
 //   node company-ask.js --hub-update [--force] | --hub-restart [--force] | --hub-status   （远程让公司 Hub 更新 / 重启 / 报版本）
-//   node company-ask.js --diag [machine,processes,hub,pool,logs] [--lines 80] [--id HA-xxxx]
+//   node company-ask.js --diag [machine,processes,hub,pool,logs,codeagent,airview,features] [--lines 80] [--id HA-xxxx]
 //     （直查公司电脑与公司 Hub：秒级、不排队、不占公司 CodeAgent；不填段落 = 全部；--id 取之前那次的结果）
 const fs = require('node:fs');
 const os = require('node:os');
@@ -30,7 +30,7 @@ async function main() {
   const command = diag ? 'diag' : hubOp ? 'hub' : process.argv[2];
   if (command === 'models') return showModels();
   const tool = diag ? 'company_diag' : hubOp ? 'company_hub_update' : { ask: 'ask_company', followup: 'followup_company', show: 'company_thread', recollect: 'recollect_company', image: 'send_image_company', images: 'company_images' }[command];
-  if (!tool) throw new Error('用法：ask --file q.md [--title t] [--model m] | models | followup --thread Q-xxxx --file f.md | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx] | --hub-update [--force] | --hub-restart [--force] | --hub-status | --diag [machine,processes,hub,pool,logs] [--lines N] [--id HA-xxxx]');
+  if (!tool) throw new Error('用法：ask --file q.md [--title t] [--model m] | models | followup --thread Q-xxxx --file f.md | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx] | --hub-update [--force] | --hub-restart [--force] | --hub-status | --diag [machine,processes,hub,pool,logs,codeagent,airview,features] [--lines N] [--id HA-xxxx]');
   // 会话身份与通行证由 Hub 在开会话时注入；只能代表本会话提问。
   const session = process.env.HUB_BRIDGE_SESSION_ID, pass = process.env.HUB_BRIDGE_SESSION_PASS;
   if (!session || !pass) throw new Error('这个会话没有家里联动的通行证：请在家里和公司配对之后、由 AI Hub 新开（或重开）的 Codex / Claude 会话里使用');

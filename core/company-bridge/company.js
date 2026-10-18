@@ -84,7 +84,9 @@ const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructi
   // restartGraceMinutes：远程重启前最多等手上的任务几分钟，到时先记下、中断，重启后自动接着做（2.1.9；0 = 立即，hub-admin.js）。
   allowRemoteAdmin: true, restartGraceMinutes: 3,
   // 允许对端直查这台电脑的状态（2026-10-18，只读，hub-admin.js diag；独立于远程更新开关，默认开）。
-  allowRemoteDiag: true });
+  allowRemoteDiag: true,
+  // 直查 airview 段看这些目录下最近更新的结果文件（只看名字、大小、修改时间），连同代码位置一起（diag.js resultFiles）。
+  resultDirs: ['C:/AirView'] });
 const ACTIVE_POLL_MS = 10000;
 const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -267,7 +269,7 @@ class CompanyBridge {
     const instructions = !s.instructions || OLD_DEFAULTS.includes(s.instructions.trim()) ? DEFAULT_INSTRUCTIONS : s.instructions;
     // 旧版设置页只能存「同时 N 个」且默认 2；没调过并行档位的（parallelRev 缺失且仍是旧默认 2）按新默认 3。
     if (!s.parallelRev && Number(s.maxParallel) === 2) delete s.maxParallel;
-    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [], parallelRev: DEFAULT_SETTINGS.parallelRev };
+    return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [], resultDirs: Array.isArray(s.resultDirs) ? s.resultDirs : DEFAULT_SETTINGS.resultDirs, parallelRev: DEFAULT_SETTINGS.parallelRev };
   }
   setSettings(patch = {}) {
     const next = this.settings();
@@ -292,6 +294,12 @@ class CompanyBridge {
     if ('autoGate' in patch) next.autoGate = patch.autoGate === true;
     if ('allowRemoteAdmin' in patch) next.allowRemoteAdmin = patch.allowRemoteAdmin === true;
     if ('allowRemoteDiag' in patch) next.allowRemoteDiag = patch.allowRemoteDiag === true;
+    if ('resultDirs' in patch) {
+      const list = (Array.isArray(patch.resultDirs) ? patch.resultDirs : String(patch.resultDirs || '').split(/\r?\n/)).map(s => String(s).trim()).filter(Boolean);
+      if (list.length > 10) throw new Error('仿真结果目录最多 10 个');
+      if (list.some(s => s.length > 260)) throw new Error('目录路径太长');
+      next.resultDirs = list;
+    }
     this.store.set('settings', next);
     this.tightenPoll(); this.changed();
     return next;

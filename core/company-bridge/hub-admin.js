@@ -181,7 +181,11 @@ class HubAdmin {
       await this.report(id, 'diag', note, { diag: fitted.data, diagBytes: fitted.bytes, elapsedMs: result.elapsedMs, sections, ...(fitted.degraded.length ? { degraded: fitted.degraded } : {}) });
       this.save({ lastDiag: { id, at: this.now(), sections, elapsedMs: result.elapsedMs, bytes: fitted.bytes, degraded: fitted.degraded.length } });
       return fitted;
-    } finally { this.diagRunning = false; this.bridge.secretsSnapshot = null; }
+    } finally {
+      // 限频从这次采集结束算（采集慢时，紧接着的下一次不会马上又压上来）
+      this.diagRunning = false; this.bridge.secretsSnapshot = null;
+      try { this.save({ lastDiagAt: this.now() }); } catch { /* 库已关 */ }
+    }
   }
   refuseDiag(id, sections, why) {
     this.auditDiag(`refused ${id} sections=${sections.join(',')} ${why}`);

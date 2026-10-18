@@ -67,6 +67,14 @@
 - 底线：只认当前配对代次；同一编号只处理一次；30 秒限频、同时只跑一条（回 refused 写原因）；只读，不读源码、不回传文件内容（日志尾部除外）；
   公司写 `logs/company-diag.log` 审计，界面给一条轻提示「对端查看了这台电脑的状态」（`notify(..., { quiet:true })`，不弹系统通知）。
   对端在看时公司接下来 10 分钟按 10 秒检查通道（同追问窗口），紧接着的追查更快送到。
+- 二期段落（2026-10-18 追加，只读）：
+  - codeagent：`<命令> --version`（隐藏窗口、8 秒超时、10 分钟内复用；命令取本机配置）、个人账号登录状态与到期时间、号池可用 / 需登录数；
+    额度读开着的 CodeAgent 会话屏幕（最近活动的 8 个，headless xterm 渲染后按 `codeagent-screen-stats.js parseCodeAgentCredit` 取 Credit 行），按号归并，号用代称。
+  - airview：进程名白名单（python / pythonw / py / matlab / simulink / octave / 名字带 airview 的），名称、PID、内存、启动时间、已运行时长、归属会话，只给一句标签（AirView 运行器 / MATLAB / Python），不回传命令行；
+    设置里的「仿真结果目录」（`resultDirs`，默认 `C:/AirView`，公司设置页可改，最多 10 个）+ 代码位置，广度优先、深 6 层、4 秒 / 3 万个条目封顶，跳过 node_modules / .git 等，
+    只认结果后缀（mat、csv、txt、log、json、xlsx、png、fig、h5、npz 等，源码后缀不在内），返回最近更新的 30 个文件的相对路径、大小、修改时间，不打开文件。
+  - features：main 给原始状态（`deps.featureStatus`），diag.js 只挑字段：论坛（最近一次抓取时间、成功与否、各站点需登录 / 报错）、简报（今天的生成时间、失败说明、数据刷新错误）、
+    手机对话（最近成功、最近错误）、桌宠形象（下载状态与错误、已下载的形象、包文件时间作为最近成功）；不带帖子、消息、会话正文。
 - 时延：= 公司下一次检查通道（活跃 10 秒；空闲按公司设置，默认 30 秒）+ 采集（真机实测见 e2e）+ 家里检查（等回报时 5 秒，卡片与 MCP 等待时 2.5 秒）。
 - 测试：`tests/unit-company-diag.test.js`（夹具系统接口）；`tests/e2e-company-diag.js`（双 Electron + relay_server.py + 公司版导出 + 真实进程枚举）。
 

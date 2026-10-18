@@ -97,6 +97,7 @@
       <label>自动作答</label><div class="hl-row"><select data-hl-f="enabled"><option value="1"${s.enabled ? ' selected' : ''}>开：收到问题就开 CodeAgent 会话作答</option><option value="0"${s.enabled ? '' : ' selected'}>关：只收下问题，不作答</option></select></div>
       <label>权限</label><div class="hl-muted">CodeAgent 不认禁用工具的启动参数，「不改动这台电脑、不回传源码」靠下面的说明约束；这台电脑上已注册的 MCP（AirView、内网搜索等）可以用。</div>
       <label>代码位置</label><div><textarea rows="3" data-hl-f="codeRoots" placeholder="每行一个目录，例如 D:\\code\\l2">${esc(s.codeRoots.join('\n'))}</textarea><div class="hl-muted">第一行作为 CodeAgent 会话的工作目录，其余目录一并开放读取。</div></div>
+      ${Array.isArray(s.resultDirs) ? `<label>仿真结果目录</label><div><textarea rows="2" data-hl-f="resultDirs" placeholder="每行一个目录，例如 C:/AirView">${esc(s.resultDirs.join('\n'))}</textarea><div class="hl-muted">对端查看状态时，列出这些目录和代码位置下最近更新的结果文件（只看文件名、大小、修改时间，不读内容）。</div></div>` : ''}
       <label>运行</label><div class="hl-row">模型：问题里指定了模型时按指定（挑有它权限的号），否则用 CodeAgent 的默认 ·
         思考<select data-hl-f="effort">${opt(['low', 'medium', 'high', 'max'].map(x => ({ id: x, label: { low: '低', medium: '中', high: '高', max: '最高' }[x] })), s.effort)}</select>
         空闲检查间隔<select data-hl-f="pollSeconds">${opt([...new Set([10, 15, 30, 60, 120, s.pollSeconds])].sort((a, b) => a - b).map(x => ({ id: String(x), label: x + ' 秒' })), String(s.pollSeconds))}</select>
@@ -274,7 +275,7 @@
       else if (verb === 'unpair') { if (!window.confirm('解除当前配对？之后需要对端重新生成配对码。')) return; data = await call('bridge:unpair'); render(); }
       else if (verb === 'reset-instructions') { field('instructions').value = data.defaultInstructions; editing = true; }
       else if (verb === 'save') {
-        await call('bridge:set-settings', { enabled: field('enabled').value === '1', codeRoots: field('codeRoots').value, effort: field('effort').value,
+        await call('bridge:set-settings', { enabled: field('enabled').value === '1', codeRoots: field('codeRoots').value, ...(field('resultDirs') ? { resultDirs: field('resultDirs').value } : {}), effort: field('effort').value,
           pollSeconds: Number(field('pollSeconds').value), instructions: field('instructions').value,
           ...(field('perAccountPeak') ? { maxParallel: Number(field('maxParallel').value), maxParallelIdle: Number(field('maxParallelIdle').value),
             perAccountPeak: Number(field('perAccountPeak').value), perAccountIdle: Number(field('perAccountIdle').value),

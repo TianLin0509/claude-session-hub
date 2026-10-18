@@ -10,6 +10,10 @@
 //   hub       版本、启动时间、并行状态、通道队列快照、Hub 里的会话（用途、状态、最后活动、PID 与内存）；
 //   pool      号池各号状态与模型，只用「个人 / 号 1 / 号 2」代称；
 //   logs      通道日志、会话收放日志、Hub 窗口事件日志的最后 N 行（脱敏）。
+// 二期（2026-10-18 追加，只读）：
+//   codeagent CodeAgent 版本、个人账号登录状态、额度剩余（各会话屏幕右侧 Stats 面板的 Credit，同 renderer/codeagent-quota-bar.js 的来源，主进程读）；
+//   airview   仿真相关进程（按进程名白名单，不回传命令行）；代码目录与仿真结果目录下最近更新的结果文件元信息（相对路径、大小、修改时间，前 30 个，不读内容）；
+//   features  论坛、简报、手机对话、桌宠形象下载各自最后一次成功时间与最后一次错误。
 // 底线：只读；不读源码，不回传文件内容（日志尾部除外，已脱敏）；sections 只认白名单，不执行对端传来的任何命令。
 // 回报整条消息（HTTP 正文 {to,mid,blob}）严格小于 60000 字节：超了按段降级（先截日志，再把进程截到前 10……），始终一条发完。
 const fs = require('node:fs');
@@ -17,8 +21,8 @@ const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-const SECTIONS = ['machine', 'processes', 'hub', 'pool', 'logs'];
-const SECTION_LABEL = { machine: '电脑', processes: '进程', hub: 'Hub 状态与队列', pool: '号池', logs: '日志' };
+const SECTIONS = ['machine', 'processes', 'hub', 'pool', 'logs', 'codeagent', 'airview', 'features'];
+const SECTION_LABEL = { machine: '电脑', processes: '进程', hub: 'Hub 状态与队列', pool: '号池', logs: '日志', codeagent: 'CodeAgent', airview: '仿真', features: '功能' };
 const MIN_INTERVAL_MS = 30000;
 const MESSAGE_LIMIT = 60000;
 const MESSAGE_MARGIN = 400; // 量的是发前那一份，真正发出时编号、时间戳的位数可能略有不同
@@ -117,7 +121,31 @@ function defaultSys() {
     sleep: ms => new Promise(r => setTimeout(r, ms)),
     drives: () => process.platform === 'win32' ? ['C:\\', 'D:\\'] : ['/'],
     clock: () => Date.now(),
+    // 二期
+    codeagentVersion: command => codeagentVersion(command),
+    renderRows: raw => require('../hub-phone/session-chat').renderRows(raw),
+    readdir: dir => fs.promises.readdir(dir, { withFileTypes: true }),
+    stat: file => fs.promises.stat(file),
   };
+}
+
+// CodeAgent 版本：跑一次「<命令> --version」（隐藏窗口、8 秒超时），10 分钟内复用。命令取本机配置（codeagent-config.js 已拦掉特殊字符），不来自对端。
+let versionCache = null;
+function codeagentVersion(command) {
+  if (versionCache && versionCache.command === command && Date.now() - versionCache.at < 10 * 60000) return versionCache.promise;
+  const promise = new Promise((resolve, reject) => {
+    const { execFile } = require('node:child_process');
+    const done = (error, stdout, stderr) => {
+      const m = /\d+\.\d+\.\d+[0-9A-Za-z.+-]*/.exec(String(stdout || '') + '\n' + String(stderr || ''));
+      // 命令行输出可能是本机代码页（中文 Windows 是 GBK），不原样带回，只说结论
+      if (m) resolve(m[0]); else reject(new Error(!error ? '版本号没读出来' : error.killed ? '8 秒没返回' : `命令没跑成（退出码 ${error.code}），可能没装 CodeAgent 或它不在 PATH 里`));
+    };
+    if (process.platform === 'win32') execFile('cmd.exe', ['/d', '/s', '/c', `"${command}" --version`], { windowsHide: true, timeout: 8000, encoding: 'utf8' }, done);
+    else execFile(command, ['--version'], { timeout: 8000, encoding: 'utf8' }, done);
+  });
+  versionCache = { command, at: Date.now(), promise };
+  promise.catch(() => { if (versionCache && versionCache.promise === promise) versionCache = null; });
+  return promise;
 }
 
 // ---- machine ----
@@ -301,6 +329,8 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
     sessions,
     // 三期远程维护用：永远不能结束的进程（当前 Hub 进程树、所有别的 Hub 主进程及其进程树、Hub 派生的脚本进程）
     protectedPids: new Set([...hubTree, ...otherTree.keys(), ...hubScripts.map(p => p.pid)]),
+    // 二期仿真进程用（不发出去）
+    internal: { hubTree, owner, list, now },
   };
 }
 
@@ -384,6 +414,149 @@ function hub(bridge, deps, sys, ctx) {
   };
 }
 
+// ==== 二期（只读）====
+// ---- codeagent：版本、个人账号登录状态、额度剩余 ----
+// 额度只有 CodeAgent 界面右侧 Stats 面板那一行（没有查额度的命令）：读开着的 CodeAgent 会话的屏幕，取最近活动的 8 个，按号归并。
+const MAX_QUOTA_SCREENS = 8;
+async function codeagent(bridge, deps, sys, ctx, poolRaw, poolError) {
+  const out = {};
+  let command = '';
+  try { command = deps.codeagentCommand ? deps.codeagentCommand() : require('../codeagent-config').resolveCodeAgentConfig(process.env).command; } catch (error) { out.versionError = errText(error); }
+  if (command) {
+    try { out.version = await Promise.race([sys.codeagentVersion(command), new Promise((_, reject) => setTimeout(() => reject(new Error('10 秒没返回')), 10000).unref?.())]); }
+    catch (error) { out.versionError = errText(error); }
+  }
+  if (poolError) out.loginError = errText(poolError);
+  const p = poolRaw?.personal;
+  out.personal = p ? { state: POOL_STATE[p.state] || String(p.state || '未知'), ready: p.state === 'ready', expiresAt: Number(p.expiresAt) || null, defaultModel: p.defaultModel || '' } : null;
+  const accounts = poolRaw?.accounts || [];
+  out.pool = { total: accounts.length, ready: accounts.filter(a => a.state === 'ready').length, needLogin: accounts.filter(a => a.state !== 'ready').length };
+  // 额度
+  const aliases = ctx.aliases || new Map([['personal', '个人']]);
+  const live = (deps.listSessionIds?.() || []).map(id => ({ id, s: deps.getSession?.(id) }))
+    .filter(x => x.s && /^codeagent/.test(String(x.s.kind || '')) && x.s.status !== 'dormant' && x.s.status !== 'closed')
+    .map(x => ({ ...x, at: Math.max(Number(x.s.lastMessageTime) || 0, Number(x.s.lastCompletedAt) || 0, Number(deps.sessionInputAt?.(x.id)) || 0) }))
+    .sort((a, b) => b.at - a.at).slice(0, MAX_QUOTA_SCREENS);
+  const quota = new Map();
+  let read = 0;
+  if (!deps.readTerminalScreen) out.quotaNote = '这台 Hub 读不到会话屏幕';
+  else {
+    const { parseCodeAgentCredit } = require('../codeagent-screen-stats');
+    for (const x of live) {
+      const account = x.s.codeagentPoolAccount ? (aliases.get(x.s.codeagentPoolAccount) || '号池') : '个人';
+      if (quota.has(account)) continue;
+      try {
+        const raw = await deps.readTerminalScreen(x.id);
+        if (!raw) continue;
+        read += 1;
+        const reading = parseCodeAgentCredit(await sys.renderRows(raw));
+        if (reading) quota.set(account, { account, remaining: reading.remaining, pct: reading.pct, total: reading.total, bucket: reading.bucket, session: String(x.id).slice(0, 8), sessionActiveAt: x.at || null });
+      } catch { /* 这个会话的屏幕读不了，看下一个 */ }
+    }
+  }
+  out.quota = [...quota.values()];
+  out.quotaScreens = { live: live.length, read };
+  if (!out.quota.length && !out.quotaNote) out.quotaNote = live.length ? '开着的 CodeAgent 会话屏幕上没看到 Credit 行（Stats 面板没显示）' : '没有开着的 CodeAgent 会话，读不到额度';
+  return out;
+}
+
+// ---- airview：仿真进程 + 结果文件元信息 ----
+const SIM_PROCESS = /^(python[w]?(\d+(\.\d+)?)?|py|matlab|mlab|simulink|octave|airview[\w.-]*|.*airview.*)\.exe$/i;
+function airviewProcesses(analyzed) {
+  const { hubTree, owner, list, now } = analyzed.internal;
+  return list.filter(p => SIM_PROCESS.test(String(p.name || '')))
+    .sort((a, b) => (b.wsBytes || 0) - (a.wsBytes || 0)).slice(0, 30)
+    .map(p => ({ name: p.name, pid: p.pid, memMB: mb(p.wsBytes), startedAt: p.startedAt || null, runningMin: p.startedAt ? Math.max(0, Math.round((now - p.startedAt) / 60000)) : null,
+      hub: hubTree.has(p.pid), session: owner.has(p.pid) ? String(owner.get(p.pid)).slice(0, 8) : null,
+      // 只给一句标签（命令行本身不发出去）
+      hint: /airview_runner/i.test(String(p.cmd || '')) ? 'AirView 运行器' : /airview/i.test(String(p.cmd || '') + p.name) ? 'AirView 相关' : /matlab|mlab|simulink/i.test(p.name) ? 'MATLAB' : /python|^py\.exe$/i.test(p.name) ? 'Python' : '' }));
+}
+// 看哪些目录：设置里的仿真结果目录（默认 C:/AirView）+ 代码目录，去重，最多 12 个。
+function resultDirsOf(bridge) {
+  const s = bridge.settings();
+  const list = [...(Array.isArray(s.resultDirs) ? s.resultDirs : []), ...(Array.isArray(s.codeRoots) ? s.codeRoots : [])].map(String).filter(Boolean);
+  const seen = new Set(), out = [];
+  for (const d of list) { const k = d.replace(/[\\/]+$/, '').toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(d); } }
+  return out.slice(0, 12);
+}
+// 结果文件后缀白名单（源码后缀不在里面）：只看名字、大小、修改时间，不打开文件。
+const RESULT_EXT = /\.(mat|csv|tsv|txt|log|json|xlsx|xls|png|jpe?g|svg|fig|h5|hdf5|dat|out|npz|npy|pkl|parquet|zip|7z|html?|pdf)$/i;
+const SKIP_DIRS = new Set(['node_modules', '.git', '.svn', '.hg', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '$recycle.bin', 'system volume information']);
+const SCAN_BUDGET_MS = 4000, SCAN_MAX_ENTRIES = 30000, SCAN_MAX_DEPTH = 6, RECENT_FILES = 30;
+async function resultFiles(sys, dirs, now) {
+  const t0 = sys.clock();
+  const dirsOut = [], recent = [];
+  let entries = 0, truncated = false;
+  const keep = file => {
+    recent.push(file); recent.sort((a, b) => b.mtime - a.mtime);
+    if (recent.length > RECENT_FILES) recent.length = RECENT_FILES;
+  };
+  for (const root of dirs) {
+    const info = { dir: root, files: 0 };
+    dirsOut.push(info);
+    try { const st = await sys.stat(root); if (!st.isDirectory()) { info.error = '不是目录'; continue; } }
+    catch (error) { info.error = error.code === 'ENOENT' ? '目录不存在' : errText(error); continue; }
+    const queue = [{ dir: root, depth: 0 }];
+    while (queue.length) {
+      if (sys.clock() - t0 > SCAN_BUDGET_MS || entries > SCAN_MAX_ENTRIES) { truncated = true; info.truncated = true; break; }
+      const { dir, depth } = queue.shift();
+      let list;
+      try { list = await sys.readdir(dir); } catch { continue; }
+      for (const e of list) {
+        entries += 1;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (depth < SCAN_MAX_DEPTH && !SKIP_DIRS.has(e.name.toLowerCase())) queue.push({ dir: full, depth: depth + 1 }); continue; }
+        if (!e.isFile() || !RESULT_EXT.test(e.name)) continue;
+        try {
+          const st = await sys.stat(full);
+          info.files += 1;
+          keep({ dir: root, rel: path.relative(root, full).split(path.sep).join('/'), sizeKB: Math.round(st.size / 1024), mtime: Math.round(st.mtimeMs) });
+        } catch { /* 读不到就跳过 */ }
+      }
+    }
+  }
+  return { dirs: dirsOut, recent: recent.map(f => ({ ...f, ageMin: Math.max(0, Math.round((now - f.mtime) / 60000)) })), scanned: entries, truncated, scanMs: sys.clock() - t0 };
+}
+
+// ---- features：论坛、简报、手机对话、桌宠形象下载 ----
+// main 给原始状态（deps.featureStatus），这里只挑字段（白名单），不带正文、会话内容、账号。
+function features(deps) {
+  if (!deps.featureStatus) throw new Error('这台 Hub 没接功能状态');
+  const raw = deps.featureStatus() || {};
+  const out = {};
+  const f = raw.forum;
+  if (f === null) out.forum = { enabled: false, note: '这台 Hub 没启用论坛' };
+  else if (f && f.error) out.forum = { error: short(f.error, 160) };
+  else if (f) {
+    const snap = f.snapshot || null, sites = (snap?.sites || []).map(x => ({ name: String(x.name || x.id || ''), ok: !!x.ok, needsLogin: !!x.needsLogin, error: x.error ? short(x.error, 160) : '' }));
+    out.forum = { enabled: f.settings?.enabled !== false, lastAttemptAt: snap?.at || null, lastSuccessAt: sites.some(x => x.ok) ? snap.at : null, today: !!f.today, syncing: !!f.syncing, nextSyncAt: f.nextSyncAt || null,
+      lastError: sites.filter(x => !x.ok).map(x => `${x.name}：${x.needsLogin ? '需要登录' : x.error || '没取到'}`).join('；') || null, sites };
+  }
+  const a = raw.assistant;
+  if (a === null) out.brief = out.phone = { enabled: false, note: '这台 Hub 没启用助理' };
+  else if (a && a.error) out.brief = out.phone = { error: short(a.error, 160) };
+  else if (a) {
+    const b = a.brief || null;
+    const failed = b && (b.by === 'none' || /没完成|读不出来/.test(String(b.note || '')));
+    out.brief = { enabled: a.enabled !== false, login: a.login ? { ok: !!a.login.ok, reason: a.login.reason || null } : null, dataRefreshedAt: a.refreshedAt || null,
+      dataErrors: (a.errors || []).slice(0, 5).map(e => short(typeof e === 'string' ? e : e?.message || e?.error || JSON.stringify(e), 160)),
+      today: b ? { generatedAt: b.generatedAt || null, total: Number(b.total) || 0, organizing: !!b.organizing } : null,
+      lastSuccessAt: b && !failed && b.total ? b.generatedAt || null : null, lastError: failed ? short(b.note, 160) : null };
+    const ph = a.phone || {};
+    out.phone = { active: !!ph.active, lastPollAt: ph.lastPollAt || null, lastSuccessAt: ph.lastOkAt || null, lastError: ph.lastError ? short(ph.lastError, 160) : null };
+  }
+  const pet = raw.pet;
+  if (pet === null) out.pet = { note: '桌宠没启动' };
+  else if (pet && pet.error) out.pet = { error: short(pet.error, 160) };
+  else if (pet) {
+    const st = pet.state || {};
+    out.pet = { phase: st.phase || null, lastError: st.error ? short(st.error, 160) : null, failedRole: st.failedId || null,
+      downloaded: (pet.roles || []).filter(r => r.installed && !r.bundled).map(r => ({ id: r.id, name: r.name, version: r.version })).slice(0, 20),
+      lastSuccessAt: pet.lastSuccessAt || null };
+  }
+  return out;
+}
+
 // ---- 汇总 ----
 async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_LOG_LINES, sys = { ...defaultSys(), ...(deps.diagSys || {}) } }) {
   const t0 = sys.clock();
@@ -392,7 +565,7 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
   const ptyPids = (() => { try { return (deps.sessionPtyPids?.() || []).filter(x => x && x.id && Number(x.pid) > 0); } catch { return []; } })();
   ctx.ptyPids = new Map(ptyPids.map(x => [x.id, Number(x.pid)]));
   let poolRaw = null, poolError = null;
-  if (sections.includes('pool') || sections.includes('hub')) { try { poolRaw = deps.poolDiag ? deps.poolDiag() : null; } catch (error) { poolError = error; } }
+  if (sections.includes('pool') || sections.includes('hub') || sections.includes('codeagent')) { try { poolRaw = deps.poolDiag ? deps.poolDiag() : null; } catch (error) { poolError = error; } }
   ctx.aliases = poolAliases(poolRaw);
   const out = { schema: 1, sections, at: bridge.now(), timings: {} };
   const run = async (name, fn) => {
@@ -403,7 +576,8 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
   // 进程先采：hub 段要用会话的 PID 与内存
   const jobs = [];
   if (sections.includes('machine')) jobs.push(run('machine', () => machine(sys)));
-  if (sections.includes('processes') || sections.includes('hub')) {
+  if (sections.includes('airview')) jobs.push(run('airviewFiles', () => resultFiles(sys, resultDirsOf(bridge), bridge.now())));
+  if (sections.includes('processes') || sections.includes('hub') || sections.includes('airview')) {
     jobs.push((async () => {
       const s = sys.clock();
       let analyzed = null, error = null;
@@ -413,10 +587,10 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
         analyzed = analyzeProcesses(snap, { hubPid, hubExe: path.basename(String(deps.hubExecPath || process.execPath)), sessionPids: ptyPids, now: bridge.now(), isHubAppDir: sys.isHubAppDir,
           ...(Number.isFinite(minAge) && minAge >= 0 ? { suspectMinAgeMs: minAge, killMinAgeMs: minAge } : {}) });
       } catch (e) { error = e; }
-      if (analyzed) ctx.sessionMem = analyzed.sessions;
+      if (analyzed) { ctx.sessionMem = analyzed.sessions; ctx.analyzed = analyzed; }
       if (error) ctx.processError = errText(error);
       if (sections.includes('processes')) {
-        if (analyzed) { const { sessions: _s, protectedPids: _p, ...rest } = analyzed; out.processes = rest; } else out.processes = { error: errText(error) };
+        if (analyzed) { const { sessions: _s, protectedPids: _p, internal: _i, ...rest } = analyzed; out.processes = rest; } else out.processes = { error: errText(error) };
         out.timings.processes = sys.clock() - s;
       }
     })());
@@ -425,6 +599,14 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
   if (sections.includes('hub')) await run('hub', () => { const h = hub(bridge, deps, sys, ctx); if (ctx.processError) h.processNote = '会话内存没算出来：' + ctx.processError; return h; });
   if (sections.includes('pool')) await run('pool', () => { if (poolError) throw poolError; return pool(poolRaw, { usePool: !!bridge.settings().usePool, models: bridge.modelTableSafe?.() || null }); });
   if (sections.includes('logs')) await run('logs', () => logs(sys, path.join(deps.dataDir, 'logs'), lines));
+  if (sections.includes('codeagent')) await run('codeagent', () => codeagent(bridge, deps, sys, ctx, poolRaw, poolError));
+  if (sections.includes('airview')) {
+    const files = out.airviewFiles; delete out.airviewFiles;
+    const t1 = out.timings.airviewFiles || 0; delete out.timings.airviewFiles;
+    await run('airview', () => ({ processes: ctx.analyzed ? airviewProcesses(ctx.analyzed) : { error: ctx.processError || '进程没采到' }, ...(files && files.error ? { filesError: files.error } : files) }));
+    out.timings.airview = (out.timings.airview || 0) + t1;
+  }
+  if (sections.includes('features')) await run('features', () => features(deps));
   out.elapsedMs = sys.clock() - t0;
   return out;
 }
@@ -445,6 +627,8 @@ function summarize(d) {
     const par = h.parallel;
     parts.push(`通道 ${h.queue.running} 个在跑、${h.queue.queued} 个排队${par ? `（上限 ${par.cap}，受${par.limitedBy}限制）` : ''}`);
   }
+  const c = d.codeagent;
+  if (c && !c.error) parts.push(`CodeAgent ${c.version ? 'v' + c.version : '版本没读到'}${(c.quota || []).length ? ' · 额度 ' + c.quota.map(q => `${q.account} ${q.pct}%`).join('、') : ''}`);
   const failed = SECTIONS.filter(s => d[s] && d[s].error);
   if (failed.length) parts.push(`没采到：${failed.map(s => SECTION_LABEL[s]).join('、')}`);
   if (d.degraded?.length) parts.push('超长已精简：' + d.degraded[d.degraded.length - 1]);
@@ -469,6 +653,8 @@ const STEPS = [
     if (d.hub?.queue?.threads) d.hub.queue.threads = d.hub.queue.threads.slice(0, 10).map(q => ({ thread: q.thread, phase: q.phase, round: q.round, queueNote: q.queueNote }));
     if (d.pool?.accounts) d.pool.accounts = d.pool.accounts.map(a => ({ alias: a.alias, state: a.state, activeSessions: a.activeSessions }));
     if (d.pool) delete d.pool.models;
+    if (d.airview?.recent) d.airview.recent = d.airview.recent.slice(0, 10);
+    if (d.airview?.dirs) d.airview.dirs = d.airview.dirs.map(x => ({ dir: x.dir, files: x.files, error: x.error }));
   }],
 ];
 // measure(encoded) → 整条消息的字节数。返回 { data(编码后), result, degraded, bytes }。

@@ -130,6 +130,8 @@ function fakeSys(t, extra = {}) {
     drives: () => ['C:\\', 'D:\\'],
     clock: (() => { let n = 0; return () => (n += 7); })(),
     mtime: () => NOW - 120000,
+    codeagentVersion: async () => '3.2.1-beta',
+    renderRows: async raw => String(raw.text).split('\n'),
     ...extra,
   };
 }
@@ -219,7 +221,7 @@ test('端到端（内存通道）：家里发 diag → 公司直接采集、压�
   // 公司：轻提示（中性措辞、不弹系统通知）、审计日志、历史里不存压缩包
   const notice = r.notices.find(n => /对端查看了这台电脑的状态/.test(n.title));
   assert.ok(notice && notice.quiet === true && !/家里/.test(notice.title + notice.text));
-  assert.match(fs.readFileSync(path.join(logs, 'company-diag.log'), 'utf8'), new RegExp(`diag ${sent.id} sections=machine,processes,hub,pool,logs elapsed=\\d+ms bytes=\\d+`));
+  assert.match(fs.readFileSync(path.join(logs, 'company-diag.log'), 'utf8'), new RegExp(`diag ${sent.id} sections=${D.SECTIONS.join(',')} elapsed=\\d+ms bytes=\\d+`));
   assert.ok(!JSON.stringify(r.company.hubAdmin.state().history).includes('"diag":"'), '公司历史里不存回报内容');
   assert.equal(r.company.status().hubAdmin.lastDiag.id, sent.id);
   // 家里：不发通知、不算待办的远程指令；摘要可读
@@ -249,7 +251,7 @@ test('代次不符、编号格式不对：不处理、不回报；段落白名�
   assert.equal(r.company.hubAdmin.receive({ type: 'hub-admin', op: 'diag', id: 'HA-1018-aaaaaa', gen: 'old-gen' }), true);
   assert.equal(r.company.hubAdmin.receive({ type: 'hub-admin', op: 'diag', id: 'bad id!', gen: r.company.link.gen() }), true);
   assert.equal(r.company.hubAdmin.diagTask, undefined); assert.equal(outbox(), 0); assert.equal(r.company.hubAdmin.state().lastDiagAt, undefined);
-  await assert.rejects(r.home.hubAdmin({ op: 'diag', sections: ['machine', 'shell'] }), /sections 只能是 machine \/ processes \/ hub \/ pool \/ logs，不认识：shell/);
+  await assert.rejects(r.home.hubAdmin({ op: 'diag', sections: ['machine', 'shell'] }), /sections 只能是 machine \/ processes \/ hub \/ pool \/ logs \/ codeagent \/ airview \/ features，不认识：shell/);
   // 绕过家里直接塞：公司只采白名单段落，其余记为 ignored
   r.company.hubAdmin.receive({ type: 'hub-admin', op: 'diag', id: 'HA-1018-bbbbbb', gen: r.company.link.gen(), sections: ['machine', 'Get-Process | Stop-Process'] });
   await r.company.hubAdmin.diagTask;
@@ -337,4 +339,72 @@ test('开关：公司关了「状态查看」回 refused；公司报过版本却
   const posts = r.relay.posts;
   await assert.rejects(r.home.hubAdmin({ op: 'diag' }), /公司 Hub 版本过旧（v2\.1\.11），不支持直查/);
   assert.equal(r.relay.posts, posts, '没有发出去');
+});
+test('二期 codeagent：版本、个人账号登录、按号读各会话屏幕的 Credit 额度（号用代称）', async t => {
+  const r = setup(t, {
+    readTerminalScreen: async id => ({ text: { 's-1-abcdefgh': '回答正文……\n▾ Stats\nContext 32.7k (16%)\nCredit 1,954.7 (78.2%)', 's-3-pppppppp': 'Credit 19,111.8 (95.6%)', 's-4-qqqqqqqq': '没有面板' }[id] || '', cols: 120, rows: 30 }),
+    poolDiag: () => ({ ...POOL(), personal: { ...POOL().personal, expiresAt: NOW + 86400000 } }) });
+  await pair(r);
+  r.cs.map.set('s-1-abcdefgh', { id: 's-1-abcdefgh', kind: 'codeagent', status: 'idle', title: '1018-Q1-codex', purpose: 'company-bridge', codeagentPoolAccount: 'abc123', lastMessageTime: NOW - 60000 });
+  r.cs.map.set('s-3-pppppppp', { id: 's-3-pppppppp', kind: 'codeagent', status: 'idle', title: '我的', lastMessageTime: NOW - 30000 });
+  r.cs.map.set('s-4-qqqqqqqq', { id: 's-4-qqqqqqqq', kind: 'codeagent', status: 'idle', title: '另一个', lastMessageTime: NOW - 10000 });
+  r.cs.map.set('s-5-dormant0', { id: 's-5-dormant0', kind: 'codeagent', status: 'dormant', title: '休眠', lastMessageTime: NOW });
+  r.box.ids.push('s-1-abcdefgh', 's-3-pppppppp', 's-4-qqqqqqqq', 's-5-dormant0');
+  const { view } = await diagRound(r, { sections: ['codeagent'] });
+  const c = view.diag.codeagent;
+  assert.equal(c.version, '3.2.1-beta');
+  assert.deepEqual(c.personal, { state: '可用', ready: true, expiresAt: NOW + 86400000, defaultModel: 'GLM-4.6' });
+  assert.deepEqual(c.pool, { total: 2, ready: 1, needLogin: 1 });
+  assert.deepEqual(c.quota.map(q => [q.account, q.pct, q.total, q.bucket, q.session]), [['个人', 95.6, 20000, '月度', 's-3-pppp'], ['号 1', 78.2, 2500, '今日忙时', 's-1-abcd']]);
+  assert.deepEqual(c.quotaScreens, { live: 3, read: 3 }, '休眠的不读；个人账号最新的会话屏幕上没有面板，再读它的下一个会话；同一个号读到一份就不再读');
+  assert.match(view.summary, /CodeAgent v3\.2\.1-beta · 额度 个人 95\.6%、号 1 78\.2%/);
+  assert.ok(!JSON.stringify(view).includes('abc123'));
+});
+
+test('二期 airview：仿真进程按名字白名单（不回传命令行）；结果目录只列结果文件的名字、大小、修改时间', async t => {
+  const r = setup(t); await pair(r);
+  const snap = fakeProcesses();
+  snap.processes.push(proc(600, 200, 'python.exe', 900, { cmd: 'python C:\\AirView\\tools\\airview_runner.py --case secret-case' }), proc(601, 4, 'MATLAB.exe', 2048), proc(602, 4, 'pythonw.exe', 20));
+  r.box.sys = fakeSys(t, { processSnapshot: async () => snap });
+  const av = path.join(r.root, 'AirView'), code = path.join(r.root, 'code');
+  for (const d of [path.join(av, 'out', 'case1'), path.join(av, 'node_modules', 'x'), path.join(code, 'src')]) fs.mkdirSync(d, { recursive: true });
+  const write = (f, size, ageMin) => { fs.writeFileSync(f, Buffer.alloc(size)); const at = new Date(Date.now() - ageMin * 60000); fs.utimesSync(f, at, at); };
+  write(path.join(av, 'out', 'case1', 'rsrp.mat'), 4096, 5); write(path.join(av, 'out', 'case1', 'summary.csv'), 2048, 1);
+  write(path.join(av, 'node_modules', 'x', 'pkg.json'), 10, 0); write(path.join(code, 'src', 'harq.c'), 100, 0); write(path.join(code, 'src', 'sched.py'), 100, 0);
+  write(path.join(code, 'result.log'), 300, 30);
+  r.company.setSettings({ resultDirs: [av, path.join(r.root, 'missing')], codeRoots: [code] });
+  const { view } = await diagRound(r, { sections: ['airview'] });
+  const a = view.diag.airview;
+  assert.deepEqual(a.processes.map(p => [p.pid, p.hint, p.session]), [[601, 'MATLAB', null], [600, 'AirView 运行器', 's-1-abcd'], [602, 'Python', null]]);
+  assert.ok(!JSON.stringify(a).includes('secret-case'), '不回传命令行');
+  assert.deepEqual(a.recent.map(f => f.rel), ['out/case1/summary.csv', 'out/case1/rsrp.mat', 'result.log'], '只列结果后缀，跳过 node_modules 与源码，按修改时间新到旧');
+  assert.deepEqual(a.recent.map(f => f.sizeKB), [2, 4, 0]);
+  assert.deepEqual(a.dirs.map(d => [d.files, d.error || null]), [[2, null], [0, '目录不存在'], [1, null]]);
+  assert.throws(() => r.company.setSettings({ resultDirs: Array.from({ length: 11 }, (_, i) => 'C:/x' + i) }), /最多 10 个/);
+  assert.deepEqual(r.company.settings().resultDirs.length, 2);
+});
+
+test('二期 features：论坛、简报、手机对话、桌宠下载的最近成功与错误；只挑字段，不带正文', async t => {
+  const r = setup(t, { featureStatus: () => ({
+    forum: { settings: { enabled: true }, today: true, syncing: false, nextSyncAt: NOW + 3600000,
+      snapshot: { at: NOW - 600000, sites: [{ id: 'a', name: '稼先社区', ok: true, lists: [{ title: '帖子正文' }] }, { id: 'b', name: '心声社区', ok: false, needsLogin: true }] } },
+    assistant: { enabled: true, login: { ok: true }, refreshedAt: NOW - 120000, errors: ['邮件：超时'], brief: { generatedAt: NOW - 3600000, by: 'agent', total: 7, organizing: false, note: '' },
+      phone: { active: true, lastPollAt: NOW - 5000, lastOkAt: NOW - 5000, lastError: '发到手机没成功：网络' }, conversations: [{ text: '同事私聊内容' }] },
+    pet: { state: { phase: 'error', error: '下载没成功，可以重试', failedId: '07-shiba' }, roles: [{ id: '05-rabbit', name: '兔子', installed: true, bundled: false, version: '1.0.0' }, { id: '01-cat', name: '小猫', installed: true, bundled: true }], lastSuccessAt: NOW - 86400000 },
+  }) });
+  await pair(r);
+  const { view } = await diagRound(r, { sections: ['features'] });
+  const f = view.diag.features;
+  assert.deepEqual([f.forum.lastSuccessAt, f.forum.lastError, f.forum.today], [NOW - 600000, '心声社区：需要登录', true]);
+  assert.deepEqual([f.brief.lastSuccessAt, f.brief.lastError, f.brief.dataErrors], [NOW - 3600000, null, ['邮件：超时']]);
+  assert.deepEqual([f.phone.lastSuccessAt, f.phone.lastError, f.phone.active], [NOW - 5000, '发到手机没成功：网络', true]);
+  assert.deepEqual([f.pet.phase, f.pet.lastError, f.pet.failedRole, f.pet.lastSuccessAt, f.pet.downloaded.map(x => x.name)], ['error', '下载没成功，可以重试', '07-shiba', NOW - 86400000, ['兔子']]);
+  const text = JSON.stringify(view);
+  for (const leak of ['帖子正文', '同事私聊内容']) assert.ok(!text.includes(leak), leak);
+  // 简报失败、助理与论坛没启用
+  const r2 = setup(t, { featureStatus: () => ({ forum: null, assistant: { enabled: true, brief: { generatedAt: NOW, by: 'none', total: 0, note: 'WeLink 没登录或登录过期：点上方「扫码登录」' }, phone: {} }, pet: null }) });
+  await pair(r2);
+  const f2 = (await diagRound(r2, { sections: ['features'] })).view.diag.features;
+  assert.deepEqual([f2.forum.enabled, f2.brief.lastSuccessAt, f2.pet.note], [false, null, '桌宠没启动']);
+  assert.match(f2.brief.lastError, /WeLink 没登录/);
 });
