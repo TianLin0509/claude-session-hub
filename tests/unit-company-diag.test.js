@@ -23,9 +23,9 @@ function fakeProcesses() {
     proc(101, 100, 'AIGroupChatHub.exe', 500, { cmd: 'AIGroupChatHub.exe --type=renderer' }),
     proc(102, 100, 'AIGroupChatHub.exe', 200, { cmd: 'AIGroupChatHub.exe --type=renderer --hidden' }),
     proc(200, 100, 'powershell.exe', 60, { cmd: 'powershell.exe -NoProfile -NoLogo' }),
-    proc(201, 200, 'node.exe', 900, { cmd: 'node C:\\tools\\codeagent\\cli.js' }),
-    proc(202, 201, 'node.exe', 400, { cmd: 'node C:\\tools\\codeagent\\cli.js serve --token=abc' }),
-    proc(300, 7777, 'node.exe', 1100, { cmd: 'node C:\\tools\\codeagent\\cli.js serve', startedAt: NOW - 86400000 }),
+    proc(201, 200, 'node.exe', 900, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js' }),
+    proc(202, 201, 'node.exe', 400, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js serve --token=abc' }),
+    proc(300, 7777, 'node.exe', 1100, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js serve', startedAt: NOW - 86400000 }),
     proc(301, 4, 'electron.exe', 150, { cmd: 'electron.exe C:\\other-app' }),
     proc(302, 4, 'explorer.exe', 120),
     proc(400, 100, 'node.exe', 80, { cmd: 'node something', startedAt: NOW - 9000000 }),
@@ -54,7 +54,7 @@ test('环境里另有正在运行的 Hub、Hub 后台脚本、别的 Electron �
   snap.processes.push(
     // 另一个正在运行的 Hub（父进程早已退出，同 bootstrap 拉起后退出的情形）：名下界面、会话、CodeAgent
     proc(500, 9, 'AIGroupChatHub.exe', 250, { startedAt: NOW - 90000000 }), proc(501, 500, 'AIGroupChatHub.exe', 300, { cmd: 'x --type=renderer' }),
-    proc(502, 500, 'powershell.exe', 30), proc(503, 502, 'node.exe', 700, { cmd: 'node C:\\tools\\codeagent\\cli.js serve' }),
+    proc(502, 500, 'powershell.exe', 30), proc(503, 502, 'node.exe', 700, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js serve' }),
     // 开着窗口、没有子进程的开发版 Hub（命令行带源码目录）；空空的安装版 Hub 主进程；开发版 Hub（目录是 Hub 源码）
     { ...proc(510, 9, 'electron.exe', 120, { cmd: 'electron.exe C:\\Users\\x\\claude-session-hub' }), hasWindow: true },
     proc(600, 9, 'AIGroupChatHub.exe', 90),
@@ -68,7 +68,7 @@ test('环境里另有正在运行的 Hub、Hub 后台脚本、别的 Electron �
     // 孤立的 Electron 子进程；父进程活着的 node（别的程序起的）；已知残留形态：空着的会话外壳；刚变孤儿 5 分钟的 CodeAgent；命令行里只是「提到」codeagent 的 node
     proc(700, 9999, 'AIGroupChatHub.exe', 60, { cmd: 'AIGroupChatHub.exe --type=gpu-process' }), proc(800, 302, 'node.exe', 40, { cmd: 'node tool.js' }),
     proc(950, 9998, 'powershell.exe', 30, { cmd: 'powershell.exe -NoProfile -NoLogo' }),
-    proc(960, 9997, 'node.exe', 500, { cmd: 'node C:\\tools\\codeagent\\cli.js', startedAt: NOW - 5 * 60000 }),
+    proc(960, 9997, 'node.exe', 500, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js', startedAt: NOW - 5 * 60000 }),
     proc(970, 9996, 'node.exe', 45, { cmd: 'node -e "setInterval(()=>{},1e9)" codeagent-mentioned', startedAt: NOW - 3 * 3600000 }));
   const a = D.analyzeProcesses(snap, { hubPid: 100, hubExe: 'AIGroupChatHub.exe', now: NOW, isHubAppDir: dir => dir === 'D:\\AIWork\\x\\wt' });
   assert.deepEqual(a.leftovers.map(x => [x.pid, x.kind, x.killable]),
@@ -93,12 +93,33 @@ test('环境里另有正在运行的 Hub、Hub 后台脚本、别的 Electron �
   assert.equal(b.leftovers.find(x => x.pid === 960).killable, true);
 });
 
+test('「可结束」档排除开着可见窗口的进程树、量得到且最近还在用 CPU 的进程（同 process-reclaim）；量不到 CPU 的先保留', () => {
+  const snap = fakeProcesses();
+  snap.cpuWindowMs = 1500; snap.cpuCount = 4;
+  snap.processes.push(
+    proc(310, 7001, 'node.exe', 300, { cmd: 'node C:\\npm\\node_modules\\codeagent\\cli.js', startedAt: NOW - 86400000 }),   // 子进程开着窗口
+    { ...proc(311, 310, 'conhost.exe', 10), hasWindow: true },
+    { ...proc(320, 7002, 'node.exe', 300, { cmd: 'node C:\\npm\\node_modules\\codeagent\\cli.js', startedAt: NOW - 86400000 }), cpuDeltaMs: 600 }, // 1.5 秒里用了 600 ms CPU
+    { ...proc(330, 7003, 'node.exe', 300, { cmd: 'node C:\\npm\\node_modules\\codeagent\\cli.js', startedAt: NOW - 86400000 }), cpuDeltaMs: 0 });  // 一点没动
+  const a = D.analyzeProcesses(snap, { hubPid: 100, hubExe: 'AIGroupChatHub.exe', now: NOW });
+  const v = Object.fromEntries(a.leftovers.map(x => [x.pid, x]));
+  assert.deepEqual([v[310].killable, v[310].windowed], [false, true], '整棵树开着窗口：仍是嫌疑，不可结束');
+  assert.deepEqual([v[320].killable, v[320].cpu.known, v[320].cpu.idle, v[320].cpu.pct], [false, true, false, 10]);
+  assert.deepEqual([v[330].killable, v[330].cpu.known, v[330].cpu.idle], [true, true, true]);
+  assert.deepEqual([v[300].killable, v[300].cpu.known], [true, false], '直查只采一次、量不到 CPU 的先保留（结束前会再量）');
+});
+
 test('CodeAgent 按可执行文件 / 入口脚本路径认，不按命令行里任意位置的字样', () => {
   const yes = [{ name: 'codeagent.exe', cmd: 'codeagent.exe' }, { name: 'node.exe', cmd: '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\a\\AppData\\Roaming\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js" serve' },
-    { name: 'node.exe', cmd: 'node --max-old-space-size=4096 D:\\CodeAgent3\\bin\\main.js' }];
-  const no = [{ name: 'node.exe', cmd: 'node -e "require(1)" codeagent' }, { name: 'node.exe', cmd: 'node D:\\tools\\grep.js --pattern codeagent' }, { name: 'powershell.exe', cmd: 'powershell -c codeagent --version' }];
+    { name: 'codeagent-cli.exe', cmd: 'codeagent-cli.exe serve' }, { name: 'cmd.exe', cmd: '"D:\\CodeAgent3\\codeagent.cmd" serve' }];
+  const no = [{ name: 'node.exe', cmd: 'node -e "require(1)" codeagent' }, { name: 'node.exe', cmd: 'node D:\\tools\\grep.js --pattern codeagent' }, { name: 'powershell.exe', cmd: 'powershell -c codeagent --version' },
+    // 路径里随便哪层目录名带 codeagent 都不算（2026-10-18 二审）
+    { name: 'node.exe', cmd: 'node D:\\work\\codeagent-notes\\tool.js' }, { name: 'node.exe', cmd: 'node C:\\tools\\codeagent\\cli.js' }, { name: 'node.exe', cmd: 'node --max-old-space-size=4096 D:\\CodeAgent3\\bin\\main.js' }];
   for (const p of yes) assert.equal(D.isCodeAgentProc(p), true, p.cmd);
   for (const p of no) assert.equal(D.isCodeAgentProc(p), false, p.cmd);
+  // 本机配置的 CodeAgent 安装目录下的入口脚本算
+  assert.equal(D.isCodeAgentProc({ name: 'node.exe', cmd: 'node --max-old-space-size=4096 D:\\CodeAgent3\\bin\\main.js' }, ['D:/CodeAgent3']), true);
+  assert.equal(D.isCodeAgentProc({ name: 'node.exe', cmd: 'node D:\\CodeAgent3x\\main.js' }, ['D:/CodeAgent3']), false);
 });
 
 test('脱敏：号身份、口令/令牌样式、配对码、网址、本机用户目录；UUID 与普通文字保留', () => {

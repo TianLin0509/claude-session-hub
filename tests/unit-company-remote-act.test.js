@@ -15,23 +15,26 @@ const proc = (pid, ppid, name, mem, extra = {}) => ({ pid, ppid, name, cmd: extr
 function processes(over = {}) {
   const list = [
     proc(100, 4, 'AIGroupChatHub.exe', 300), proc(101, 100, 'AIGroupChatHub.exe', 400, { cmd: 'x --type=renderer' }),
-    proc(200, 100, 'powershell.exe', 60, { cmd: 'powershell.exe -NoProfile -NoLogo' }), proc(201, 200, 'node.exe', 900, { cmd: 'node C:\\tools\\codeagent\\cli.js' }),
-    proc(300, 7777, 'node.exe', 1100, { cmd: 'node C:\\tools\\codeagent\\cli.js serve', startedAt: NOW - 86400000 }),
-    proc(301, 7778, 'node.exe', 700, { cmd: 'node C:\\tools\\codeagent\\cli.js', startedAt: NOW - 5 * 60000 }),
+    proc(200, 100, 'powershell.exe', 60, { cmd: 'powershell.exe -NoProfile -NoLogo' }), proc(201, 200, 'node.exe', 900, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js' }),
+    proc(300, 7777, 'node.exe', 1100, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js serve', startedAt: NOW - 86400000 }),
+    proc(301, 7778, 'node.exe', 700, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js', startedAt: NOW - 5 * 60000 }),
     proc(302, 4, 'explorer.exe', 100), proc(400, 302, 'node.exe', 50, { cmd: 'node tool.js' }),
-    proc(500, 9, 'AIGroupChatHub.exe', 250, { startedAt: NOW - 90000000 }), proc(501, 500, 'node.exe', 800, { cmd: 'node C:\\tools\\codeagent\\cli.js', startedAt: NOW - 90000000 }),
+    proc(500, 9, 'AIGroupChatHub.exe', 250, { startedAt: NOW - 90000000 }), proc(501, 500, 'node.exe', 800, { cmd: 'node C:\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js', startedAt: NOW - 90000000 }),
   ];
   return { sampledAt: NOW, processes: list.map(p => (over[p.pid] ? { ...p, ...over[p.pid] } : p)).filter(p => !over[p.pid]?.gone) };
 }
 function setup(t, extra = {}) {
-  const box = { ids: [], snap: processes(), killed: [], suspended: [], free: 2 * GB };
+  const box = { ids: [], snap: processes(), killed: [], suspended: [], free: 2 * GB, stubborn: [], cpu: {} };
   const r = rig(t, { companyDeps: { appUpdate: () => null, currentVersion: '2.1.12', listSessionIds: () => box.ids, hubPid: 100, hubExecPath: 'C:\\AI HUB\\AIGroupChatHub.exe', hubStartedAt: NOW - 7200000,
     sessionPtyPids: () => [{ id: 's-b1', pid: 200 }], poolDiag: () => null, accountSecrets: () => [],
     memory: () => ({ total: 16 * GB, free: box.free, ratio: box.free / (16 * GB) }),
     killProcess: pid => { box.killed.push(pid); box.free += 1100 * MB; },
+    processAlive: pid => box.stubborn.includes(pid) || !box.killed.includes(pid),
     suspendSession: (id, opts) => { box.suspended.push({ id, opts }); box.free += 1300 * MB; return { ok: true }; },
     ...extra } });
-  Object.defineProperty(r.company.deps, 'diagSys', { get: () => ({ processSnapshot: async () => box.snap, sleep: async () => {}, clock: (() => { let n = 0; return () => (n += 5); })(),
+  Object.defineProperty(r.company.deps, 'diagSys', { get: () => ({ processSnapshot: async () => box.snap,
+    // 结束进程前隔 1.5 秒采两次：默认都没动 CPU，box.cpu 可以给某个 PID 设用量
+    sampleProcesses: async () => ({ ...box.snap, cpuWindowMs: 1500, cpuCount: 4, processes: box.snap.processes.map(p => ({ ...p, cpuDeltaMs: box.cpu[p.pid] ?? 0 })) }), sleep: async () => {}, clock: (() => { let n = 0; return () => (n += 5); })(),
     os: { totalmem: () => 16 * GB, freemem: () => box.free, cpus: () => [], uptime: () => 100, platform: () => 'win32', release: () => 'x' }, statfs: async () => ({ blocks: 1, bsize: 1, bavail: 1 }), drives: () => [] }), configurable: true });
   r.clock.now = NOW;
   return Object.assign(r, { box });
@@ -217,4 +220,99 @@ test('MCP company_act：描述写明会改动公司电脑状态、先 diag 再 a
     ['company_act', { action: 'set-parallel', memFloorPct: 5, maxParallel: 2, restoreAfterHours: 2 }],
     ['company_act', { action: 'cancel-queued', thread: 'Q-1018-03' }],
     ['company_act', { action: 'suspend-idle' }]]);
+});
+
+test('kill-orphans 二审保险：重新枚举找不到当前 Hub 就一个都不结束；最近还在用 CPU 的不结束；发出结束后 5 秒没退出如实写「未确认」', async t => {
+  const r = setup(t); await pair(r);
+  const target = [{ pid: 300, startedAt: NOW - 86400000 }];
+  await diag(r);
+  // 进程表里没有当前 Hub 主进程（枚举不完整）：fail-closed
+  r.box.snap = processes({ 100: { gone: true } });
+  let v = actResult(r, (await act(r, 'kill-orphans', { targets: target })).id);
+  assert.equal(v.act.ok, false); assert.match(v.act.error, /没找到当前 Hub 主进程.*一个都不结束/);
+  assert.deepEqual(r.box.killed, []);
+  // 最近 1.5 秒里还在用 CPU
+  r.box.snap = processes(); r.box.cpu = { 300: 900 };
+  r.clock.now += 61000;
+  v = actResult(r, (await act(r, 'kill-orphans', { targets: target })).id);
+  assert.deepEqual(r.box.killed, []); assert.match(v.act.results[0].why, /最近还在用 CPU（15%），不动/);
+  // 结束请求发出去了，但它 5 秒内没退
+  r.box.cpu = {}; r.box.stubborn = [300];
+  r.clock.now += 61000;
+  v = actResult(r, (await act(r, 'kill-orphans', { targets: target })).id);
+  assert.deepEqual(r.box.killed, [300]);
+  assert.deepEqual([v.act.results[0].ok, v.act.results[0].confirmed], [true, false]);
+  assert.match(v.note, /结束了 0 个，1 个已发出结束请求、未确认，0 个没动/);
+});
+
+test('cancel-queued 竞态：派发 A 还在开会话时取消排队的 B，B 不会被旧对象写回、也不会被派发', async t => {
+  let release, first = null;
+  const gate = new Promise(res => { release = res; });
+  const created = [];
+  const r = setup(t, { memory: () => ({ total: 16 * GB, free: 12 * GB, ratio: 0.75 }),
+    createSession: async (kind, opts) => { if (!first) { first = opts.id; await gate; } created.push(opts.id); r.cs.map.set(opts.id, { id: opts.id, kind, status: 'idle', title: opts.title, purpose: opts.purpose }); return { id: opts.id }; } });
+  await pair(r);
+  r.hs.map.set('home-s', { id: 'home-s', kind: 'claude', status: 'idle' });
+  const a = await r.home.ask('home-s', { question: '请看一下 L2 HARQ 合并的实现细节' });
+  const b = await r.home.ask('home-s', { question: '再看一下 L2 调度器的优先级计算' });
+  const pending = r.company.checkNow();
+  for (let i = 0; i < 200 && !first; i++) await new Promise(res => setImmediate(res));
+  assert.ok(first, 'A 正在开会话');
+  assert.equal(r.company.thread(b.thread).state, 'queued');
+  const out = await r.company.hubAdmin.remoteAct().cancelQueued({ thread: b.thread });
+  assert.equal(out.whole, true);
+  release(); await pending;
+  await r.company.checkNow();
+  assert.equal(r.company.thread(b.thread).state, 'cancelled', 'B 保持已取消');
+  assert.equal(created.length, 1, '只给 A 开了会话');
+  assert.equal(r.company.thread(a.thread).state, 'running');
+});
+
+test('cancel-queued 只取消排队的那一轮：追问轮被取消后问题还能接着追问', async t => {
+  const r = setup(t); await pair(r);
+  r.hs.map.set('home-s', { id: 'home-s', kind: 'claude', status: 'idle' });
+  const a = await r.home.ask('home-s', { question: '请看一下 L2 HARQ 合并的实现细节' });
+  await r.company.checkNow();
+  const sid = r.company.thread(a.thread).sessionId;
+  r.cs.answer(sid, '第一轮的回答');
+  await r.company.checkNow(); await r.home.checkNow();
+  assert.equal(r.company.thread(a.thread).state, 'replied');
+  await r.home.followup('home-s', { thread: a.thread, question: '再细看一下重传' });
+  r.cs.busy.add(sid); // 会话在忙：第 2 轮留在排队
+  await r.company.checkNow();
+  assert.equal(r.company.thread(a.thread).state, 'queued');
+  const v = actResult(r, (await act(r, 'cancel-queued', { thread: a.thread })).id);
+  assert.equal(v.act.ok, true); assert.equal(v.act.whole, false); assert.equal(v.act.round, 2);
+  const ct = r.company.thread(a.thread);
+  assert.notEqual(ct.state, 'cancelled', '整个问题没有作废'); assert.match(ct.rounds[1].error, /第 2 轮被对端取消/); assert.equal(ct.rounds[0].reply, '第一轮的回答');
+  await r.home.checkNow();
+  assert.match(r.home.thread(a.thread).rounds[1].error, /第 2 轮被对端取消/);
+  // 之后还能追问
+  r.cs.busy.delete(sid);
+  await r.home.followup('home-s', { thread: a.thread, question: '那就只看合并比的计算' });
+  await r.company.checkNow();
+  assert.equal(r.company.thread(a.thread).rounds.length, 3);
+  assert.equal(r.company.thread(a.thread).state, 'running');
+});
+
+test('set-parallel 恢复：设置页手动改过的键不覆盖（记审计）；第二次调整不带恢复时间时沿用原计划、恢复到最初原值', async t => {
+  const r = setup(t); await pair(r);
+  const base = r.company.settings();
+  await act(r, 'set-parallel', { memFloorPct: 5, maxParallel: 1, restoreAfterHours: 1 });
+  const plan = r.company.hubAdmin.state().parallelRestore;
+  r.clock.now += 11000;
+  // 第二次：不带恢复时间，再改同时处理与闲时上限
+  await act(r, 'set-parallel', { maxParallel: 2, maxParallelIdle: 2 });
+  const plan2 = r.company.hubAdmin.state().parallelRestore;
+  assert.equal(plan2.at, plan.at, '沿用原来的恢复时间');
+  assert.deepEqual(plan2.values, { memFloorPct: base.memFloorPct, maxParallel: base.maxParallel, maxParallelIdle: base.maxParallelIdle }, '恢复到最初的原值');
+  // 人在设置页把内存保底改成 20
+  r.company.setSettings({ memFloorPct: 20 });
+  r.clock.now += 3600000;
+  await r.company.checkNow();
+  const s = r.company.settings();
+  assert.deepEqual([s.memFloorPct, s.maxParallel, s.maxParallelIdle], [20, base.maxParallel, base.maxParallelIdle]);
+  assert.match(fs.readFileSync(path.join(r.root, 'company', 'logs', 'company-act.log'), 'utf8'), /restore-skip \{"memFloorPct":20\}/);
+  await r.home.checkNow();
+  assert.ok((r.home.adminState().statuses || []).some(x => /memFloorPct 期间在公司设置页改过，保留现值/.test(x.note)));
 });

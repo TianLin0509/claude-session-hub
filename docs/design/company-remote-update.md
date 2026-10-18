@@ -52,9 +52,9 @@
   「别的 Hub」：当前 Hub 进程树外的 Hub 主进程（不带 --type=）连同它整棵进程树，一律不算残留、进保护名单（`protectedPids`），名下空空又没窗口的单独提示「可能是没退出的旧主进程」；
   认 Hub：安装版按程序名 AIGroupChatHub.exe；开发版 electron.exe 要命令行里带 Hub 源码目录（有 main-bootstrap.js 与 core/company-bridge），别的 Electron 程序不算。
   「Hub 后台脚本」：用 Hub 程序跑脚本、按设计脱离进程树的（ordinary-browser-daemon.js、web-roundtable worker.js、apply-update.ps1）不是主进程也不是残留，进保护名单。
-  CodeAgent 按可执行文件名 / 路径或 node 入口脚本路径认，不按命令行里任意位置的字样。
+  CodeAgent 只认：可执行文件名以 codeagent 开头；node 入口脚本在 npm 包目录 node_modules\[@scope\]codeagent* 里；或在本机配置的 CodeAgent 安装目录下（命令是绝对路径时取其目录）。路径里随便哪层目录名带 codeagent、命令行里提到 codeagent 都不算（二审）。
   残留分两档（2026-10-18 审核）：「嫌疑」= 不属于任何 Hub 且命中 `process-reclaim.js` 的残留形态白名单，或父进程已不在、活了 ≥10 分钟的 CodeAgent / node / 孤立 Electron 子进程，只供参考；
-  「可结束」= 嫌疑里的 CodeAgent 或白名单形态，父进程已不在、活了 ≥30 分钟（三期 kill-orphans 只认这一档）。隔离测试实例可用 `CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS` 改短。
+  「可结束」= 嫌疑里的 CodeAgent 或白名单形态，父进程已不在、活了 ≥30 分钟，整棵进程树没有可见窗口，量得到 CPU 时最近几乎不动（同 process-reclaim.js；三期 kill-orphans 只认这一档）。隔离测试实例可用 `CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS` 改短。
   top 行的残留标记与残留列表同一套规则。
   
   hub（版本、启动时间、`parallelLimitSafe()`、通道队列快照、会话列表含 PID 与内存）、pool（只用「个人 / 号 1 / 号 2」，字段白名单）、
@@ -87,11 +87,15 @@
 - 底线：只认当前配对代次；公司设置「远程维护」（`allowRemoteMaintain`，默认开，关了回 refused）；按动作限频（kill-orphans 60 秒，其余 10 秒）；同时只做一个；
   参数家里先核、公司再核（`parseParams`）；每次写 `logs/company-act.log`，界面轻提示「对端执行了：…」（不弹系统通知）；公司每条回报带 `caps:['diag','act']`，旧版公司家里直接说明不支持。
 - suspend-idle：只动 purpose=company-bridge、不在干活、没有排队 / 在途问题的会话，走 `suspendSession` 现有底线（置顶、正看着、群聊成员不收；空闲不足 1 分钟不收）；人自己开的会话一律不动。回报休眠了哪些、跳过哪些及原因、可用内存前后。
+- kill-orphans（二审加固）：重新枚举的结果里找不到当前 Hub 主进程就整体拒绝（fail-closed）；隔 1.5 秒采两次量 CPU，量不到或最近还在用的不结束；发出结束后最多轮询 5 秒，回报区分「已结束」和「已发出结束请求、未确认」。
 - kill-orphans：对端传 `targets:[{pid,startedAt}]`（最多 20 个），必须在 5 分钟内那次直查记下的「可结束」清单里（`hubAdmin.lastDiagKillable`，PID + 启动时间都一致）；
   动手前重新枚举进程、用同一套参数（`diag.js analyzeOptions`）再判一次：仍是「可结束」、启动时间没变（PID 没被复用）、不在保护名单（当前 Hub 进程树、所有别的 Hub 主进程及其进程树、Hub 后台脚本、本进程）才结束。
   只按 PID 结束（`process.kill(pid)`），绝不按命令行匹配；结束前后各记一次可用内存，结束过的从清单里划掉。
-- set-parallel：`memFloorPct` / `maxParallel` / `maxParallelIdle` 走 `setSettings` 的校验与上下限；`restoreAfterHours`（0.25–24）到点由通道定时器（`hubAdmin.advance`）恢复原值并告诉家里；连调两次恢复到第一次之前。
-- cancel-queued：只取消还在排队（没开会话）的问题，线程记为 cancelled，家里那一轮收到「被对端取消」；retry：复用 `CompanyBridge.retry`。
+- set-parallel：`memFloorPct` / `maxParallel` / `maxParallelIdle` 走 `setSettings` 的校验与上下限；`restoreAfterHours`（0.25–24）到点由通道定时器（`hubAdmin.advance`）恢复原值并告诉家里。
+  计划记 `values`（最初原值）与 `applied`（远程最后设下的值）：到点只恢复仍等于 `applied` 的键，期间在设置页手动改过的保留现值并记审计；第二次调整不带恢复时间时沿用原计划的时间、并入这次改的键、恢复到最初原值。
+- cancel-queued：只取消排队的那一轮——第 1 轮就在排队（还没开会话）时整个问题记为 cancelled；追问轮只给该轮落 error（「第 N 轮被对端取消」），线程状态照常推导，之后还能追问。`advance` 循环里每个问题处理前都重读，派发途中（开会话、恢复会话之后）再核一次这一轮还在排队，取消不会被旧对象写回（二审）。retry：复用 `CompanyBridge.retry`。
+- 版本探测：`cmd.exe` 用 `windowsVerbatimArguments` 原样传参；8 秒超时只按 PID 用 `taskkill /T` 结束这里自己起的那一个 cmd 进程树（全功能唯一用 /T 的地方）。
+- 结果目录扫描：每个条目都看时间预算与条数，每次 readdir / stat 3 秒超时，整段 6 秒硬上限，到点交出已扫到的。
 - 隔离测试实例可用 `CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS`（残留最短存活时间）、`CLAUDE_HUB_ACT_HOUR_MS`（「1 小时」的长度）缩短等待，只在设了 `CLAUDE_HUB_DATA_DIR` 时生效。
 - 测试：`tests/unit-company-remote-act.test.js`；`tests/e2e-company-remote-act.js`（双 Electron + 通道服务 + CodeAgent 替身 = 真 Claude Code + Haiku 开出真的通道会话 + 人为制造的残留进程）。
 

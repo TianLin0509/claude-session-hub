@@ -109,6 +109,13 @@ function defaultSys() {
     // 开发版的别的 Hub：命令行里那个目录是不是 Hub 源码目录（有 main-bootstrap.js 和 core/company-bridge）。只看文件在不在，不读内容。
     isHubAppDir: dir => fs.existsSync(path.join(dir, 'main-bootstrap.js')) && fs.existsSync(path.join(dir, 'core', 'company-bridge')),
     processSnapshot: () => require('../process-inspector').createProcessInspector({ timeoutMs: PROCESS_TIMEOUT_MS, ttlMs: 2000, logger: { warn() {} } }).snapshot({ force: true }),
+    // 同一个采集器隔 gapMs 采两次：第二份带每个进程这段时间用掉的 CPU（远程维护结束进程前用，还在干活的不结束）
+    sampleProcesses: async gapMs => {
+      const insp = require('../process-inspector').createProcessInspector({ timeoutMs: PROCESS_TIMEOUT_MS, ttlMs: 2000, logger: { warn() {} } });
+      await insp.snapshot({ force: true });
+      await new Promise(r => setTimeout(r, gapMs));
+      return insp.snapshot({ force: true });
+    },
     tail: (file, bytes) => {
       const fd = fs.openSync(file, 'r');
       try {
@@ -130,18 +137,32 @@ function defaultSys() {
 }
 
 // CodeAgent 版本：跑一次「<命令> --version」（隐藏窗口、8 秒超时），10 分钟内复用。命令取本机配置（codeagent-config.js 已拦掉特殊字符），不来自对端。
+// cmd.exe 用 windowsVerbatimArguments 原样传命令行（同 codeagent-pool.js 的号池登录）；超时只按 PID 用 taskkill /T 结束我们自己刚起的这一个 cmd 进程树
+// ——这是整个直查 / 远程维护里唯一用 /T 的地方，因为这棵树确定是这里自己起的（2026-10-18 审核）。
 let versionCache = null;
 function codeagentVersion(command) {
   if (versionCache && versionCache.command === command && Date.now() - versionCache.at < 10 * 60000) return versionCache.promise;
   const promise = new Promise((resolve, reject) => {
     const { execFile } = require('node:child_process');
+    let timer = null, timedOut = false;
     const done = (error, stdout, stderr) => {
+      clearTimeout(timer);
       const m = /\d+\.\d+\.\d+[0-9A-Za-z.+-]*/.exec(String(stdout || '') + '\n' + String(stderr || ''));
       // 命令行输出可能是本机代码页（中文 Windows 是 GBK），不原样带回，只说结论
-      if (m) resolve(m[0]); else reject(new Error(!error ? '版本号没读出来' : error.killed ? '8 秒没返回' : `命令没跑成（退出码 ${error.code}），可能没装 CodeAgent 或它不在 PATH 里`));
+      if (m) resolve(m[0]); else reject(new Error(!error ? '版本号没读出来' : timedOut ? '8 秒没返回' : `命令没跑成（退出码 ${error.code}），可能没装 CodeAgent 或它不在 PATH 里`));
     };
-    if (process.platform === 'win32') execFile('cmd.exe', ['/d', '/s', '/c', `"${command}" --version`], { windowsHide: true, timeout: 8000, encoding: 'utf8' }, done);
-    else execFile(command, ['--version'], { timeout: 8000, encoding: 'utf8' }, done);
+    let child;
+    if (process.platform === 'win32') {
+      const head = /^[A-Za-z0-9_.-]+$/.test(command) ? command : `"${String(command).replace(/"/g, '')}"`;
+      child = execFile('cmd.exe', ['/d', '/s', '/c', `"call ${head} --version"`], { windowsHide: true, windowsVerbatimArguments: true, encoding: 'utf8' }, done);
+    } else child = execFile(command, ['--version'], { encoding: 'utf8' }, done);
+    timer = setTimeout(() => {
+      timedOut = true;
+      const pid = child && child.pid;
+      if (pid && process.platform === 'win32') execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {});
+      else { try { child.kill(); } catch { /* 已退出 */ } }
+    }, 8000);
+    timer.unref?.();
   });
   versionCache = { command, at: Date.now(), promise };
   promise.catch(() => { if (versionCache && versionCache.promise === promise) versionCache = null; });
@@ -199,15 +220,25 @@ function entryScript(p) {
   }
   return '';
 }
-const CODEAGENT_PATH = /(^|[\\/])[^\\/]*codeagent[^\\/]*([\\/]|$)/i;
-// CodeAgent：按可执行文件名 / 路径，或 node 跑的入口脚本路径认（不按命令行里任意位置出现的字样，2026-10-18 审核）。
-function isCodeAgentProc(p) {
-  if (/codeagent/i.test(String(p.name || ''))) return true;
-  const exe = cmdTokens(p.cmd)[0] || '';
-  return CODEAGENT_PATH.test(exe) || CODEAGENT_PATH.test(entryScript(p));
+// CodeAgent 怎么认（2026-10-18 二审收紧）：只认
+//   1. 可执行文件名本身以 codeagent 开头（codeagent.exe / codeagent.cmd …）；
+//   2. node 跑的入口脚本在 CodeAgent 的 npm 包目录里（…\node_modules\[@scope\]codeagent*\…）；
+//   3. 入口脚本在本机配置的 CodeAgent 安装目录下（installDirs，取自 CodeAgent 命令的所在目录）。
+// 路径里随便哪一层目录名带 codeagent、命令行里提到 codeagent，都不算。
+const CODEAGENT_EXE = /^codeagent[\w.-]*?(\.(exe|cmd|bat))?$/i;
+const CODEAGENT_PKG = /[\\/]node_modules[\\/](@[^\\/]+[\\/])?codeagent[\w.-]*[\\/]/i;
+function isCodeAgentProc(p, installDirs = []) {
+  if (CODEAGENT_EXE.test(String(p.name || ''))) return true;
+  const exe = path.win32.basename(cmdTokens(p.cmd)[0] || '');
+  if (exe && CODEAGENT_EXE.test(exe)) return true;
+  const script = entryScript(p);
+  if (!script) return false;
+  if (CODEAGENT_PKG.test(script)) return true;
+  const low = script.replace(/\//g, '\\').toLowerCase();
+  return installDirs.some(d => { const dir = String(d || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase(); return dir.length > 3 && low.startsWith(dir + '\\'); });
 }
-function processHint(p) {
-  if (isCodeAgentProc(p)) return /\bserve\b/i.test(String(p.cmd || '')) ? 'CodeAgent（serve）' : 'CodeAgent';
+function processHint(p, installDirs = []) {
+  if (isCodeAgentProc(p, installDirs)) return /\bserve\b/i.test(String(p.cmd || '')) ? 'CodeAgent（serve）' : 'CodeAgent';
   const c = String(p.cmd || '');
   if (/[\\/]_npx[\\/]/i.test(c)) return 'npx 临时工具';
   if (/\bmcp\b|mcp[-_]/i.test(entryScript(p))) return 'MCP 服务';
@@ -225,7 +256,7 @@ const SUSPECT_MIN_AGE_MS = 10 * 60000;
 // 进程快照 + 会话 PTY 的 PID → 分类与汇总。纯函数，单测直接喂夹具。
 // 残留分两档：suspect（嫌疑，只提示）与 killable（可结束，三期 kill-orphans 只认这一档）。
 function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N, now = Date.now(), isHubAppDir = () => false,
-  suspectMinAgeMs = SUSPECT_MIN_AGE_MS, killMinAgeMs = null } = {}) {
+  suspectMinAgeMs = SUSPECT_MIN_AGE_MS, killMinAgeMs = null, codeagentDirs = [] } = {}) {
   const R = require('../process-reclaim');
   const { realParent, subtreePids, ancestorChain } = R;
   const killAge = killMinAgeMs == null ? R.UNATTRIBUTED_MIN_AGE_MS : killMinAgeMs;
@@ -238,7 +269,7 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
   const lower = p => String(p.name || '').toLowerCase();
   const isHelper = p => /--type=/.test(String(p.cmd || ''));
   const isHubCore = p => p.pid === hubPid || (hubTree.has(p.pid) && lower(p) === exe);
-  const isCodeAgent = p => !isHubCore(p) && isCodeAgentProc(p);
+  const isCodeAgent = p => !isHubCore(p) && isCodeAgentProc(p, codeagentDirs);
   const sum = arr => arr.reduce((a, p) => a + (p.wsBytes || 0), 0);
   // 每个会话的 PTY 进程树：会话编号、内存
   const owner = new Map(), sessions = new Map();
@@ -295,8 +326,14 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
     const pattern = kind.startsWith('pattern:');
     const gone = parentGone(p);
     if (!pattern && !(gone && age(p) >= suspectMinAgeMs)) return null;
-    const killable = (kind === 'codeagent' || pattern) && gone && age(p) >= killAge;
-    return { kind: pattern ? 'pattern' : kind, pattern: pattern ? kind.slice(8) : null, killable, gone };
+    // 再加两道（2026-10-18 二审，同 process-reclaim.js）：整棵进程树开着可见窗口的不算可结束；量得到 CPU 且最近还在用的不算可结束。
+    // 量不到 CPU（直查只采一次）先不排除，远程维护结束前会隔 1.5 秒再采一次，量不到就不结束。
+    const tree = subtreePids(p.pid, children, byPid);
+    const windowed = R.treeHasWindow ? R.treeHasWindow(tree, byPid) : [...tree].some(x => byPid.get(x)?.hasWindow);
+    const cpu = R.treeCpuState(tree, byPid, snap.cpuWindowMs, snap.cpuCount);
+    const killable = (kind === 'codeagent' || pattern) && gone && age(p) >= killAge && !windowed && !(cpu.known && !cpu.idle);
+    return { kind: pattern ? 'pattern' : kind, pattern: pattern ? kind.slice(8) : null, killable, gone, windowed,
+      cpu: { known: cpu.known, idle: cpu.idle, pct: cpu.cpuPct == null ? null : Math.round(cpu.cpuPct * 100) / 100 } };
   };
   const verdict = new Map();
   for (const p of list) { const v = judge(p); if (v) verdict.set(p.pid, v); }
@@ -305,7 +342,7 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
     .sort((a, b) => (Number(verdict.get(b.pid).killable) - Number(verdict.get(a.pid).killable)) || (rank[verdict.get(a.pid).kind] - rank[verdict.get(b.pid).kind]) || ((b.wsBytes || 0) - (a.wsBytes || 0)));
   const otherMembers = list.filter(p => otherTree.has(p.pid));
   const hintOf = (p, v) => v.kind === 'pattern' ? (R.LEFTOVER_PATTERNS.find(x => x.id === v.pattern) || {}).label || v.pattern
-    : v.kind === 'electron-helper' ? '孤立的 Electron 子进程（它的主进程已经不在了）' : processHint(p) || 'Node';
+    : v.kind === 'electron-helper' ? '孤立的 Electron 子进程（它的主进程已经不在了）' : processHint(p, codeagentDirs) || 'Node';
   const row = p => ({ name: p.name, pid: p.pid, ppid: p.ppid || 0, memMB: mb(p.wsBytes), privMB: mb(p.privBytes), startedAt: p.startedAt || null,
     hub: hubTree.has(p.pid), hubCore: isHubCore(p), codeAgent: isCodeAgent(p), session: owner.has(p.pid) ? String(owner.get(p.pid)).slice(0, 8) : null,
     otherHub: otherTree.has(p.pid), leftover: verdict.has(p.pid), killable: !!verdict.get(p.pid)?.killable });
@@ -324,7 +361,7 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
     },
     top: [...list].sort((a, b) => (b.wsBytes || 0) - (a.wsBytes || 0)).slice(0, top).map(row),
     leftovers: leftovers.slice(0, MAX_LEFTOVERS).map(p => { const v = verdict.get(p.pid); return { name: p.name, pid: p.pid, ppid: p.ppid || 0, memMB: mb(p.wsBytes), startedAt: p.startedAt || null,
-      ageMin: p.startedAt ? Math.max(0, Math.round((now - p.startedAt) / 60000)) : null, kind: v.kind, parentAlive: !v.gone, killable: v.killable, hint: hintOf(p, v) }; }),
+      ageMin: p.startedAt ? Math.max(0, Math.round((now - p.startedAt) / 60000)) : null, kind: v.kind, parentAlive: !v.gone, killable: v.killable, ...(v.windowed ? { windowed: true } : {}), cpu: v.cpu, hint: hintOf(p, v) }; }),
     otherHubs: otherHubs.sort((a, b) => b.treeMemMB - a.treeMemMB).slice(0, 10),
     sessions,
     // 三期远程维护用：永远不能结束的进程（当前 Hub 进程树、所有别的 Hub 主进程及其进程树、Hub 派生的脚本进程）
@@ -484,40 +521,51 @@ function resultDirsOf(bridge) {
 // 结果文件后缀白名单（源码后缀不在里面）：只看名字、大小、修改时间，不打开文件。
 const RESULT_EXT = /\.(mat|csv|tsv|txt|log|json|xlsx|xls|png|jpe?g|svg|fig|h5|hdf5|dat|out|npz|npy|pkl|parquet|zip|7z|html?|pdf)$/i;
 const SKIP_DIRS = new Set(['node_modules', '.git', '.svn', '.hg', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '$recycle.bin', 'system volume information']);
-const SCAN_BUDGET_MS = 4000, SCAN_MAX_ENTRIES = 30000, SCAN_MAX_DEPTH = 6, RECENT_FILES = 30;
+const SCAN_BUDGET_MS = 4000, SCAN_HARD_MS = 6000, SCAN_OP_MS = 3000, SCAN_MAX_ENTRIES = 30000, SCAN_MAX_DEPTH = 6, RECENT_FILES = 30;
+// 每次 readdir / stat 最多等 3 秒（网络盘、休眠的盘可能卡住）；每处理一个条目都看一次时间预算和条数；整段另有 6 秒硬上限（2026-10-18 二审）。
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => { const t = setTimeout(() => reject(Object.assign(new Error(what + ' 超过 ' + ms / 1000 + ' 秒'), { code: 'ETIMEOUT' })), ms); t.unref?.(); })]);
 async function resultFiles(sys, dirs, now) {
-  const t0 = sys.clock();
-  const dirsOut = [], recent = [];
-  let entries = 0, truncated = false;
+  const state = { dirs: [], recent: [], entries: 0, truncated: false, t0: sys.clock() };
+  const scan = scanDirs(sys, dirs, state);
+  // 硬上限：到点不再等，把已经扫到的交出去（扫描本身会在下一个条目处看到超时自行停下）
+  let hard = false;
+  await Promise.race([scan, new Promise(r => { const t = setTimeout(() => { hard = true; r(); }, SCAN_HARD_MS); t.unref?.(); })]);
+  if (hard) { state.truncated = true; state.stopped = true; }
+  return { dirs: state.dirs.map(d => ({ ...d })), recent: state.recent.map(f => ({ ...f, ageMin: Math.max(0, Math.round((now - f.mtime) / 60000)) })),
+    scanned: state.entries, truncated: state.truncated, ...(hard ? { note: `扫描超过 ${SCAN_HARD_MS / 1000} 秒，先交已扫到的` } : {}), scanMs: sys.clock() - state.t0 };
+}
+async function scanDirs(sys, dirs, state) {
+  const over = () => state.stopped || sys.clock() - state.t0 > SCAN_BUDGET_MS || state.entries > SCAN_MAX_ENTRIES;
   const keep = file => {
-    recent.push(file); recent.sort((a, b) => b.mtime - a.mtime);
-    if (recent.length > RECENT_FILES) recent.length = RECENT_FILES;
+    state.recent.push(file); state.recent.sort((a, b) => b.mtime - a.mtime);
+    if (state.recent.length > RECENT_FILES) state.recent.length = RECENT_FILES;
   };
   for (const root of dirs) {
+    if (over()) { state.truncated = true; break; }
     const info = { dir: root, files: 0 };
-    dirsOut.push(info);
-    try { const st = await sys.stat(root); if (!st.isDirectory()) { info.error = '不是目录'; continue; } }
+    state.dirs.push(info);
+    try { const st = await within(sys.stat(root), SCAN_OP_MS, '读目录信息'); if (!st.isDirectory()) { info.error = '不是目录'; continue; } }
     catch (error) { info.error = error.code === 'ENOENT' ? '目录不存在' : errText(error); continue; }
     const queue = [{ dir: root, depth: 0 }];
     while (queue.length) {
-      if (sys.clock() - t0 > SCAN_BUDGET_MS || entries > SCAN_MAX_ENTRIES) { truncated = true; info.truncated = true; break; }
+      if (over()) { state.truncated = true; info.truncated = true; break; }
       const { dir, depth } = queue.shift();
       let list;
-      try { list = await sys.readdir(dir); } catch { continue; }
+      try { list = await within(sys.readdir(dir), SCAN_OP_MS, '列目录'); } catch { continue; }
       for (const e of list) {
-        entries += 1;
+        if (over()) { state.truncated = true; info.truncated = true; queue.length = 0; break; }
+        state.entries += 1;
         const full = path.join(dir, e.name);
         if (e.isDirectory()) { if (depth < SCAN_MAX_DEPTH && !SKIP_DIRS.has(e.name.toLowerCase())) queue.push({ dir: full, depth: depth + 1 }); continue; }
         if (!e.isFile() || !RESULT_EXT.test(e.name)) continue;
         try {
-          const st = await sys.stat(full);
+          const st = await within(sys.stat(full), SCAN_OP_MS, '读文件信息');
           info.files += 1;
           keep({ dir: root, rel: path.relative(root, full).split(path.sep).join('/'), sizeKB: Math.round(st.size / 1024), mtime: Math.round(st.mtimeMs) });
         } catch { /* 读不到就跳过 */ }
       }
     }
   }
-  return { dirs: dirsOut, recent: recent.map(f => ({ ...f, ageMin: Math.max(0, Math.round((now - f.mtime) / 60000)) })), scanned: entries, truncated, scanMs: sys.clock() - t0 };
 }
 
 // ---- features：论坛、简报、手机对话、桌宠形象下载 ----
@@ -564,7 +612,10 @@ function analyzeOptions(bridge, sys, ptyPids = null) {
   const deps = bridge.deps;
   const pids = ptyPids || (() => { try { return (deps.sessionPtyPids?.() || []).filter(x => x && x.id && Number(x.pid) > 0); } catch { return []; } })();
   const minAge = Number(deps.leftoverMinAgeMs);
-  return { hubPid: Number(deps.hubPid) || process.pid, hubExe: path.basename(String(deps.hubExecPath || process.execPath)), sessionPids: pids, now: bridge.now(), isHubAppDir: sys.isHubAppDir,
+  // CodeAgent 安装目录：配置的命令是绝对路径时取它所在目录（认 node 入口脚本用）
+  let codeagentDirs = [];
+  try { const cmd = deps.codeagentCommand ? deps.codeagentCommand() : ''; if (cmd && path.win32.isAbsolute(cmd)) codeagentDirs = [path.win32.dirname(cmd)]; } catch { codeagentDirs = []; }
+  return { hubPid: Number(deps.hubPid) || process.pid, hubExe: path.basename(String(deps.hubExecPath || process.execPath)), sessionPids: pids, now: bridge.now(), isHubAppDir: sys.isHubAppDir, codeagentDirs,
     ...(deps.leftoverMinAgeMs != null && Number.isFinite(minAge) && minAge >= 0 ? { suspectMinAgeMs: minAge, killMinAgeMs: minAge } : {}) };
 }
 

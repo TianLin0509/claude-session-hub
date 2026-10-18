@@ -199,6 +199,8 @@ function ensureOpenColumn(db, needsWork) {
 function roundPhase(r) { return r.reply ? 'replied' : r.error ? 'failed' : r.sentAt ? 'running' : 'queued'; }
 // 在途轮次从什么时候算起：发出时间；远程重启后恢复会话、发了「继续」的，从恢复时间算（hub-admin.js）。
 function activeSince(r) { return Math.max(r.sentAt || 0, r.resumedAt || 0); }
+// 派发途中重读线程后：这一轮是不是还在排队（没被取消、没落 error）。
+function stillQueued(t, r) { const cur = t.rounds.find(x => x.round === r.round); return !!cur && roundPhase(cur) === 'queued'; }
 function deriveState(t) {
   if (t.state === 'cancelled') return 'cancelled';
   const phases = t.rounds.map(roundPhase);
@@ -471,7 +473,10 @@ class CompanyBridge {
   // 推进：在途的轮次看有没有答完；排队的轮次按并发上限开会话或续问。同一问题一次只有一轮在途。
   async advance() {
     const s = this.settings(), gen = this.link.gen();
-    for (const t of this.openThreads()) {
+    for (const listed of this.openThreads()) {
+      // 每个都重读：前一个 collect 等待期间，这一个可能已被取消 / 解除配对（2026-10-18 审核：拿旧对象写回会把取消覆盖掉）
+      const t = this.thread(listed.id);
+      if (!t || !['queued', 'running'].includes(t.state)) continue;
       if (t.gen !== gen) { this.saveThread({ ...t, state: 'cancelled', cancelNote: '属于上一次配对' }); continue; }
       if (t.state === 'running') await this.collect(t);
     }
@@ -486,7 +491,10 @@ class CompanyBridge {
     let waiting = 0;
     // 家里要求重启、正在等手上的任务答完：新任务先排队，重启后接着做。
     if (this.hubAdmin.holdingDispatch()) { this.careSessions(); return; }
-    for (let t of queue) {
+    for (const listed of queue) {
+      // 重读：前一个 dispatch 等待（开会话、发送）期间，这一个可能已被对端取消（remote-act.js cancel-queued）或解除配对
+      let t = this.thread(listed.id);
+      if (!t || t.state !== 'queued' || t.gen !== gen) continue;
       if (t.sessionId && this.sessionBusy(t.sessionId)) continue; // 追问时原会话还在忙（例如改写上一轮），等它停下
       if (t.rounds.some(x => roundPhase(x) === 'queued' && x.retryAt > this.now())) continue; // CLI 还没就绪，到点再发
       // 家里指定了模型、要新开会话：只等有这个模型的号空出来，不占别的问题的名额（没有哪个号有它的，交给 dispatch 报回）。
@@ -717,13 +725,14 @@ class CompanyBridge {
         if (!created || created.id !== sessionId) throw new Error('会话创建结果与预留编号不一致');
         // 开会话要十几秒：期间可能已解除配对。重新读一次，作废了就不再发问题。
         const latest = this.thread(t.id);
-        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen()) { if (latest) this.saveThread({ ...latest, sessionId }); return; }
+        // 这一轮在开会话期间被对端取消了（remote-act.js cancel-queued 给该轮落了 error）：也不再发
+        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen() || !stillQueued(latest, r)) { if (latest) this.saveThread({ ...latest, sessionId }); return; }
         t = this.saveThread({ ...latest, sessionId, everAnswered: false });
       } else if (!this.deps.getSession(sessionId)) {
         await this.deps.resumeSession(sessionId);
         if (!this.deps.getSession(sessionId)) throw new Error('原会话没能恢复');
         const latest = this.thread(t.id);
-        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen()) return;
+        if (!latest || latest.state === 'cancelled' || latest.gen !== this.link.gen() || !stillQueued(latest, r)) return;
         t = latest;
       }
       const before = this.lastFinal(sessionId);

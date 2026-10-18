@@ -72,8 +72,8 @@ async function main() {
     const ps = await cc.eval('require("electron").ipcRenderer.invoke("create-session", { kind: "powershell", opts: { title: "diag-probe-shell" } })');
     check(ps && ps.id, '公司 Hub 里开了一个 PowerShell 会话 ' + (ps && ps.id));
     await _waitMs(3000);
-    // 「CodeAgent」替身：一个路径里带 codeagent 的入口脚本（CodeAgent 按可执行文件 / 入口脚本路径认）
-    const standin = path.join(root, 'codeagent-standin', 'cli.js');
+    // 「CodeAgent」替身：放在 npm 包目录 node_modules\codeagent 里的入口脚本（CodeAgent 按可执行文件名或 npm 包 / 安装目录里的入口脚本认）
+    const standin = path.join(root, 'node_modules', 'codeagent', 'cli.js'); // 认 CodeAgent 只看可执行文件或 npm 包目录里的入口脚本
     fs.mkdirSync(path.dirname(standin), { recursive: true }); fs.writeFileSync(standin, 'setInterval(() => {}, 1e9);\n');
     await cc.eval(`require("electron").ipcRenderer.send("terminal-input", { sessionId: ${j(ps.id)}, data: ${j('node "' + standin + '"\r')} })`);
     // 「重启残留」：一个中间进程起一个脱离的 node 后自己退出——父进程不在了，也不在任何 Hub 进程树里（同公司重启后留下的 CodeAgent）

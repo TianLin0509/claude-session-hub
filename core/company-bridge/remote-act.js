@@ -134,10 +134,14 @@ class RemoteAct {
     }
     const listed = new Map(seen.list.map(x => [x.pid, x]));
     const sys = { ...D.defaultSys(), ...(this.deps.diagSys || {}) };
-    const snap = await sys.processSnapshot();
+    // 隔 1.5 秒采两次，才量得出每个进程最近用了多少 CPU（还在干活的不结束）
+    const snap = await (sys.sampleProcesses ? sys.sampleProcesses(1500) : sys.processSnapshot());
     const fresh = D.analyzeProcesses(snap, { ...D.analyzeOptions(this.bridge, sys) });
+    // 重新枚举里连当前 Hub 主进程都找不到：进程表不可信，一个都不结束（fail-closed，2026-10-18 审核）
+    if (!fresh.hubFound) throw new Error('重新枚举进程时没找到当前 Hub 主进程，进程表不可信，这次一个都不结束');
     const byPid = new Map((snap.processes || []).map(p => [p.pid, p]));
     const killableNow = new Map(fresh.leftovers.filter(x => x.killable).map(x => [x.pid, x]));
+    const alive = this.deps.processAlive || (pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } });
     const before = this.memView();
     const results = [];
     for (const t of targets) {
@@ -149,18 +153,26 @@ class RemoteAct {
       // 硬保护：当前 Hub、别的 Hub 的整棵进程树、Hub 后台脚本、本进程，一律不动
       if (fresh.protectedPids.has(t.pid) || t.pid === process.pid || t.pid === Number(this.deps.hubPid)) { results.push({ ...one, ok: false, why: '属于正在运行的 Hub，不动' }); continue; }
       const now = killableNow.get(t.pid);
-      if (!now) { results.push({ ...one, ok: false, why: '重新判定后不再是「可结束」（父进程回来了或不再像残留）' }); continue; }
-      try {
-        (this.deps.killProcess || (pid => process.kill(pid)))(t.pid);
-        results.push({ ...one, ok: true, name: cur.name, memMB: mb(cur.wsBytes) });
-      } catch (error) { results.push({ ...one, ok: false, why: '结束失败：' + short(error.message, 80) }); }
+      if (!now) {
+        const lo = fresh.leftovers.find(x => x.pid === t.pid);
+        const why = lo && lo.windowed ? '开着窗口，不动' : lo && lo.cpu && lo.cpu.known && !lo.cpu.idle ? `最近还在用 CPU（${lo.cpu.pct}%），不动` : '重新判定后不再是「可结束」（父进程回来了或不再像残留）';
+        results.push({ ...one, ok: false, why }); continue;
+      }
+      if (!now.cpu || !now.cpu.known || !now.cpu.idle) { results.push({ ...one, ok: false, why: now.cpu && now.cpu.known ? `最近还在用 CPU（${now.cpu.pct}%），不动` : '量不到它最近的 CPU 占用，不动' }); continue; }
+      try { (this.deps.killProcess || (pid => process.kill(pid)))(t.pid); }
+      catch (error) { results.push({ ...one, ok: false, why: '结束失败：' + short(error.message, 80) }); continue; }
+      // 发出结束请求后最多等 5 秒，确认它真的退出了
+      let gone = false;
+      for (let i = 0; i < 10 && !gone; i += 1) { if (!alive(t.pid)) gone = true; else await this.sleep(500); }
+      results.push({ ...one, ok: true, confirmed: gone, name: cur.name, memMB: mb(cur.wsBytes), ...(gone ? {} : { why: '已发出结束请求，5 秒内没确认退出' }) });
     }
     const killed = results.filter(x => x.ok && !x.already);
-    if (killed.length) await this.sleep(2000);
+    const confirmed = killed.filter(x => x.confirmed);
+    if (killed.length) await this.sleep(1000);
     const after = this.memView();
     this.admin.save({ lastDiagKillable: { ...seen, list: seen.list.filter(x => !killed.some(k => k.pid === x.pid)) } });
     return { ok: killed.length > 0 || results.every(x => x.ok), results, before, after, freedMB: after.freeMB - before.freeMB,
-      note: `结束了 ${killed.length} 个，${results.length - killed.length} 个没动；可用内存 ${before.freeMB} → ${after.freeMB} MB` };
+      note: `结束了 ${confirmed.length} 个${killed.length > confirmed.length ? `，${killed.length - confirmed.length} 个已发出结束请求、未确认` : ''}，${results.length - killed.length} 个没动；可用内存 ${before.freeMB} → ${after.freeMB} MB` };
   }
 
   // ---- set-parallel ----
@@ -171,15 +183,20 @@ class RemoteAct {
     const before = b.parallelLimitSafe();
     b.setSettings(values); // 超出上下限会抛错，原样回报
     const after = b.parallelLimitSafe();
-    const st = this.admin.state();
-    // 已有一份待恢复：保留最早的原值（连调两次，恢复时回到第一次之前）
+    const st = this.admin.state(), old = st.parallelRestore || null;
     // actHourMs：只有隔离测试实例能把「1 小时」缩短（main.js 按 CLAUDE_HUB_DATA_DIR 判断），平时就是 1 小时
     const hourMs = Number(this.deps.actHourMs) > 0 ? Number(this.deps.actHourMs) : 3600000;
-    const restore = p.restoreAfterHours ? { at: this.now() + p.restoreAfterHours * hourMs, values: { ...prev, ...(st.parallelRestore?.values || {}) } } : null;
+    // 待恢复计划（2026-10-18 审核）：values = 最初的原值（连调几次都恢复到第一次之前），applied = 远程最后设下的值（恢复时只动仍等于它的键）。
+    // 已有计划时：这次没带恢复时间就沿用原计划的时间，这次改的键也并入计划；没有计划、这次也没带恢复时间就不恢复。
+    let restore = null;
+    if (p.restoreAfterHours || old) {
+      restore = { at: p.restoreAfterHours ? this.now() + p.restoreAfterHours * hourMs : old.at,
+        values: { ...prev, ...(old?.values || {}) }, applied: { ...(old?.applied || {}), ...values } };
+    }
     this.admin.save({ parallelRestore: restore });
     const desc = Object.entries(values).map(([k, v]) => `${k} ${prev[k]} → ${v}`).join('，');
     return { ok: true, values, previous: prev, before, after, restoreAt: restore ? restore.at : null,
-      note: `${desc}；现在最多同时 ${after ? after.cap : '?'} 个（受${after ? after.limitedBy : '?'}限制）${restore ? `；${p.restoreAfterHours} 小时后恢复原值` : '；不自动恢复'}` };
+      note: `${desc}；现在最多同时 ${after ? after.cap : '?'} 个（受${after ? after.limitedBy : '?'}限制）${!restore ? '；不自动恢复' : p.restoreAfterHours ? `；${p.restoreAfterHours} 小时后恢复原值` : '；沿用之前的恢复时间，到时恢复到最初的原值'}` };
   }
   // 由通道定时器调用：到点恢复原值并告诉对端。
   async restoreDue() {
@@ -187,12 +204,19 @@ class RemoteAct {
     if (!plan || this.now() < plan.at) return null;
     this.admin.save({ parallelRestore: null });
     try {
-      this.bridge.setSettings(plan.values);
-      const note = '临时调整的并行档位已到时恢复：' + Object.entries(plan.values).map(([k, v]) => `${k} = ${v}`).join('，');
-      this.audit('restored ' + JSON.stringify(plan.values));
+      // 只恢复「现在仍是远程设下的值」的键：这期间在公司设置页手动改过的，以人改的为准，不覆盖（2026-10-18 审核）
+      const cur = this.bridge.settings(), applied = plan.applied || {}, back = {}, kept = {};
+      for (const [k, v] of Object.entries(plan.values || {})) {
+        if (!(k in applied) || cur[k] === applied[k]) back[k] = v; else kept[k] = cur[k];
+      }
+      if (Object.keys(back).length) this.bridge.setSettings(back);
+      if (Object.keys(kept).length) this.audit('restore-skip ' + JSON.stringify(kept) + ' 期间在设置页改过，不恢复');
+      const note = (Object.keys(back).length ? '临时调整的并行档位已到时恢复：' + Object.entries(back).map(([k, v]) => `${k} = ${v}`).join('，') : '临时调整的并行档位到时了')
+        + (Object.keys(kept).length ? `；${Object.keys(kept).join('、')} 期间在公司设置页改过，保留现值` : '');
+      this.audit('restored ' + JSON.stringify(back));
       this.bridge.notify('并行档位已恢复', note, null, { quiet: true });
-      await this.admin.report(null, 'act', note, { act: { action: 'set-parallel', ok: true, restored: plan.values } });
-      return plan.values;
+      await this.admin.report(null, 'act', note, { act: { action: 'set-parallel', ok: true, restored: back, kept } });
+      return back;
     } catch (error) { this.audit('restore-failed ' + error.message); return null; }
   }
 
@@ -203,10 +227,14 @@ class RemoteAct {
     if (t.state !== 'queued') throw new Error(`这个问题现在是「${t.state}」，只能取消还在排队的`);
     const r = t.rounds.find(x => !x.reply && !x.error && !x.sentAt);
     if (!r) throw new Error('这个问题没有排队中的轮次');
-    const why = '被对端取消（还在排队，没有开会话作答）';
-    b.saveThread({ ...t, state: 'cancelled', cancelNote: why, rounds: t.rounds.map(x => x.round === r.round ? { ...x, error: why, failedAt: this.now(), cancelledBy: 'peer' } : x) });
+    // 只取消排队的这一轮（2026-10-18 审核）：第 1 轮就在排队（还没开过会话）才把整个问题作废；
+    // 追问的轮次只给该轮落 error，线程状态照 deriveState 推导，之后还能接着追问，答完的会话照常按保温规则休眠。
+    const whole = r.round === 1 && !t.sessionId;
+    const why = whole ? '被对端取消（还在排队，没有开会话作答）' : `第 ${r.round} 轮被对端取消（还在排队，没有发给 CodeAgent）`;
+    const rounds = t.rounds.map(x => x.round === r.round ? { ...x, error: why, failedAt: this.now(), cancelledBy: 'peer' } : x);
+    b.saveThread(whole ? { ...t, state: 'cancelled', cancelNote: why, rounds } : { ...t, state: undefined, rounds });
     void b.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'error', note: why }).catch(() => {});
-    return { ok: true, thread: t.id, round: r.round, note: `${t.id} 第 ${r.round} 轮已取消` };
+    return { ok: true, thread: t.id, round: r.round, whole, note: `${t.id} 第 ${r.round} 轮已取消${whole ? '（整个问题作废）' : '（之后还能追问）'}` };
   }
   async retry({ thread }) {
     const b = this.bridge, t = b.thread(thread);

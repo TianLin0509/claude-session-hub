@@ -106,7 +106,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     const dirs = (a.dirs || []).map(d => `${esc(d.dir)}：${d.error ? `<span class="bad">${esc(d.error)}</span>` : `${esc(d.files)} 个结果文件${d.truncated ? '（没扫完）' : ''}`}`).join('<br>');
     const files = table(['目录', '文件（相对路径）', '大小', '修改时间'], (a.recent || []).map(f => [esc(f.dir), esc(f.rel), f.sizeKB >= 1024 ? (f.sizeKB / 1024).toFixed(1) + ' MB' : esc(f.sizeKB) + ' KB', ago(f.mtime)]));
     return block('仿真', `${a.processes?.error ? `<p class="wp-note warn">进程没采到：${esc(a.processes.error)}</p>` : procs || '<p class="wp-empty">没有在跑的 Python / MATLAB / AirView 进程。</p>'}
-      <div class="wp-strip">${row('结果目录', dirs || '设置里没有配置目录')}${a.filesError ? row('提示', `<span class="bad">${esc(a.filesError)}</span>`) : ''}${a.scanned != null ? row('扫描', `看了 ${esc(a.scanned)} 个条目，用时 ${esc(a.scanMs)} 毫秒${a.truncated ? '（达到上限，没扫完）' : ''}；只看文件名、大小、修改时间`) : ''}</div>
+      <div class="wp-strip">${row('结果目录', dirs || '设置里没有配置目录')}${a.filesError ? row('提示', `<span class="bad">${esc(a.filesError)}</span>`) : ''}${a.scanned != null ? row('扫描', `看了 ${esc(a.scanned)} 个条目，用时 ${esc(a.scanMs)} 毫秒${a.truncated ? '（达到上限，没扫完）' : ''}；只看文件名、大小、修改时间${a.note ? '；' + esc(a.note) : ''}`) : ''}</div>
       ${files ? `<h4>最近更新的结果文件（前 ${(a.recent || []).length} 个）</h4>${files}` : ''}`);
   }
   function features(f) {
@@ -176,7 +176,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   function actDetail(v) {
     const a = v.act || {};
     const mem = a.before && a.after && !/可用内存/.test(v.note || '') ? `可用内存 ${esc(a.before.freeMB)} → ${esc(a.after.freeMB)} MB` : '';
-    const list = a.results ? a.results.map(x => `PID ${esc(x.pid)}：${x.ok ? (x.already ? '已经不在了' : '已结束') : esc(x.why || '没动')}`).join('；')
+    const list = a.results ? a.results.map(x => `PID ${esc(x.pid)}：${x.ok ? (x.already ? '已经不在了' : x.confirmed === false ? '已发出结束请求、未确认退出' : '已结束') : esc(x.why || '没动')}`).join('；')
       : a.suspended ? [...a.suspended.map(x => `${esc(x.thread)} 已休眠`), ...(a.skipped || []).map(x => `${esc(x.thread)} 没动（${esc(x.why)}）`)].join('；') : '';
     return [mem, list].filter(Boolean).join('<br>');
   }

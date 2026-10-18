@@ -4,7 +4,7 @@
 // 沿用直查 / 远程重启的双 Electron 设施：家里 = 当前工作区源码；公司 = 当前工作区按公司目标导出、以源码方式启动；中间是真实的通道服务（relay_server.py，绑 localhost）。
 // CodeAgent 用替身 = 真 Claude Code + Haiku（tests/fixtures/codeagent-standin），家里一个会话用「问公司」命令行提一个只要一行回答的问题，
 // 公司开出一个真的通道会话（purpose=company-bridge）答完后空着。公司 Hub 里另有一个人自己开的 PowerShell 会话。
-// 测试进程再人为制造一个「重启残留」：脱离任何 Hub 进程树、父进程已退出、入口脚本路径带 codeagent 的 node。
+// 测试进程再人为制造一个「重启残留」：脱离任何 Hub 进程树、父进程已退出、入口脚本在 node_modules\codeagent 包目录里的 node。
 // 公司测试实例把残留最短存活时间改成 5 秒（CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS）、把「1 小时」缩成 20 秒（CLAUDE_HUB_ACT_HOUR_MS），只对隔离实例生效。
 //   1. 家里无线页「公司电脑状态」→ 卡片里「结束可结束的残留」（二次确认）→ 只结束那个残留；两台 Hub 都还活着。
 //   2. 命令行 --act suspend-idle → 只休眠空闲的通道会话，人自己开的 PowerShell 会话不动。
@@ -101,7 +101,7 @@ async function main() {
 
     // ---- 公司：人自己开的 PowerShell 会话；测试进程制造一个「重启残留」 ----
     const userShell = await cc.eval('require("electron").ipcRenderer.invoke("create-session", { kind: "powershell", opts: { title: "我自己的终端" } })');
-    const orphanJs = path.join(root, 'codeagent-orphan', 'cli.js');
+    const orphanJs = path.join(root, 'node_modules', 'codeagent', 'cli.js');
     fs.mkdirSync(path.dirname(orphanJs), { recursive: true }); fs.writeFileSync(orphanJs, 'setInterval(() => {}, 1e9);\n');
     const spawner = `const c=require('child_process').spawn(process.execPath,[${j(orphanJs)},'serve'],{detached:true,stdio:'ignore',windowsHide:true});c.unref();process.stdout.write(String(c.pid))`;
     orphan = Number(execFileSync(process.execPath, ['-e', spawner], { encoding: 'utf8', windowsHide: true }).trim());
