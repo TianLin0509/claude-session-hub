@@ -250,7 +250,7 @@ function markModelAvoid(dataDir, key, { model = '', reason = '', sample = '', ru
   const list = state.models[key] && typeof state.models[key] === 'object' ? state.models[key] : {};
   const prev = list[mk];
   const entry = {
-    source: 'error', kind: 'model-config', model: String(model || '').trim() || '*',
+    source: 'error', kind: 'model-config', model: String(model || '').trim() || '*', account: key === 'personal' ? 'personal' : 'pool',
     have: (Array.isArray(have) ? have : []).map(String).filter(Boolean).slice(0, 12),
     reason: String(reason || KINDS['model-config']).slice(0, 160),
     since: prev ? prev.since : now, lastHitAt: now, probeAt: now + probeMs, until: null,
@@ -387,6 +387,13 @@ function keyForAlias(aliases, alias) {
 
 // 给人看的一句话：「额度上限（Credit 读数），预计 18:30 恢复」。
 const clock = ms => { const d = new Date(Number(ms) + 8 * 3600000); return d.toISOString().slice(5, 16).replace('T', ' '); };
+// 怎么修（审核 2026-10-19）：个人账号可经远程维护改默认模型；号池的号由 Hub 管配置，提示核对。
+function modelConfigHint(entry) {
+  if (!entry || entry.kind !== 'model-config') return '';
+  const have = Array.isArray(entry.have) ? entry.have : [];
+  if (entry.account === 'personal') return `；可用 set-personal-model 改成 ${have.length === 1 ? have[0] : '权限清单里的模型'}`;
+  return '；请在「账号与号池」里核对这个号的模型配置';
+}
 function describeAvoid(entry, now = Date.now()) {
   if (!entry) return '';
   // 模型配置有误：「模型配置有误：请求了 X，该号只有 Y；配置不变就一直避让，… 起允许试一次」
@@ -394,7 +401,7 @@ function describeAvoid(entry, now = Date.now()) {
     const have = Array.isArray(entry.have) && entry.have.length ? entry.have.join('、') : '（权限清单未知）';
     const asked = entry.model && entry.model !== '*' ? entry.model : '（报错里没写模型）';
     const probe = Number(entry.probeAt) > now ? `${clock(entry.probeAt)} 起允许试一次` : '现在允许试一次';
-    return `模型配置有误：请求了 ${asked}，该号只有 ${have}；配置不变就一直避让，${probe}`;
+    return `模型配置有误：请求了 ${asked}，该号只有 ${have}；配置不变就一直避让，${probe}${modelConfigHint(entry)}`;
   }
   const what = entry.source === 'manual' ? '手动暂停' : `${KINDS[entry.kind] || '额度'}（${SOURCES[entry.source] || entry.source}）`;
   const until = entry.until == null ? '直到手动恢复' : `预计 ${clock(entry.until)} 恢复`;
@@ -405,6 +412,6 @@ module.exports = {
   BUILTIN_RULES, KINDS, SOURCES, DEFAULT_RETRY_MS, MODEL_PROBE_MS, RULES_FILE, STATE_FILE,
   rulesFile, stateFile, compileRule, loadRules, matchText, isSuspect, parseReset, redactSnippet,
   readState, activeAvoid, creditReadings, markAvoid, clearAvoid, recordCredit, isActive,
-  markModelAvoid, modelAvoidAll, activeModelAvoid, modelAvoidEntry, noteModelProbe, clearModelAvoid, modelKey,
+  markModelAvoid, modelAvoidAll, modelConfigHint, activeModelAvoid, modelAvoidEntry, noteModelProbe, clearModelAvoid, modelKey,
   aliasMap, normalizeAlias, keyForAlias, describeAvoid, clock, ALIAS_FILE, MATCH_INPUT_CHARS, MAX_RESET_MS,
 };

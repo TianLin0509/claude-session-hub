@@ -534,6 +534,7 @@ class CompanyBridge {
         const accounts = this.routeAccounts();
         const pick = accounts && accounts.length ? route.pickAnyRoute(accounts, { only }) : null;
         if (pick && !pick.ok && pick.reason === 'avoid') {
+          if (this.failIfModelConfigDeadEnd(t, accounts, '', only)) continue; // 全是模型配置有误：不排队，直接报回修法
           waiting += 1;
           this.reportQueue(t, waiting, limit, working, this.avoidQueueNote(accounts, pick.until, only));
           continue;
@@ -551,6 +552,7 @@ class CompanyBridge {
           if (!qr.switchWaitSince || qr.switchWaitSince !== since) t = this.patchRound(t, qr.round, { switchWaitSince: since });
           if (this.now() - since >= MODEL_SWITCH_WAIT_MS) { this.rejectModel(t, qr, this.routeAccounts(), 'switch'); continue; }
         } else if (qr && qr.switchWaitSince) t = this.patchRound(t, qr.round, { switchWaitSince: null });
+        if (pick && !pick.ok && pick.reason === 'avoid' && this.failIfModelConfigDeadEnd(t, this.routeAccounts(), pick.model || t.model, only)) continue;
         if (pick && !pick.ok && pick.reason !== 'none') {
           waiting += 1;
           this.reportQueue(t, waiting, limit, working, pick.reason === 'avoid' ? this.avoidQueueNote(this.routeAccounts(), pick.until, only, pick.model)
@@ -613,6 +615,60 @@ class CompanyBridge {
     if (this.settings().quotaGuard === false) return {};
     try { return Q.activeModelAvoid(this.deps.dataDir, this.now()); } catch { return {}; }
   }
+  // 个人账号上实际作答过的模型（set-personal-model 的权限证据之一，审核 2026-10-19）：
+  //   1. 通道回执：回执元数据里的实际模型（actualModel，否则 model——2.1.12 起是发回执前从原生记录读的回答模型），
+  //      账号按回执里的代称（2.1.13 起有 accountAlias），没有代称的老回执按会话元数据（没有号池标记 = 个人账号）；
+  //   2. 会话记录：个人账号 CodeAgent 会话落盘的 codeagentActualModel（main.js observeCodeAgentModel 从原生记录读到的回答模型）。
+  // 返回 [{ model, source, count }]（模型名不涉及隐私，直查也显示）。
+  personalAnsweredModels() {
+    const seen = new Map();
+    const add = (model, source) => {
+      const m = String(model || '').trim();
+      if (!m || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/.test(m)) return;
+      const k = m.toLowerCase() + '|' + source;
+      seen.set(k, { model: m, source, count: (seen.get(k)?.count || 0) + 1 });
+    };
+    try {
+      for (const t of this.threads(500)) {
+        for (const r of t.rounds || []) {
+          if (!r.reply || !r.meta) continue;
+          let personal;
+          if (r.meta.accountAlias) personal = r.meta.accountAlias === '个人';
+          else {
+            const s = t.sessionId && (this.deps.getSession?.(t.sessionId) || this.deps.getSessionMetadata?.(t.sessionId));
+            personal = !!s && /^codeagent/.test(String(s.kind || 'codeagent')) && !s.codeagentPoolAccount;
+          }
+          if (personal) add(r.meta.actualModel || r.meta.model, 'receipt');
+        }
+      }
+    } catch { /* 读不到回执就只看会话记录 */ }
+    try { for (const m of this.deps.personalAnsweredModels?.() || []) add(m, 'session'); } catch { /* 读不到会话记录 */ }
+    return [...seen.values()];
+  }
+  // 除了 key 这个号，还有没有能接这一题的号（不在避让中、指定了模型时有它的权限；指定了号时只看那个号）。
+  otherAccountUsable(t, key) {
+    const accounts = (this.routeAccounts() || []).filter(a => a.key !== key);
+    return accounts.some(a => (t.model ? route.canEverServe(a, t.model) : true) && !route.avoidFor(a, t.model || ''));
+  }
+  // 「模型配置有误：个人请求了 X，该号只有 Y；可用 set-personal-model 改成 Y」（回执用，模型名原样）
+  modelConfigFailText(key, model = '') {
+    let entry = null;
+    try { entry = Q.modelAvoidEntry(Q.modelAvoidAll(this.deps.dataDir), key, model || ''); } catch { entry = null; }
+    const asked = (entry && entry.model !== '*' ? entry.model : model) || '（报错里没写模型）';
+    const have = entry && Array.isArray(entry.have) && entry.have.length ? entry.have.join('、') : '（权限清单未知）';
+    const hint = entry ? Q.modelConfigHint(entry) : '';
+    return `模型配置有误：${this.aliasOf(key)}请求了 ${asked}，该号只有 ${have}${hint}；现在没有别的号能接这一题，没有换号重做、也没有排队（配置不改会一直报）`;
+  }
+  // 排队前：能接这一题的号全在避让中、且都是模型配置有误（不会自己恢复）→ 不排队，直接报回修法。返回 true 表示已处理。
+  failIfModelConfigDeadEnd(t, accounts, model = '', only = '') {
+    const list = (accounts || []).filter(a => (!only || a.key === only) && (!model || route.canEverServe(a, model)));
+    if (!list.length || !list.every(a => { const e = route.avoidFor(a, model); return e && e.kind === 'model-config'; })) return false;
+    const r = t.rounds.find(x => roundPhase(x) === 'queued');
+    if (!r) return false;
+    const a = list[0];
+    this.rejectRound(t, r, this.scrubText(this.modelConfigFailText(a.key, route.requestModel(a, model))));
+    return true;
+  }
   // 派给一个有模型配置避让记录、已到试探时间的号：记一次试探（下一次再过 6 小时），这次照派；试探又报错就重新避让、按换号重做处理。
   noteProbe(account, model = '') {
     if (!account || !account.key) return;
@@ -633,10 +689,14 @@ class CompanyBridge {
     if (this.settings().quotaGuard === false) return out;
     let all = {};
     try { all = Q.modelAvoidAll(this.deps.dataDir); } catch { all = {}; }
+    // 只显示和这个号此刻会请求的模型对得上的记录（审核 2026-10-19）：配置已改成别的模型、或只是某个会话里临时换过的，不再挂「避让中」
+    const accounts = new Map((this.routeAccountsRaw() || []).map(a => [a.key, a]));
     for (const [key, list] of Object.entries(all)) {
       if (out[key]) continue;
-      const latest = Object.values(list || {}).sort((x, y) => (Number(y.lastHitAt) || 0) - (Number(x.lastHitAt) || 0))[0];
-      if (latest) out[key] = latest;
+      const a = accounts.get(key);
+      if (!a) continue;
+      const e = Q.modelAvoidEntry({ [key]: list }, key, a.configModel || a.defaultModel || '');
+      if (e) out[key] = e;
     }
     return out;
   }
@@ -1063,6 +1123,10 @@ class CompanyBridge {
         this.bridgeLog(`rehome-skip ${t.id}#${r.round} 撞额度后原会话自己答出来了，不换号`);
       } else {
         if (this.sessionBusy(t.sessionId) && this.now() - hit.at < REHOME_GRACE_MS) return;
+        // 模型配置有误、又没有别的号能接这一题：不换号重做（换了也只会排队 6 小时），直接如实报回并给出修法（审核 2026-10-19）
+        if (hit.kind === 'model-config' && !this.otherAccountUsable(t, hit.key)) {
+          return this.failRound(t, r, this.scrubText(this.modelConfigFailText(hit.key, hit.model)));
+        }
         if ((Number(r.rehomed) || 0) >= MAX_REHOME) {
           const alias = this.aliasOf(hit.key);
           const why = (r.rehome && r.rehome.kind === 'model-config') ? '模型配置有误' : '额度';

@@ -29,9 +29,16 @@ function personalModels({ dataDir, personalDir, fsModule = fs }) {
   const written = pool.readSettingsModel(personalDir, fsModule);
   const defaultModel = pool.personalDefaultModel(written, known);
   const models = (known.models || []).slice();
-  const configMismatch = !defaultModel && models.length === 1 ? { written, models: models.slice(), suggest: models[0] } : null;
+  // 收紧（审核 2026-10-19）：只有「写的值不在清单里（分档名按 -Auto 算在内）」且「这个号对写的值有还没清除的模型配置避让记录」
+  // 才算不符——合法的内部别名（如 MiniMax-M2.7-CodeAgentCLI，CLI 实际按它跑）没报过错就不标红。清单只有一个模型时给出建议改成它。
+  let configMismatch = null;
+  if (written && !models.some(m => eq(m, written) || eq(m, written + '-Auto'))) {
+    let record = null;
+    try { record = dataDir ? (require('./codeagent-quota').modelAvoidAll(dataDir, fsModule).personal || {})[String(written).toLowerCase()] || null : null; } catch { record = null; }
+    if (record) configMismatch = { written, models: models.slice(), suggest: models.length === 1 ? models[0] : '' };
+  }
   if (defaultModel && !models.some(m => eq(m, defaultModel))) models.push(defaultModel);
-  return { models, defaultModel, written, configMismatch };
+  return { models, defaultModel, written, configMismatch, authoritative: !!known.authoritative, probedAt: known.probedAt || null };
 }
 // 号表、直查里的一句话（模型名不涉及隐私，原样写）。
 function describeMismatch(m) {

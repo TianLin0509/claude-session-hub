@@ -190,8 +190,15 @@ class QuotaWatch {
       const sample = Q.redactSnippet(hit.text, { scrub: t => this.bridge.scrubText(t) });
       // 报错里没写模型时，按这个会话此刻请求的模型（通道指定的，或预计模型）记；都没有就记成这个号的任何模型（'*'）
       const model = hit.model || (s && (s.codeagentRouteModel || (s.currentModel && s.currentModel.id))) || '';
-      let have = [];
-      try { const a = (this.bridge.routeAccountsRaw?.() || []).find(x => x.key === key); have = a ? (a.models || []).slice() : []; } catch { have = []; }
+      let have = [], account = null;
+      try { account = (this.bridge.routeAccountsRaw?.() || []).find(x => x.key === key) || null; have = account ? (account.models || []).slice() : []; } catch { have = []; }
+      // 用户自己开的会话（在里面用 /model 临时换过模型等）报错不标记（审核 2026-10-19）：只认通道会话，
+      // 或报错里的模型就是这个号此刻配置里会请求的模型（新开会话一定也会报）。
+      const configModel = account ? String(account.configModel || account.defaultModel || '') : '';
+      if (!(s && s.purpose === 'company-bridge') && !(model && configModel && Q.modelKey(model) === Q.modelKey(configModel))) {
+        this.bridge.bridgeLog?.(`model-config skip ${key === 'personal' ? 'personal' : 'pool'} session=${String(id).slice(0, 8)} model=${model || '?'}：不是通道会话，也不是这个号配置里的模型`);
+        return;
+      }
       const r = Q.markModelAvoid(this.dataDir, key, { model, have, reason: `${Q.KINDS['model-config']}：${sample}`, ruleId: hit.rule.id, session: id, sample }, this.now());
       const prev = this.hits.get(id);
       if (!prev || prev.at < at) this.hits.set(id, { at, key, ruleId: hit.rule.id, kind: 'model-config', text: sample, model: r.entry.model, resetAt: r.entry.probeAt });

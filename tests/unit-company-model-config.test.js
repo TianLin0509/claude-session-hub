@@ -63,7 +63,7 @@ test('按「号 + 模型」避让：不设自动到期，6 小时后放行一次
   assert.equal(r.changed, true);
   assert.equal(r.entry.until, null, '没有到期时间');
   assert.equal(r.entry.probeAt, now + 6 * HOUR);
-  assert.match(Q.describeAvoid(r.entry, now), new RegExp(`^模型配置有误：请求了 ${DS}，该号只有 ${GLM}；配置不变就一直避让，\\d\\d-\\d\\d \\d\\d:\\d\\d 起允许试一次$`));
+  assert.match(Q.describeAvoid(r.entry, now), new RegExp(`^模型配置有误：请求了 ${DS}，该号只有 ${GLM}；配置不变就一直避让，\\d\\d-\\d\\d \\d\\d:\\d\\d 起允许试一次；可用 set-personal-model 改成 ${GLM}$`));
   assert.ok(Q.activeModelAvoid(dataDir, now + 6 * HOUR - 1).personal[DS]);
   assert.equal(Q.activeModelAvoid(dataDir, now + 6 * HOUR).personal, undefined, '到了试探时间就放行');
   assert.ok(Q.modelAvoidAll(dataDir).personal[DS], '记录还在（不是过期删除）');
@@ -105,13 +105,17 @@ test('挑号：模型配置避让只在请求那个模型时生效；不指定�
   assert.equal(table.models.find(m => m.id === GLM).free, 2, 'GLM 不受 DS 的避让影响');
 });
 
-test('个人账号「默认模型和权限不符」：settings 里写了没权限的模型、清单只有一个模型时标出来，带上写的值；写对了、或清单有多个时不标', t => {
+test('个人账号「默认模型和权限不符」：只在写的值不在清单里、且对它有还没清除的模型配置避让记录时标出（合法内部别名不标）；带上写的值', t => {
   const dataDir = tmp(t), personalDir = path.join(dataDir, 'personal-cac');
   fs.mkdirSync(personalDir, { recursive: true });
   probe.writeProbed(pool.personalModelsFile(dataDir), { models: [GLM], defaultModel: GLM });
   fs.writeFileSync(path.join(personalDir, 'settings.json'), JSON.stringify({ model: DS }));
   let p = route.personalModels({ dataDir, personalDir });
   assert.equal(p.defaultModel, '');
+  assert.equal(p.configMismatch, null, '还没报过错：不标');
+  assert.equal(p.authoritative, true); assert.ok(p.probedAt, '读到了 personal-models.json 探测文件');
+  Q.markModelAvoid(dataDir, 'personal', { model: DS, have: [GLM] }, 1000);
+  p = route.personalModels({ dataDir, personalDir });
   assert.deepEqual(p.configMismatch, { written: DS, models: [GLM], suggest: GLM });
   assert.equal(route.describeMismatch(p.configMismatch), `默认模型和权限不符：settings.json 里写的是 ${DS}，权限只有 ${GLM}`);
   creds(personalDir, 'w00123456');
@@ -120,13 +124,19 @@ test('个人账号「默认模型和权限不符」：settings 里写了没权�
   const table = route.modelTable([acct], { aliases: new Map([['personal', '个人']]) });
   assert.equal(table.accountRows[0].configNote, `默认模型和权限不符：settings.json 里写的是 ${DS}，权限只有 ${GLM}`);
   assert.ok(route.avoidSignature(table), '号表签名带上配置提示，变化时推给对端');
+  // 合法的内部别名：CLI 实际按它跑，没报过错就不标红
+  fs.writeFileSync(path.join(personalDir, 'settings.json'), JSON.stringify({ model: 'MiniMax-M2.7-CodeAgentCLI' }));
+  assert.equal(route.personalModels({ dataDir, personalDir }).configMismatch, null, '内部别名不标');
   fs.writeFileSync(path.join(personalDir, 'settings.json'), JSON.stringify({ model: 'GLM-5.2-WX' }));
   assert.equal(route.personalModels({ dataDir, personalDir }).configMismatch, null, '分档名归到 -Auto，不算不符');
+  // 清单有多个模型：仍标出，但不替人选
   probe.writeProbed(pool.personalModelsFile(dataDir), { models: [GLM, 'MiniMax-M2.7'], defaultModel: '' });
   fs.writeFileSync(path.join(personalDir, 'settings.json'), JSON.stringify({ model: DS }));
-  assert.equal(route.personalModels({ dataDir, personalDir }).configMismatch, null, '清单有多个模型时不替人选');
+  assert.deepEqual(route.personalModels({ dataDir, personalDir }).configMismatch, { written: DS, models: [GLM, 'MiniMax-M2.7'], suggest: '' });
+  // 避让记录清除后不再标
+  Q.clearModelAvoid(dataDir, 'personal');
+  assert.equal(route.personalModels({ dataDir, personalDir }).configMismatch, null);
 });
-
 // ---- 修正个人账号默认模型（core/codeagent-personal-model.js） ----
 function personalFixture(t, settings = { model: DS, permissions: { allow: ['Bash'] }, env: { A: '1' } }) {
   const dataDir = tmp(t), personalDir = path.join(dataDir, 'personal-cac');
@@ -173,11 +183,13 @@ test('set-personal-model：回读核对不一致就从备份还原并报失败�
     readFileSync: (file, enc) => (file === f.file && writes === 1 && !flaky.lied ? (flaky.lied = true, JSON.stringify({ model: 'other' })) : fs.readFileSync(file, enc)) };
   const r = PM.setPersonalModel({ ...f, model: GLM, fsModule: flaky });
   assert.equal(r.ok, false); assert.equal(r.rolledBack, true);
-  assert.match(r.error, /写入后核对不一致（回读到的 model 是 other.*已从备份还原/);
+  assert.equal(r.code, 'verify-failed');
+  assert.equal(r.error, '写入后回读核对不一致，已从备份还原', '回给对端的是固定文案');
+  assert.match(r.detail, /回读到的 model 是 other/, '原始信息只留给本机审计');
   assert.equal(fs.readFileSync(f.file, 'utf8'), original, '已从备份还原');
   // 坏 JSON
   fs.writeFileSync(f.file, '{ "model": ');
-  assert.throws(() => PM.setPersonalModel({ ...f, model: GLM }), /不是有效的 JSON，没改/);
+  assert.throws(() => PM.setPersonalModel({ ...f, model: GLM }), e => e.code === 'bad-json' && /不是有效的 JSON，没改/.test(e.message) && !e.message.includes(f.personalDir) && !/Unexpected|JSON at/.test(e.message));
   assert.equal(fs.readFileSync(f.file, 'utf8'), '{ "model": ');
   // 号池目录
   const poolDir = pool.accountDir(f.dataDir, 'abc123def');
@@ -185,6 +197,38 @@ test('set-personal-model：回读核对不一致就从备份还原并报失败�
   fs.writeFileSync(path.join(poolDir, 'settings.json'), JSON.stringify({ model: DS }));
   assert.throws(() => PM.setPersonalModel({ dataDir: f.dataDir, personalDir: poolDir, model: GLM }), /落在号池目录里/);
   assert.deepEqual(read(path.join(poolDir, 'settings.json')), { model: DS }, '号池账号目录不动');
+});
+
+test('set-personal-model 权限依据：清单没经过探测时，要有个人账号实际作答过的记录（分档名算 -Auto）；都没有就拒绝；force 跳过这一条但其余校验照常', t => {
+  const f = personalFixture(t);
+  fs.rmSync(pool.personalModelsFile(f.dataDir), { force: true });
+  fs.writeFileSync(path.join(f.personalDir, '.cac.json'), JSON.stringify({ modelConfig: { [GLM]: {} } }));
+  const list = PM.allowedModels(f);
+  assert.ok(list.models.includes(GLM)); assert.equal(list.authoritative, false, '配置文件里零散收集的清单不算权威'); assert.equal(list.source, 'config');
+  const original = fs.readFileSync(f.file, 'utf8');
+  assert.throws(() => PM.setPersonalModel({ ...f, model: GLM }), e => e.code === 'unverified' && /请在公司 Hub 点「获取模型权限」，或者用 --force-unverified 强制写入/.test(e.message));
+  assert.throws(() => PM.setPersonalModel({ ...f, model: GLM, answered: [DS] }), e => e.code === 'unverified', '作答过别的模型不算');
+  assert.equal(fs.readFileSync(f.file, 'utf8'), original);
+  // 10-17 前个人账号回执里的实际模型是分档名 GLM-5.2-WX：算 GLM-5.2-WX-Auto 有权限
+  const r = PM.setPersonalModel({ ...f, model: GLM, answered: ['GLM-5.2-WX'], now: 10 });
+  assert.equal(r.ok, true); assert.equal(r.verifiedBy, 'answered');
+  PM.setPersonalModel({ ...f, restore: true, now: 20 });
+  // force：跳过权限依据，清单外的仍拒绝；照样备份、回读
+  assert.throws(() => PM.setPersonalModel({ ...f, model: 'MiniMax-M2.7', force: true }), e => e.code === 'not-in-list');
+  const forced = PM.setPersonalModel({ ...f, model: GLM, force: true, now: 30 });
+  assert.equal(forced.ok, true); assert.equal(forced.verifiedBy, 'force'); assert.ok(forced.backup);
+  assert.equal(read(f.file).model, GLM);
+  // 有探测文件就是依据
+  probe.writeProbed(pool.personalModelsFile(f.dataDir), { models: [GLM], defaultModel: GLM });
+  PM.setPersonalModel({ ...f, restore: true, now: 40 });
+  assert.equal(PM.setPersonalModel({ ...f, model: GLM, now: 50 }).verifiedBy, 'probe');
+  // CodeAgent 自己的账号模型清单（.cac.json enterpriseModelOptionsCache，它的 /model 菜单按这个列）也算权威
+  fs.rmSync(pool.personalModelsFile(f.dataDir), { force: true });
+  fs.writeFileSync(path.join(f.personalDir, '.cac.json'), JSON.stringify({ enterpriseModelOptionsCache: [{ value: GLM }] }));
+  assert.equal(PM.allowedModels(f).source, 'enterprise');
+  PM.setPersonalModel({ ...f, restore: true, now: 60 });
+  assert.equal(PM.setPersonalModel({ ...f, model: GLM, now: 70 }).verifiedBy, 'enterprise');
+  assert.deepEqual(PM.latestBackup(f.personalDir).model, DS, '最近一次修改前的备份（撤销按钮用）');
 });
 
 // ---- 通道：真实 routeAccounts（个人账号目录 + 号池目录），假会话带原生记录 ----
@@ -289,7 +333,7 @@ test('通道：个人账号会话报模型配置有误 → 只对它请求的 DS
   void third;
 });
 
-test('通道：换号重做只一次——重做的号也报模型配置有误就如实报失败', async t => {
+test('通道：换到的号也报模型配置有误、又没有别的号能接 → 如实报失败并给出修法，不再换号、不排队', async t => {
   const r = setup(t); await pair(r);
   await step(r, 1000);
   const asked = await r.home.ask('home-s', { question: '查一下 PF 权重的更新位置', account: '个人' });
@@ -301,9 +345,55 @@ test('通道：换号重做只一次——重做的号也报模型配置有误�
   r.inject(second.id, apiErrorLine('API Error: 模型 "DeepSeek-V4-Flash-0731" 不存在或配置有误，请检查模型配置', r.clock.now));
   await step(r, 2000);
   assert.equal(r.created().length, 2, '没有第三个会话');
-  assert.match(r.home.thread(asked.thread).rounds[0].error, /已经因模型配置有误换过一次号，换到号 1\s?重做后，号 1\s?也撞到了模型配置有误.*只换号重做一次/);
+  assert.match(r.home.thread(asked.thread).rounds[0].error, /模型配置有误：号 1\s?请求了 DeepSeek-V4-Flash-0731，该号只有 DeepSeek-V4-Flash-0731；请在「账号与号池」里核对这个号的模型配置；现在没有别的号能接这一题，没有换号重做、也没有排队/);
 });
 
+test('通道：只有个人账号可用时报模型配置有误 → 不换号、不排队 6 小时，直接回报「请求 X，该号只有 Y；可用 set-personal-model 改成 Y」；新问题也直接回报', async t => {
+  const r = setup(t); await pair(r);
+  r.company.setSettings({ usePool: false });
+  await step(r, 1000);
+  const asked = await r.home.ask('home-s', { question: '只有个人账号时：L2 调度入口在哪' });
+  await r.company.checkNow(); await r.company.checkNow();
+  assert.equal(r.account(r.created()[0]), 'personal');
+  r.inject(r.created()[0].id, apiErrorLine(SAMPLE, r.clock.now));
+  await step(r, 2000);
+  assert.equal(r.created().length, 1, '没有换号重做');
+  const hint = new RegExp(`模型配置有误：个人\\s?请求了 ${DS}，该号只有 ${GLM}；可用 set-personal-model 改成 ${GLM}`);
+  assert.match(r.home.thread(asked.thread).rounds[0].error, hint);
+  // 新问题：不排队，直接回报同样的修法
+  const next = await r.home.ask('home-s', { question: '只有个人账号时：第二个问题' });
+  await step(r, 1000); await step(r, 1000);
+  assert.equal(r.created().length, 1, '不开会话');
+  assert.match(r.home.thread(next.thread).rounds[0].error, hint);
+  // 号表里的避让原因也带修法（只剩个人账号且它的默认模型不可用时，模型表没有可派的模型、不推给对端，这里看公司一端算出的号表）
+  assert.match(r.company.modelTable().accountRows.find(x => x.alias === '个人').avoid.reason, new RegExp(`可用 set-personal-model 改成 ${GLM}`));
+});
+
+test('用户自己开的会话：报的模型不是这个号配置里的模型就不标记；是配置里的模型才标；配置改了之后旧记录不再显示为避让中', async t => {
+  const r = setup(t); await pair(r);
+  const tx = path.join(r.root, 'tx-own.jsonl');
+  fs.writeFileSync(tx, '');
+  r.cs.map.set('own-1', { id: 'own-1', kind: 'codeagent', status: 'idle', transcriptPath: tx });
+  // 用户在自己的会话里 /model 临时换到 MiniMax，报错：不标
+  fs.appendFileSync(tx, apiErrorLine('API Error: 模型 "MiniMax-M2.7" 不存在或配置有误，请检查模型配置', r.clock.now));
+  await step(r, 2000);
+  assert.deepEqual(Q.modelAvoidAll(r.dataDir), {}, '不是通道会话、也不是配置里的模型：不标');
+  assert.ok(r.company.quota.errors().some(e => /MiniMax-M2\.7/.test(e.text)), '样本照样留');
+  // 同一个会话报配置里的 DS：新开会话一定也会报，标记
+  fs.appendFileSync(tx, apiErrorLine(SAMPLE, r.clock.now));
+  await step(r, 21000);
+  assert.ok(Q.modelAvoidAll(r.dataDir).personal[DS]);
+  assert.equal(r.company.avoidViewMap().personal.model, DS);
+  // 号主把配置改成 GLM：DS 的记录不再显示为避让中，直查 avoiding 计数为 0，个人账号照常可派
+  fs.writeFileSync(path.join(r.box.personalDir, 'settings.json'), JSON.stringify({ model: GLM }));
+  assert.equal(r.company.avoidViewMap().personal, undefined);
+  const D = require('../core/company-bridge/diag');
+  r.company.deps.poolDiag = () => ({ personal: { state: 'ready', models: [GLM], defaultModel: GLM, activeSessions: 0 }, accounts: [] });
+  const out = await D.collect({ bridge: r.company, sections: ['pool'], sys: { ...D.defaultSys(), clock: () => r.clock.now } });
+  assert.equal(out.pool.avoiding, 0);
+  assert.equal(out.pool.accounts[0].modelsAuthoritative, false, '直查带清单是否经过探测');
+  assert.ok('modelsProbedAt' in out.pool.accounts[0]);
+});
 test('远程维护 set-personal-model：改成清单内的模型、回报前后值与「只影响之后新开的会话」、轻提示中性、审计；之后个人账号重新接活；清单外拒绝；限频；开关关闭拒绝；老公司不发', async t => {
   const r = setup(t); await pair(r);
   Q.markModelAvoid(r.dataDir, 'personal', { model: DS, have: [GLM] }, r.clock.now);
@@ -355,12 +445,58 @@ test('远程维护 set-personal-model：改成清单内的模型、回报前后�
   await assert.rejects(r.home.hubAdmin({ op: 'act', action: 'set-personal-model', params: { model: GLM } }), /版本过旧.*不支持远程修改个人账号默认模型/);
 });
 
-test('MCP company_act 与命令行：带 set-personal-model 的 model / restore 参数', () => {
+test('远程维护 set-personal-model：回报只给固定文案和 code（路径等只进审计）；没有权限依据时拒绝并提示 --force-unverified，force 写入标「未经权限校验」；撤销不清避让', async t => {
+  const r = setup(t); await pair(r);
+  await step(r, 31000);
+  const act = async params => { r.clock.now += 61000; const sent = await r.home.hubAdmin({ op: 'act', action: 'set-personal-model', params }); await step(r, 1000); await step(r, 1000); return r.home.actView(sent.id); };
+  const log = () => fs.readFileSync(path.join(r.dataDir, 'logs', 'company-act.log'), 'utf8');
+  // 坏 JSON：对端只看到固定文案 + code，本机审计有原始信息
+  const file = path.join(r.box.personalDir, 'settings.json');
+  const good = fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(file, '{ "model": ');
+  let v = await act({ model: GLM });
+  assert.match(v.note, /个人账号的 settings\.json 不是有效的 JSON，没改（bad-json）/);
+  assert.ok(!v.note.includes(r.root) && !/Unexpected|JSON at|position/.test(v.note), v.note);
+  assert.match(log(), /detail HA-[\w-]+ set-personal-model bad-json /);
+  fs.writeFileSync(file, good);
+  // 清单没经过探测、也没有作答记录：拒绝并提示 --force-unverified
+  fs.rmSync(pool.personalModelsFile(r.dataDir), { force: true });
+  fs.writeFileSync(path.join(r.box.personalDir, '.cac.json'), JSON.stringify({ modelConfig: { [GLM]: {} } }));
+  v = await act({ model: GLM });
+  assert.equal(v.act.ok, false);
+  assert.match(v.note, /请在公司 Hub 点「获取模型权限」，或者用 --force-unverified 强制写入（unverified）/);
+  assert.equal(read(file).model, DS);
+  // 个人账号会话以前实际用分档名 GLM-5.2-WX 作答过（会话记录）：算依据
+  r.company.deps.personalAnsweredModels = () => ['GLM-5.2-WX'];
+  v = await act({ model: GLM });
+  assert.equal(v.act.ok, true, v.note); assert.equal(v.act.verifiedBy, 'answered');
+  assert.match(v.note, /依据：个人账号实际作答过这个模型/);
+  // 撤销：回到 DS，DS 的避让记录（撤销前就有的）保留
+  Q.markModelAvoid(r.dataDir, 'personal', { model: DS, have: [GLM] }, r.clock.now);
+  v = await act({ restore: true });
+  assert.equal(v.act.ok, true); assert.equal(read(file).model, DS);
+  assert.ok(Q.modelAvoidAll(r.dataDir).personal[DS], '撤销不清避让');
+  // force：没有依据也写，回报和审计都标「未经权限校验」
+  r.company.deps.personalAnsweredModels = () => [];
+  v = await act({ model: GLM, force: true });
+  assert.equal(v.act.ok, true); assert.equal(v.act.unverified, true);
+  assert.match(v.note, new RegExp(`个人账号默认模型 ${DS} → ${GLM}（未经权限校验）`));
+  assert.match(log(), /unverified-force HA-[\w-]+ set-personal-model/);
+  assert.ok(r.notices.some(x => /对端修改了个人账号默认模型：.*（未经权限校验）/.test(x.title)));
+  // 回执里的实际模型也是依据（通道回执元数据 + 账号代称）
+  r.company.saveThread({ id: 'Q-1017-09', gen: r.company.link.gen(), title: 't', createdAt: r.clock.now, rounds: [{ round: 1, question: 'q', receivedAt: 1, sentAt: 1, reply: 'a', replyAt: 2, meta: { model: 'GLM-5.2-WX', accountAlias: '个人' } }] });
+  assert.ok(r.company.personalAnsweredModels().some(x => x.model === 'GLM-5.2-WX' && x.source === 'receipt'));
+  await assert.rejects(r.home.hubAdmin({ op: 'act', action: 'set-personal-model', params: { restore: true, force: true } }), /force 只用于改成某个模型/);
+});
+
+test('MCP company_act 与命令行：带 set-personal-model 的 model / restore / force 参数', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'company-bridge-mcp.js'), 'utf8');
   assert.match(src, /'set-personal-model'\]/);
   assert.match(src, /model: \{ type: 'string', description: 'set-personal-model/);
   assert.match(src, /restore: \{ type: 'boolean'/);
+  assert.match(src, /force: \{ type: 'boolean'/);
   const cli = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'company-ask.js'), 'utf8');
-  assert.match(cli, /set-personal-model --model GLM-5\.2-WX-Auto \| set-personal-model --restore/);
+  assert.match(cli, /set-personal-model --model GLM-5\.2-WX-Auto \[--force-unverified\] \| set-personal-model --restore/);
   assert.match(cli, /a\.restore = true/);
+  assert.match(cli, /a\.force = true/);
 });

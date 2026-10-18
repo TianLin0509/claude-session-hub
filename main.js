@@ -2423,6 +2423,14 @@ try {
       fallbackCwd: os.homedir(),
       // 个人账号的配置目录（远程维护 set-personal-model 只改这里的 settings.json 的 model，2026-10-19 田哥授权）
       personalConfigDir: () => require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir,
+      // 个人账号 CodeAgent 会话实际作答过的模型（打开着的 + 落盘的会话记录；observeCodeAgentModel 从原生记录读到的回答模型）
+      personalAnsweredModels: () => {
+        const out = [];
+        const take = s => { if (s && /^codeagent(?:-resume)?$/.test(String(s.kind || '')) && !s.codeagentPoolAccount && typeof s.codeagentActualModel === 'string' && s.codeagentActualModel) out.push(s.codeagentActualModel); };
+        try { for (const s of sessionManager.getAllSessions()) take(s); } catch { /* 读不到打开着的会话 */ }
+        try { for (const s of require('./core/session-store').listSessionFilesWithData()) take(s); } catch { /* 读不到会话记录 */ }
+        return out;
+      },
       isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
@@ -2497,6 +2505,9 @@ try {
         return {
           personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive,
             configModel: known.written || '', ...(known.configMismatch ? { configMismatch: known.configMismatch } : {}), settingsMtime,
+            // 权限清单是否来自探测文件（set-personal-model 的权限依据之一）、最近一次修改前的备份（家里卡片据此给「撤销」）
+            modelsAuthoritative: !!known.authoritative, modelsProbedAt: known.probedAt || null,
+            lastBackup: (() => { try { const b = require('./core/codeagent-personal-model').latestBackup(personalDir); return b ? { model: b.model, name: b.name } : null; } catch { return null; } })(),
             configSource: require('./core/codeagent-config').configDirSource(process.env) },
           accounts: pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalAccountId: creds.accountId || '' }),
         };

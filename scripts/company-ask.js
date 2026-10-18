@@ -17,7 +17,7 @@
 //   node company-ask.js --act suspend-idle | kill-orphans --pids 300:1799913600000,... | set-parallel [--mem-floor 5] [--max-parallel 1] [--max-parallel-idle 4] [--use-pool on|off] [--restore-hours 2]
 //                       | cancel-queued --thread Q-xxxx | retry --thread Q-xxxx
 //                       | pause-account --account 号1 [--hours 2] [--reason 原因] | resume-account --account 号1
-//                       | set-personal-model --model GLM-5.2-WX-Auto | set-personal-model --restore   [--id HA-xxxx 取之前那次的结果]
+//                       | set-personal-model --model GLM-5.2-WX-Auto [--force-unverified] | set-personal-model --restore   [--id HA-xxxx 取之前那次的结果]
 //     （远程维护：会改动公司电脑状态，先 --diag 看清楚再做）
 const fs = require('node:fs');
 const os = require('node:os');
@@ -57,6 +57,7 @@ async function main() {
     if (arg('thread')) a.thread = arg('thread');
     if (actOp === 'set-personal-model' && arg('model')) a.model = arg('model');
     if (process.argv.includes('--restore')) a.restore = true;
+    if (process.argv.includes('--force-unverified')) a.force = true;
     if (arg('id')) a.id = arg('id');
     return a;
   };

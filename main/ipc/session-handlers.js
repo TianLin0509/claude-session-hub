@@ -545,16 +545,26 @@ function registerSessionIpc(ipcMain, deps) {
     const quota = require('../../core/codeagent-quota');
     let avoid = {}, credit = {}, rules = null;
     try { avoid = quota.activeAvoid(getHubDataDir()); credit = quota.creditReadings(getHubDataDir()); } catch { /* 读不到就都按可用显示 */ }
-    // 模型配置避让（2026-10-19）：整号没在避让时，显示这个号最近一条模型配置避让（含已到试探时间的）
-    try {
-      for (const [key, list] of Object.entries(quota.modelAvoidAll(getHubDataDir()))) {
-        const latest = Object.values(list || {}).sort((x, y) => (Number(y.lastHitAt) || 0) - (Number(x.lastHitAt) || 0))[0];
-        if (latest && !avoid[key]) avoid[key] = latest;
-      }
-    } catch { /* 读不到就按可用显示 */ }
     // 默认模型和权限不符（个人账号）：只显示，不改 settings.json
     let personalCheck = null;
     try { personalCheck = require('../../core/codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir }); } catch { personalCheck = null; }
+    // 模型配置避让（2026-10-19）：整号没在避让时，显示和这个号此刻会请求的模型对得上的那条（含已到试探时间的）；
+    // 配置已改成别的模型、或只是某个会话里临时换过的不显示（审核 2026-10-19）
+    try {
+      const all = quota.modelAvoidAll(getHubDataDir());
+      const configModelOf = key => {
+        if (key === 'personal') return personalCheck ? (personalCheck.written || personalCheck.defaultModel || '') : '';
+        const a = codeagentPoolAccounts().find(x => x.id === key);
+        return a ? pool.effectiveModel(a.dir) : null;
+      };
+      for (const key of Object.keys(all)) {
+        if (avoid[key]) continue;
+        const cm = configModelOf(key);
+        if (cm == null) continue;
+        const e = quota.modelAvoidEntry(all, key, cm);
+        if (e) avoid[key] = e;
+      }
+    } catch { /* 读不到就按可用显示 */ }
     try { const loaded = quota.loadRules(getHubDataDir()); rules = { count: loaded.rules.length, file: loaded.file, errors: loaded.errors }; } catch { rules = null; }
     const quotaOf = key => ({ avoid: avoid[key] ? { ...avoid[key], label: quota.describeAvoid(avoid[key]) } : null, credit: credit[key] || null });
     return { ok: true, accounts: accounts.map(a => ({ ...a, ...quotaOf(a.id) })), checkedAt: new Date().toISOString(),

@@ -55,3 +55,11 @@
 - 目标必须在个人账号权限清单里（探测文件，没有时用配置文件里的账号清单），否则拒绝并列出可选；只改 `model` 一个键，改前整份备份为 `settings.json.hub-backup-<时间>`，临时文件 + 改名（失败重试一次），回读核对不过就从备份还原并报失败；`restore: true` 用最近一次（非 `-undo`）备份里的值；个人目录落在号池目录里拒绝。
 - 只影响之后新开的会话；成功后解除个人账号的模型配置避让，审计写 `company-act.log`，公司界面轻提示「对端修改了个人账号默认模型：A → B」。限频 60 秒一次，「远程维护」开关关闭时拒绝；公司 `caps` 带 `personal-model`，老公司家里直接说明不支持。
 - 端到端 `tests/e2e-company-model-config.js`：替身按 `standin-model-permissions.json` 模拟后端按号校验模型，假后端回报真机原文。
+### 独立审核后的修正（2026-10-19）
+
+- 撞到模型配置有误、又没有别的号能接这一题（其余号都在避让、或没有该模型权限）：不换号重做、不排队 6 小时，直接回报「模型配置有误：个人请求了 X，该号只有 Y；可用 set-personal-model 改成 Y」；新问题同理。避让说明里也带这条修法（号池的号提示到「账号与号池」核对）。
+- 「默认模型和权限不符」只在 settings 写的值不在清单里（分档名按 `-Auto` 算在内）、且对这个值有还没清除的模型配置避让记录时标出，合法的内部别名不标红。
+- 用户自己开的会话报错：只有报错里的模型就是这个号配置里会请求的模型才标记（通道会话照常标）。界面、直查的「避让中」只显示和号此刻会请求的模型对得上的记录。
+- set-personal-model 回给对端的只有固定文案 + code（`bad-json` / `unverified` / `verify-failed` 等），路径、JSON 片段只写本机 `company-act.log`。
+- 权限依据：清单权威（「获取模型权限」的探测文件 `probe`，或 CodeAgent 自己存在 `.cac.json` 的账号清单 `enterprise`——2.1.12 直查个人号 models 只有 GLM、没有混进 settings 里写的 DS，说明来自后者），或个人账号实际用该模型作答过（回执元数据的实际模型 + 代称 / 会话归属，或会话记录的 `codeagentActualModel`；分档名 `GLM-5.2-WX` 算 `GLM-5.2-WX-Auto`）。都没有时拒绝并提示「获取模型权限」或 `--force-unverified`；`force:true` 只跳过这一条，回报、轻提示、审计都标「未经权限校验」。直查 pool 段带 `modelsAuthoritative` / `modelsProbedAt` / `modelsSource`，个人一行另带 `answeredModels`、`lastBackup`。
+- 撤销（restore）不清避让；家里卡片个人一行有「撤销上次修改（改回 X）」按钮（二次确认）。

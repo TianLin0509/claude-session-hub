@@ -124,7 +124,7 @@ async function main() {
     check(true, '家里与公司配对接通');
     const homeEntry = await until('home models', async () => { await hc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")'); return (await status(hc)).companyModels; }, 120000, 3000);
     const row0 = (homeEntry.table.accountRows || []).find(a => a.alias === '个人');
-    check(row0 && new RegExp(`默认模型和权限不符：settings.json 里写的是 ${DS}，权限只有 ${GLM}`).test(row0.configNote || ''), '家里号表：个人一行标出「默认模型和权限不符」并带上 settings 里写的值');
+    check(row0 && !row0.configNote, '还没报过错时，个人一行不标「默认模型和权限不符」（写的值可能是合法的内部别名）');
 
     // ---- 家里提问方（替身会话）+ 命令行（和 AI 调 ask_company 同一个本机接口） ----
     const asker = await hc.eval(`require("electron").ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd: homeWork, title: '家里 · 提问方' } })})`);
@@ -166,7 +166,8 @@ async function main() {
     // ---- 2. 家里号表：个人一行写明原因；指定个人账号直接报错不发出 ----
     const models = await until('home table avoid', async () => { await hc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")'); const m = cli(['models']); return m.accounts.find(a => a.alias === '个人' && a.avoid) ? m : null; }, 3 * 60000, 5000);
     result.modelsText = models.text;
-    check(new RegExp(`个人：.*避让中：模型配置有误：请求了 ${DS}，该号只有 ${GLM}`).test(models.text), '家里号表写明「模型配置有误：请求了 X，该号只有 Y」');
+    check(new RegExp(`个人：.*避让中：模型配置有误：请求了 ${DS}，该号只有 ${GLM}.*可用 set-personal-model 改成 ${GLM}`).test(models.text), '家里号表写明「模型配置有误：请求了 X，该号只有 Y」和修法');
+    check(new RegExp(`默认模型和权限不符：settings.json 里写的是 ${DS}，权限只有 ${GLM}`).test(models.text), '报过错之后，家里号表个人一行标出「默认模型和权限不符」并带上 settings 里写的值');
     const bad = cli(['ask', '--text', '指定一个避让中的号试试，应当直接报错不发出', '--account', '个人']);
     check(bad.ok === false && /个人\s?在避让中.*模型配置有误/.test(bad.error), '指定避让中的个人账号：家里直接报错，不发出');
 
@@ -199,6 +200,7 @@ async function main() {
     await shot(hc, '02-home-diag-card-mismatch');
     await hc.eval('window.__confirmText = ""; window.confirm = t => { window.__confirmText = t; return true; }');
     await click(hc, fixBtn);
+    const fixedAt = Date.now();
     check(new RegExp(`从「${DS}」改成「${GLM}」.*只影响之后新开的会话`, 's').test(await hc.eval('window.__confirmText')), '修改前二次确认，写明前后值和只影响之后新开的会话');
     const banner = await until('fix result', () => hc.eval('(()=>{const e=document.querySelector("dialog.cl-diag .cl-diag-act-result");return e&&!/执行中/.test(e.innerText)&&/个人账号默认模型 |没改成|没做成|两分钟还没回报/.test(e.innerText)?e.innerText:null})()'), 150000, 1000);
     result.fixBanner = banner;
@@ -225,6 +227,22 @@ async function main() {
     const r2 = await homeReply(q2.asked.thread);
     result.reply2 = { text: String(r2.reply).slice(0, 200), meta: r2.meta };
     check(new RegExp(q2.token).test(r2.reply) && r2.meta.accountAlias === '个人' && !r2.meta.rehomedFrom, '家里拿到个人账号作答的回执（没有换号）');
+    // ---- 6. 家里卡片上的「撤销上次修改」（二次确认）→ 改回修改前的值；撤销不清避让、也不越过限频 ----
+    while (Date.now() - fixedAt < 62000) await _waitMs(2000); // 同一个动作 60 秒内只做一次
+    await click(hc, '.cl-section:not([hidden]) [data-cl=diag]');
+    const undoBtn = 'dialog.cl-diag[open] [data-diag-act=set-personal-model-restore]';
+    await until('undo button', () => hc.eval(`!!document.querySelector(${j(undoBtn)})`), 150000, 1000);
+    check(new RegExp(`撤销上次修改（改回 ${DS}）`).test(await hc.eval(`document.querySelector(${j(undoBtn)}).innerText`)), '卡片个人一行给出「撤销上次修改（改回 deepseek-v4-flash-0731）」');
+    check(!(await hc.eval('document.querySelector("dialog.cl-diag").innerText')).includes('清单未经探测'), '探测过的清单不标「未经探测」');
+    await hc.eval('window.__confirmText = ""; window.confirm = t => { window.__confirmText = t; return true; }');
+    await click(hc, undoBtn);
+    check(new RegExp(`撤销上一次.*改回「${DS}」`).test(await hc.eval('window.__confirmText')), '撤销前二次确认');
+    const undoBanner = await until('undo result', () => hc.eval('(()=>{const e=document.querySelector("dialog.cl-diag .cl-diag-act-result");return e&&!/执行中/.test(e.innerText)&&/个人账号默认模型 |没改成|没做成|两分钟还没回报/.test(e.innerText)?e.innerText:null})()'), 150000, 1000);
+    result.undoBanner = undoBanner;
+    check(new RegExp(`个人账号默认模型 ${GLM} → ${DS}（撤销上一次修改`).test(undoBanner), '卡片显示撤销结果：改回修改前的值');
+    check(JSON.parse(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8')).model === DS, '个人 settings.json 改回了修改前的值');
+    await shot(hc, '04-home-diag-card-undone');
+    await hc.eval('document.querySelector("dialog.cl-diag [data-diag=close]")?.click()');
     result.passed = true;
   } catch (error) {
     result.error = error && error.stack || String(error);
