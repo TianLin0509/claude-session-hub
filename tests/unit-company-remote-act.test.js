@@ -147,6 +147,21 @@ test('set-parallel：复用设置校验与上下限；带「N 小时后恢复」
   assert.ok((r.home.adminState().statuses || []).some(x => /已到时恢复/.test(x.note)));
 });
 
+test('set-parallel usePool：对端可停用号池（通道新开会话只用个人账号），到点恢复；非布尔值拒绝（2026-10-18 号池额度用完）', async t => {
+  const r = setup(t); await pair(r);
+  assert.equal(r.company.settings().usePool, true);
+  let v = actResult(r, (await act(r, 'set-parallel', { usePool: false, restoreAfterHours: 2 })).id);
+  assert.equal(v.act.ok, true);
+  assert.equal(r.company.settings().usePool, false);
+  assert.deepEqual(v.act.previous, { usePool: true });
+  assert.match(v.note, /usePool true → false/);
+  r.clock.now += 11000;
+  await assert.rejects(act(r, 'set-parallel', { usePool: 'off' }), /usePool 要是 true \/ false/, '家里先核参数');
+  r.clock.now += 2 * 3600000;
+  await r.company.checkNow(); await r.home.checkNow();
+  assert.equal(r.company.settings().usePool, true, '两小时后恢复用号池');
+});
+
 test('cancel-queued / retry：取消排队中的问题（家里收到「被对端取消」）；在跑的不能取消；重试失败的轮次', async t => {
   const r = setup(t, { memory: () => ({ total: 16 * GB, free: 0.5 * GB, ratio: 0.03 }) }); await pair(r);
   r.hs.map.set('home-s', { id: 'home-s', kind: 'claude', status: 'idle' });

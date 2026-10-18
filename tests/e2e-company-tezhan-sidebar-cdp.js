@@ -51,8 +51,16 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
     })()`);
     await _waitMs(300);
     // 2026-10-18 起公司助理常驻最上面的「助理」一栏、不受筛选影响：数普通分组时不算它，另外核对它一直在。
-    const titles = () => cdp.eval('Array.from(document.querySelectorAll("#session-list .session-item:not(.resident-placeholder) .sl-title")).map(e => e.textContent.trim())');
-    const resident = () => cdp.eval('!!document.querySelector("#session-list .sec-resident") && /公司助理/.test(document.querySelector("#session-list .resident-placeholder")?.innerText || "")');
+    // 「助理」一栏里可能是占位行，也可能是真的助理会话（公司版助理会话已建好时）：都不算进普通分组。
+    const titles = () => cdp.eval(`(() => { const out = []; let inResident = false;
+      for (const el of document.querySelectorAll("#session-list .session-sec-header, #session-list .session-item")) {
+        if (el.classList.contains("session-sec-header")) { inResident = el.classList.contains("sec-resident"); continue; }
+        if (inResident || el.classList.contains("resident-placeholder")) continue;
+        const t = el.querySelector(".sl-title"); if (t) out.push(t.textContent.trim());
+      } return out; })()`);
+    const resident = () => cdp.eval(`(() => { const h = document.querySelector("#session-list .sec-resident"); if (!h) return false;
+      let el = h.nextElementSibling; while (el && !el.classList.contains("session-item") && !el.classList.contains("session-sec-header")) el = el.nextElementSibling;
+      return !!el && el.classList.contains("session-item") && /公司助理|助理/.test(el.innerText || ""); })()`);
     let list = await titles();
     assert.ok(await resident(), '平时最上面有常驻的「助理」一栏');
     assert.ok(list.some(t => /我自己的周报整理/.test(t)) && list.some(t => /L2 调度单测排查/.test(t)), JSON.stringify(list));
