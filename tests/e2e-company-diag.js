@@ -26,7 +26,7 @@ async function main() {
   const t0 = Date.now(); const log = m => console.log(`[${Math.round((Date.now() - t0) / 1000)}s] ${m}`);
   const result = { passed: false, root, out, checks: [], timings: {}, scope: '真实 Electron ×2（家里源码 + 公司版导出）+ 真实通道服务（localhost）+ 真实进程枚举' };
   const check = (ok, label) => { assert.ok(ok, label); result.checks.push(label); log('✔ ' + label); };
-  let relay, home, company, hc, cc, outsider, intreePid = null;
+  let relay, home, company, hc, cc, outsider, daemon, intreePid = null;
   try {
     // ---- 公司版导出 ----
     const exportDir = path.join(root, 'export');
@@ -58,7 +58,7 @@ async function main() {
       launchIsolatedHub({ dataDir: hdata, port: await freePort(), windowMode: 'background', label: 'diag-home', allowExternalState: true,
         extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'home-hubhome'), CLAUDE_HUB_BRIDGE_ROLE: 'home', CLAUDE_HUB_BRIDGE_API_URL: apiUrl, CLAUDE_HUB_WIRELESS_TIMER: '0' } }),
       launchIsolatedHub({ dataDir: cdata, port: await freePort(), windowMode: 'background', label: 'diag-company', allowExternalState: true, entryPath: exportDir,
-        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'company-hubhome'), AI_HUB_CODEAGENT_CONFIG_DIR: cac, AI_HUB_RULES_BASE_URL: 'http://127.0.0.1:9/hub-rules/',
+        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'company-hubhome'), AI_HUB_CODEAGENT_CONFIG_DIR: cac, CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS: '5000', AI_HUB_RULES_BASE_URL: 'http://127.0.0.1:9/hub-rules/',
           AI_HUB_UPDATE_SOURCES: j([{ id: 'x', name: 'x', manifest: 'http://127.0.0.1:9/x.json', files: 'http://127.0.0.1:9/' }]), AI_HUB_UPDATE_STARTUP_DELAY_MS: '600000' } }),
     ]);
     [hc, cc] = await Promise.all([connectFirstPage(home), connectFirstPage(company)]);
@@ -72,11 +72,21 @@ async function main() {
     const ps = await cc.eval('require("electron").ipcRenderer.invoke("create-session", { kind: "powershell", opts: { title: "diag-probe-shell" } })');
     check(ps && ps.id, '公司 Hub 里开了一个 PowerShell 会话 ' + (ps && ps.id));
     await _waitMs(3000);
-    await cc.eval(`require("electron").ipcRenderer.send("terminal-input", { sessionId: ${j(ps.id)}, data: 'node -e "setInterval(()=>{},1e9)" codeagent-diag-intree-probe\\r' })`);
+    // 「CodeAgent」替身：一个路径里带 codeagent 的入口脚本（CodeAgent 按可执行文件 / 入口脚本路径认）
+    const standin = path.join(root, 'codeagent-standin', 'cli.js');
+    fs.mkdirSync(path.dirname(standin), { recursive: true }); fs.writeFileSync(standin, 'setInterval(() => {}, 1e9);\n');
+    await cc.eval(`require("electron").ipcRenderer.send("terminal-input", { sessionId: ${j(ps.id)}, data: ${j('node "' + standin + '"\r')} })`);
     // 「重启残留」：一个中间进程起一个脱离的 node 后自己退出——父进程不在了，也不在任何 Hub 进程树里（同公司重启后留下的 CodeAgent）
-    const spawner = "const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1e9)','codeagent-diag-outside-probe'],{detached:true,stdio:'ignore',windowsHide:true});c.unref();process.stdout.write(String(c.pid))";
+    const detachedSpawner = (exe, args, env = {}) => `const c=require('child_process').spawn(${j(exe)},${j(args)},{detached:true,stdio:'ignore',windowsHide:true,env:{...process.env,...${j(env)}}});c.unref();process.stdout.write(String(c.pid))`;
+    const spawner = detachedSpawner(process.execPath, [standin, 'serve']);
     outsider = { pid: Number(execFileSync(process.execPath, ['-e', spawner], { encoding: 'utf8', windowsHide: true }).trim()) };
     log('残留 node PID：' + outsider.pid);
+    // 「Hub 后台脚本」：用 Hub 的程序（electron.exe）跑的普通浏览器守护进程替身，同样脱离、父进程已退出——不能被判成残留或 Hub 主进程
+    const daemonJs = path.join(root, 'fake-hub', 'core', 'ordinary-browser-daemon.js');
+    fs.mkdirSync(path.dirname(daemonJs), { recursive: true }); fs.writeFileSync(daemonJs, 'setInterval(() => {}, 1e9);\n');
+    const electronExe = path.join(repo, 'node_modules', 'electron', 'dist', 'electron.exe');
+    daemon = { pid: Number(execFileSync(process.execPath, ['-e', detachedSpawner(electronExe, [daemonJs, '{}'], { ELECTRON_RUN_AS_NODE: '1' })], { encoding: 'utf8', windowsHide: true }).trim()) };
+    log('浏览器守护进程替身 PID：' + daemon.pid);
     await _waitMs(2000);
 
     // ---- 配对 ----
@@ -117,16 +127,19 @@ async function main() {
     const companyPid = company.pid;
     check(d.processes.hubFound && d.processes.summary.hubSelf.count >= 2 && d.processes.summary.hubSelf.memMB > 0 && d.processes.top.length === 20, `进程：前 20、Hub 自身 ${d.processes.summary.hubSelf.count} 个进程 ${d.processes.summary.hubSelf.memMB} MB（真实 Win32_Process）`);
     const leftover = d.processes.leftovers.find(x => x.pid === outsider.pid);
-    check(leftover && leftover.kind === 'codeagent' && leftover.hint === 'CodeAgent' && leftover.parentAlive === false && d.processes.leftovers[0].kind === 'codeagent', `树外残留嫌疑认出父进程已退出的 node（PID ${outsider.pid}），CodeAgent 类排最前`);
+    check(leftover && leftover.kind === 'codeagent' && leftover.hint === 'CodeAgent（serve）' && leftover.parentAlive === false && leftover.killable === true && d.processes.leftovers[0].pid === outsider.pid,
+      `残留认出父进程已退出的 CodeAgent 替身（PID ${outsider.pid}），列为「可结束」并排最前（测试实例把最短存活时间改成 5 秒）`);
+    check(!d.processes.leftovers.some(x => x.pid === daemon.pid) && !(d.processes.otherHubs || []).some(x => x.pid === daemon.pid) && d.processes.summary.hubScripts.count >= 1,
+      `带脚本参数的 electron.exe 子进程（浏览器守护进程替身 PID ${daemon.pid}）既不算残留、也不算 Hub 主进程，归「Hub 后台脚本」`);
     // 环境里另有正在运行的 Hub（家里这台隔离 Hub；跑测试的电脑上还有生产 Hub）：一律归「别的 Hub」，不进残留
     const otherPids = (d.processes.otherHubs || []).map(x => x.pid);
     check(otherPids.includes(home.pid) && !d.processes.leftovers.some(x => x.pid === home.pid)
-      && d.processes.leftovers.every(x => ['codeagent', 'node', 'electron-helper'].includes(x.kind) && x.parentAlive === false)
+      && d.processes.leftovers.every(x => x.kind === 'pattern' || (['codeagent', 'node', 'electron-helper'].includes(x.kind) && x.parentAlive === false))
       && !d.processes.leftovers.some(x => otherPids.includes(x.pid)),
       `正在运行的别的 Hub（家里隔离 Hub PID ${home.pid} 等 ${otherPids.length} 个主进程）归「别的 Hub」，没有一个进残留；残留只有父进程不在的 CodeAgent / node / 孤立 Electron 子进程`);
     check(d.processes.summary.codeAgent.inHub >= 1 && d.processes.summary.codeAgent.outside >= 1 && !d.processes.leftovers.some(x => x.pid === companyPid), `CodeAgent：Hub 会话里 ${d.processes.summary.codeAgent.inHub} 个、树外 ${d.processes.summary.codeAgent.outside} 个；公司 Hub 主进程不在残留里`);
-    const sess = d.hub.sessions.list.find(s => s.title === 'diag-probe-shell');
-    check(sess && sess.state === 'active' && sess.pid > 0 && sess.memMB > 0 && sess.processes >= 2, `Hub 会话列表对上了 PID ${sess && sess.pid} 与内存 ${sess && sess.memMB} MB（含会话里的 node）`);
+    const sess = d.hub.sessions.list.find(s => s.kind === 'powershell');
+    check(sess && sess.title === '' && sess.state === 'active' && sess.pid > 0 && sess.memMB > 0 && sess.processes >= 2, `Hub 会话列表对上了 PID ${sess && sess.pid} 与内存 ${sess && sess.memMB} MB（含会话里的 node）；非通道会话不带标题`);
     // 会话里起的 node：按会话终端 PID 的子进程找（测试收尾时按这个 PID 结束）
     try { intreePid = Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${Number(sess.pid)} AND Name='node.exe'" | Select-Object -First 1).ProcessId`], { encoding: 'utf8', windowsHide: true }).trim()) || null; } catch { intreePid = null; }
     log('会话里的 node PID：' + intreePid);
@@ -173,8 +186,8 @@ async function main() {
     if (home) await gracefulQuit(home).catch(() => {});
     if (company) await gracefulQuit(company).catch(() => {});
     // 测试自己起的两个 node：按 PID 结束（只认这两个 PID，且确认它们是 node）
-    for (const pid of [outsider && outsider.pid, intreePid].filter(Boolean)) {
-      try { const name = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue).ProcessName`], { encoding: 'utf8', windowsHide: true }).trim(); if (name === 'node') process.kill(pid); } catch {}
+    for (const [pid, want] of [[outsider && outsider.pid, 'node'], [intreePid, 'node'], [daemon && daemon.pid, 'electron']].filter(x => x[0])) {
+      try { const name = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue).ProcessName`], { encoding: 'utf8', windowsHide: true }).trim(); if (name === want) process.kill(pid); } catch {}
     }
     try { relay && relay.kill(); } catch {}
     fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify(result, null, 2));

@@ -105,6 +105,8 @@
       ${'allowRemoteAdmin' in s ? `<label>远程更新</label><div><select data-hl-f="allowRemoteAdmin"><option value="1"${s.allowRemoteAdmin ? ' selected' : ''}>允许家里远程更新 / 重启这台 Hub</option><option value="0"${s.allowRemoteAdmin ? '' : ' selected'}>不允许</option></select>
         ${'restartGraceMinutes' in s ? `· 重启前最多等<select data-hl-f="restartGraceMinutes">${opt([...new Set([0, 1, 3, 5, 10, 15, 30, Number(s.restartGraceMinutes)])].sort((a, b) => a - b).map(x => ({ id: String(x), label: x ? x + ' 分钟' : '不等' })), String(s.restartGraceMinutes))}</select>` : ''}
         <div class="hl-muted">只更新到发行源上的正式版本；重启前先等手上的任务答完，到时还没答完的先记下、中断，重启后自动恢复会话发「继续」接着做，回执照常发回（家里带 force 时不等）。${data.hubAdmin?.history?.[0] ? '最近一次：' + esc(data.hubAdmin.history[0].note) + '（' + clock(data.hubAdmin.history[0].at) + '）' : ''}</div></div>` : ''}
+      ${'allowRemoteDiag' in s ? `<label>状态查看</label><div><select data-hl-f="allowRemoteDiag"><option value="1"${s.allowRemoteDiag ? ' selected' : ''}>允许对端查看这台电脑的状态</option><option value="0"${s.allowRemoteDiag ? '' : ' selected'}>不允许</option></select>
+        <div class="hl-muted">只读：内存、进程、任务队列、号池状态（不含账号）、日志尾部（已脱敏）；不读代码和文件内容。每次查看都会在这里轻提示并记入日志。${data.hubAdmin?.lastDiag ? '最近一次：' + clock(data.hubAdmin.lastDiag.at) : ''}</div></div>` : ''}
       <label>网络放行</label><div><select data-hl-f="autoGate"><option value="0"${s.autoGate ? '' : ' selected'}>手动：被拦时提示我去点放行页</option><option value="1"${s.autoGate ? ' selected' : ''}>自动放行（我已知晓风险）</option></select>
         <div class="hl-muted">自动放行：公司网络弹出放行页时，Hub 在后台替你点「继续访问」并重新连接；连续 3 次没放行就停下提示你，30 分钟后再试。</div></div>
       <label>给 CodeAgent<br>的说明</label><div><textarea rows="8" data-hl-f="instructions">${esc(s.instructions)}</textarea>
@@ -279,6 +281,7 @@
             memFloorPct: Number(field('memFloorPct').value), busyHours: field('busyHours').value, usePool: field('usePool').value === '1' } : {}),
           ...(field('autoGate') ? { autoGate: field('autoGate').value === '1' } : {}),
           ...(field('allowRemoteAdmin') ? { allowRemoteAdmin: field('allowRemoteAdmin').value === '1' } : {}),
+          ...(field('allowRemoteDiag') ? { allowRemoteDiag: field('allowRemoteDiag').value === '1' } : {}),
           ...(field('restartGraceMinutes') ? { restartGraceMinutes: Number(field('restartGraceMinutes').value) } : {}) });
         editing = false; await load(); toast('AI特战队专用功能设置已保存');
       }

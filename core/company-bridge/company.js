@@ -82,7 +82,9 @@ const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructi
   perAccountPeak: 3, perAccountIdle: 6, memFloorPct: 10, busyHours: care.DEFAULT_BUSY_HOURS, usePool: true, pollSeconds: 30, autoGate: false, parallelRev: 2,
   // 允许家里远程更新 / 重启这台 Hub（2026-10-17 田哥：默认开）。
   // restartGraceMinutes：远程重启前最多等手上的任务几分钟，到时先记下、中断，重启后自动接着做（2.1.9；0 = 立即，hub-admin.js）。
-  allowRemoteAdmin: true, restartGraceMinutes: 3 });
+  allowRemoteAdmin: true, restartGraceMinutes: 3,
+  // 允许对端直查这台电脑的状态（2026-10-18，只读，hub-admin.js diag；独立于远程更新开关，默认开）。
+  allowRemoteDiag: true });
 const ACTIVE_POLL_MS = 10000;
 const FOLLOWUP_WINDOW_MS = 10 * 60000;
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -226,14 +228,18 @@ class CompanyBridge {
   }
   now() { return this.deps.now ? this.deps.now() : Date.now(); }
   // 本机各号的身份字样（工号掩码、备注、号池编号、显示名），由 main 从号池登记和个人账号凭证里取；读不到就只按掩码样式换。
+  // 每次现读（号刚加进号池、备注刚改，下一条消息就要换掉）；读号池要同步读盘，批量脱敏的调用方先取一份快照再传给 scrubText
+  // （2026-10-18 审核：直查脱敏上千个字符串时每次都读盘，会卡住主进程）。
   accountSecrets() {
+    if (this.secretsSnapshot) return this.secretsSnapshot; // 直查采集与量大小期间用同一份（几秒内）
     let list = [];
     try { list = (this.deps.accountSecrets?.() || []).map(String).filter(s => s.trim().length >= 2); } catch { list = []; }
     return [...new Set(list)].sort((a, b) => b.length - a.length);
   }
-  scrubText(text) {
+  // secrets：调用方批量脱敏时传入同一份快照（hub-admin.js diag）。
+  scrubText(text, secrets = this.accountSecrets()) {
     let s = String(text);
-    for (const secret of this.accountSecrets()) {
+    for (const secret of secrets) {
       const isNote = !/\*|^[a-z0-9]{6,16}$/.test(secret);
       s = s.split(secret).join(isNote ? '（号主备注）' : '号池里的一个号');
     }
@@ -285,6 +291,7 @@ class CompanyBridge {
     if ('pollSeconds' in patch) { const n = Number(patch.pollSeconds); if (!Number.isInteger(n) || n < 10 || n > 600) throw new Error('检查间隔只能是 10–600 秒'); next.pollSeconds = n; }
     if ('autoGate' in patch) next.autoGate = patch.autoGate === true;
     if ('allowRemoteAdmin' in patch) next.allowRemoteAdmin = patch.allowRemoteAdmin === true;
+    if ('allowRemoteDiag' in patch) next.allowRemoteDiag = patch.allowRemoteDiag === true;
     this.store.set('settings', next);
     this.tightenPoll(); this.changed();
     return next;

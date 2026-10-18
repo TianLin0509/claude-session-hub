@@ -300,6 +300,11 @@ class HomeBridge {
       const bad = asked.map(s => String(s).trim().toLowerCase()).filter(s => s && !D.SECTIONS.includes(s));
       if (bad.length) throw new Error(`sections 只能是 ${D.SECTIONS.join(' / ')}，不认识：${bad.join('、')}`);
       extra = { sections: D.parseSections(asked).sections, ...(lines != null ? { lines: D.parseLines(lines) } : {}) };
+      // 公司报过版本、却没报「认得直查」：老版本会把指令静默丢掉，直接说明，不白等（2026-10-18 审核）。
+      const company = this.adminState().company || {};
+      if (company.current && !(company.caps || []).includes('diag')) {
+        throw Object.assign(new Error(`公司 Hub 版本过旧（v${company.current}），不支持直查；先让它更新（company_hub_update op=update），或用 ask_company 请公司 CodeAgent 查`), { code: 'diag-unsupported' });
+      }
     }
     const d = new Date(this.now() + 8 * 3600000);
     const id = 'HA-' + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0') + '-' + randomBytes(3).toString('hex');
@@ -341,7 +346,9 @@ class HomeBridge {
         degraded: Array.isArray(message.degraded) ? message.degraded.map(String).slice(0, 10) : [], result, error }, ...diags.filter(x => x.id !== entry.id)].slice(0, DIAG_KEEP);
     }
     this.store.set('hubAdmin', { ...st, statuses: [entry, ...(st.statuses || [])].slice(0, 20), diags,
-      company: { current: entry.current || st.company?.current || null, latest: entry.latest || st.company?.latest || null, at: this.now() } });
+      company: { current: entry.current || st.company?.current || null, latest: entry.latest || st.company?.latest || null, at: this.now(),
+        // 公司认得的远程指令能力（新版每条回报都带；老版不带 = 不支持直查）
+        caps: Array.isArray(message.caps) ? message.caps.map(String).slice(0, 20) : (entry.current && entry.current !== st.company?.current ? null : st.company?.caps || null) } });
     // 「在线」只更新版本，不打扰；直查结果由等它的地方拿；其余都发通知。
     if (entry.phase !== 'online' && entry.phase !== 'diag' && !(entry.phase === 'refused' && this.isDiag(entry.id))) this.notify('公司 Hub', entry.note || entry.phase);
     this.changed();

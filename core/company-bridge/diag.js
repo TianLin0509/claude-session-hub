@@ -101,7 +101,9 @@ function deepRedact(value, redact, depth = 0) {
 function defaultSys() {
   return {
     os,
-    statfs: dir => fs.statfsSync(dir),
+    statfs: dir => fs.promises.statfs(dir),
+    // 开发版的别的 Hub：命令行里那个目录是不是 Hub 源码目录（有 main-bootstrap.js 和 core/company-bridge）。只看文件在不在，不读内容。
+    isHubAppDir: dir => fs.existsSync(path.join(dir, 'main-bootstrap.js')) && fs.existsSync(path.join(dir, 'core', 'company-bridge')),
     processSnapshot: () => require('../process-inspector').createProcessInspector({ timeoutMs: PROCESS_TIMEOUT_MS, ttlMs: 2000, logger: { warn() {} } }).snapshot({ force: true }),
     tail: (file, bytes) => {
       const fd = fs.openSync(file, 'r');
@@ -134,7 +136,9 @@ async function machine(sys) {
   for (const dir of sys.drives()) {
     const drive = dir.replace(/[\\/]+$/, '') || dir;
     try {
-      const st = sys.statfs(dir), size = Number(st.blocks) * Number(st.bsize), avail = Number(st.bavail) * Number(st.bsize);
+      // 网络盘、休眠的盘可能卡住：3 秒没回就算这个盘没读到
+      const st = await Promise.race([Promise.resolve().then(() => sys.statfs(dir)), new Promise((_, reject) => setTimeout(() => reject(new Error('3 秒没读到')), 3000).unref?.())]);
+      const size = Number(st.blocks) * Number(st.bsize), avail = Number(st.bavail) * Number(st.bsize);
       disks.push({ drive, totalGB: gb(size), freeGB: gb(avail), freePct: size > 0 ? Math.round(avail / size * 100) : null });
     } catch (error) { disks.push({ drive, error: error.code === 'ENOENT' ? '没有这个盘' : errText(error) }); }
   }
@@ -148,27 +152,66 @@ async function machine(sys) {
 }
 
 // ---- processes ----
-const CODEAGENT = /codeagent/i;
-function processHint(cmd) {
-  const c = String(cmd || '');
-  if (CODEAGENT.test(c)) return /\bserve\b/i.test(c) ? 'CodeAgent（serve）' : 'CodeAgent';
-  if (/claude-session-hub|aigroupchathub|ai hub/i.test(c)) return 'AI Hub';
-  if (/[\\/]_npx[\\/]/i.test(c)) return 'npx 临时工具';
-  if (/\bmcp\b|mcp[-_]/i.test(c)) return 'MCP 服务';
-  if (/--type=/.test(c)) return 'Electron 子进程';
+// 命令行拆成参数（认双引号），只用来认「可执行文件 / 入口脚本」是谁，不发出去。
+function cmdTokens(cmd) {
+  const out = [], re = /"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(String(cmd || ''))) && out.length < 8) out.push(m[1] !== undefined ? m[1] : m[2]);
+  return out;
+}
+const NODE_LIKE = new Set(['node.exe', 'node', 'electron.exe', 'aigroupchathub.exe']);
+// 入口脚本：node / electron 后面第一个像路径的参数（-e / -p / --eval 这类内联代码不算）。
+function entryScript(p) {
+  if (!NODE_LIKE.has(String(p.name || '').toLowerCase())) return '';
+  const t = cmdTokens(p.cmd);
+  for (let i = 1; i < t.length; i++) {
+    if (/^(-e|-p|--eval|--print|-r|--require)$/i.test(t[i])) return '';
+    if (t[i].startsWith('-')) continue;
+    return /[\\/]|\.[cm]?js$/i.test(t[i]) ? t[i] : '';
+  }
   return '';
 }
+const CODEAGENT_PATH = /(^|[\\/])[^\\/]*codeagent[^\\/]*([\\/]|$)/i;
+// CodeAgent：按可执行文件名 / 路径，或 node 跑的入口脚本路径认（不按命令行里任意位置出现的字样，2026-10-18 审核）。
+function isCodeAgentProc(p) {
+  if (/codeagent/i.test(String(p.name || ''))) return true;
+  const exe = cmdTokens(p.cmd)[0] || '';
+  return CODEAGENT_PATH.test(exe) || CODEAGENT_PATH.test(entryScript(p));
+}
+function processHint(p) {
+  if (isCodeAgentProc(p)) return /\bserve\b/i.test(String(p.cmd || '')) ? 'CodeAgent（serve）' : 'CodeAgent';
+  const c = String(p.cmd || '');
+  if (/[\\/]_npx[\\/]/i.test(c)) return 'npx 临时工具';
+  if (/\bmcp\b|mcp[-_]/i.test(entryScript(p))) return 'MCP 服务';
+  return '';
+}
+// Hub 自己派生、按设计会脱离 Hub 进程树的进程（普通浏览器守护进程、网页圆桌 worker、更新替换脚本）：不是 Hub 主进程，也不是残留。
+const HUB_SCRIPT = /(^|[\\/])(ordinary-browser-daemon|worker)\.[cm]?js$/i;
+function isHubScript(p, exe) {
+  const n = String(p.name || '').toLowerCase();
+  if ((n === exe || n === 'electron.exe' || n === 'aigroupchathub.exe') && /\.[cm]?js$/i.test(entryScript(p))) return true;
+  if (n === 'powershell.exe' && /apply-update\.ps1/i.test(String(p.cmd || ''))) return true;
+  return HUB_SCRIPT.test(entryScript(p));
+}
+const SUSPECT_MIN_AGE_MS = 10 * 60000;
 // 进程快照 + 会话 PTY 的 PID → 分类与汇总。纯函数，单测直接喂夹具。
-function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N, now = Date.now() } = {}) {
-  const { realParent, subtreePids } = require('../process-reclaim');
+// 残留分两档：suspect（嫌疑，只提示）与 killable（可结束，三期 kill-orphans 只认这一档）。
+function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N, now = Date.now(), isHubAppDir = () => false,
+  suspectMinAgeMs = SUSPECT_MIN_AGE_MS, killMinAgeMs = null } = {}) {
+  const R = require('../process-reclaim');
+  const { realParent, subtreePids, ancestorChain } = R;
+  const killAge = killMinAgeMs == null ? R.UNATTRIBUTED_MIN_AGE_MS : killMinAgeMs;
   const { buildChildrenMap } = require('../process-inspector');
   const list = (snap.processes || []).filter(p => p && p.pid > 0);
   const byPid = new Map(list.map(p => [p.pid, p]));
   const children = snap.childrenMap || buildChildrenMap(list);
   const hubTree = byPid.has(hubPid) ? subtreePids(hubPid, children, byPid) : new Set();
   const exe = String(hubExe || '').toLowerCase();
-  const isHubCore = p => p.pid === hubPid || (hubTree.has(p.pid) && String(p.name || '').toLowerCase() === exe);
-  const isCodeAgent = p => !isHubCore(p) && (CODEAGENT.test(p.name || '') || CODEAGENT.test(p.cmd || ''));
+  const lower = p => String(p.name || '').toLowerCase();
+  const isHelper = p => /--type=/.test(String(p.cmd || ''));
+  const isHubCore = p => p.pid === hubPid || (hubTree.has(p.pid) && lower(p) === exe);
+  const isCodeAgent = p => !isHubCore(p) && isCodeAgentProc(p);
+  const sum = arr => arr.reduce((a, p) => a + (p.wsBytes || 0), 0);
   // 每个会话的 PTY 进程树：会话编号、内存
   const owner = new Map(), sessions = new Map();
   for (const { id, pid } of sessionPids) {
@@ -178,15 +221,20 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
     for (const x of tree) { const p = byPid.get(x); if (!p || owner.has(x)) continue; owner.set(x, id); ws += p.wsBytes || 0; count += 1; if (isCodeAgent(p)) codeAgent += 1; }
     sessions.set(id, { pid: Number(pid), memMB: mb(ws), processes: count, codeAgent });
   }
-  const sum = arr => arr.reduce((a, p) => a + (p.wsBytes || 0), 0);
   const hubCore = list.filter(isHubCore), codeAgents = list.filter(isCodeAgent);
   const sessionProcs = list.filter(p => owner.has(p.pid));
-  const lower = p => String(p.name || '').toLowerCase();
-  const isHelper = p => /--type=/.test(String(p.cmd || ''));
-  // 树外的 Hub 主进程（不是 --type= 子进程）：活着、名下有进程或开着窗口的，是「别的 Hub」（另一个实例），它整棵进程树都归它；
-  // 名下空空、也没窗口的也不算残留（Hub 主进程一律不进残留、也永远不结束），单列提示。
-  const { isHubProcess, ancestorChain } = require('../process-reclaim');
-  const isHubMain = p => !hubTree.has(p.pid) && !isHelper(p) && (lower(p) === exe || isHubProcess(p));
+  // 别的 Hub 主进程：树外、不是 --type= 子进程、不是 Hub 派生的脚本进程，并且确实是 Hub——
+  // 安装版按程序名（AIGroupChatHub.exe）；开发版是 electron.exe，要命令行里带 Hub 源码目录（别的 Electron 程序不算）。
+  const hubScript = p => isHubScript(p, exe);
+  const isHubMain = p => {
+    if (hubTree.has(p.pid) || isHelper(p) || hubScript(p)) return false;
+    const n = lower(p);
+    if (n === 'aigroupchathub.exe' || (exe !== 'electron.exe' && n === exe)) return true;
+    if (n !== 'electron.exe') return false;
+    if (R.isHubProcess(p)) return true;
+    const arg = cmdTokens(p.cmd).slice(1).find(x => !x.startsWith('-'));
+    try { return !!arg && isHubAppDir(arg); } catch { return false; }
+  };
   const otherTree = new Map(); // 进程 PID → 所属的别的 Hub 主进程 PID
   const otherHubs = [];
   for (const main of list.filter(isHubMain)) {
@@ -196,40 +244,63 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
     otherHubs.push({ pid: main.pid, name: main.name, startedAt: main.startedAt || null, memMB: mb(main.wsBytes), processes: members.length - 1, treeMemMB: mb(sum(members)),
       hasWindow: !!main.hasWindow, idle: members.length <= 1 && !main.hasWindow });
   }
-  const family = p => {
-    const n = lower(p);
+  const hubScripts = list.filter(p => !hubTree.has(p.pid) && !otherTree.has(p.pid) && hubScript(p));
+  // 残留：只看当前 Hub 树、别的 Hub 树都不包含、自己不是 Hub 主进程、也不是 Hub 派生脚本的进程。
+  // 嫌疑 = 命中 process-reclaim 的残留形态白名单，或「父进程已经不在、活了 10 分钟以上」的 CodeAgent / node / 孤立 Electron 子进程。
+  // 可结束 = 嫌疑里的 CodeAgent 或命中白名单的，父进程已经不在、活了 30 分钟以上（三期 kill-orphans 只认这一档）。
+  const age = p => (p.startedAt ? now - p.startedAt : 0);
+  const parentGone = p => !realParent(p, byPid);
+  const outside = p => !hubTree.has(p.pid) && !otherTree.has(p.pid) && !isHubMain(p) && !hubScript(p);
+  const kindOf = p => {
     if (isCodeAgent(p)) return 'codeagent';
+    const pattern = R.matchLeftoverPattern(p);
+    if (pattern) return 'pattern:' + pattern.id;
+    const n = lower(p);
     if (n === 'node.exe' || n === 'node') return 'node';
     if (isHelper(p) && (n === exe || n === 'electron.exe' || n === 'aigroupchathub.exe')) return 'electron-helper';
     return null;
   };
-  // 残留嫌疑只有一种：父进程已经不在、不在当前 Hub 和任何别的 Hub 进程树里、自己不是 Hub 主进程的 CodeAgent / node；
-  // 孤立的 Electron 子进程（--type=）也列，单独标注。CodeAgent 排最前，同类按内存。
-  const isLeftover = p => !hubTree.has(p.pid) && !otherTree.has(p.pid) && !isHubMain(p) && !realParent(p, byPid) && !!family(p);
-  const rank = { codeagent: 0, node: 1, 'electron-helper': 2 };
-  const leftovers = list.filter(isLeftover).sort((a, b) => (rank[family(a)] - rank[family(b)]) || ((b.wsBytes || 0) - (a.wsBytes || 0)));
+  const judge = p => {
+    if (!outside(p)) return null;
+    const kind = kindOf(p);
+    if (!kind) return null;
+    const pattern = kind.startsWith('pattern:');
+    const gone = parentGone(p);
+    if (!pattern && !(gone && age(p) >= suspectMinAgeMs)) return null;
+    const killable = (kind === 'codeagent' || pattern) && gone && age(p) >= killAge;
+    return { kind: pattern ? 'pattern' : kind, pattern: pattern ? kind.slice(8) : null, killable, gone };
+  };
+  const verdict = new Map();
+  for (const p of list) { const v = judge(p); if (v) verdict.set(p.pid, v); }
+  const rank = { codeagent: 0, pattern: 1, node: 2, 'electron-helper': 3 };
+  const leftovers = list.filter(p => verdict.has(p.pid))
+    .sort((a, b) => (Number(verdict.get(b.pid).killable) - Number(verdict.get(a.pid).killable)) || (rank[verdict.get(a.pid).kind] - rank[verdict.get(b.pid).kind]) || ((b.wsBytes || 0) - (a.wsBytes || 0)));
   const otherMembers = list.filter(p => otherTree.has(p.pid));
+  const hintOf = (p, v) => v.kind === 'pattern' ? (R.LEFTOVER_PATTERNS.find(x => x.id === v.pattern) || {}).label || v.pattern
+    : v.kind === 'electron-helper' ? '孤立的 Electron 子进程（它的主进程已经不在了）' : processHint(p) || 'Node';
   const row = p => ({ name: p.name, pid: p.pid, ppid: p.ppid || 0, memMB: mb(p.wsBytes), privMB: mb(p.privBytes), startedAt: p.startedAt || null,
     hub: hubTree.has(p.pid), hubCore: isHubCore(p), codeAgent: isCodeAgent(p), session: owner.has(p.pid) ? String(owner.get(p.pid)).slice(0, 8) : null,
-    otherHub: otherTree.has(p.pid), leftover: isLeftover(p) });
+    otherHub: otherTree.has(p.pid), leftover: verdict.has(p.pid), killable: !!verdict.get(p.pid)?.killable });
+  const killable = leftovers.filter(p => verdict.get(p.pid).killable);
   return {
     sampledAt: snap.sampledAt || now, total: list.length, hubPid, hubFound: byPid.has(hubPid),
+    rules: { suspectMinAgeMin: Math.round(suspectMinAgeMs / 60000), killMinAgeMin: Math.round(killAge / 60000) },
     summary: {
       codeAgent: { count: codeAgents.length, memMB: mb(sum(codeAgents)), inHub: codeAgents.filter(p => hubTree.has(p.pid)).length, outside: codeAgents.filter(p => !hubTree.has(p.pid)).length },
       hubSelf: { count: hubCore.length, memMB: mb(sum(hubCore)) },
       hubSessions: { sessions: sessions.size, processes: sessionProcs.length, memMB: mb(sum(sessionProcs)) },
       hubTree: { count: hubTree.size, memMB: mb(sum(list.filter(p => hubTree.has(p.pid)))) },
-      leftovers: { count: leftovers.length, memMB: mb(sum(leftovers)) },
+      leftovers: { count: leftovers.length, memMB: mb(sum(leftovers)), killable: killable.length, killableMemMB: mb(sum(killable)) },
       otherHubs: { count: otherHubs.length, processes: otherMembers.length, memMB: mb(sum(otherMembers)) },
+      hubScripts: { count: hubScripts.length, memMB: mb(sum(hubScripts)) },
     },
     top: [...list].sort((a, b) => (b.wsBytes || 0) - (a.wsBytes || 0)).slice(0, top).map(row),
-    leftovers: leftovers.slice(0, MAX_LEFTOVERS).map(p => ({ name: p.name, pid: p.pid, ppid: p.ppid || 0, memMB: mb(p.wsBytes), startedAt: p.startedAt || null,
-      ageMin: p.startedAt ? Math.max(0, Math.round((now - p.startedAt) / 60000)) : null, kind: family(p), parentAlive: false,
-      hint: family(p) === 'electron-helper' ? '孤立的 Electron 子进程（它的主进程已经不在了）' : processHint(p.cmd) || (family(p) === 'node' ? 'Node' : '') })),
+    leftovers: leftovers.slice(0, MAX_LEFTOVERS).map(p => { const v = verdict.get(p.pid); return { name: p.name, pid: p.pid, ppid: p.ppid || 0, memMB: mb(p.wsBytes), startedAt: p.startedAt || null,
+      ageMin: p.startedAt ? Math.max(0, Math.round((now - p.startedAt) / 60000)) : null, kind: v.kind, parentAlive: !v.gone, killable: v.killable, hint: hintOf(p, v) }; }),
     otherHubs: otherHubs.sort((a, b) => b.treeMemMB - a.treeMemMB).slice(0, 10),
     sessions,
-    // 三期远程维护用：永远不能结束的进程（当前 Hub 进程树、所有别的 Hub 主进程及其进程树）
-    protectedPids: new Set([...hubTree, ...otherTree.keys()]),
+    // 三期远程维护用：永远不能结束的进程（当前 Hub 进程树、所有别的 Hub 主进程及其进程树、Hub 派生的脚本进程）
+    protectedPids: new Set([...hubTree, ...otherTree.keys(), ...hubScripts.map(p => p.pid)]),
   };
 }
 
@@ -292,7 +363,8 @@ function hub(bridge, deps, sys, ctx) {
     if (!s) continue;
     const mem = ctx.sessionMem?.get(id);
     const lastActiveAt = Math.max(Number(s.lastMessageTime) || 0, Number(s.lastCompletedAt) || 0, Number(s.lastRunStartedAt) || 0, Number(deps.sessionInputAt?.(id)) || 0) || null;
-    sessions.push({ id: String(id).slice(0, 8), title: short(s.title, 40), kind: String(s.kind || ''), purpose: s.purpose || null,
+    // 标题里可能有公司项目名：只有通道会话（标题是「1018-Q1-codex」这类编号）保留，其余置空（2026-10-18 审核）
+    sessions.push({ id: String(id).slice(0, 8), title: s.purpose === 'company-bridge' ? short(s.title, 40) : '', kind: String(s.kind || ''), purpose: s.purpose || null,
       state: s.status === 'dormant' ? 'dormant' : s.status === 'closed' ? 'closed' : 'active', status: s.status || null, busy: !!bridge.sessionBusy(id),
       lastActiveAt, pid: mem?.pid ?? ctx.ptyPids?.get(id) ?? null, memMB: mem ? mem.memMB : null, processes: mem ? mem.processes : null,
       account: s.codeagentPoolAccount ? (aliases.get(s.codeagentPoolAccount) || '号池') : /^codeagent/.test(String(s.kind || '')) ? '个人' : null });
@@ -337,7 +409,9 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
       let analyzed = null, error = null;
       try {
         const snap = await Promise.race([sys.processSnapshot(), new Promise((_, reject) => setTimeout(() => reject(new Error(`进程枚举超过 ${PROCESS_TIMEOUT_MS / 1000} 秒没返回`)), PROCESS_TIMEOUT_MS + 1000).unref?.())]);
-        analyzed = analyzeProcesses(snap, { hubPid, hubExe: path.basename(String(deps.hubExecPath || process.execPath)), sessionPids: ptyPids, now: bridge.now() });
+        const minAge = Number(deps.leftoverMinAgeMs);
+        analyzed = analyzeProcesses(snap, { hubPid, hubExe: path.basename(String(deps.hubExecPath || process.execPath)), sessionPids: ptyPids, now: bridge.now(), isHubAppDir: sys.isHubAppDir,
+          ...(Number.isFinite(minAge) && minAge >= 0 ? { suspectMinAgeMs: minAge, killMinAgeMs: minAge } : {}) });
       } catch (e) { error = e; }
       if (analyzed) ctx.sessionMem = analyzed.sessions;
       if (error) ctx.processError = errText(error);
@@ -364,7 +438,7 @@ function summarize(d) {
   if (p && !p.error && p.summary) {
     parts.push(`CodeAgent ${p.summary.codeAgent.count} 个共 ${gb(p.summary.codeAgent.memMB * 1048576)} GB`);
     parts.push(`Hub 自身 ${gb(p.summary.hubSelf.memMB * 1048576)} GB`);
-    if (p.summary.leftovers.count) parts.push(`残留嫌疑 ${p.summary.leftovers.count} 个（${gb(p.summary.leftovers.memMB * 1048576)} GB）`);
+    if (p.summary.leftovers.count) parts.push(`残留嫌疑 ${p.summary.leftovers.count} 个（${gb(p.summary.leftovers.memMB * 1048576)} GB${p.summary.leftovers.killable ? `，其中可结束 ${p.summary.leftovers.killable} 个` : ''}）`);
   }
   const h = d.hub;
   if (h && !h.error) {
@@ -415,7 +489,9 @@ function fit(result, measure, limit = MESSAGE_LIMIT - MESSAGE_MARGIN) {
   return { data, result: d, degraded: d.degraded, bytes };
 }
 
+const STEP_LABELS = STEPS.map(s => s[0]);
 module.exports = {
+  STEP_LABELS, cmdTokens, entryScript, isCodeAgentProc, isHubScript, SUSPECT_MIN_AGE_MS,
   SECTIONS, SECTION_LABEL, MIN_INTERVAL_MS, MESSAGE_LIMIT, PROCESS_TIMEOUT_MS, DEFAULT_LOG_LINES, MAX_LOG_LINES, LOGS,
   parseSections, parseLines, encode, decode, makeRedactor, deepRedact, analyzeProcesses, poolAliases, pool, machine, logs, hub, collect, summarize, fit, defaultSys,
 };

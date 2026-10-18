@@ -2425,6 +2425,8 @@ try {
       hubPid: process.pid,
       hubExecPath: process.execPath,
       hubStartedAt: Math.round(Date.now() - process.uptime() * 1000),
+      // 残留判定的最短存活时间（默认嫌疑 10 分钟、可结束 30 分钟）：只有隔离测试实例能改短（同 role.js 的做法）。
+      leftoverMinAgeMs: process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS ? Number(process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS) : undefined,
       sessionPtyPids: () => [...(sessionManager.sessions?.entries?.() || [])].map(([id, s]) => ({ id, pid: Number(s?.pty?.pid) || 0 })),
       poolDiag: () => {
         const pool = require('./core/codeagent-pool');

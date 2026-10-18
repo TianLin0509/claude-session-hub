@@ -50,11 +50,19 @@
 - 段落（白名单，各自 try/catch）：machine（内存、CPU 0.5 秒采样、开机时长、C/D 盘）、processes（`core/process-inspector.js` 的 Win32_Process 快照，15 秒超时；
   前 20、CodeAgent 数与内存、Hub 自身、按会话终端 PID 归属的会话内存；不回传命令行）。
   「别的 Hub」：当前 Hub 进程树外的 Hub 主进程（不带 --type=）连同它整棵进程树，一律不算残留、进保护名单（`protectedPids`），名下空空又没窗口的单独提示「可能是没退出的旧主进程」；
-  「残留嫌疑」只有一种：父进程已经不在、不在当前 Hub 和任何别的 Hub 进程树里、自己不是 Hub 主进程的 CodeAgent / node，孤立的 Electron 子进程（--type=）单独标注；CodeAgent 排前（2026-10-18 审核：开发机上把正在运行的生产 Hub 误标成残留）。
+  认 Hub：安装版按程序名 AIGroupChatHub.exe；开发版 electron.exe 要命令行里带 Hub 源码目录（有 main-bootstrap.js 与 core/company-bridge），别的 Electron 程序不算。
+  「Hub 后台脚本」：用 Hub 程序跑脚本、按设计脱离进程树的（ordinary-browser-daemon.js、web-roundtable worker.js、apply-update.ps1）不是主进程也不是残留，进保护名单。
+  CodeAgent 按可执行文件名 / 路径或 node 入口脚本路径认，不按命令行里任意位置的字样。
+  残留分两档（2026-10-18 审核）：「嫌疑」= 不属于任何 Hub 且命中 `process-reclaim.js` 的残留形态白名单，或父进程已不在、活了 ≥10 分钟的 CodeAgent / node / 孤立 Electron 子进程，只供参考；
+  「可结束」= 嫌疑里的 CodeAgent 或白名单形态，父进程已不在、活了 ≥30 分钟（三期 kill-orphans 只认这一档）。隔离测试实例可用 `CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS` 改短。
+  top 行的残留标记与残留列表同一套规则。
   
   hub（版本、启动时间、`parallelLimitSafe()`、通道队列快照、会话列表含 PID 与内存）、pool（只用「个人 / 号 1 / 号 2」，字段白名单）、
   logs（company-bridge.log、company-session-care.log、window-events.log 最后 N 行，默认 80、上限 200）。
-- 脱敏：所有字符串过 `scrubText`（号身份）+ 口令/令牌样式、配对码、网址、本机用户名与用户目录；UUID 保留。
+- 脱敏：所有字符串过 `scrubText`（号身份，整次直查只读一次号池做快照，量大小时封装消息也用这份）+ 口令/令牌样式、配对码、网址、本机用户名与用户目录；UUID 保留。
+  会话标题只有通道会话（purpose=company-bridge，「1018-Q1-codex」这类编号）保留，其余置空。
+- 开关：公司设置「状态查看」（`allowRemoteDiag`，默认开，独立于远程更新开关），关了回 refused。
+- 能力声明：公司每条 hub-admin-status 带 `caps:['diag']`；家里看到公司报过版本却没带 diag 能力（旧版会把指令静默丢掉）就直接报「版本过旧，不支持直查」，不白等。
 - 大小：整条消息（HTTP 正文 `{to,mid,blob}`）实测 < 60000 字节，超了按顺序降级：日志 40 行 → 15 行 → 进程前 10 → 日志省略 → 会话 20 个 → 进程前 5、会话省略 → 只留汇总 → 只留摘要，始终一条发完。
 - 底线：只认当前配对代次；同一编号只处理一次；30 秒限频、同时只跑一条（回 refused 写原因）；只读，不读源码、不回传文件内容（日志尾部除外）；
   公司写 `logs/company-diag.log` 审计，界面给一条轻提示「对端查看了这台电脑的状态」（`notify(..., { quiet:true })`，不弹系统通知）。

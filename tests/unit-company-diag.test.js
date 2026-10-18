@@ -49,28 +49,56 @@ test('进程分类：Hub 自身、会话进程树、CodeAgent（树内 / 树外�
   assert.ok(!('cmd' in a.top[0]) && !('cmd' in a.leftovers[0]));
 });
 
-test('环境里另有正在运行的 Hub：主进程和它整棵进程树都归「别的 Hub」、不算残留，且列入永不结束的保护名单', () => {
+test('环境里另有正在运行的 Hub、Hub 后台脚本、别的 Electron 程序：都不算残留；残留分「嫌疑」「可结束」两档；保护名单', () => {
   const snap = fakeProcesses();
   snap.processes.push(
     // 另一个正在运行的 Hub（父进程早已退出，同 bootstrap 拉起后退出的情形）：名下界面、会话、CodeAgent
     proc(500, 9, 'AIGroupChatHub.exe', 250, { startedAt: NOW - 90000000 }), proc(501, 500, 'AIGroupChatHub.exe', 300, { cmd: 'x --type=renderer' }),
-    proc(502, 500, 'powershell.exe', 30), proc(503, 502, 'node.exe', 700, { cmd: 'node codeagent serve' }),
-    // 开着窗口、没有子进程的 Hub 主进程；空空的 Hub 主进程
+    proc(502, 500, 'powershell.exe', 30), proc(503, 502, 'node.exe', 700, { cmd: 'node C:\\tools\\codeagent\\cli.js serve' }),
+    // 开着窗口、没有子进程的开发版 Hub（命令行带源码目录）；空空的安装版 Hub 主进程；开发版 Hub（目录是 Hub 源码）
     { ...proc(510, 9, 'electron.exe', 120, { cmd: 'electron.exe C:\\Users\\x\\claude-session-hub' }), hasWindow: true },
     proc(600, 9, 'AIGroupChatHub.exe', 90),
-    // 孤立的 Electron 子进程；父进程活着的 node（别的程序起的）
-    proc(700, 9999, 'AIGroupChatHub.exe', 60, { cmd: 'AIGroupChatHub.exe --type=gpu-process' }), proc(800, 302, 'node.exe', 40, { cmd: 'node tool.js' }));
-  const a = D.analyzeProcesses(snap, { hubPid: 100, hubExe: 'AIGroupChatHub.exe', now: NOW });
-  assert.deepEqual(a.leftovers.map(x => [x.pid, x.kind]), [[300, 'codeagent'], [400, 'node'], [700, 'electron-helper']]);
-  assert.match(a.leftovers[2].hint, /孤立的 Electron 子进程/);
-  for (const pid of [500, 501, 502, 503, 510, 600, 800]) assert.ok(!a.leftovers.some(x => x.pid === pid), pid + ' 不该算残留');
+    proc(902, 9, 'electron.exe', 110, { cmd: '"C:\\hub\\node_modules\\electron\\dist\\electron.exe" D:\\AIWork\\x\\wt --remote-debugging-port=9333' }),
+    // 别的 Electron 程序（目录不是 Hub）：不是别的 Hub，也不是残留
+    proc(901, 9, 'electron.exe', 100, { cmd: 'electron.exe D:\\other\\app' }),
+    // Hub 后台脚本：用 Hub 的程序跑的普通浏览器守护进程（父进程已退出）、网页圆桌 worker、更新替换脚本
+    proc(910, 9, 'AIGroupChatHub.exe', 80, { cmd: '"C:\\Program Files\\AI HUB\\AIGroupChatHub.exe" "C:\\Program Files\\AI HUB\\resources\\app.asar\\core\\ordinary-browser-daemon.js" {}' }),
+    proc(911, 9, 'electron.exe', 60, { cmd: 'electron.exe D:\\hub\\core\\web-roundtable\\worker.js abc run' }),
+    proc(912, 9, 'powershell.exe', 40, { cmd: 'powershell.exe -NoProfile -NonInteractive -File "D:\\x\\apply-update.ps1" -Plan "p.json"' }),
+    // 孤立的 Electron 子进程；父进程活着的 node（别的程序起的）；已知残留形态：空着的会话外壳；刚变孤儿 5 分钟的 CodeAgent；命令行里只是「提到」codeagent 的 node
+    proc(700, 9999, 'AIGroupChatHub.exe', 60, { cmd: 'AIGroupChatHub.exe --type=gpu-process' }), proc(800, 302, 'node.exe', 40, { cmd: 'node tool.js' }),
+    proc(950, 9998, 'powershell.exe', 30, { cmd: 'powershell.exe -NoProfile -NoLogo' }),
+    proc(960, 9997, 'node.exe', 500, { cmd: 'node C:\\tools\\codeagent\\cli.js', startedAt: NOW - 5 * 60000 }),
+    proc(970, 9996, 'node.exe', 45, { cmd: 'node -e "setInterval(()=>{},1e9)" codeagent-mentioned', startedAt: NOW - 3 * 3600000 }));
+  const a = D.analyzeProcesses(snap, { hubPid: 100, hubExe: 'AIGroupChatHub.exe', now: NOW, isHubAppDir: dir => dir === 'D:\\AIWork\\x\\wt' });
+  assert.deepEqual(a.leftovers.map(x => [x.pid, x.kind, x.killable]),
+    [[300, 'codeagent', true], [950, 'pattern', true], [400, 'node', false], [970, 'node', false], [700, 'electron-helper', false]]);
+  assert.match(a.leftovers.find(x => x.pid === 700).hint, /孤立的 Electron 子进程/);
+  assert.equal(a.leftovers.find(x => x.pid === 950).hint, 'Agent 会话外壳');
+  assert.equal(a.leftovers.find(x => x.pid === 970).hint, 'Node', '命令行里只是提到 codeagent 的 node 不算 CodeAgent');
+  for (const pid of [500, 501, 502, 503, 510, 600, 800, 901, 902, 910, 911, 912, 960]) assert.ok(!a.leftovers.some(x => x.pid === pid), pid + ' 不该算残留');
   const others = Object.fromEntries(a.otherHubs.map(x => [x.pid, x]));
+  assert.deepEqual(Object.keys(others).map(Number).sort((x, y) => x - y), [500, 510, 600, 902], '别的 Electron 程序（901）和 Hub 后台脚本（910/911）不是别的 Hub');
   assert.deepEqual([others[500].processes, others[500].treeMemMB, others[500].idle], [3, 1280, false]);
-  assert.equal(others[510].hasWindow, true); assert.equal(others[510].idle, false); assert.equal(others[600].idle, true);
-  assert.deepEqual(a.summary.otherHubs, { count: 3, processes: 6, memMB: 1490 });
-  for (const pid of [100, 101, 102, 200, 201, 202, 500, 501, 503, 510, 600]) assert.ok(a.protectedPids.has(pid), pid + ' 应在保护名单');
-  for (const pid of [300, 400, 700]) assert.ok(!a.protectedPids.has(pid));
-  assert.equal(a.top.find(x => x.pid === 503).otherHub, true);
+  assert.equal(others[510].hasWindow, true); assert.equal(others[600].idle, true);
+  assert.deepEqual(a.summary.hubScripts, { count: 3, memMB: 180 });
+  assert.deepEqual(a.summary.leftovers, { count: 5, memMB: 1100 + 30 + 80 + 45 + 60, killable: 2, killableMemMB: 1130 });
+  for (const pid of [100, 101, 102, 200, 201, 202, 500, 501, 503, 510, 600, 902, 910, 911, 912]) assert.ok(a.protectedPids.has(pid), pid + ' 应在保护名单');
+  for (const pid of [300, 400, 700, 950]) assert.ok(!a.protectedPids.has(pid));
+  const rowOf = pid => a.top.find(x => x.pid === pid) || null;
+  assert.equal(rowOf(503).otherHub, true);
+  assert.deepEqual([rowOf(300).leftover, rowOf(300).killable], [true, true], 'top 行与残留列表同一套规则');
+  // 改短最短存活时间（隔离测试用）：刚变孤儿的 CodeAgent 也进可结束
+  const b = D.analyzeProcesses(snap, { hubPid: 100, hubExe: 'AIGroupChatHub.exe', now: NOW, suspectMinAgeMs: 0, killMinAgeMs: 0 });
+  assert.equal(b.leftovers.find(x => x.pid === 960).killable, true);
+});
+
+test('CodeAgent 按可执行文件 / 入口脚本路径认，不按命令行里任意位置的字样', () => {
+  const yes = [{ name: 'codeagent.exe', cmd: 'codeagent.exe' }, { name: 'node.exe', cmd: '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\a\\AppData\\Roaming\\npm\\node_modules\\@huawei\\codeagent\\dist\\cli.js" serve' },
+    { name: 'node.exe', cmd: 'node --max-old-space-size=4096 D:\\CodeAgent3\\bin\\main.js' }];
+  const no = [{ name: 'node.exe', cmd: 'node -e "require(1)" codeagent' }, { name: 'node.exe', cmd: 'node D:\\tools\\grep.js --pattern codeagent' }, { name: 'powershell.exe', cmd: 'powershell -c codeagent --version' }];
+  for (const p of yes) assert.equal(D.isCodeAgentProc(p), true, p.cmd);
+  for (const p of no) assert.equal(D.isCodeAgentProc(p), false, p.cmd);
 });
 
 test('脱敏：号身份、口令/令牌样式、配对码、网址、本机用户目录；UUID 与普通文字保留', () => {
@@ -151,7 +179,10 @@ test('端到端（内存通道）：家里发 diag → 公司直接采集、压�
   const createdBefore = r.cs.created.length;
   r.notices.length = 0;
 
+  let secretReads = 0; const readSecrets = r.company.deps.accountSecrets; r.company.deps.accountSecrets = () => { secretReads += 1; return readSecrets(); };
   const { sent, view } = await diagRound(r);
+  const text0 = () => JSON.stringify(view);
+  assert.ok(secretReads <= 2, `整份回报脱敏只读号身份 1~2 次（实际 ${secretReads}）`);
   assert.match(sent.id, /^HA-\d{4}-[a-f0-9]{6}$/);
   assert.deepEqual(sent.sections, D.SECTIONS);
   assert.equal(view.status, '已回报');
@@ -174,6 +205,8 @@ test('端到端（内存通道）：家里发 diag → 公司直接采集、压�
   const s1 = d.hub.sessions.list.find(x => x.id === 's-1-abcd');
   assert.deepEqual({ purpose: s1.purpose, state: s1.state, pid: s1.pid, memMB: s1.memMB, account: s1.account }, { purpose: 'company-bridge', state: 'active', pid: 200, memMB: 1360, account: '号 1' });
   assert.equal(d.hub.sessions.list.find(x => x.id === 's-2-zzzz').state, 'dormant');
+  assert.equal(s1.title, '1018-Q1-codex'); assert.equal(d.hub.sessions.list.find(x => x.id === 's-2-zzzz').title, '', '非通道会话不带标题（可能有公司项目名）');
+  assert.ok(!text0().includes('我自己的会话'));
   // pool：只有代称
   assert.deepEqual(d.pool.accounts.map(a => [a.alias, a.state, a.activeSessions]), [['个人', '可用', 1], ['号 1', '可用', 2], ['号 2', '需登录', 0]]);
   // logs：默认 80 行，已脱敏
@@ -288,4 +321,20 @@ test('MCP 列出 company_diag（只读）；命令行 --diag 把段落、行数�
   assert.equal((await run(['--diag', '--id', 'HA-1018-abcdef'])).code, 0);
   assert.deepEqual(bodies.map(b => [b.name, b.arguments]), [
     ['company_diag', { sections: ['machine', 'hub'], lines: 30 }], ['company_diag', {}], ['company_diag', { id: 'HA-1018-abcdef' }]]);
+});
+
+test('开关：公司关了「状态查看」回 refused；公司报过版本却没报直查能力（旧版）时家里直接说明、不发', async t => {
+  const r = setup(t); await pair(r);
+  r.company.setSettings({ allowRemoteDiag: false });
+  const off = await diagRound(r, { sections: ['machine'] });
+  assert.equal(off.view.status, '公司没处理'); assert.match(off.view.note, /没允许对端查看状态/);
+  assert.equal(r.company.hubAdmin.state().lastDiagAt, undefined, '关着时不算一次直查');
+  r.company.setSettings({ allowRemoteDiag: true });
+  assert.ok((r.home.adminState().company.caps || []).includes('diag'), '新版公司的回报带直查能力');
+  // 模拟旧版公司：报了版本、没带 caps
+  const st = r.home.adminState();
+  r.home.store.set('hubAdmin', { ...st, company: { current: '2.1.11', latest: null, at: NOW, caps: null } });
+  const posts = r.relay.posts;
+  await assert.rejects(r.home.hubAdmin({ op: 'diag' }), /公司 Hub 版本过旧（v2\.1\.11），不支持直查/);
+  assert.equal(r.relay.posts, posts, '没有发出去');
 });
