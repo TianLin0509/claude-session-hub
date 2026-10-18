@@ -16,7 +16,8 @@ const { standinRunner } = require('./helpers/welink-standin-inproc');
 const STANDIN = path.join(__dirname, 'fixtures', 'welink-cli-standin.js');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'company-phone-'));
 const wait = ms => new Promise(r => setTimeout(r, ms));
-const until = async (fn, label, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await fn()) return; await wait(20); } throw new Error('timeout: ' + label); };
+// 等条件成立就立刻返回，上限只防卡死：放宽到 60 秒（全量测试并行时，同一步实测要 55 秒；单跑不到 1 秒）。
+const until = async (fn, label, ms = 60000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await fn()) return; await wait(20); } throw new Error('timeout: ' + label); };
 
 function rig({ idle = 9999 } = {}) {
   const dir = tmp(), log = path.join(dir, 'calls.log'), stateFile = path.join(dir, 'welink-state');
@@ -219,7 +220,7 @@ test('MCP：列出 7 个工具；带对会话编号能调通，编号不对被�
     const child = spawn(entry.command, entry.args, { env: { ...process.env, ...entry.env }, stdio: ['pipe', 'pipe', 'inherit'] });
     let buf = ''; const replies = new Map();
     child.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); const m = JSON.parse(line); replies.set(m.id, m); } });
-    const ask = async (id, method, params) => { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); await until(() => replies.has(id), method, 5000); return replies.get(id); };
+    const ask = async (id, method, params) => { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); await until(() => replies.has(id), method, 60000); return replies.get(id); };
     try {
       const tools = await ask(1, 'tools/list', {});
       const listed = await ask(2, 'tools/call', { name: 'list_sessions', arguments: {} });
