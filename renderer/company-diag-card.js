@@ -61,8 +61,9 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     // 远程维护（三期）：休眠空闲通道会话、临时调并行档位
     const opt = (list, cur) => list.map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${l}</option>`).join('');
     const maintain = `<div class="cl-diag-actions"><button type="button" class="hub-button" data-diag-act="suspend-idle">让空闲的通道会话休眠</button>
-      <span class="cl-diag-par">临时：内存保底 <select data-diag-p="memFloorPct">${opt([[5, '5%'], [8, '8%'], [10, '10%'], [15, '15%'], [20, '20%']], 5)}</select>
+      <span class="cl-diag-par">临时：内存保底 <select data-diag-p="memFloorPct">${opt([['', '不改'], [5, '5%'], [8, '8%'], [10, '10%'], [15, '15%'], [20, '20%']], 5)}</select>
       · 同时 <select data-diag-p="maxParallel">${opt([['', '不改'], [1, '1 个'], [2, '2 个'], [3, '3 个'], [4, '4 个'], [6, '6 个']], '')}</select>
+      · 号池 <select data-diag-p="usePool">${opt([['', '不改'], ['off', '停用（只用个人账号）'], ['on', '启用']], '')}</select>
       · <select data-diag-p="restoreAfterHours">${opt([[1, '1 小时后恢复'], [2, '2 小时后恢复'], [4, '4 小时后恢复'], ['', '不自动恢复']], 2)}</select>
       <button type="button" class="hub-button" data-diag-act="set-parallel">调整</button></span></div>`;
     const sessions = table(['标题', '用途', '状态', '最后活动', '号', 'PID', '内存'], (h.sessions.list || []).map(s => [esc(s.title || s.id), esc(PURPOSE[s.purpose] || s.purpose || s.kind),
@@ -193,7 +194,12 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       for (const k of ['memFloorPct', 'maxParallel', 'restoreAfterHours']) { const v = dialog.querySelector(`[data-diag-p=${k}]`)?.value; if (v) params[k] = Number(v); }
       // 闲时上限取「忙时、闲时」两者较大的：只改忙时，晚上和周末不生效，所以两个一起改
       if (params.maxParallel) params.maxParallelIdle = params.maxParallel;
-      confirmText = `临时把公司「内存保底」改成 ${params.memFloorPct}%${params.maxParallel ? `、同时处理改成 ${params.maxParallel} 个（忙时、闲时都改）` : ''}，${params.restoreAfterHours ? params.restoreAfterHours + ' 小时后自动恢复原值' : '不自动恢复'}？`;
+      const pool = dialog.querySelector('[data-diag-p=usePool]')?.value;
+      if (pool) params.usePool = pool === 'on';
+      const parts = [params.memFloorPct ? `「内存保底」改成 ${params.memFloorPct}%` : '', params.maxParallel ? `同时处理改成 ${params.maxParallel} 个（忙时、闲时都改）` : '',
+        pool ? (params.usePool ? '通道恢复使用号池' : '通道停用号池、只用个人账号') : ''].filter(Boolean);
+      if (!parts.length) return banner('没有选要调整的项。', 'warn');
+      confirmText = `临时把公司${parts.join('、')}，${params.restoreAfterHours ? params.restoreAfterHours + ' 小时后自动恢复原值' : '不自动恢复'}？`;
     } else {
       params.thread = el?.dataset.thread || '';
       confirmText = action === 'cancel-queued' ? `取消排队中的问题 ${params.thread}？提问的会话会收到「被对端取消」。` : `重试问题 ${params.thread}？`;

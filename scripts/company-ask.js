@@ -13,7 +13,7 @@
 //   node company-ask.js --hub-update [--force] | --hub-restart [--force] | --hub-status   （远程让公司 Hub 更新 / 重启 / 报版本）
 //   node company-ask.js --diag [machine,processes,hub,pool,logs,codeagent,airview,features] [--lines 80] [--id HA-xxxx]
 //     （直查公司电脑与公司 Hub：秒级、不排队、不占公司 CodeAgent；不填段落 = 全部；--id 取之前那次的结果）
-//   node company-ask.js --act suspend-idle | kill-orphans --pids 300:1799913600000,... | set-parallel [--mem-floor 5] [--max-parallel 1] [--max-parallel-idle 4] [--restore-hours 2]
+//   node company-ask.js --act suspend-idle | kill-orphans --pids 300:1799913600000,... | set-parallel [--mem-floor 5] [--max-parallel 1] [--max-parallel-idle 4] [--use-pool on|off] [--restore-hours 2]
 //                       | cancel-queued --thread Q-xxxx | retry --thread Q-xxxx   [--id HA-xxxx 取之前那次的结果]
 //     （远程维护：会改动公司电脑状态，先 --diag 看清楚再做）
 const fs = require('node:fs');
@@ -48,6 +48,7 @@ async function main() {
     const a = { action: actOp };
     if (arg('pids')) a.targets = arg('pids').split(',').map(x => x.trim()).filter(Boolean).map(x => { const [pid, startedAt] = x.split(':').map(Number); return { pid, startedAt }; });
     for (const [flag, key] of [['mem-floor', 'memFloorPct'], ['max-parallel', 'maxParallel'], ['max-parallel-idle', 'maxParallelIdle'], ['restore-hours', 'restoreAfterHours']]) if (num(flag) !== undefined) a[key] = num(flag);
+    if (arg('use-pool') != null) { const v = String(arg('use-pool')).toLowerCase(); if (!['on', 'off'].includes(v)) throw new Error('--use-pool 只能是 on 或 off'); a.usePool = v === 'on'; }
     if (arg('thread')) a.thread = arg('thread');
     if (arg('id')) a.id = arg('id');
     return a;
