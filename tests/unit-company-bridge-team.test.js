@@ -122,6 +122,13 @@ test('邀请码保存后 Hub 装上团队 skill，并记在状态里', async t =
   assert.equal(st.team.skills.installed.length, 2);
   assert.ok(fs.existsSync(path.join(home, '.claude', 'skills', 'tezhan-ask-company', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(home, '.agents', 'skills', 'tezhan-ask-company', 'SKILL.md')));
+  // 同事自己删掉 Claude 那份：Hub 重启后不再装回去，Codex 那份照旧
+  fs.rmSync(path.join(home, '.claude', 'skills', 'tezhan-ask-company'), { recursive: true, force: true });
+  const again = r.home.installSkills();
+  assert.deepEqual(again.removed, [path.join('.claude', 'skills', 'tezhan-ask-company')]);
+  assert.equal(fs.existsSync(path.join(home, '.claude', 'skills', 'tezhan-ask-company')), false);
+  assert.ok(fs.existsSync(path.join(home, '.agents', 'skills', 'tezhan-ask-company', 'SKILL.md')));
+  assert.equal(r.home.installSkills().removed.length, 1, '之后每次都记得');
 });
 
 test('组长管理成员：带口令调管理接口，新建得到可用的邀请码，收回校验编号', async t => {

@@ -88,6 +88,11 @@ const freePort = () => new Promise((resolve, reject) => {
     await leader.until('team block', () => leader.c.eval('!!document.querySelector(".cl-team")'));
     await leader.until('members loaded', async () => /还没有发过邀请码/.test(await leader.text('.cl-team')));
     await leader.type('[data-cl-input="label"]', '同事');
+    // 正在称呼框里打字时通道来了动静：不重绘这一块，输入框还是原来那个、内容和焦点都在
+    await leader.c.eval('(() => { window.__labelEl = document.querySelector("[data-cl-input=label]"); require("electron").ipcRenderer.emit("bridge:changed", {}); })()');
+    await wait(800);
+    assert.equal(await leader.c.eval('document.querySelector("[data-cl-input=label]") === window.__labelEl && document.activeElement === window.__labelEl && window.__labelEl.value === "同事"'), true);
+    check('组长：正在称呼框里打字时通道刷新，不重绘、不丢字、不丢焦点（拼音输入法不会被打断）');
     await leader.click('[data-cl="team-create"]');
     await leader.until('fresh invite', () => leader.c.eval('!!document.querySelector("[data-cl-input=fresh]")?.value'));
     const invite = await leader.c.eval('document.querySelector("[data-cl-input=fresh]").value');

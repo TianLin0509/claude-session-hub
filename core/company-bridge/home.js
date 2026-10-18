@@ -551,8 +551,10 @@ class HomeBridge {
   installSkills() {
     if (!this.invite()) return null;
     try {
-      const report = (this.deps.installTeamSkills || installTeamSkills)({ homeDir: this.deps.homeDir });
-      this.store.set('teamSkills', { ...report, at: this.now() });
+      const prev = this.store.get('teamSkills') || {};
+      const known = [...new Set([...(prev.known || []), ...(prev.installed || [])])];
+      const report = (this.deps.installTeamSkills || installTeamSkills)({ homeDir: this.deps.homeDir, known });
+      this.store.set('teamSkills', { ...report, known: [...new Set([...known, ...report.installed])], at: this.now() });
       return report;
     } catch (error) { console.warn('[company-bridge] team skills', error.message); return null; }
   }
@@ -565,7 +567,7 @@ class HomeBridge {
     const skills = this.store.get('teamSkills');
     return { invite: inv ? { label: inv.label || '', host: new URL(inv.url).host, savedAt: inv.savedAt || null } : null, inbox,
       needsInvite: !inv && !inbox && !this.deps.bridgeApiUrl?.(), admin: this.team.available(),
-      skills: skills ? { installed: skills.installed, updated: skills.updated, kept: skills.kept, errors: skills.errors, at: skills.at } : null };
+      skills: skills ? { installed: skills.installed, updated: skills.updated, kept: skills.kept, removed: skills.removed || [], errors: skills.errors, known: skills.known || [], at: skills.at } : null };
   }
 
   // ---- 配对 ----

@@ -18,8 +18,10 @@ function bundled(sourceRoot = SOURCE_ROOT) {
   return names.map(name => ({ name, text: readText(path.join(sourceRoot, name, 'SKILL.md')) })).filter(s => s.text);
 }
 
-function installTeamSkills({ homeDir = os.homedir(), sourceRoot = SOURCE_ROOT, now = Date.now } = {}) {
-  const report = { installed: [], updated: [], kept: [], unchanged: [], errors: [] };
+// known：以前在这台电脑上装过的位置（Hub 记着）。用户自己删掉的不再装回去。
+function installTeamSkills({ homeDir = os.homedir(), sourceRoot = SOURCE_ROOT, now = Date.now, known = [] } = {}) {
+  const report = { installed: [], updated: [], kept: [], unchanged: [], removed: [], errors: [] };
+  const knownSet = new Set(known);
   const roots = ['.claude', '.agents'].map(x => path.join(homeDir, x, 'skills'));
   for (const skill of bundled(sourceRoot)) {
     const want = hash(skill.text);
@@ -28,6 +30,7 @@ function installTeamSkills({ homeDir = os.homedir(), sourceRoot = SOURCE_ROOT, n
       const where = path.join(path.basename(path.dirname(root)), 'skills', skill.name);
       try {
         let exists = false; try { fs.lstatSync(dir); exists = true; } catch {}
+        if (!exists && knownSet.has(where)) { report.removed.push(where); continue; }
         if (!exists) {
           fs.mkdirSync(dir, { recursive: true });
           fs.writeFileSync(file, skill.text, 'utf8');

@@ -19,7 +19,7 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
     const team = data.team || {};
     if (team.needsInvite) return `<div class="wp-row cl-invite"><span class="k">邀请码</span><span class="v">先粘贴组长发的邀请码（以 AIHUB-TZ-1. 开头），保存后就能生成配对码。邀请码只给你自己用，别转发。<textarea class="cl-code" data-cl-input="invite" rows="3" placeholder="AIHUB-TZ-1.…"></textarea></span><span class="r"><button type="button" class="wp-btn primary" data-cl="invite-save">保存</button></span></div>`;
     if (!team.invite) return '';
-    return `<div class="wp-row"><span class="k">通道</span><span class="v">特战队团队入口${team.invite.label ? ' · ' + esc(team.invite.label) : ''} · ${esc(team.invite.host)}${team.skills?.installed?.length ? ` · 已装团队版 skill（${team.skills.installed.length} 处）` : ''}</span><span class="r">${data.link.state === 'none' ? '<button type="button" class="wp-link" data-cl="invite-clear">换邀请码</button>' : ''}</span></div>`;
+    return `<div class="wp-row"><span class="k">通道</span><span class="v">特战队团队入口${team.invite.label ? ' · ' + esc(team.invite.label) : ''} · ${esc(team.invite.host)}${team.skills?.known?.length ? ' · 已装团队版 skill' : ''}</span><span class="r">${data.link.state === 'none' ? '<button type="button" class="wp-link" data-cl="invite-clear">换邀请码</button>' : ''}</span></div>`;
   }
   function head() {
     const st = data.link.state, net = data.net || {};
@@ -89,13 +89,17 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
   }
   function render() {
     if (!root || !data) return;
-    // 通道一有动静就会重绘：先记下正在填的邀请码 / 称呼和焦点，重绘后放回去，免得打到一半被清空。
-    const typed = {}, focused = document.activeElement?.dataset?.clInput || null;
-    root.querySelectorAll('[data-cl-input]:not([readonly])').forEach(el => { typed[el.dataset.clInput] = el.value; });
-    root.querySelector('.cl-head').innerHTML = head();
-    root.querySelector('.cl-team-root').innerHTML = teamBlock();
-    for (const [key, value] of Object.entries(typed)) { const el = root.querySelector(`[data-cl-input="${key}"]`); if (el && !el.readOnly) el.value = value; }
-    if (focused) root.querySelector(`[data-cl-input="${focused}"]`)?.focus();
+    // 通道一有动静就会重绘。正在邀请码 / 称呼框里打字时先不重绘这两块（拼音输入法组合到一半会被打断），
+    // 离开输入框后的下一次刷新再补上；没在打字时，记下填了一半的内容，重绘后放回去。
+    const active = document.activeElement;
+    const editing = active && root.contains(active) && active.dataset?.clInput && !active.readOnly;
+    if (!editing) {
+      const typed = {};
+      root.querySelectorAll('[data-cl-input]:not([readonly])').forEach(el => { typed[el.dataset.clInput] = el.value; });
+      root.querySelector('.cl-head').innerHTML = head();
+      root.querySelector('.cl-team-root').innerHTML = teamBlock();
+      for (const [key, value] of Object.entries(typed)) { const el = root.querySelector(`[data-cl-input="${key}"]`); if (el && !el.readOnly) el.value = value; }
+    }
     root.querySelector('.wp-list').innerHTML = threads() + consults();
     images?.update(data);
   }
