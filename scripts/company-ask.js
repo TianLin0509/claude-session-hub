@@ -16,7 +16,8 @@
 //     （直查公司电脑与公司 Hub：秒级、不排队、不占公司 CodeAgent；不填段落 = 全部；--id 取之前那次的结果）
 //   node company-ask.js --act suspend-idle | kill-orphans --pids 300:1799913600000,... | set-parallel [--mem-floor 5] [--max-parallel 1] [--max-parallel-idle 4] [--use-pool on|off] [--restore-hours 2]
 //                       | cancel-queued --thread Q-xxxx | retry --thread Q-xxxx
-//                       | pause-account --account 号1 [--hours 2] [--reason 原因] | resume-account --account 号1   [--id HA-xxxx 取之前那次的结果]
+//                       | pause-account --account 号1 [--hours 2] [--reason 原因] | resume-account --account 号1
+//                       | set-personal-model --model GLM-5.2-WX-Auto | set-personal-model --restore   [--id HA-xxxx 取之前那次的结果]
 //     （远程维护：会改动公司电脑状态，先 --diag 看清楚再做）
 const fs = require('node:fs');
 const os = require('node:os');
@@ -36,7 +37,7 @@ async function main() {
   const command = actOp ? 'act' : diag ? 'diag' : hubOp ? 'hub' : process.argv[2];
   if (command === 'models') return showModels();
   const tool = actOp ? 'company_act' : diag ? 'company_diag' : hubOp ? 'company_hub_update' : { ask: 'ask_company', followup: 'followup_company', show: 'company_thread', recollect: 'recollect_company', image: 'send_image_company', images: 'company_images' }[command];
-  if (!tool) throw new Error('用法：ask --file q.md [--title t] [--model m] [--account 号1] | models | followup --thread Q-xxxx --file f.md [--account 号1] | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx] | --hub-update [--force] | --hub-restart [--force] | --hub-status | --diag [machine,processes,hub,pool,logs,codeagent,airview,features,errors] [--lines N] [--errors N] [--id HA-xxxx] | --act <suspend-idle|kill-orphans|set-parallel|cancel-queued|retry|pause-account|resume-account> [...]');
+  if (!tool) throw new Error('用法：ask --file q.md [--title t] [--model m] [--account 号1] | models | followup --thread Q-xxxx --file f.md [--account 号1] | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx] | --hub-update [--force] | --hub-restart [--force] | --hub-status | --diag [machine,processes,hub,pool,logs,codeagent,airview,features,errors] [--lines N] [--errors N] [--id HA-xxxx] | --act <suspend-idle|kill-orphans|set-parallel|cancel-queued|retry|pause-account|resume-account|set-personal-model> [...]');
   // 会话身份与通行证由 Hub 在开会话时注入；只能代表本会话提问。
   const session = process.env.HUB_BRIDGE_SESSION_ID, pass = process.env.HUB_BRIDGE_SESSION_PASS;
   if (!session || !pass) throw new Error('这个会话没有家里联动的通行证：请在家里和公司配对之后、由 AI Hub 新开（或重开）的 Codex / Claude 会话里使用');
@@ -54,6 +55,8 @@ async function main() {
     if (arg('account')) a.account = arg('account');
     if (arg('reason')) a.reason = arg('reason');
     if (arg('thread')) a.thread = arg('thread');
+    if (actOp === 'set-personal-model' && arg('model')) a.model = arg('model');
+    if (process.argv.includes('--restore')) a.restore = true;
     if (arg('id')) a.id = arg('id');
     return a;
   };

@@ -40,3 +40,18 @@
 
 - 单测 `tests/unit-company-quota-route.test.js`：真实样本与 6 种标点空格变体、数据文件规则、避让与过期、挑号、换号重做（只一次）、全部避让排队与远程恢复、追问换号、account 与代称、隐私、屏幕与 Credit、errors 段脱敏与条数。
 - 真实端到端 `tests/e2e-company-quota-route.js`：双 Electron + 公司版导出 + 替身（真 Claude Code + Haiku）；号 1 的配置目录放 `standin-api-base.txt`，替身把它的请求发到本机假后端，按样本文字回报错误，真 Claude Code 把它写成 API 错误消息落进原生记录。公司 CodeAgent 的确切写法（是否带状态码、JSON）待直查 errors 段取回核对。
+
+## 模型配置有误（v2.1.14，2026-10-19）
+
+- 真机证据（2026-10-19 00:18 公司 v2.1.13 直查）：个人账号权限只有 `GLM-5.2-WX-Auto`，pool 段个人 `defaultModel` 为空；errors 段两条结构化 API 错误原文 `API Error: 模型 "deepseek-v4-flash-0731" 不存在或配置有误，请检查模型配置`（10-18 22:4x、00:16 各一次）。即个人配置目录 `settings.json` 的 `model` 写成了它没有权限的 DS 模型，个人账号开的每个会话一启动就报。
+- 规则 `codeagent-model-config-v1`（`kind: model-config`）：`API Error` 后 160 字内「模型 X 不存在或（者）配置有误」，全角半角冒号、各种引号（含 JSON 转义的 `\"`）、空格宽松；第 1 个捕获组是被请求的模型。
+- 避让按「号 + 被请求的模型」记在 `quota-avoid.json` 的 `models` 段（和整号避让分开）：不设自动到期（配置不变就一直会报），`probeAt`（6 小时）之后放行一次试探，派出时推后 6 小时；试探又报重新计时。解除：这个号用那个模型正常答出来（原生记录里该模型的正常回答）、「恢复派活」、远程修正个人账号默认模型成功。
+- 路由：账号带 `configModel`（不指定模型时它实际会请求的模型——个人账号是 settings 里写的值，哪怕没权限）。不指定模型按 `configModel` 判断，指定模型按指定的判断；其余模型照常可派。撞到时走和额度一样的换号重做（`MAX_REHOME = 1`），回执元数据 `rehomeKind: 'model-config'`。
+- 号表 / 直查写明「模型配置有误：请求了 X，该号只有 Y」；个人账号默认模型为空、权限清单只有一个模型时另标「默认模型和权限不符：settings.json 里写的是 X，权限只有 Y」（`configNote`；直查 pool 段 `configMismatch`，codeagent 段带 `configModel`、`settingsMtime`、`configSource`）。
+
+## 远程修正个人账号默认模型 set-personal-model（v2.1.14，2026-10-19 田哥授权）
+
+- 只由远程维护手动触发（MCP `company_act`、`company-ask.js --act set-personal-model --model X | --restore`、家里「公司电脑状态」卡片个人一行的「改成 X」，均二次确认）；Hub 不自动改个人 `settings.json`。
+- 目标必须在个人账号权限清单里（探测文件，没有时用配置文件里的账号清单），否则拒绝并列出可选；只改 `model` 一个键，改前整份备份为 `settings.json.hub-backup-<时间>`，临时文件 + 改名（失败重试一次），回读核对不过就从备份还原并报失败；`restore: true` 用最近一次（非 `-undo`）备份里的值；个人目录落在号池目录里拒绝。
+- 只影响之后新开的会话；成功后解除个人账号的模型配置避让，审计写 `company-act.log`，公司界面轻提示「对端修改了个人账号默认模型：A → B」。限频 60 秒一次，「远程维护」开关关闭时拒绝；公司 `caps` 带 `personal-model`，老公司家里直接说明不支持。
+- 端到端 `tests/e2e-company-model-config.js`：替身按 `standin-model-permissions.json` 模拟后端按号校验模型，假后端回报真机原文。

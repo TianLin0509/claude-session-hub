@@ -57,7 +57,8 @@ test('识别规则可配置：数据文件里加规则、停用内置规则；�
     { id: 'bad', pattern: '(' }, { id: 'off', pattern: 'x', enabled: false }, { id: 'redos', pattern: 'API Error (a+)+$' },
     { id: 'redos2', pattern: 'API Error', reset: { pattern: '(\\d*)*分钟', type: 'duration' } }] }));
   const loaded = Q.loadRules(dataDir);
-  assert.deepEqual(loaded.rules.map(r => r.id), ['my-rate']);
+  assert.deepEqual(loaded.rules.filter(r => !r.builtin).map(r => r.id), ['my-rate']);
+  assert.deepEqual(loaded.rules.filter(r => r.builtin).map(r => r.id), ['codeagent-model-config-v1'], '只停用了额度那一条内置规则');
   assert.match(loaded.errors.join(), /bad：正则写错了/);
   assert.match(loaded.errors.join(), /redos：pattern 里有嵌套量词/);
   assert.match(loaded.errors.join(), /redos2：reset 正则太长或有嵌套量词/);

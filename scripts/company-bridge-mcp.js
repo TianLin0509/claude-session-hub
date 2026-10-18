@@ -75,11 +75,14 @@ const tools = [
     description: '远程维护公司电脑上的 AI Hub：会改动公司电脑状态，仅在用户要求或诊断明确指向时使用，先用 company_diag 看清楚再 act。'
       + 'action：suspend-idle（让答完空着的通道会话休眠，人自己开的会话不动）；kill-orphans（结束最近一次 company_diag 列为「可结束」的残留进程，targets 填那次结果里的 pid 和 startedAt，5 分钟内有效，只按 PID 结束，Hub 进程树永远不动）；'
       + 'set-parallel（临时改 memFloorPct 5–50 / maxParallel 1–8 / maxParallelIdle 1–12，usePool true/false：false = 通道新开的会话只用公司个人账号、不用号池，restoreAfterHours 0.25–24 小时后恢复原值；maxParallel 只管工作日忙时，闲时上限取两者较大的，要整体收紧就两个一起改）；cancel-queued（取消还在排队的问题，thread 填编号）；retry（重试失败的问题）；'
-      + 'pause-account（手动让一个号避让，account 填代称如「号 1」，hours 0.25–72 小时后自动恢复、不填 = 直到手动恢复；单个号额度用完时优先用它，比整体停用号池更细）；resume-account（解除一个号的避让，含自动识别到额度报错的，之后照常派活）。'
+      + 'pause-account（手动让一个号避让，account 填代称如「号 1」，hours 0.25–72 小时后自动恢复、不填 = 直到手动恢复；单个号额度用完时优先用它，比整体停用号池更细）；resume-account（解除一个号的避让，含自动识别到额度报错的，之后照常派活）；'
+      + 'set-personal-model（修正公司个人账号的默认模型：model 必须在个人账号的权限清单里，如 GLM-5.2-WX-Auto，company_diag 的 pool 段个人账号一行若有「默认模型和权限不符」就用它给的模型；只改个人配置目录 settings.json 的 model 一项，改前备份、写后核对，只影响之后新开的会话；restore:true 撤销上一次修改；用户明确要求时才用）。'
       + '公司端可在设置里关掉「远程维护」，关了回 refused；每个动作有限频。调用后最多等约 45 秒直接返回结果和前后对比（如内存释放多少）；等不到就返回编号，稍后带 id 再取，不要重复发同一个动作。',
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     inputSchema: schema({
-      action: { type: 'string', enum: ['suspend-idle', 'kill-orphans', 'set-parallel', 'cancel-queued', 'retry', 'pause-account', 'resume-account'] },
+      action: { type: 'string', enum: ['suspend-idle', 'kill-orphans', 'set-parallel', 'cancel-queued', 'retry', 'pause-account', 'resume-account', 'set-personal-model'] },
+      model: { type: 'string', description: 'set-personal-model：改成哪个模型（必须在公司个人账号的权限清单里）' },
+      restore: { type: 'boolean', description: 'set-personal-model：true = 撤销上一次修改（用最近一次备份里的值），不填 model' },
       account: { type: 'string', description: 'pause-account / resume-account：号的代称，如「个人」「号 1」（company_diag 的 pool 段里看）' },
       hours: { type: 'number', minimum: 0.25, maximum: 72, description: 'pause-account：多少小时后自动恢复（不填 = 直到手动恢复）' },
       reason: { type: 'string', description: 'pause-account：原因（可选，60 字内）' },

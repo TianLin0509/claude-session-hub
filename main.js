@@ -2421,6 +2421,8 @@ try {
           activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalActive, usePool });
       },
       fallbackCwd: os.homedir(),
+      // 个人账号的配置目录（远程维护 set-personal-model 只改这里的 settings.json 的 model，2026-10-19 田哥授权）
+      personalConfigDir: () => require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir,
       isDirectory: p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
       // CodeAgent 的原生记录是 Claude 格式，按 Claude 读最终回答。
       readFinals: meta => { const r = live.read({ ...meta, id: meta.id || meta.hubId, kind: 'claude' }); return r && r.available ? r.records : []; },
@@ -2489,8 +2491,13 @@ try {
         const known = require('./core/codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir });
         const personalActive = sessionManager.getAllSessions().filter(s => /^codeagent(?:-resume)?$/.test(String(s.kind || ''))
           && !s.codeagentPoolAccount && s.status !== 'dormant' && s.status !== 'closed').length;
+        // 默认模型和权限不符（2026-10-19）：带上 settings.json 写的值、文件修改时间、个人账号目录的来源（排查是谁改的）
+        let settingsMtime = null;
+        try { settingsMtime = Math.round(fs.statSync(path.join(personalDir, 'settings.json')).mtimeMs); } catch { settingsMtime = null; }
         return {
-          personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive },
+          personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive,
+            configModel: known.written || '', ...(known.configMismatch ? { configMismatch: known.configMismatch } : {}), settingsMtime,
+            configSource: require('./core/codeagent-config').configDirSource(process.env) },
           accounts: pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalAccountId: creds.accountId || '' }),
         };
       },

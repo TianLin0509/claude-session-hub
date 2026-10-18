@@ -45,7 +45,8 @@ function accountNote(t, r) {
   const meta = r.meta || {};
   const asked = r.account || '';
   const parts = [];
-  if (meta.rehomedFrom && meta.rehomeKind === 'quota') parts.push(`原先的号（${meta.rehomedFrom}）撞到额度上限，公司自动换到${meta.accountAlias || '另一个号'}新开会话重做了这一轮`);
+  if (meta.rehomedFrom && meta.rehomeKind === 'model-config') parts.push(`原先的号（${meta.rehomedFrom}）报模型配置有误（请求的模型它没有权限），公司自动换到${meta.accountAlias || '另一个号'}新开会话重做了这一轮`);
+  else if (meta.rehomedFrom && meta.rehomeKind === 'quota') parts.push(`原先的号（${meta.rehomedFrom}）撞到额度上限，公司自动换到${meta.accountAlias || '另一个号'}新开会话重做了这一轮`);
   else if (meta.rehomedFrom) parts.push(`这一轮从${meta.rehomedFrom}换到${meta.accountAlias || '另一个号'}的新会话作答（带上了前几轮问答）`);
   else if (meta.accountAlias) parts.push(`公司用的号：${meta.accountAlias}`);
   if (asked && !meta.accountAlias) parts.push(`指定了号 ${asked}，但公司 Hub 没有确认（可能是旧版，不认指定号）`);
@@ -361,6 +362,9 @@ class HomeBridge {
       if (company.current && !(company.caps || []).includes('act')) throw Object.assign(new Error(`公司 Hub 版本过旧（v${company.current}），不支持远程维护；先让它更新（company_hub_update op=update）`), { code: 'act-unsupported' });
       if (['pause-account', 'resume-account'].includes(action) && company.current && !(company.caps || []).includes('quota')) {
         throw Object.assign(new Error(`公司 Hub 版本过旧（v${company.current}），不支持按号暂停 / 恢复；先让它更新（company_hub_update op=update）`), { code: 'act-unsupported' });
+      }
+      if (action === 'set-personal-model' && company.current && !(company.caps || []).includes('personal-model')) {
+        throw Object.assign(new Error(`公司 Hub 版本过旧（v${company.current}），不支持远程修改个人账号默认模型；先让它更新（company_hub_update op=update）`), { code: 'act-unsupported' });
       }
       extra = { action, params: checked };
     }

@@ -545,12 +545,23 @@ function registerSessionIpc(ipcMain, deps) {
     const quota = require('../../core/codeagent-quota');
     let avoid = {}, credit = {}, rules = null;
     try { avoid = quota.activeAvoid(getHubDataDir()); credit = quota.creditReadings(getHubDataDir()); } catch { /* 读不到就都按可用显示 */ }
+    // 模型配置避让（2026-10-19）：整号没在避让时，显示这个号最近一条模型配置避让（含已到试探时间的）
+    try {
+      for (const [key, list] of Object.entries(quota.modelAvoidAll(getHubDataDir()))) {
+        const latest = Object.values(list || {}).sort((x, y) => (Number(y.lastHitAt) || 0) - (Number(x.lastHitAt) || 0))[0];
+        if (latest && !avoid[key]) avoid[key] = latest;
+      }
+    } catch { /* 读不到就按可用显示 */ }
+    // 默认模型和权限不符（个人账号）：只显示，不改 settings.json
+    let personalCheck = null;
+    try { personalCheck = require('../../core/codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir }); } catch { personalCheck = null; }
     try { const loaded = quota.loadRules(getHubDataDir()); rules = { count: loaded.rules.length, file: loaded.file, errors: loaded.errors }; } catch { rules = null; }
     const quotaOf = key => ({ avoid: avoid[key] ? { ...avoid[key], label: quota.describeAvoid(avoid[key]) } : null, credit: credit[key] || null });
     return { ok: true, accounts: accounts.map(a => ({ ...a, ...quotaOf(a.id) })), checkedAt: new Date().toISOString(),
       usable: accounts.filter(a => a.state === 'ready' && !a.sameAsPersonal && !a.duplicateOf).length, quotaRules: rules,
       personal: { accountLabel: pool.maskAccountId(personal.accountId), method: personal.method || null, present: !!personal.present,
-        activeSessions: personalActive, models: personalModels.models, modelsProbedAt: personalModels.probedAt || null, ...quotaOf('personal') } };
+        activeSessions: personalActive, models: personalModels.models, modelsProbedAt: personalModels.probedAt || null, ...quotaOf('personal'),
+        ...(personalCheck && personalCheck.configMismatch ? { configNote: require('../../core/codeagent-model-route').describeMismatch(personalCheck.configMismatch) } : {}) } };
   }
   // 一键获取模型权限：后台起这个账号的 CodeAgent 读 /model 菜单（core/codeagent-model-probe.js），一次只跑一个。
   // v2.1.6（2026-10-16 用户「按计划推进」）：新添加的号登录完成、导入本机已登录的号、以及从没获取过的号（含个人账号），
