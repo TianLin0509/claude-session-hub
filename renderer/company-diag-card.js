@@ -86,8 +86,14 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
         + `<button type="button" class="wp-link" data-diag-act="resume-account" data-account="${esc(a.alias)}">恢复派活</button>`;
       return `${a.ready ? '可用' : '—'}${credit}${a.ready ? `<button type="button" class="wp-link" data-diag-act="pause-account" data-account="${esc(a.alias)}">暂停派活</button>` : ''}`;
     };
-    const rows = (p.accounts || []).map(a => [esc(a.alias), a.ready ? esc(a.state) : `<span class="bad">${esc(a.state)}</span>`, dispatchCell(a), esc(a.activeSessions ?? '—'), esc(a.defaultModel || '—'),
-      esc((a.models || []).length ? (a.models || []).join('、') : '—') + (a.duplicate ? '（和别的号重复）' : '') + (a.sameAsPersonal ? '（和个人账号是同一个号）' : '')]);
+    // 默认模型和权限不符（个人账号，2026-10-19）：写明 settings.json 里的值，给「改成 X」（远程维护 set-personal-model，二次确认）
+    const mismatch = a => a.configMismatch ? `<div class="wp-meta"><span class="bad">${esc(a.configMismatch.note || '默认模型和权限不符')}</span></div>`
+      + (a.configMismatch.suggest ? `<button type="button" class="wp-link" data-diag-act="set-personal-model" data-model="${esc(a.configMismatch.suggest)}" data-from="${esc(a.configMismatch.written || '')}">改成 ${esc(a.configMismatch.suggest)}</button>` : '') : '';
+    // 撤销上一次远程修改（审核 2026-10-19 补的按钮，二次确认）：最近一次修改前的备份里是什么模型就改回什么
+    const undo = a => a.lastBackup && (a.configModel == null || a.configModel !== (a.lastBackup.model || '')) ? `<div><button type="button" class="wp-link" data-diag-act="set-personal-model-restore" data-model="${esc(a.lastBackup.model || '')}" data-from="${esc(a.defaultModel || '')}">撤销上次修改（改回 ${esc(a.lastBackup.model || '未设置')}）</button></div>` : '';
+    const probed = a => (a.modelsAuthoritative === false && (a.models || []).length ? '<div class="wp-meta">清单未经探测</div>' : '');
+    const rows = (p.accounts || []).map(a => [esc(a.alias), a.ready ? esc(a.state) : `<span class="bad">${esc(a.state)}</span>`, dispatchCell(a), esc(a.activeSessions ?? '—'), esc(a.defaultModel || '—') + mismatch(a) + undo(a),
+      esc((a.models || []).length ? (a.models || []).join('、') : '—') + probed(a) + (a.duplicate ? '（和别的号重复）' : '') + (a.sameAsPersonal ? '（和个人账号是同一个号）' : '')]);
     const pauseSel = `<span class="cl-diag-par">暂停时长 <select data-diag-p="pauseHours"><option value="1">1 小时</option><option value="2" selected>2 小时</option><option value="4">4 小时</option><option value="24">24 小时</option><option value="">直到手动恢复</option></select></span>`;
     return block('号池', `<p class="wp-meta">${p.usePool ? '通道开会话走号池' : '通道只用个人账号'} · 可用 ${esc(p.ready)} 个号${p.avoiding ? ` · <span class="bad">避让中 ${esc(p.avoiding)} 个</span>` : ''} · 通道挑号时跳过避让中的号</p>`
       + table(['号', '登录', '派活', '进行中', '默认模型', '模型'], rows) + `<div class="cl-diag-actions">${pauseSel}</div>`);
@@ -187,7 +193,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   }
   // ---- 远程维护（三期）：按钮 → 二次确认 → hub-admin op:'act' → 等回报 → 顶部横条显示结果和前后对比 ----
   const ACT_LABEL = { 'suspend-idle': '让空闲的通道会话休眠', 'kill-orphans': '结束残留进程', 'set-parallel': '临时调整并行档位', 'cancel-queued': '取消排队中的问题', retry: '重试失败的问题',
-    'pause-account': '暂停派活给一个号', 'resume-account': '恢复派活给一个号' };
+    'pause-account': '暂停派活给一个号', 'resume-account': '恢复派活给一个号', 'set-personal-model': '修改个人账号默认模型', 'set-personal-model-restore': '撤销个人账号默认模型的上次修改' };
   function banner(html, tone = '') {
     const el = dialog?.querySelector('.cl-diag-act-result');
     if (!el) return;
@@ -196,7 +202,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   }
   function actDetail(v) {
     const a = v.act || {};
-    const mem = a.before && a.after && !/可用内存/.test(v.note || '') ? `可用内存 ${esc(a.before.freeMB)} → ${esc(a.after.freeMB)} MB` : '';
+    const mem = a.before?.freeMB != null && a.after?.freeMB != null && !/可用内存/.test(v.note || '') ? `可用内存 ${esc(a.before.freeMB)} → ${esc(a.after.freeMB)} MB` : '';
     const list = a.results ? a.results.map(x => `PID ${esc(x.pid)}：${x.ok ? (x.already ? '已经不在了' : x.confirmed === false ? '已发出结束请求、未确认退出' : '已结束') : esc(x.why || '没动')}`).join('；')
       : a.suspended ? [...a.suspended.map(x => `${esc(x.thread)} 已休眠`), ...(a.skipped || []).map(x => `${esc(x.thread)} 没动（${esc(x.why)}）`)].join('；') : '';
     return [mem, list].filter(Boolean).join('<br>');
@@ -227,6 +233,15 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       confirmText = action === 'pause-account'
         ? `暂停公司把新问题派给「${params.account}」${params.hours ? `，${params.hours} 小时后自动恢复` : '，直到手动恢复'}？通道新开会话和换号重做都不再挑它；已在跑的会话不受影响。`
         : `恢复公司派活给「${params.account}」？如果它的额度其实还没恢复，撞到报错会再自动避让。`;
+    } else if (action === 'set-personal-model') {
+      params.model = el?.dataset.model || '';
+      if (!params.model) return banner('没有可改成的模型。', 'warn');
+      confirmText = `把公司个人账号的默认模型从「${el?.dataset.from || '未设置'}」改成「${params.model}」？`
+        + '\n\n只改公司个人配置目录 settings.json 里的 model 一项，改前自动备份、写后核对，可用 set-personal-model restore 撤销；只影响之后新开的会话，已在跑的会话不动。';
+    } else if (action === 'set-personal-model-restore') {
+      params.restore = true;
+      confirmText = `撤销上一次对公司个人账号默认模型的修改，改回「${el?.dataset.model || '未设置'}」？`
+        + '\n\n用最近一次修改前的备份里的值，只改 settings.json 里的 model 一项，改前同样备份；只影响之后新开的会话，已在跑的会话不动。';
     } else {
       params.thread = el?.dataset.thread || '';
       confirmText = action === 'cancel-queued' ? `取消排队中的问题 ${params.thread}？提问的会话会收到「被对端取消」。` : `重试问题 ${params.thread}？`;
@@ -235,7 +250,8 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     dialog.querySelectorAll('[data-diag-act]').forEach(b => { b.disabled = true; });
     banner(`<span class="wp-pill run">执行中</span> 已请公司 Hub ${esc(ACT_LABEL[action])}，等回报……`);
     try {
-      const { id } = await call('bridge:hub-admin', { op: 'act', action, params });
+      // 「撤销上次修改」是 set-personal-model 带 restore:true
+      const { id } = await call('bridge:hub-admin', { op: 'act', action: action === 'set-personal-model-restore' ? 'set-personal-model' : action, params });
       const start = Date.now();
       for (;;) {
         await new Promise(r => setTimeout(r, 2500));
