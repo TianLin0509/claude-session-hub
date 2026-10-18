@@ -54,11 +54,15 @@ if (group === '__test' && sub === 'say') {
 } else if (group === 'onebox' && sub === 'user-info') {
   out({ accountId: 1, name: '用户甲', loginName: 'user001', email: process.env.WELINK_STANDIN_NO_EMAIL === '1' ? '' : 'user001@example.com', status: 'normal' });
 } else if (group === 'im' && sub === 'query-recent-conversation') {
-  out({ conversation_info: [
-    { group_id: '', group_name: '', group_type: 0, native_name: '同事甲', recent_conversation_type: 'CHAT_TYPE_P2P_MSG', staff_name: '同事甲', target_account: 'colleague_a' },
-    { group_id: 'g-100', group_name: '项目群A', group_type: 1, native_name: '项目群A', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' },
-    { group_id: 'g-phone', group_name: '助理 CodeAgent', group_type: 0, native_name: '助理 CodeAgent', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' },
-  ] });
+  // 和真机同形（Q-1018-10）：每个会话 8 个字段，没有时间、免打扰、置顶、未读；单聊 group_id 是 "0"。
+  // --count 默认 10、上限 50：中间垫 12 个没有消息往来的旧单聊，不带 --count 时只能拿到前 10 个，正好漏掉后面的会话。
+  const p2p = (account, name) => ({ cross_instance: false, group_id: '0', group_name: '', group_type: 'NORMAL_GROUP', native_name: name, recent_conversation_type: 'CHAT_TYPE_P2P_MSG', staff_name: account + ' 00000000', target_account: account });
+  const grp = (id, name) => ({ cross_instance: false, group_id: id, group_name: name, group_type: 'NORMAL_GROUP', native_name: '', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' });
+  const all = [p2p('colleague_a', '同事甲'), grp('g-100', '项目群A'), grp('g-phone', '助理 CodeAgent'),
+    // 垫着的空旧单聊个数：WELINK_STANDIN_PAD，默认 12；单测设 0 省时间
+    ...Array.from({ length: Number(process.env.WELINK_STANDIN_PAD ?? 12) }, (_, i) => p2p('old_' + i, '老同事' + i)), grp('g-200', '部门大群'), p2p('colleague_d', '同事丁')];
+  const count = Math.min(50, Math.max(1, Number(arg('--count') || 10)));
+  out({ app_service_id: 'x', conversation_info: all.slice(0, count), error: { error_code: 0, error_msg: '' } });
 } else if (group === 'im' && sub === 'query-history-message' && arg('--group-id') === 'g-phone') {
   // 手机对话的专用群：消息存在 WELINK_STANDIN_STATE 同目录的 welink-phone-group.jsonl（测试往里写「手机发的」消息）。
   // 和真机一样：msgId 是超过 JS 安全整数的长整数；--query-direction 1 取比 --message-id 更新的（help 写反了）。
@@ -67,7 +71,7 @@ if (group === '__test' && sub === 'say') {
   let list = from ? all.filter(m => dir === '1' ? BigInt(m.msgId) > BigInt(from) : BigInt(m.msgId) < BigInt(from)) : all.slice(-count);
   list = dir === '1' ? list.slice(0, count) : list.slice(-count);
   const body = list.map(m => `{"at":"","atAccountList":[],"content":${JSON.stringify(m.content)},"contentType":"TEXT_MSG","groupId":"g-phone","groupType":0,"msgId":${m.msgId},"receiver":"g-phone","sender":${JSON.stringify(m.sender)},"serverSendTime":${m.serverSendTime}}`);
-  out(`{"code":0,"data":{"msgTotalCount":${list.length},"msgList":[${body.join(',')}]}}`);
+  out(`{"chatInfo":[${body.join(',')}],"msgTotalCount":${list.length},"resultCode":"0","resultContext":"Operate Success"}`);
 } else if (group === 'im' && sub === 'send-to-group') {
   if (arg('--group-id') !== 'g-phone') { process.stderr.write('group not found\n'); process.exitCode = 1; }
   else { addPhoneMessage('user001', arg('--text') || ''); out('{"code":0,"message":"success"}'); }
@@ -76,17 +80,26 @@ if (group === '__test' && sub === 'say') {
     ? [{ account: 'user001', name: '用户甲' }, { account: 'xiaowei_bot', name: '小微助手' }]
     : [{ account: 'user001', name: '用户甲' }, { account: 'colleague_b', name: '同事乙' }, { account: 'colleague_c', name: '同事丙' }] } });
 } else if (group === 'im' && sub === 'query-history-message') {
-  if (arg('--user-account') === 'colleague_a') {
-    out({ messages: [
-      { msg_id: 'p1', sender_account: 'user001', sender_name: '我', send_time: now - 30 * H, content: '好的，我周五前把评估报告发你' },
-      { msg_id: 'p2', sender_account: 'colleague_a', sender_name: '同事甲', send_time: now - 5 * H, content: '评审材料能先帮我看一下吗？' },
-    ] });
-  } else {
-    out({ messages: [
-      { msg_id: 'g1', sender_account: 'colleague_b', sender_name: '同事乙', send_time: now - 2 * H, content: '仿真基线已更新，请大家确认' },
-      { msg_id: 'g2', sender_account: 'colleague_c', sender_name: '同事丙', send_time: now - 20 * M, content: '版本转测时间定在下周一' },
-    ] });
-  }
+  // 和真机同形（Q-1018-04）：msgId 长整数、sender 是账号、serverSendTime 毫秒、at / atAccountList；
+  // 不带 --message-id 取最新的 --query-count 条；direction 0 取更旧的、1 取更新的；每次调用记进日志，测试据此核对翻页。
+  const conv = arg('--user-account') || arg('--group-id');
+  const base = { colleague_a: 7100000000000000000n, 'g-100': 7200000000000000000n, 'g-200': 7400000000000000000n, colleague_d: 7500000000000000000n }[conv] || 7600000000000000000n;
+  const msg = (n, sender, minutesAgo, content, atList = [], at = atList.length > 0) => ({ msgId: String(base + BigInt(n) * 3n), sender, serverSendTime: now - minutesAgo * M, content, at, atAccountList: atList });
+  const lists = {
+    colleague_a: [msg(1, 'user001', 30 * 60, '好的，我周五前把评估报告发你'), msg(2, 'colleague_a', 5 * 60, '评审材料能先帮我看一下吗？')],
+    'g-100': [msg(1, 'colleague_b', 120, '仿真基线已更新，请大家确认'), msg(2, 'colleague_c', 20, '版本转测时间定在下周一'), msg(3, 'colleague_b', 10, '@所有人 明天上午系统维护', [], true)],
+    // 150 条的大群（开了免打扰）：两页取不完；第 140 条有人 @ 我；最早的 10 条在 40 小时前（超出 36 小时回看）。
+    'g-200': Array.from({ length: 150 }, (_, i) => i === 139 ? msg(i + 1, 'colleague_e', (150 - i) * 12, '@用户甲 周报模板请今天下班前更新一下', ['user001']) : msg(i + 1, 'colleague_' + 'efgh'[i % 4], i < 10 ? 40 * 60 - i : (150 - i) * 12, `第 ${i + 1} 条：日常讨论`)),
+    colleague_d: [msg(1, 'colleague_d', 50, '下午的对齐会挪到 4 点了')],
+  };
+  const all = lists[conv] || [];
+  const from = arg('--message-id'), dir = arg('--query-direction'), count = Number(arg('--query-count') || 20);
+  // 真机往更旧翻时把起点那条也带上（Q-1018-10：重叠 1 条），往更新翻时同样处理，Hub 要按编号去重。
+  let list = from ? all.filter(m => dir === '1' ? BigInt(m.msgId) >= BigInt(from) : BigInt(m.msgId) <= BigInt(from)) : all;
+  list = dir === '1' ? list.slice(0, count) : list.slice(-count);
+  const body = list.map(m => `{"at":${m.at},"atAccountList":${JSON.stringify(m.atAccountList)},"content":${JSON.stringify(m.content)},"contentType":"TEXT_MSG","groupId":${arg('--group-id') && /^\d+$/.test(arg('--group-id')) ? arg('--group-id') : 0},"groupType":0,"msgId":${m.msgId},"receiver":"","sender":${JSON.stringify(m.sender)},"serverSendTime":${m.serverSendTime}}`);
+  const ids = list.map(m => m.msgId);
+  out(`{"chatInfo":[${body.join(',')}],"maxMsgId":${ids.at(-1) || 0},"minMsgId":${ids[0] || 0},"msgTotalCount":${list.length},"resultCode":"0","resultContext":"Operate Success"}`);
 } else if (group === 'mail' && sub === 'list' && exchangeFile && !exchangeReady()) {
   needExchange();
 } else if (group === 'mail' && sub === 'list') {

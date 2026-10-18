@@ -13,6 +13,7 @@ const R = require('../core/company-assistant/reminders');
 const { NoticeBus } = require('../core/company-assistant/notice-bus');
 const { CompanyAssistant } = require('../core/company-assistant/service');
 const { companyAssistantEnabled } = require('../core/company-assistant/gate');
+const { standinRunner } = require('./helpers/welink-standin-inproc');
 
 const STANDIN = path.join(__dirname, 'fixtures', 'welink-cli-standin.js');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'company-assistant-'));
@@ -92,7 +93,7 @@ test('数据整理：会议只取今天、单聊最后一句不是我说的算�
 
 test('简报：清单版五栏、空栏不显示；AI 版出处不在原始数据里的删掉并计数；处理过的不再出现；首屏最多 10 条', () => {
   const snap = snapshotAt();
-  const settings = { watchGroups: [{ id: 'g1', name: '项目群' }] };
+  const settings = { keywords: ['转测'] }; // 2026-10-18：不再手动勾关注群，群里提到关注词就算「群里和你相关」
   const list = B.fallbackBrief(snap, { day: '2026-10-14', now: NOW, settings });
   assert.deepEqual(list.sections.map(s => s.key), ['meetings', 'awaiting', 'groups', 'mail']);
   assert.equal(list.by, 'list');
@@ -195,7 +196,8 @@ function fakeDeps(dataDir, log, extraEnv = {}) {
     sessions, finals, sent,
     deps: {
       dataDir, noTimer: true,
-      welinkRun: (args, opts) => W.run(args, { ...opts, cli: STANDIN, env: { ...process.env, ...extraEnv, WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: path.join(dataDir, 'welink-state') } }),
+      // 在测试进程里跑假 welink-cli（白名单照样检查），不再每条命令起子进程
+      welinkRun: standinRunner({ ...process.env, ...extraEnv, WELINK_STANDIN_PAD: '0', WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: path.join(dataDir, 'welink-state') }),
       createSession: async (kind, opts) => { sessions.set(opts.id, { id: opts.id, kind, ...opts, status: 'idle' }); finals.set(opts.id, []); return { id: opts.id }; },
       sendPrompt: async (id, text) => { sent.push({ id, text }); return { ok: true }; },
       getSession: id => sessions.get(id) || null,

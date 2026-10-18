@@ -11,6 +11,7 @@ const W = require('../core/company-assistant/welink');
 const { CompanyAssistant, TOOLS_VERSION } = require('../core/company-assistant/service');
 const { NoticeBus } = require('../core/company-assistant/notice-bus');
 const { PREFIX, PHONE_NOTE, plain, chunks } = require('../core/company-assistant/phone');
+const { standinRunner } = require('./helpers/welink-standin-inproc');
 
 const STANDIN = path.join(__dirname, 'fixtures', 'welink-cli-standin.js');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'company-phone-'));
@@ -19,14 +20,14 @@ const until = async (fn, label, ms = 3000) => { const end = Date.now() + ms; whi
 
 function rig({ idle = 9999 } = {}) {
   const dir = tmp(), log = path.join(dir, 'calls.log'), stateFile = path.join(dir, 'welink-state');
-  const env = { ...process.env, WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: stateFile };
+  const env = { ...process.env, WELINK_STANDIN_PAD: '0', WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: stateFile };
   const sessions = new Map(), finals = new Map(), sent = [], keys = [], busy = new Set();
   const say = (text, extra = []) => { const r = spawnSync(process.execPath, [STANDIN, '__test', 'say', '--text', text, ...extra], { env, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); };
   const groupFile = path.join(dir, 'welink-phone-group.jsonl');
   const group = () => (fs.existsSync(groupFile) ? fs.readFileSync(groupFile, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
   const deps = {
     dataDir: dir, noTimer: true, nodeExecutable: process.execPath,
-    welinkRun: (args, opts) => W.run(args, { ...opts, cli: STANDIN, env }),
+    welinkRun: standinRunner(env), // 在测试进程里跑假 welink-cli（白名单照样检查）
     createSession: async (kind, opts) => { sessions.set(opts.id, { id: opts.id, kind, title: opts.title, ...opts, status: 'idle' }); finals.set(opts.id, []); return { id: opts.id, cwd: opts.cwd || dir }; },
     sendPrompt: async (id, text) => { sent.push({ id, text }); return { ok: true }; },
     getSession: id => sessions.get(id) || null,
