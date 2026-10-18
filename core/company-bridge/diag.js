@@ -638,6 +638,8 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
   // 进程先采：hub 段要用会话的 PID 与内存
   const jobs = [];
   if (sections.includes('machine')) jobs.push(run('machine', () => machine(sys)));
+  // CodeAgent 段（跑 --version、读会话屏幕）不依赖进程枚举：和它并行，省一两秒
+  if (sections.includes('codeagent')) jobs.push(run('codeagent', () => codeagent(bridge, deps, sys, ctx, poolRaw, poolError)));
   if (sections.includes('airview')) jobs.push(run('airviewFiles', () => resultFiles(sys, resultDirsOf(bridge), bridge.now())));
   if (sections.includes('processes') || sections.includes('hub') || sections.includes('airview')) {
     jobs.push((async () => {
@@ -659,7 +661,6 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
   if (sections.includes('hub')) await run('hub', () => { const h = hub(bridge, deps, sys, ctx); if (ctx.processError) h.processNote = '会话内存没算出来：' + ctx.processError; return h; });
   if (sections.includes('pool')) await run('pool', () => { if (poolError) throw poolError; return pool(poolRaw, { usePool: !!bridge.settings().usePool, models: bridge.modelTableSafe?.() || null }); });
   if (sections.includes('logs')) await run('logs', () => logs(sys, path.join(deps.dataDir, 'logs'), lines));
-  if (sections.includes('codeagent')) await run('codeagent', () => codeagent(bridge, deps, sys, ctx, poolRaw, poolError));
   if (sections.includes('airview')) {
     const files = out.airviewFiles; delete out.airviewFiles;
     const t1 = out.timings.airviewFiles || 0; delete out.timings.airviewFiles;
