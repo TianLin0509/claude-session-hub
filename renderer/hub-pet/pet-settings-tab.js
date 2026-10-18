@@ -80,11 +80,12 @@ function mountPetSettingsTab(container, { ipcRenderer, window, document }) {
       </div>`;
   }
 
-  // 大小滑块（2026-10-18 田哥：连续调）：拖动时边拖边改（约 60ms 一次，不重画分页免得打断拖动），松手再存一次。
+  // 大小滑块（2026-10-18 田哥：连续调）：拖动时边拖边改（约 60ms 一次，不重画分页免得打断拖动）。
+  // 拖动中带 live：主进程只改内存、实时挪窗口，不写盘；松手（change）再发一次不带 live 的，只写这一次。
   const SIZE_MIN = 60, SIZE_MAX = 160;
   const sizePct = v => Math.round((Number(v) || 1) * 100);
   let sizeTimer = null, sizeWant = null, sizeSent = null;
-  const sendSize = () => { if (sizeWant == null || sizeWant === sizeSent) return; sizeSent = sizeWant; void ipcRenderer.invoke('hub-pet:set-settings', { scale: sizeWant / 100 }).catch(() => {}); };
+  const sendSize = () => { if (sizeWant == null || sizeWant === sizeSent) return; sizeSent = sizeWant; void ipcRenderer.invoke('hub-pet:set-settings', { scale: sizeWant / 100, live: true }).catch(() => {}); };
   function pushSize(final) {
     if (final) {
       clearTimeout(sizeTimer); sizeTimer = null;

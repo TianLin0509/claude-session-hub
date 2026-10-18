@@ -21,7 +21,7 @@
   const CALM_FPS = { idle: 20, tired: 20, peek: 15, sleep: 12, typing: 30, happy: 30 };
   const POP_MS = 80;
 
-  let state = { pose: 'idle', role: '', sequences: [], clipped: {}, bubble: null, dots: 0, dock: null, peeking: false };
+  let state = { pose: 'idle', role: '', sequences: [], clipped: {}, bubble: null, dots: 0, dock: null, peeking: false, edge: { left: 0, right: 0 } };
   let pose = null;
   let phase = 0;
   let arousal = 0.25;
@@ -356,6 +356,39 @@
     lastDots = n;
   }
 
+  // 气泡、小圆点、提醒面板只放在窗口里看得见的那一段（2026-10-18 审核）：贴边时窗口有一截伸出屏幕，伸出多少由主进程算好
+  // 放在 state.edge（随大小、形象透明边变）。气泡尽量对着看得见的身体居中，放不下就往屏幕里面挪，小尾巴仍指着身体。
+  const WIN_W = 280, EDGE_PAD = 6, BUBBLE_MAX = 236;
+  const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  function layoutOverlays() {
+    const edge = state.edge || {};
+    const body = Math.round(150 * (Number(state.scale) || 1));
+    const side = (WIN_W - body) / 2;
+    const visL = (Number(edge.left) || 0) + EDGE_PAD;
+    const visR = Math.max(visL + 80, WIN_W - (Number(edge.right) || 0) - EDGE_PAD); // 躲边时几乎全在外面，留个下限免得算出负宽
+    const cx = side + body * (1 + box.left - box.right) / 2; // 看得见的身体的水平中心
+    // 小圆点：身体右上角，出了可见段就挪回来
+    let dotLeft = side + body * 0.807;
+    if (!dotEl.hidden) {
+      const dw = dotEl.offsetWidth || 24;
+      dotLeft = clampNum(dotLeft, visL, visR - dw);
+    }
+    dotEl.style.left = dotLeft.toFixed(1) + 'px';
+    // 气泡
+    bubbleEl.style.maxWidth = Math.min(BUBBLE_MAX, visR - visL) + 'px';
+    if (!bubbleEl.hidden) {
+      bubbleEl.style.left = '0px'; // 先放到最左量宽度：绝对定位的元素量宽时受「left 右边还剩多少」限制
+      const w = bubbleEl.offsetWidth;
+      const left = clampNum(cx - w / 2, visL, visR - w);
+      bubbleEl.style.left = left.toFixed(1) + 'px';
+      bubbleEl.style.setProperty('--tail-x', clampNum(cx - left, 16, w - 16).toFixed(1) + 'px');
+      bubbleEl.style.setProperty('--to-dot-x', (dotLeft + 10 - (left + w / 2)).toFixed(1) + 'px');
+    }
+    // 提醒面板：两边各留 10px，伸出屏幕的那边再让出伸出的宽度
+    panelEl.style.left = Math.max(10, visL) + 'px';
+    panelEl.style.right = Math.max(10, WIN_W - visR) + 'px';
+  }
+
   function showPanel(items) {
     panelList.textContent = '';
     $('panel-count').textContent = (items || []).length > 1 ? (items || []).length + ' 条' : '';
@@ -378,6 +411,7 @@
     bubbleEl.hidden = true;
     bubbleId = '';
     panelEl.hidden = false;
+    layoutOverlays();
   }
   function hidePanel() { panelEl.hidden = true; setHit(false); }
   $('panel-close').addEventListener('click', hidePanel);
@@ -426,7 +460,7 @@
     document.documentElement.style.setProperty('--body', body + 'px');
     document.documentElement.style.setProperty('--feet', Math.round(box.bottom * body) + 'px');
   }
-  function measureBody(url) {
+  function measureBody(url, role) {
     const img = new Image();
     img.onload = () => {
       try {
@@ -442,11 +476,12 @@
           if (d[(y * w + x) * 4 + 3] <= 24) continue;
           if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
         }
-        if (maxX < 0) return;
+        if (maxX < 0 || role !== state.role) return; // 量完时已经换了形象，这次的结果作废
         box = { left: minX / w, right: (w - 1 - maxX) / w, top: minY / h, bottom: (h - 1 - maxY) / h };
         sizeKey = '';
         applySize();
-        api.bodyBox?.(box);
+        layoutOverlays();
+        api.bodyBox?.({ ...box, role });
       } catch (_) { /* 量不出来就按整张图算，和以前一样 */ }
     };
     img.src = url;
@@ -463,7 +498,7 @@
     }
     applySize();
     if (roleChanged) {
-      measureBody(asset('idle'));
+      measureBody(asset('idle'), state.role);
       preloadRole();
       const first = !pose;
       if (first) applyPose(state.pose, true);
@@ -471,6 +506,7 @@
     } else applyPose(state.pose, false);
     showBubble(state.bubble);
     showDots(state.dots);
+    layoutOverlays();
     wake();
   });
   api.onMotion(m => {
@@ -484,6 +520,6 @@
   });
   api.onPanel(p => { showPanel(p && p.items); wake(); });
 
-  window.__hubPetDebug = () => ({ box, size: getComputedStyle(document.documentElement).getPropertyValue('--body').trim(), pose, layers: visual ? [visual.key] : [], opacities: visual ? [1] : [], domLayers: layersEl.children.length, frame: visual ? visual.shown : -1, swapping: !!pendingSwap, fps: raf ? 'raf' : timer ? 'timer' : 'stopped', bubble: bubbleId, dots: lastDots, transform: bodyEl.style.transform });
+  window.__hubPetDebug = () => ({ box, edge: state.edge, size: getComputedStyle(document.documentElement).getPropertyValue('--body').trim(), pose, layers: visual ? [visual.key] : [], opacities: visual ? [1] : [], domLayers: layersEl.children.length, frame: visual ? visual.shown : -1, swapping: !!pendingSwap, fps: raf ? 'raf' : timer ? 'timer' : 'stopped', bubble: bubbleId, dots: lastDots, transform: bodyEl.style.transform });
   api.ready();
 })();

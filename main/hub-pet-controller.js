@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { ASSISTANT_ACTIONS, MODES, ROLES, SpeechQueue, chatterFor, decidePose, localDateKey, speakGate } = require('../core/hub-pet/state');
 const { allowedRange, clampTo, cubicOut, dockOf, releasePlan } = require('../core/hub-pet/motion');
-const { createSettingsStore } = require('../core/hub-pet/settings');
+const { SCALE_MAX, SCALE_MIN, createSettingsStore, parseBox, parseScale } = require('../core/hub-pet/settings');
 const { DEFAULT_ROLE, createRolePackStore } = require('../core/hub-pet/role-packs');
 const { createFullscreenWatch } = require('../core/hub-pet/fullscreen-watch');
 
@@ -14,8 +14,8 @@ const WIN_W = 280;
 const WIN_H = 340;                       // 原大小时的窗口高度；放大后按身体加高（winH）
 const BODY = 150;                        // 原大小时宠物身体的显示尺寸（DIP），在窗口底部居中
 const INSET = { left: (WIN_W - BODY) / 2, right: (WIN_W - BODY) / 2, top: 0, bottom: 6 };
-// 大小（2026-10-18 田哥：设置里滑动条连续调）：身体 = BODY × scale；窗口宽不变（放到最大 240 也装得下），高度按身体加高。
-const SCALE_MIN = 0.6, SCALE_MAX = 1.6;
+// 大小（2026-10-18 田哥：设置里滑动条连续调）：身体 = BODY × scale（SCALE_MIN–SCALE_MAX，见 core/hub-pet/settings.js）；
+// 窗口宽不变（放到最大 240 也装得下），高度按身体加高。
 const HEAD_ROOM = WIN_H - BODY;          // 身体上方留给气泡、提醒列表的高度
 const MARGIN = 24;
 const PEEK_VISIBLE = 0.42;               // 躲边时露出身体的比例
@@ -69,7 +69,12 @@ function createHubPetController({
   let signals = { quotaLow: false };
   // 形象图里身体四周的透明边（占身体框的比例，渲染端量出来的）。贴边按看得见的身体算，
   // 不然图里那圈透明边会像「空气墙」一样，离屏幕边还有二三十像素就停住（2026-10-18 田哥在公司反馈）。
-  let bodyBox = { left: 0, right: 0, top: 0, bottom: 0 };
+  // 量过的形象记在 hub-pet.json 的 bodyBoxes 里，启动时直接用，不再「先按整张图摆、量完又挪一下」（2026-10-18 审核）。
+  const ZERO_BOX = { left: 0, right: 0, top: 0, bottom: 0 };
+  const cachedBox = id => parseBox((settings.get().bodyBoxes || {})[id]);
+  let boxRole = currentRole();
+  let bodyBox = cachedBox(boxRole) || { ...ZERO_BOX };
+  let flushTimer = null;          // 拖大小滑块时，停下 300ms 再写盘
   const overrides = {};          // 隔离测试注入（idleSec / busy / fullscreen / cursor）
 
   const fsWatch = createFullscreenWatch({ logger, onChange: (value) => { if (overrides.fullscreen == null) setScreenFull(value); } });
@@ -78,35 +83,79 @@ function createHubPetController({
   const alive = () => !!(win && !win.isDestroyed());
   const send = (channel, payload) => { if (alive()) win.webContents.send(channel, payload); };
 
-  const scaleNow = () => { const v = Number(settings.get().scale); return Number.isFinite(v) ? Math.min(SCALE_MAX, Math.max(SCALE_MIN, v)) : 1; };
-  const bodyPx = () => Math.round(BODY * scaleNow());
-  const winH = () => Math.max(WIN_H, HEAD_ROOM + bodyPx());
-  const winSize = () => ({ width: WIN_W, height: winH() });
-  function inset() {
-    const b = bodyPx(), side = (WIN_W - b) / 2;
-    return { left: side + Math.round(bodyBox.left * b), right: side + Math.round(bodyBox.right * b), top: 0, bottom: INSET.bottom };
+  const scaleNow = () => parseScale(settings.get().scale) ?? 1;
+  // 某个大小、某组透明边下的几何：身体边长、窗口高、身体相对窗口的边距。改大小或量出透明边时，新旧两套都要算。
+  function geom(scale = scaleNow(), box = bodyBox) {
+    const b = Math.round(BODY * scale), side = (WIN_W - b) / 2;
+    const h = Math.max(WIN_H, HEAD_ROOM + b);
+    return { body: b, h, size: { width: WIN_W, height: h },
+      inset: { left: side + Math.round(box.left * b), right: side + Math.round(box.right * b), top: 0, bottom: INSET.bottom } };
   }
+  const bodyPx = () => geom().body;
+  const winH = () => geom().h;
+  const winSize = () => geom().size;
+  const inset = () => geom().inset;
   function displayFor(point) {
     try { return screen.getDisplayNearestPoint(point); } catch (_) { return screen.getPrimaryDisplay(); }
   }
-  function areaAt(pos) {
-    return displayFor({ x: Math.round(pos.x + WIN_W / 2), y: Math.round(pos.y + winH() - INSET.bottom - bodyPx() / 2) }).workArea;
+  // 身体中心所在屏幕的工作区。
+  function areaFor(pos, g = geom()) {
+    return displayFor({ x: Math.round(pos.x + WIN_W / 2), y: Math.round(pos.y + g.h - INSET.bottom - g.body / 2) }).workArea;
   }
-  function rangeAt(pos) { return allowedRange(areaAt(pos), winSize(), inset()); }
+  const areaAt = pos => areaFor(pos);
+  function rangeFor(pos, g = geom()) { return allowedRange(areaFor(pos, g), g.size, g.inset); }
+  const rangeAt = pos => rangeFor(pos);
   function currentPos() { const b = win.getBounds(); return { x: b.x, y: b.y }; }
-  function place(pos) { if (alive()) win.setBounds({ x: Math.round(pos.x), y: Math.round(pos.y), width: WIN_W, height: winH() }, false); }
+  // 最近一次自己放窗口的位置。混合 DPI 下 getBounds 读回来可能和设的差 1px，连续改大小时按读回值算会一点点漂；
+  // 读回值和它相差不超过 2px 就以它为准（2026-10-18 审核）。
+  let placed = null;
+  function place(pos) {
+    if (!alive()) return;
+    placed = { x: Math.round(pos.x), y: Math.round(pos.y), height: winH() };
+    win.setBounds({ x: placed.x, y: placed.y, width: WIN_W, height: placed.height }, false);
+  }
+  function placedBounds() {
+    const b = win.getBounds();
+    if (placed && Math.abs(b.x - placed.x) <= 2 && Math.abs(b.y - placed.y) <= 2 && Math.abs(b.height - placed.height) <= 2) return { ...placed };
+    return { x: b.x, y: b.y, height: b.height };
+  }
 
+  // 存的位置不在现在的任何屏幕上（副屏拔了），窗口被拉回最近的屏幕时为 true：这时不拿窗口的位置覆盖存的副屏位置，
+  // 只有用户真的拖过才写（2026-10-18 审核）。
+  let savedDetached = false;
+  function defaultPosition(g = geom()) {
+    const area = screen.getPrimaryDisplay().workArea;
+    return { x: area.x + area.width - WIN_W + g.inset.right - MARGIN, y: area.y + area.height - g.h + INSET.bottom - 8 };
+  }
   function initialPosition() {
     const saved = settings.get().position;
     if (saved) {
-      const area = areaAt(saved);
-      const range = allowedRange(area, winSize(), inset());
-      const pos = clampTo(range, saved.x, saved.y);
       // 存的位置所在的屏幕已经拔掉时，clamp 会把它拉回最近的屏幕。
+      const pos = clampTo(rangeAt(saved), saved.x, saved.y);
+      savedDetached = pos.x !== saved.x || pos.y !== saved.y;
       return pos;
     }
-    const area = screen.getPrimaryDisplay().workArea;
-    return { x: area.x + area.width - WIN_W + inset().right - MARGIN, y: area.y + area.height - winH() + INSET.bottom - 8 };
+    savedDetached = false;
+    return defaultPosition();
+  }
+  // 大小或透明边变了，存的位置怎么换算：脚的位置不动（窗口底边对齐），原来贴边的继续贴边。
+  // 窗口开没开都按这个算（桌宠关着时改大小，下次打开不会悬在半空）。存的位置不在现有屏幕上时只按脚换算，不往现有屏幕上拉。
+  function convertSaved(saved, g0, g1) {
+    const feetShift = { x: saved.x, y: saved.y + g0.h - g1.h };
+    const r0 = rangeFor(saved, g0);
+    const c = clampTo(r0, saved.x, saved.y);
+    if (c.x !== saved.x || c.y !== saved.y) return feetShift;
+    const d = dockOf({ position: saved, area: areaFor(saved, g0), size: g0.size, inset: g0.inset });
+    const r1 = rangeFor(feetShift, g1);
+    return clampTo(r1, d === 'left' ? r1.minX : d === 'right' ? r1.maxX : feetShift.x, feetShift.y);
+  }
+  // 窗口伸出所在屏幕工作区的宽度（左、右）。告诉渲染端，气泡、提醒面板、小圆点都只放在看得见的那一段里（2026-10-18 审核：
+  // 原来写死 65px，小猫 100% 贴右边时会被裁约 30px，60% 时约 48px）。
+  function edgeCut() {
+    if (!alive()) return { left: 0, right: 0 };
+    const b = placedBounds();
+    const area = areaFor(b);
+    return { left: Math.max(0, Math.round(area.x - b.x)), right: Math.max(0, Math.round(b.x + WIN_W - (area.x + area.width))) };
   }
 
   // 隐藏的宿主窗口（2026-10-17，公司 CI 39030602842）：桌宠是置顶窗，Windows 挑「进程主窗口」时（Get-Process 的
@@ -124,6 +173,8 @@ function createHubPetController({
   }
   function ensureWindow() {
     if (alive()) return win;
+    // 关着时换过形象：用新形象量过的透明边摆位置。
+    if (boxRole !== currentRole()) { boxRole = currentRole(); bodyBox = cachedBox(boxRole) || bodyBox; }
     const parent = ensureOwner();
     win = new BrowserWindow({
       ...(parent ? { parent } : {}),
@@ -169,6 +220,12 @@ function createHubPetController({
 
   function evaluate() {
     if (!alive()) return;
+    // 换了形象：量过的就直接用它的透明边（refit 里会再进 evaluate，boxRole 先改掉，不会绕圈）。
+    if (boxRole !== currentRole()) {
+      boxRole = currentRole();
+      const box = cachedBox(boxRole);
+      if (box && JSON.stringify(box) !== JSON.stringify(bodyBox)) { applyBodyBox(box); return; }
+    }
     const t = clock();
     const idleSec = idleSeconds();
     const ctxBase = { now: t, fullscreen, assistantBusy: assistantBusy(), idleSec, quotaLow: signals.quotaLow, pettedAt };
@@ -185,7 +242,7 @@ function createHubPetController({
       pose, role, assetBase: roles.assetBase(role), mode: s.mode, dock: fullscreen ? 'right' : dock, peeking: fullscreen, scale: scaleNow(),
       bubble: snap.bubble ? { id: snap.bubble.id, title: snap.bubble.title, kind: snap.bubble.kind } : null,
       dots: snap.dots, quiet: !gate([]).ok, sequences: (roles.meta(role) && roles.meta(role).sequences) || [], clipped: (roles.meta(role) && roles.meta(role).clipped) || {},
-      night: pose === 'sleep',
+      night: pose === 'sleep', edge: edgeCut(),
     };
     const key = JSON.stringify(state);
     if (key !== lastSent) { lastSent = key; send('hub-pet:state', state); }
@@ -211,6 +268,11 @@ function createHubPetController({
     setFullscreen(screenFull && settings.get().peekOnFullscreen !== false);
     evaluate();
   }
+  function peekTarget(from, g = geom()) {
+    const area = areaFor(from, g);
+    const visible = g.body * (1 - bodyBox.left - bodyBox.right);
+    return { x: area.x + area.width - g.inset.left - Math.round(visible * PEEK_VISIBLE), y: area.y + area.height - g.h + INSET.bottom };
+  }
   function setFullscreen(value) {
     if (value === fullscreen) return;
     fullscreen = value;
@@ -218,14 +280,12 @@ function createHubPetController({
       if (fullscreen) {
         peekFrom = currentPos();
         const pos = peekFrom;
-        const area = areaAt(pos);
-        const visible = bodyPx() * (1 - bodyBox.left - bodyBox.right);
-        const to = { x: area.x + area.width - inset().left - Math.round(visible * PEEK_VISIBLE), y: area.y + area.height - winH() + INSET.bottom };
+        const to = peekTarget(pos);
         animateTo([{ from: pos, to, durationMs: 420 }], () => send('hub-pet:motion', { phase: 'land', impact: 0.2 }));
       } else if (peekFrom) {
         const back = peekFrom;
         peekFrom = null;
-        animateTo([{ from: currentPos(), to: back, durationMs: 420 }], () => send('hub-pet:motion', { phase: 'land', impact: 0.4 }));
+        animateTo([{ from: currentPos(), to: back, durationMs: 420 }], () => { send('hub-pet:motion', { phase: 'land', impact: 0.4 }); evaluate(); });
       }
     }
     evaluate();
@@ -272,9 +332,13 @@ function createHubPetController({
     const c = cursor();
     if (!drag.moved && Math.hypot(c.x - drag.start.x, c.y - drag.start.y) < CLICK_SLOP) return;
     if (!drag.moved) { drag.moved = true; send('hub-pet:motion', { phase: 'lift' }); }
-    // 按鼠标此刻要去的位置所在的屏幕限位：以前按「现在所在的屏幕」限位，宠物永远出不了这块屏（双屏拖不过去）。
+    // 限位取「鼠标所在屏」和「宠物现在所在屏」的并集：以前只按现在所在的屏，宠物出不了这块屏（双屏拖不过去）；
+    // 只按要去的位置所在屏时，身体中心一过两屏中线范围就整个换掉，会闪跳一下（2026-10-18 审核）。松手后再按落点所在屏贴好。
     const want = { x: c.x - drag.offset.x, y: c.y - drag.offset.y };
-    const range = rangeAt(want);
+    const g = geom();
+    const a = allowedRange(displayFor({ x: Math.round(c.x), y: Math.round(c.y) }).workArea, g.size, g.inset);
+    const b = rangeFor(drag.last, g);
+    const range = { minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX), minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY) };
     const pos = clampTo({ ...range, minY: range.minY - 40 }, want.x, want.y);
     const t = Date.now();
     const prev = drag.samples[drag.samples.length - 1];
@@ -303,6 +367,7 @@ function createHubPetController({
     animateTo(plan.steps, () => {
       dock = plan.dock;
       settings.update({ position: plan.final });
+      savedDetached = false;
       send('hub-pet:motion', { phase: 'land', impact: Math.min(1, 0.35 + plan.speed / 2400) });
       lastSent = '';
       evaluate();
@@ -457,14 +522,16 @@ function createHubPetController({
       openAssistant({ noticeId: String(item.id || '').slice(0, 160), sessionId: item.sessionId ? String(item.sessionId).slice(0, 160) : undefined });
     },
     'hub-pet:signal': (event, patch) => { if (fromMain(event)) setSignal(patch); },
-    // 渲染端量出的身体透明边（比例）。只认 0–0.45 的数，防止一张奇怪的图把限位算坏。
+    // 渲染端量出的身体透明边（比例）。只认 0–0.45 的数，防止一张奇怪的图把限位算坏；量的是别的形象（刚换过）就不认。
+    // 量出来就记进 hub-pet.json，下次启动直接用。
     'hub-pet:body-box': (event, box) => {
       if (!fromPet(event) || !box) return;
-      const f = v => (Number.isFinite(Number(v)) ? Math.min(0.45, Math.max(0, Number(v))) : 0);
-      const next = { left: f(box.left), right: f(box.right), top: f(box.top), bottom: f(box.bottom) };
-      if (JSON.stringify(next) === JSON.stringify(bodyBox)) return;
-      bodyBox = next;
-      refit();
+      const role = currentRole();
+      if (typeof box.role === 'string' && box.role && box.role !== role) return;
+      const next = parseBox(box);
+      if (!next) return;
+      boxRole = role;
+      applyBodyBox(next, JSON.stringify(cachedBox(role)) !== JSON.stringify(next) ? { bodyBoxes: { [role]: next } } : {});
     },
   };
   for (const [channel, fn] of Object.entries(handlers)) ipcMain.on(channel, fn);
@@ -472,7 +539,8 @@ function createHubPetController({
   // roles：[{ id, name, bundled, installed, available, update, bytes, preview, previewMain }]，「换形象」只列 installed 的。
   function roleList() { return roles.listRoles(); }
   function publicSettings() {
-    const s = settings.get(), t = clock();
+    const { bodyBoxes: _boxes, ...s } = settings.get();
+    const t = clock();
     return { available, settings: { ...s, role: currentRole() }, roles: roleList(), modes: MODES.map(id => ({ id, label: MODE_LABELS[id] })),
       quietHour: s.quietUntil > t, silentToday: s.silentDate === localDateKey(t), running: alive() };
   }
@@ -498,7 +566,7 @@ function createHubPetController({
         evaluate();
         return true;
       }
-      if (req.op === 'state') return { lastSent: lastSent ? JSON.parse(lastSent) : null, bounds: alive() ? win.getBounds() : null, area: alive() ? areaAt(currentPos()) : null, bodyBox: { ...bodyBox }, inset: inset(), scale: scaleNow(), dock, visible: alive() && win.isVisible(), petPid: alive() ? win.webContents.getOSProcessId() : null, fullscreenWatch: fsWatch.isRunning(), lastRelease, autoRole: { ...autoRole }, role: settings.get().role };
+      if (req.op === 'state') return { lastSent: lastSent ? JSON.parse(lastSent) : null, bounds: alive() ? win.getBounds() : null, area: alive() ? areaAt(currentPos()) : null, bodyBox: { ...bodyBox }, inset: inset(), edge: edgeCut(), scale: scaleNow(), dock, savedPosition: settings.get().position, savedDetached, visible: alive() && win.isVisible(), petPid: alive() ? win.webContents.getOSProcessId() : null, fullscreenWatch: fsWatch.isRunning(), lastRelease, autoRole: { ...autoRole }, role: settings.get().role };
       if (req.op === 'metrics') {
         const pid = alive() ? win.webContents.getOSProcessId() : null;
         return (app?.getAppMetrics?.() || []).filter(m => m.pid === pid || m.type === 'GPU').map(m => ({ pid: m.pid, type: m.type, cpu: m.cpu && m.cpu.percentCPUUsage }));
@@ -519,6 +587,9 @@ function createHubPetController({
   }
 
   function setSettings(patch = {}) {
+    // live：设置页正在拖大小滑块。只改内存、实时挪窗口，停下 300ms（或松手发来不带 live 的最后一次）再写一次盘（2026-10-18 审核：
+    // 原来每 60ms 一次、每次写两遍盘）。
+    const live = patch.live === true;
     const clean = {};
     if (typeof patch.enabled === 'boolean') clean.enabled = patch.enabled;
     if (typeof patch.role === 'string' && roles.installed(patch.role)) clean.role = patch.role;
@@ -528,10 +599,22 @@ function createHubPetController({
     if (typeof patch.quietHour === 'boolean') clean.quietUntil = patch.quietHour ? t + 3600000 : 0;
     if (typeof patch.silentToday === 'boolean') clean.silentDate = patch.silentToday ? localDateKey(t) : '';
     if (patch.resetPosition === true) clean.position = null;
-    if (Number.isFinite(Number(patch.scale)) && patch.scale !== null && patch.scale !== '') clean.scale = Math.round(Math.min(SCALE_MAX, Math.max(SCALE_MIN, Number(patch.scale))) * 100) / 100;
-    const before = scaleNow();
-    settings.update(clean);
-    if ('scale' in clean && clean.scale !== before) refit();
+    const scale = parseScale(patch.scale);
+    const g0 = geom();
+    if (scale != null && scale !== scaleNow()) {
+      clean.scale = scale;
+      // 存的位置按脚换算（窗口开没开都换算；没存过位置的照旧用默认位置，不写）。
+      const saved = settings.get().position;
+      if (saved && !('position' in clean)) clean.position = convertSaved(saved, g0, geom(scale));
+    }
+    settings.update(clean, { persist: !live });
+    if (clean.position === null) savedDetached = false;
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (live && settings.isDirty()) {
+      flushTimer = setTimeout(() => { flushTimer = null; settings.flush(); }, 300);
+      flushTimer.unref?.();
+    }
+    if ('scale' in clean) refitWindow(g0);
     if ('peekOnFullscreen' in clean) setFullscreen(screenFull && clean.peekOnFullscreen);
     if (clean.position === null && alive() && !drag) {
       // 「回到右下角」：滑回默认位置。
@@ -545,19 +628,44 @@ function createHubPetController({
     else evaluate();
   }
 
-  // 大小或身体透明边变了：脚的位置不动（窗口底边对齐），窗口按新高度往上长；原来贴着边的继续贴着，超出屏幕的拉回来。
-  function refit() {
-    if (!alive() || drag) return;
+  // 大小或身体透明边变了，挪窗口（g0 是变之前的几何）：脚的位置不动（窗口底边对齐），窗口按新高度往上长；
+  // 原来贴着边的继续贴着，超出屏幕的拉回来；没存过位置的回到新大小下的默认位置；躲边中的按新大小重新躲。
+  // 只挪窗口，不写盘：存的位置由调用方按 convertSaved 换算后写。返回是否挪了（挪了就已经 evaluate 过）。
+  function refitWindow(g0) {
+    if (!alive() || drag) return false;
     stopMove();
-    const b = win.getBounds();
-    const want = { x: b.x, y: b.y + b.height - winH() };
-    const range = rangeAt(want);
-    const pos = clampTo(range, dock === 'left' ? range.minX : dock === 'right' ? range.maxX : want.x, want.y);
-    place(pos);
-    dock = dockOf({ position: pos, area: areaAt(pos), size: winSize(), inset: inset() }) || (fullscreen ? dock : null);
-    if (!fullscreen) settings.update({ position: pos });
+    const g1 = geom();
+    const base = placedBounds();
+    if (fullscreen) {
+      if (peekFrom) peekFrom = { x: peekFrom.x, y: peekFrom.y + g0.h - g1.h };
+      place(peekTarget({ x: base.x, y: base.y + base.height - g1.h }, g1));
+    } else if (!settings.get().position) {
+      const pos = defaultPosition(g1);
+      place(pos);
+      dock = dockOf({ position: pos, area: areaFor(pos, g1), size: g1.size, inset: g1.inset });
+    } else {
+      const want = { x: base.x, y: base.y + base.height - g1.h };
+      const range = rangeFor(want, g1);
+      const pos = clampTo(range, dock === 'left' ? range.minX : dock === 'right' ? range.maxX : want.x, want.y);
+      place(pos);
+      dock = dockOf({ position: pos, area: areaFor(pos, g1), size: g1.size, inset: g1.inset });
+    }
     lastSent = '';
     evaluate();
+    return true;
+  }
+  // 换上新的身体透明边。存过位置、且不是「副屏拔了被拉回来」的，按贴边换算后写盘；没存过位置的不写（2026-10-18 审核）。
+  function applyBodyBox(next, extraPatch = {}) {
+    const patch = { ...extraPatch };
+    const changed = JSON.stringify(next) !== JSON.stringify(bodyBox);
+    const g0 = geom();
+    if (changed) {
+      bodyBox = { ...next };
+      const saved = settings.get().position;
+      if (saved && !savedDetached) patch.position = convertSaved(saved, g0, geom());
+    }
+    if (Object.keys(patch).length) settings.update(patch);
+    if (changed && !refitWindow(g0)) evaluate();
   }
 
   // ---------- 记住的形象没装：后台补下载（2026-10-18） ----------
@@ -626,6 +734,9 @@ function createHubPetController({
     deadlineTimer = null;
     if (autoRoleTimer) clearTimeout(autoRoleTimer);
     autoRoleTimer = null;
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+    settings.flush();
     stopMove();
     drag = null;
     fsWatch.stop();
@@ -634,6 +745,7 @@ function createHubPetController({
     peekFrom = null;
     if (alive()) win.destroy();
     win = null;
+    placed = null;
     if (menuAlive()) menuWin.destroy();
     menuWin = null; menuReady = false;
     if (owner && !owner.isDestroyed?.()) { try { owner.destroy(); } catch (_) {} }
@@ -643,6 +755,9 @@ function createHubPetController({
   function dispose() {
     if (disposed) return;
     stop();
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+    settings.flush();
     roles.cancel();
     disposed = true;
     for (const [channel, fn] of Object.entries(handlers)) ipcMain.removeListener?.(channel, fn);

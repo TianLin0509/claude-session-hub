@@ -47,9 +47,9 @@ class FakeIpc extends EventEmitter {
 const display = { workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 const screen = { getPrimaryDisplay: () => display, getDisplayNearestPoint: () => display, getCursorScreenPoint: () => ({ x: 900, y: 900 }) };
 
-function setup({ company = true, settings = null, now = () => new Date(2026, 9, 16, 10, 0).getTime(), screen: scr = screen } = {}) {
+function setup({ company = true, settings = null, now = () => new Date(2026, 9, 16, 10, 0).getTime(), screen: scr = screen, Win = FakeWindow, dataDir: dir = null } = {}) {
   FakeWindow.all = [];
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-pet-'));
+  const dataDir = dir || fs.mkdtempSync(path.join(os.tmpdir(), 'hub-pet-'));
   if (settings) fs.writeFileSync(path.join(dataDir, 'hub-pet.json'), JSON.stringify(settings));
   const ipcMain = new FakeIpc();
   const mainWc = new FakeWebContents();
@@ -57,7 +57,7 @@ function setup({ company = true, settings = null, now = () => new Date(2026, 9, 
   const sent = [];
   const bus = new NoticeBus({ now });
   const ctl = createHubPetController({
-    BrowserWindow: FakeWindow, screen: scr, ipcMain, powerMonitor: { getSystemIdleTime: () => 0 }, app: { getAppMetrics: () => [] },
+    BrowserWindow: Win, screen: scr, ipcMain, powerMonitor: { getSystemIdleTime: () => 0 }, app: { getAppMetrics: () => [] },
     htmlPath: 'pet.html', preloadPath: 'pet-preload.js', assetsDir: path.join(ROOT, 'renderer', 'assets', 'hub-pet'), dataDir,
     company, getMainWindow: () => mainWindow, focusPrimaryWindow: () => sent.push(['focus']), sendToRenderer: (ch, p) => sent.push([ch, p]),
     noticeBus: bus, debug: true, watchFullscreen: false, logger: { warn() {} }, now,
@@ -291,4 +291,157 @@ test('大小：0.6–1.6 倍连续调；放大时脚的位置不动、窗口往�
   assert.equal(w.getBounds().height, WIN_H, '缩小时窗口不比原来矮（气泡要有地方）');
   assert.equal((await set({ sender: mainWc }, { scale: 5 })).settings.scale, 1.6, '超出范围按上限');
   assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'hub-pet.json'), 'utf8')).scale, 1.6, '记住大小');
+});
+
+// ---------- 2026-10-18 合并前审核修正 ----------
+const readSaved = dataDir => JSON.parse(fs.readFileSync(path.join(dataDir, 'hub-pet.json'), 'utf8'));
+// 数 hub-pet.json 写了几次（settings.js 先写 .tmp 再改名）。
+function countWrites() {
+  const real = fs.writeFileSync;
+  const counter = { n: 0, restore: () => { fs.writeFileSync = real; } };
+  fs.writeFileSync = function (file, ...rest) { if (String(file).includes('hub-pet.json')) counter.n += 1; return real.call(this, file, ...rest); };
+  return counter;
+}
+const CAT_BOX = { left: 49 / 320, right: 65 / 320, top: 0.1, bottom: 44 / 320 };
+
+test('副屏在主屏左边（x 为负）、缩放不同：来回拖大小滑块，位置不漂；拖动中不写盘，停 300ms 或松手只写一次', async () => {
+  const prim = { workArea: { x: 0, y: 0, width: 1920, height: 1040 }, scaleFactor: 1 };
+  const leftHiDpi = { workArea: { x: -2560, y: 0, width: 2560, height: 1400 }, scaleFactor: 1.5 };
+  const scr = { getPrimaryDisplay: () => prim, getDisplayNearestPoint: p => (p.x < 0 ? leftHiDpi : prim), getCursorScreenPoint: () => ({ x: 0, y: 0 }) };
+  // 模拟混合 DPI：在 150% 那块屏上，getBounds 读回来比设的偏 1px（实机上换算取整会这样）。
+  class DpiWindow extends FakeWindow { getBounds() { const b = super.getBounds(); return b.x < 0 ? { ...b, x: b.x + 1, y: b.y + 1 } : b; } }
+  const { ctl, ipcMain, mainWc, dataDir } = setup({ screen: scr, Win: DpiWindow, settings: { enabled: true, position: { x: -1500, y: 800 } } });
+  ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  const set = ipcMain.handlers.get('hub-pet:set-settings');
+  assert.deepEqual([w.bounds.x, w.bounds.y], [-1500, 800]);
+  const writes = countWrites();
+  try {
+    const ramp = [];
+    for (let round = 0; round < 2; round++) {
+      for (let v = 105; v <= 160; v += 5) ramp.push(v);
+      for (let v = 155; v >= 60; v -= 5) ramp.push(v);
+      for (let v = 65; v <= 100; v += 5) ramp.push(v);
+    }
+    for (const v of ramp) {
+      await set({ sender: mainWc }, { scale: v / 100, live: true });
+      const h = Math.max(WIN_H, 190 + Math.round(150 * (v / 100)));
+      assert.equal(w.bounds.x, -1500, `${v}% 时 x 不漂`);
+      assert.equal(w.bounds.y + w.bounds.height, 800 + WIN_H, `${v}% 时脚的位置不动`);
+      assert.equal(w.bounds.height, h);
+    }
+    assert.equal(writes.n, 0, '拖动中一次盘都不写');
+    assert.equal(readSaved(dataDir).scale, 1, '盘上还是原来的');
+    await wait(380);
+    assert.equal(writes.n, 1, '停下 300ms 写一次');
+    assert.deepEqual(readSaved(dataDir).position, { x: -1500, y: 800 });
+    for (const v of [120, 140, 160]) await set({ sender: mainWc }, { scale: v / 100, live: true });
+    await set({ sender: mainWc }, { scale: 1.6 }); // 松手
+    assert.equal(writes.n, 2, '松手只写一次（大小和位置在同一次里）');
+    const saved = readSaved(dataDir);
+    assert.equal(saved.scale, 1.6);
+    assert.deepEqual(saved.position, { x: -1500, y: 800 + WIN_H - 430 });
+    await wait(380);
+    assert.equal(writes.n, 2, '松手后不再补写');
+  } finally { writes.restore(); }
+});
+
+test('桌宠关着时改大小：存的位置按脚换算，打开时站在原来的地方；没存过位置的不写', async () => {
+  const docked = setup({ settings: { enabled: false, position: { x: 1920 - WIN_W + 65, y: 600 } } });
+  const set = docked.ipcMain.handlers.get('hub-pet:set-settings');
+  assert.equal(FakeWindow.all.length, 0);
+  await set({ sender: docked.mainWc }, { scale: 1.6 });
+  assert.deepEqual(readSaved(docked.dataDir).position, { x: 1920 - WIN_W + 20, y: 600 + WIN_H - 430 }, '贴右边的放大后还贴右边，脚的高度不变');
+  await set({ sender: docked.mainWc }, { enabled: true });
+  await tick();
+  const b = FakeWindow.all[0].getBounds();
+  assert.deepEqual([b.x, b.y, b.height], [1920 - WIN_W + 20, 600 + WIN_H - 430, 430]);
+  docked.ctl.dispose();
+
+  const free = setup({ settings: { enabled: false, position: { x: 800, y: 700 } } });
+  await free.ipcMain.handlers.get('hub-pet:set-settings')({ sender: free.mainWc }, { scale: 0.6 });
+  assert.deepEqual(readSaved(free.dataDir).position, { x: 800, y: 700 }, '缩小时窗口高度不变（不比原来矮），位置不动');
+  await free.ipcMain.handlers.get('hub-pet:set-settings')({ sender: free.mainWc }, { scale: 1.2 });
+  assert.deepEqual(readSaved(free.dataDir).position, { x: 800, y: 700 + WIN_H - 370 });
+  free.ctl.dispose();
+
+  const never = setup({ settings: { enabled: false } });
+  await never.ipcMain.handlers.get('hub-pet:set-settings')({ sender: never.mainWc }, { scale: 1.4 });
+  assert.equal(readSaved(never.dataDir).position, null);
+  assert.equal(readSaved(never.dataDir).scale, 1.4);
+});
+
+test('首次量出透明边：没存过位置的不写位置，量出的边记进文件；下次启动直接用，不再挪一下', async () => {
+  const first = setup({ settings: { enabled: true } });
+  first.ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  assert.equal(w.bounds.x, 1920 - WIN_W + 65 - 24, '没量之前按整张图摆');
+  first.ipcMain.emit('hub-pet:body-box', first.petEvent(), { ...CAT_BOX, role: '03-penguin' });
+  assert.equal((await first.ipcMain.handlers.get('hub-pet:debug')({ sender: first.mainWc }, { op: 'state' })).bodyBox.left, 0, '量的是别的形象，不认');
+  first.ipcMain.emit('hub-pet:body-box', first.petEvent(), { ...CAT_BOX, role: '01-cat' });
+  let saved = readSaved(first.dataDir);
+  assert.equal(saved.position, null, '首次量出时不给没存过位置的用户写位置');
+  assert.deepEqual(saved.bodyBoxes['01-cat'], { left: 0.1531, right: 0.2031, top: 0.1, bottom: 0.1375 });
+  assert.equal(w.bounds.x, 1920 - WIN_W + 95 - 24, '回到按看得见的身体算的默认位置');
+  first.ctl.dispose();
+
+  const again = setup({ dataDir: first.dataDir });
+  let moves = 0;
+  again.ctl.start();
+  const w2 = FakeWindow.all[0];
+  const realSet = w2.setBounds.bind(w2);
+  w2.setBounds = b => { moves += 1; realSet(b); };
+  await tick();
+  assert.equal(w2.bounds.x, 1920 - WIN_W + 95 - 24, '启动时直接用记住的透明边');
+  again.ipcMain.emit('hub-pet:body-box', again.petEvent(), { ...CAT_BOX, role: '01-cat' });
+  assert.equal(moves, 0, '量出来和记住的一样，不挪');
+  assert.equal(readSaved(again.dataDir).position, null);
+});
+
+test('存的位置在拔掉的副屏上：启动拉回现有屏幕，量出透明边时不覆盖存的副屏位置；拖过一次才写', async () => {
+  const { ctl, ipcMain, petEvent, mainWc, dataDir } = setup({ settings: { enabled: true, position: { x: 2500, y: 600 } } });
+  ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  const debug = ipcMain.handlers.get('hub-pet:debug');
+  assert.equal(w.bounds.x, 1920 - WIN_W + 65, '拉回主屏右边');
+  ipcMain.emit('hub-pet:body-box', petEvent(), { ...CAT_BOX, role: '01-cat' });
+  assert.equal(w.bounds.x, 1920 - WIN_W + 95, '窗口照样按看得见的身体贴边');
+  assert.deepEqual(readSaved(dataDir).position, { x: 2500, y: 600 }, '存的副屏位置没被覆盖');
+  assert.equal((await debug({ sender: mainWc }, { op: 'state' })).savedDetached, true);
+  await ipcMain.handlers.get('hub-pet:set-settings')({ sender: mainWc }, { scale: 1.6 });
+  assert.deepEqual(readSaved(dataDir).position, { x: 2500, y: 600 + WIN_H - 430 }, '改大小时副屏位置只按脚换算');
+  const b = w.getBounds();
+  await dragTo(ipcMain, petEvent, debug, mainWc, { x: b.x + 140, y: b.y + b.height - 60 }, { x: b.x - 400, y: b.y + b.height - 60 });
+  const now = readSaved(dataDir).position;
+  assert.deepEqual(now, { x: w.getBounds().x, y: w.getBounds().y }, '用户拖过，写现在的位置');
+});
+
+test('跨屏拖动：鼠标在两屏中线附近来回时宠物跟着走，不在两块屏的边之间闪跳', async () => {
+  const left = { workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  const right = { workArea: { x: 1920, y: 0, width: 2560, height: 1400 } };
+  const scr = { getPrimaryDisplay: () => left, getDisplayNearestPoint: p => (p.x >= 1920 ? right : left), getCursorScreenPoint: () => ({ x: 0, y: 0 }) };
+  const { ctl, ipcMain, petEvent, mainWc } = setup({ screen: scr, settings: { enabled: true, position: { x: 1300, y: 700 } } });
+  ctl.start();
+  await tick();
+  const w = FakeWindow.all[0];
+  const debug = ipcMain.handlers.get('hub-pet:debug');
+  const grabY = 700 + 280;
+  const moveTo = async (cx) => {
+    await debug({ sender: mainWc }, { op: 'cursor', pos: { x: cx, y: grabY } });
+    const end = Date.now() + 400;
+    while (Date.now() < end && w.bounds.x !== cx - 140) await wait(10);
+    return w.bounds.x;
+  };
+  await debug({ sender: mainWc }, { op: 'cursor', pos: { x: 1440, y: grabY } });
+  ipcMain.emit('hub-pet:press', petEvent(), { target: 'pet' });
+  await moveTo(1600);
+  await moveTo(1935); // 鼠标进了右边那块屏
+  const xs = [];
+  for (const cx of [1915, 1925, 1912, 1928, 1918, 1922]) xs.push(await moveTo(cx));
+  ipcMain.emit('hub-pet:release', petEvent());
+  assert.deepEqual(xs, [1915, 1925, 1912, 1928, 1918, 1922].map(cx => cx - 140), '跟着鼠标走：' + xs.join(','));
+  for (let i = 1; i < xs.length; i++) assert.ok(Math.abs(xs[i] - xs[i - 1]) <= 20, '相邻两次最多差 20px：' + xs.join(','));
 });
