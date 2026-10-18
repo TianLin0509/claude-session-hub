@@ -82,3 +82,11 @@
 .cl-diag-table th{background:#f2f5fa;color:#63728a;font-weight:500;text-align:left;padding:5px 8px;white-space:nowrap}
 .cl-diag-table td{padding:5px 8px;border-top:1px solid #f0f3f8;color:#1b2942;vertical-align:top;overflow-wrap:anywhere}
 .cl-diag-log{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;background:#fff;border:1px solid #edf1f7;border-radius:8px;padding:8px 10px;margin:4px 0;font:11.5px/1.6 Consolas,"Microsoft YaHei",monospace}
+/* 远程维护（三期）：按钮行与结果横条 */
+.cl-diag-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:8px 0 4px}
+.cl-diag-par{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:#4b5a70}
+.cl-diag-par select{padding:3px 6px;border:1px solid #dfe6f1;border-radius:6px;background:#fff;color:#1b2942;font:inherit;font-size:12.5px}
+.cl-diag-act-result{margin:10px 0;padding:10px 14px;border-radius:10px;background:#eef3fd;border:1px solid #d6e2f8;font-size:13px;color:#1b2942}
+.cl-diag-act-result[hidden]{display:none}
+.cl-diag-act-result.ok{background:#edf7f0;border-color:#cfe8d7}
+.cl-diag-act-result.warn{background:#fdf5e8;border-color:#f1dcb4}

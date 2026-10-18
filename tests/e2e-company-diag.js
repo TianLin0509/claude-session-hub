@@ -72,8 +72,8 @@ async function main() {
     const ps = await cc.eval('require("electron").ipcRenderer.invoke("create-session", { kind: "powershell", opts: { title: "diag-probe-shell" } })');
     check(ps && ps.id, '公司 Hub 里开了一个 PowerShell 会话 ' + (ps && ps.id));
     await _waitMs(3000);
-    // 「CodeAgent」替身：一个路径里带 codeagent 的入口脚本（CodeAgent 按可执行文件 / 入口脚本路径认）
-    const standin = path.join(root, 'codeagent-standin', 'cli.js');
+    // 「CodeAgent」替身：放在 npm 包目录 node_modules\codeagent 里的入口脚本（CodeAgent 按可执行文件名或 npm 包 / 安装目录里的入口脚本认）
+    const standin = path.join(root, 'node_modules', 'codeagent', 'cli.js'); // 认 CodeAgent 只看可执行文件或 npm 包目录里的入口脚本
     fs.mkdirSync(path.dirname(standin), { recursive: true }); fs.writeFileSync(standin, 'setInterval(() => {}, 1e9);\n');
     await cc.eval(`require("electron").ipcRenderer.send("terminal-input", { sessionId: ${j(ps.id)}, data: ${j('node "' + standin + '"\r')} })`);
     // 「重启残留」：一个中间进程起一个脱离的 node 后自己退出——父进程不在了，也不在任何 Hub 进程树里（同公司重启后留下的 CodeAgent）
@@ -145,6 +145,11 @@ async function main() {
     log('会话里的 node PID：' + intreePid);
     check(d.hub.parallel && Number.isInteger(d.hub.parallel.cap) && typeof d.hub.parallel.limitedBy === 'string' && d.hub.queue && Array.isArray(d.hub.queue.threads), `并行与队列：上限 ${d.hub.parallel.cap}（受${d.hub.parallel.limitedBy}限制），队列快照在`);
     check(d.pool.accounts.map(a => a.alias).join(',') === '个人,号 1' && d.pool.accounts.every(a => a.state === '可用'), '号池只用「个人 / 号 1」代称');
+    // 二期段落：CodeAgent（这台电脑没装 CodeAgent 时如实写没读到）、仿真（进程 + 结果目录）、功能
+    check(d.codeagent && (d.codeagent.version || d.codeagent.versionError) && d.codeagent.personal && d.codeagent.personal.ready === true && d.codeagent.quotaNote
+      && d.airview && Array.isArray(d.airview.processes) && Array.isArray(d.airview.dirs) && d.airview.dirs.some(x => x.error === '目录不存在' || x.files >= 0)
+      && d.features && d.features.forum && d.features.pet,
+      `二期段落齐：CodeAgent ${d.codeagent.version ? 'v' + d.codeagent.version : '版本没读到（' + d.codeagent.versionError + '）'}、个人账号可用；仿真进程 ${d.airview.processes.length} 个、结果目录 ${d.airview.dirs.length} 个；功能状态在`);
     const blog = d.logs.files.find(f => f.key === 'bridge');
     check(blog && blog.lines.length === 30 && blog.lines.every(l => /token=<已隐去>/.test(l) && /AIHUB-LINK-1\.<已隐去>/.test(l)), '通道日志 30 行带回、令牌与配对码已隐去');
     const text = JSON.stringify(view);
@@ -168,7 +173,8 @@ async function main() {
     check(true, `30 秒内再查：公司回「30 秒内只查一次」，卡片同时保留上一次结果（${(result.timings.refusedMs / 1000).toFixed(1)} 秒）`);
     result.shots.push(await shot(hc, '04-card-refused'));
     const firstAt = Date.parse(new Date(view.receivedAt).toISOString()) || Date.now();
-    await _waitMs(Math.max(0, 33000 - (Date.now() - clickAt)));
+    // 限频从上一次采集结束算：等第一份回报到了 33 秒后再查
+    await _waitMs(Math.max(0, 33000 - (Date.now() - (clickAt + result.timings.firstMs))));
     const cpoll2 = (await status(cc)).polling;
     await hc.eval('document.querySelector("dialog.cl-diag [data-diag=again]").click()');
     const thirdAt = Date.now();
