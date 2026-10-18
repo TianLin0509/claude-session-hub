@@ -15,7 +15,8 @@ const readJson = file => { try { return JSON.parse(fs.readFileSync(file, 'utf8')
 function bundled(sourceRoot = SOURCE_ROOT) {
   let names = [];
   try { names = fs.readdirSync(sourceRoot, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name); } catch {}
-  return names.map(name => ({ name, text: readText(path.join(sourceRoot, name, 'SKILL.md')) })).filter(s => s.text);
+  // 统一成 LF：Windows 检出会把仓库里的文件转成 CRLF，装到用户目录的版本不随检出方式变。
+  return names.map(name => ({ name, text: (readText(path.join(sourceRoot, name, 'SKILL.md')) || '').replace(/\r\n/g, '\n') })).filter(s => s.text);
 }
 
 // known：以前在这台电脑上装过的位置（Hub 记着）。用户自己删掉的不再装回去。

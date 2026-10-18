@@ -110,7 +110,7 @@ test('团队版 skill：装到两处；没改过的随 Hub 升级；改过的和
 });
 
 test('随 Hub 打包的团队版 skill：有 frontmatter、不提组长个人项目', () => {
-  const text = fs.readFileSync(path.join(__dirname, '..', 'core', 'company-bridge', 'team-skills', 'tezhan-ask-company', 'SKILL.md'), 'utf8');
+  const text = fs.readFileSync(path.join(__dirname, '..', 'core', 'company-bridge', 'team-skills', 'tezhan-ask-company', 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n');
   assert.match(text, /^---\nname: tezhan-ask-company\ndescription: .+\n---\n/);
   assert.doesNotMatch(text, /SuperRAN|AirView|田哥|airview-company-dev/);
 });
@@ -122,6 +122,7 @@ test('邀请码保存后 Hub 装上团队 skill，并记在状态里', async t =
   assert.equal(st.team.skills.installed.length, 2);
   assert.ok(fs.existsSync(path.join(home, '.claude', 'skills', 'tezhan-ask-company', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(home, '.agents', 'skills', 'tezhan-ask-company', 'SKILL.md')));
+  assert.doesNotMatch(fs.readFileSync(path.join(home, '.claude', 'skills', 'tezhan-ask-company', 'SKILL.md'), 'utf8'), /\r/, '装出来的统一是 LF');
   // 同事自己删掉 Claude 那份：Hub 重启后不再装回去，Codex 那份照旧
   fs.rmSync(path.join(home, '.claude', 'skills', 'tezhan-ask-company'), { recursive: true, force: true });
   const again = r.home.installSkills();
