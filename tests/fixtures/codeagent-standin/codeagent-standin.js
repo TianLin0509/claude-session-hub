@@ -28,6 +28,9 @@ for (let i = 0; i < input.length; i += 1) {
 }
 const env = { ...process.env };
 if (env.CODEAGENT3_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = env.CODEAGENT3_CONFIG_DIR;
+// 显示端到端（2026-10-18）：CODEAGENT_STANDIN_BASE_URL 指向测试里的本机转发，转发把回答里的模型名换成公司模型名
+// （公司 CodeAgent 记录里写的是 deepseek… 这类名字），只对替身启动的 Claude 生效，不影响 Hub 本身。
+if (env.CODEAGENT_STANDIN_BASE_URL) env.ANTHROPIC_BASE_URL = env.CODEAGENT_STANDIN_BASE_URL;
 // 按模型派活的端到端（2026-10-18）：真 CLI 交互模式按配置目录 settings.json 的 model 定模型。
 // CODEAGENT_STANDIN_LAUNCH_LOG=<文件> 时记下每次启动的配置目录和当时 settings.json 里的模型（证据：开在哪个号、用哪个模型）；
 // CODEAGENT_STANDIN_MAP_SETTINGS_MODEL=1 时，那个模型是公司模型名（Claude 不认识）就改用 CODEAGENT_STANDIN_MODEL 跑。

@@ -152,6 +152,23 @@ function markAssigned(dataDir, id, now = Date.now()) {
   writeRegistry(dataDir, registry);
 }
 
+// 个人账号上次分到通道会话的时间（2026-10-18 田哥反馈 v2.1.11：通道只开号池的号、不开个人账号）。
+// AI特战队通道不指定模型时在个人账号和号池各号之间按「进行中会话最少 → 上次分配时间」轮转
+// （core/codeagent-model-route.js pickAnyRoute），个人账号的这个时间以前恒为 0，平局时永远是它；单独存一个小文件。
+const PERSONAL_ASSIGNED = 'personal-assigned.json';
+function personalLastAssignedAt(dataDir, fsModule = fs) {
+  try { return Number(JSON.parse(fsModule.readFileSync(path.join(poolRoot(dataDir), PERSONAL_ASSIGNED), 'utf8')).lastAssignedAt) || 0; }
+  catch { return 0; }
+}
+function markPersonalAssigned(dataDir, now = Date.now()) {
+  const root = poolRoot(dataDir);
+  fs.mkdirSync(root, { recursive: true });
+  const file = path.join(root, PERSONAL_ASSIGNED);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ schema: 1, lastAssignedAt: now }) + '\n', 'utf8');
+  fs.renameSync(tmp, file);
+}
+
 function addAccount(dataDir, { note = '' } = {}) {
   const registry = readRegistry(dataDir);
   let id;
@@ -196,6 +213,23 @@ function chooseAccountModel(own, known) {
     if (!inList(model)) model = inList(known.defaultModel) ? known.defaultModel : known.models[0];
   }
   return model;
+}
+
+// 个人账号此刻启动会用的模型，只用于判定和显示，不改写个人账号的 settings.json（号主自己日常用的配置）。
+// 2026-10-18 田哥反馈 v2.1.11：个人账号 settings.json 没写模型且没探测过、或写的是不在菜单里的分档名 GLM-5.2-WX 时，
+// 以前判成「默认模型未知」，个人账号从模型表里整个消失，指定 GLM 被回「没有可用的号」。规则：
+//   1. 写了、在清单里：就是它（按清单写法）；
+//   2. 写的是分档名、清单里有「名字-Auto」：归到 -Auto（分档只是 Auto 里的配置，菜单里只能选 Auto，2026-10-13 公司真机）；
+//   3. 没写或不在清单里：探测文件 / 配置标的默认 → CodeAgent 自己的默认（GLM-5.2-WX-Auto，2026-10-17 公司实测没定模型时退回它）→ 清单第一个；
+//   4. 清单为空：写了什么就是什么（不知道清单时不否定它），没写就留空。
+function personalDefaultModel(own, known) {
+  const models = (known && known.models) || [];
+  const pick = m => models.find(x => x.toLowerCase() === String(m || '').toLowerCase()) || '';
+  const written = typeof own === 'string' ? own.trim() : '';
+  if (!models.length) return written;
+  if (pick(written)) return pick(written);
+  if (written && pick(written + '-Auto')) return pick(written + '-Auto');
+  return pick(known.defaultModel) || pick(require('./codeagent-models').DEFAULT_MODEL) || models[0];
 }
 function readSettingsModel(dir, fsModule = fs) {
   try { const v = JSON.parse(fsModule.readFileSync(path.join(dir, 'settings.json'), 'utf8')); return v && typeof v.model === 'string' ? v.model.trim() : ''; }
@@ -352,6 +386,7 @@ module.exports = {
   openLoginWindow,
   POOL_DIR, poolRoot, accountDir, readRegistry, maskAccountId, readCredentials, accountState,
   listAccounts, label, pickAccount, markAssigned, addAccount, setNote, removeAccount,
+  personalLastAssignedAt, markPersonalAssigned,
   projectCredentialsOverride, syncSharedConfig, poolModelOptions,
-  chooseAccountModel, readSettingsModel, effectiveModel, ROUTE_MARKER,
+  chooseAccountModel, personalDefaultModel, readSettingsModel, effectiveModel, ROUTE_MARKER,
 };

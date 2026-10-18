@@ -891,7 +891,7 @@ sessionListEl.addEventListener('keydown', event => {
           : (SLOT_LABELS_M[idx] || `Slot ${idx + 1}`);
         const avatarSrc = sub && sub.kind
           // *-resume 没有专属 svg，归一到基础 kind 头像（assets 只有 5+1 个基础 logo）
-          ? `assets/ai-logos/${_logoKind(sub.kind, sub.currentModel?.id) || String(sub.kind).replace(/-resume$/, '')}.svg`
+          ? `assets/ai-logos/${_logoKind(sub.kind, require('../core/codeagent-models').iconModelId(sub)) || String(sub.kind).replace(/-resume$/, '')}.svg`
           : '';
         const modelLabel = sub && sub.currentModel ? (typeof modelShort === 'function' ? modelShort(sub.currentModel) : sub.currentModel.id) : '';
         const subRuntime = sub ? getSessionRuntimeTruth(sub) : null;
@@ -931,7 +931,7 @@ sessionListEl.addEventListener('keydown', event => {
         if (!member) return '';
         let state = partitionSidebarSessions([member], { sessionMap, groupMemberIds: new Set([id]) }).states.get(id) || 'idle';
         if (getSessionRuntimeTruth(member).state === RUNTIME_DORMANT && !member._resumePending && state !== 'error') state = 'dorm';
-        return _sessionKindHtml(member.kind, member.currentModel ? modelShort(member.currentModel) : '', state, '', member.currentModel?.id || '');
+        return _sessionKindHtml(member.kind, member.currentModel ? modelShort(member.currentModel) : '', state, '', require('../core/codeagent-models').iconModelId(member));
       }).join('');
       const answered = s._meeting.answeredThisTurn?.size || 0;
       const progress = memberTotal ? Math.min(100, answered / memberTotal * 100) : 0;
@@ -1046,7 +1046,7 @@ sessionListEl.addEventListener('keydown', event => {
     // 在途时标签里就是当前那一步和耗时，悬停看编号与全程。
     const bridge = bridgeBadge(s.id);
     const bridgeHtml = bridge ? `<span class="bt-badge" data-state="${escapeHtml(bridge.state)}" data-role="${escapeHtml(bridge.role || '')}" title="${escapeHtml(bridge.sub)}">${escapeHtml(bridge.chip)}</span>` : '';
-    div.innerHTML = _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), s.currentModel?.id || '')
+    div.innerHTML = _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), require('../core/codeagent-models').iconModelId(s))
       + '<span class="sl-title">' + _warningHtml(anyWarning) + poolHtml + bridgeHtml + escapeHtml(displayTitle) + '</span>'
       + timeHtml(s, showUnread ? Math.max(1, unreadCount) : 0);
     if (child) div.className += ' child';
