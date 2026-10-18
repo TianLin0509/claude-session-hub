@@ -178,36 +178,40 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
     for (const x of tree) { const p = byPid.get(x); if (!p || owner.has(x)) continue; owner.set(x, id); ws += p.wsBytes || 0; count += 1; if (isCodeAgent(p)) codeAgent += 1; }
     sessions.set(id, { pid: Number(pid), memMB: mb(ws), processes: count, codeAgent });
   }
-  const family = p => {
-    const n = String(p.name || '').toLowerCase();
-    if (isCodeAgent(p)) return 'codeagent';
-    if (n === exe || n === 'aigroupchathub.exe') return 'hub';
-    if (n === 'electron.exe') return 'electron';
-    if (n === 'node.exe' || n === 'node') return 'node';
-    return null;
-  };
   const sum = arr => arr.reduce((a, p) => a + (p.wsBytes || 0), 0);
   const hubCore = list.filter(isHubCore), codeAgents = list.filter(isCodeAgent);
   const sessionProcs = list.filter(p => owner.has(p.pid));
-  // 另一个还活着的 Hub 主进程（树外、不是 --type= 子进程）：它下面的进程归它，不算残留；它自己单列（另一个实例，或重启时没退出的旧主进程）。
-  const { isHubProcess } = require('../process-reclaim');
-  const isHubMain = p => !hubTree.has(p.pid) && !/--type=/.test(String(p.cmd || '')) && (String(p.name || '').toLowerCase() === exe || isHubProcess(p));
-  const { ancestorChain } = require('../process-reclaim');
-  const otherHubOf = p => ancestorChain(p, byPid).find(isHubMain) || null;
-  const otherHub = new Map(); // 主进程 PID → 子进程数与内存
-  for (const p of list) {
-    if (hubTree.has(p.pid)) continue;
-    const root = otherHubOf(p);
-    if (!root) continue;
-    const o = otherHub.get(root.pid) || { count: 0, ws: 0 };
-    o.count += 1; o.ws += p.wsBytes || 0; otherHub.set(root.pid, o);
+  const lower = p => String(p.name || '').toLowerCase();
+  const isHelper = p => /--type=/.test(String(p.cmd || ''));
+  // 树外的 Hub 主进程（不是 --type= 子进程）：活着、名下有进程或开着窗口的，是「别的 Hub」（另一个实例），它整棵进程树都归它；
+  // 名下空空、也没窗口的也不算残留（Hub 主进程一律不进残留、也永远不结束），单列提示。
+  const { isHubProcess, ancestorChain } = require('../process-reclaim');
+  const isHubMain = p => !hubTree.has(p.pid) && !isHelper(p) && (lower(p) === exe || isHubProcess(p));
+  const otherTree = new Map(); // 进程 PID → 所属的别的 Hub 主进程 PID
+  const otherHubs = [];
+  for (const main of list.filter(isHubMain)) {
+    const tree = subtreePids(main.pid, children, byPid);
+    for (const x of tree) if (!otherTree.has(x)) otherTree.set(x, main.pid);
+    const members = [...tree].map(x => byPid.get(x)).filter(Boolean);
+    otherHubs.push({ pid: main.pid, name: main.name, startedAt: main.startedAt || null, memMB: mb(main.wsBytes), processes: members.length - 1, treeMemMB: mb(sum(members)),
+      hasWindow: !!main.hasWindow, idle: members.length <= 1 && !main.hasWindow });
   }
-  // CodeAgent 残留最可疑，排最前；同类按内存。
-  const rank = { codeagent: 0, hub: 1, electron: 2, node: 3 };
-  const leftovers = list.filter(p => !hubTree.has(p.pid) && family(p) && !otherHubOf(p)).sort((a, b) => (rank[family(a)] - rank[family(b)]) || ((b.wsBytes || 0) - (a.wsBytes || 0)));
+  const family = p => {
+    const n = lower(p);
+    if (isCodeAgent(p)) return 'codeagent';
+    if (n === 'node.exe' || n === 'node') return 'node';
+    if (isHelper(p) && (n === exe || n === 'electron.exe' || n === 'aigroupchathub.exe')) return 'electron-helper';
+    return null;
+  };
+  // 残留嫌疑只有一种：父进程已经不在、不在当前 Hub 和任何别的 Hub 进程树里、自己不是 Hub 主进程的 CodeAgent / node；
+  // 孤立的 Electron 子进程（--type=）也列，单独标注。CodeAgent 排最前，同类按内存。
+  const isLeftover = p => !hubTree.has(p.pid) && !otherTree.has(p.pid) && !isHubMain(p) && !realParent(p, byPid) && !!family(p);
+  const rank = { codeagent: 0, node: 1, 'electron-helper': 2 };
+  const leftovers = list.filter(isLeftover).sort((a, b) => (rank[family(a)] - rank[family(b)]) || ((b.wsBytes || 0) - (a.wsBytes || 0)));
+  const otherMembers = list.filter(p => otherTree.has(p.pid));
   const row = p => ({ name: p.name, pid: p.pid, ppid: p.ppid || 0, memMB: mb(p.wsBytes), privMB: mb(p.privBytes), startedAt: p.startedAt || null,
     hub: hubTree.has(p.pid), hubCore: isHubCore(p), codeAgent: isCodeAgent(p), session: owner.has(p.pid) ? String(owner.get(p.pid)).slice(0, 8) : null,
-    leftover: !hubTree.has(p.pid) && !!family(p) });
+    otherHub: otherTree.has(p.pid), leftover: isLeftover(p) });
   return {
     sampledAt: snap.sampledAt || now, total: list.length, hubPid, hubFound: byPid.has(hubPid),
     summary: {
@@ -216,13 +220,16 @@ function analyzeProcesses(snap, { hubPid, hubExe, sessionPids = [], top = TOP_N,
       hubSessions: { sessions: sessions.size, processes: sessionProcs.length, memMB: mb(sum(sessionProcs)) },
       hubTree: { count: hubTree.size, memMB: mb(sum(list.filter(p => hubTree.has(p.pid)))) },
       leftovers: { count: leftovers.length, memMB: mb(sum(leftovers)) },
-      otherHubs: { count: otherHub.size, processes: [...otherHub.values()].reduce((a, o) => a + o.count, 0), memMB: mb([...otherHub.values()].reduce((a, o) => a + o.ws, 0)) },
+      otherHubs: { count: otherHubs.length, processes: otherMembers.length, memMB: mb(sum(otherMembers)) },
     },
     top: [...list].sort((a, b) => (b.wsBytes || 0) - (a.wsBytes || 0)).slice(0, top).map(row),
     leftovers: leftovers.slice(0, MAX_LEFTOVERS).map(p => ({ name: p.name, pid: p.pid, ppid: p.ppid || 0, memMB: mb(p.wsBytes), startedAt: p.startedAt || null,
-      ageMin: p.startedAt ? Math.max(0, Math.round((now - p.startedAt) / 60000)) : null, kind: family(p), parentAlive: !!realParent(p, byPid),
-      hint: isHubMain(p) ? `AI Hub 主进程（另一个实例或没退出的旧进程${otherHub.get(p.pid) ? `，下面还有 ${otherHub.get(p.pid).count} 个进程共 ${mb(otherHub.get(p.pid).ws)} MB` : ''}）` : processHint(p.cmd) })),
+      ageMin: p.startedAt ? Math.max(0, Math.round((now - p.startedAt) / 60000)) : null, kind: family(p), parentAlive: false,
+      hint: family(p) === 'electron-helper' ? '孤立的 Electron 子进程（它的主进程已经不在了）' : processHint(p.cmd) || (family(p) === 'node' ? 'Node' : '') })),
+    otherHubs: otherHubs.sort((a, b) => b.treeMemMB - a.treeMemMB).slice(0, 10),
     sessions,
+    // 三期远程维护用：永远不能结束的进程（当前 Hub 进程树、所有别的 Hub 主进程及其进程树）
+    protectedPids: new Set([...hubTree, ...otherTree.keys()]),
   };
 }
 
@@ -335,7 +342,7 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
       if (analyzed) ctx.sessionMem = analyzed.sessions;
       if (error) ctx.processError = errText(error);
       if (sections.includes('processes')) {
-        if (analyzed) { const { sessions: _s, ...rest } = analyzed; out.processes = rest; } else out.processes = { error: errText(error) };
+        if (analyzed) { const { sessions: _s, protectedPids: _p, ...rest } = analyzed; out.processes = rest; } else out.processes = { error: errText(error) };
         out.timings.processes = sys.clock() - s;
       }
     })());
@@ -357,7 +364,7 @@ function summarize(d) {
   if (p && !p.error && p.summary) {
     parts.push(`CodeAgent ${p.summary.codeAgent.count} 个共 ${gb(p.summary.codeAgent.memMB * 1048576)} GB`);
     parts.push(`Hub 自身 ${gb(p.summary.hubSelf.memMB * 1048576)} GB`);
-    if (p.summary.leftovers.count) parts.push(`树外残留嫌疑 ${p.summary.leftovers.count} 个（${gb(p.summary.leftovers.memMB * 1048576)} GB）`);
+    if (p.summary.leftovers.count) parts.push(`残留嫌疑 ${p.summary.leftovers.count} 个（${gb(p.summary.leftovers.memMB * 1048576)} GB）`);
   }
   const h = d.hub;
   if (h && !h.error) {
@@ -384,7 +391,7 @@ const STEPS = [
     if (d.hub?.sessions?.list) d.hub.sessions.list = [];
   }],
   ['只留各段汇总', d => {
-    if (d.processes && !d.processes.error) { delete d.processes.top; delete d.processes.leftovers; }
+    if (d.processes && !d.processes.error) { delete d.processes.top; delete d.processes.leftovers; delete d.processes.otherHubs; }
     if (d.hub?.queue?.threads) d.hub.queue.threads = d.hub.queue.threads.slice(0, 10).map(q => ({ thread: q.thread, phase: q.phase, round: q.round, queueNote: q.queueNote }));
     if (d.pool?.accounts) d.pool.accounts = d.pool.accounts.map(a => ({ alias: a.alias, state: a.state, activeSessions: a.activeSessions }));
     if (d.pool) delete d.pool.models;

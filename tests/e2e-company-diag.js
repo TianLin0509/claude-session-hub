@@ -118,7 +118,12 @@ async function main() {
     check(d.processes.hubFound && d.processes.summary.hubSelf.count >= 2 && d.processes.summary.hubSelf.memMB > 0 && d.processes.top.length === 20, `进程：前 20、Hub 自身 ${d.processes.summary.hubSelf.count} 个进程 ${d.processes.summary.hubSelf.memMB} MB（真实 Win32_Process）`);
     const leftover = d.processes.leftovers.find(x => x.pid === outsider.pid);
     check(leftover && leftover.kind === 'codeagent' && leftover.hint === 'CodeAgent' && leftover.parentAlive === false && d.processes.leftovers[0].kind === 'codeagent', `树外残留嫌疑认出父进程已退出的 node（PID ${outsider.pid}），CodeAgent 类排最前`);
-    const intree = d.processes.top.concat(d.processes.leftovers).filter(x => x.codeAgent && x.hub);
+    // 环境里另有正在运行的 Hub（家里这台隔离 Hub；跑测试的电脑上还有生产 Hub）：一律归「别的 Hub」，不进残留
+    const otherPids = (d.processes.otherHubs || []).map(x => x.pid);
+    check(otherPids.includes(home.pid) && !d.processes.leftovers.some(x => x.pid === home.pid)
+      && d.processes.leftovers.every(x => ['codeagent', 'node', 'electron-helper'].includes(x.kind) && x.parentAlive === false)
+      && !d.processes.leftovers.some(x => otherPids.includes(x.pid)),
+      `正在运行的别的 Hub（家里隔离 Hub PID ${home.pid} 等 ${otherPids.length} 个主进程）归「别的 Hub」，没有一个进残留；残留只有父进程不在的 CodeAgent / node / 孤立 Electron 子进程`);
     check(d.processes.summary.codeAgent.inHub >= 1 && d.processes.summary.codeAgent.outside >= 1 && !d.processes.leftovers.some(x => x.pid === companyPid), `CodeAgent：Hub 会话里 ${d.processes.summary.codeAgent.inHub} 个、树外 ${d.processes.summary.codeAgent.outside} 个；公司 Hub 主进程不在残留里`);
     const sess = d.hub.sessions.list.find(s => s.title === 'diag-probe-shell');
     check(sess && sess.state === 'active' && sess.pid > 0 && sess.memMB > 0 && sess.processes >= 2, `Hub 会话列表对上了 PID ${sess && sess.pid} 与内存 ${sess && sess.memMB} MB（含会话里的 node）`);
@@ -134,7 +139,7 @@ async function main() {
     check(!leaks.length, '回报里没有号编号、备注、工号、令牌、配对码' + (leaks.length ? '（漏了：' + leaks.join('、') + '）' : ''));
     check(!/codeagent-diag-(intree|outside)-probe/.test(text), '回报里没有命令行原文');
     const cardText = await hc.eval('document.querySelector("dialog.cl-diag").innerText');
-    check(/内存都去哪了/.test(cardText) && /通道并行与队列/.test(cardText) && /树外残留嫌疑/.test(cardText) && /号 1/.test(cardText) && !/abc123|张三/.test(cardText), '卡片用人话标签显示各段，号用代称');
+    check(/内存都去哪了/.test(cardText) && /通道并行与队列/.test(cardText) && /残留嫌疑/.test(cardText) && /别的 Hub（不算残留）/.test(cardText) && /号 1/.test(cardText) && !/abc123|张三/.test(cardText), '卡片用人话标签显示各段，号用代称');
 
     // ---- 公司：审计日志；界面轻提示中性措辞 ----
     const audit = fs.readFileSync(path.join(cdata, 'logs', 'company-diag.log'), 'utf8');

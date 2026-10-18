@@ -32,16 +32,16 @@ function fakeProcesses() {
   ] };
 }
 
-test('进程分类：Hub 自身、会话进程树、CodeAgent（树内 / 树外）、树外残留嫌疑与 PID 复用', () => {
+test('进程分类：Hub 自身、会话进程树、CodeAgent（树内 / 树外）、残留嫌疑（父进程不在的 CodeAgent / node）与 PID 复用', () => {
   const a = D.analyzeProcesses(fakeProcesses(), { hubPid: 100, hubExe: 'AIGroupChatHub.exe', sessionPids: [{ id: 's-1-abcdefgh', pid: 200 }], now: NOW });
   assert.equal(a.hubFound, true);
   assert.deepEqual(a.summary.hubSelf, { count: 3, memMB: 1000 });
   assert.deepEqual(a.summary.codeAgent, { count: 3, memMB: 2400, inHub: 2, outside: 1 });
   assert.deepEqual(a.summary.hubSessions, { sessions: 1, processes: 3, memMB: 1360 });
-  assert.deepEqual(a.leftovers.map(x => x.pid), [300, 301, 400], '树外的 CodeAgent / Electron / Node 都列出（CodeAgent 排前），PID 复用的 400 不算 Hub 的孩子');
+  assert.deepEqual(a.leftovers.map(x => x.pid), [300, 400], '父进程不在的 CodeAgent / node 才算（CodeAgent 排前）；PID 复用的 400 不算 Hub 的孩子；父进程活着的 Electron 301 不算');
   const l300 = a.leftovers[0];
   assert.equal(l300.kind, 'codeagent'); assert.equal(l300.parentAlive, false); assert.equal(l300.hint, 'CodeAgent（serve）'); assert.equal(l300.ageMin, 1440);
-  assert.ok(!a.leftovers.some(x => x.pid === 302), '系统进程不算残留');
+  assert.ok(!a.leftovers.some(x => [301, 302].includes(x.pid)), '别的程序、系统进程不算残留');
   assert.equal(a.top[0].pid, 300); assert.equal(a.top.length, 10);
   assert.equal(a.top.find(x => x.pid === 201).session, 's-1-abcd');
   assert.equal(a.sessions.get('s-1-abcdefgh').memMB, 1360);
@@ -49,16 +49,28 @@ test('进程分类：Hub 自身、会话进程树、CodeAgent（树内 / 树外�
   assert.ok(!('cmd' in a.top[0]) && !('cmd' in a.leftovers[0]));
 });
 
-test('另一个还活着的 Hub 主进程：它名下的进程不算残留；它自己单列为「另一个实例或没退出的旧进程」', () => {
+test('环境里另有正在运行的 Hub：主进程和它整棵进程树都归「别的 Hub」、不算残留，且列入永不结束的保护名单', () => {
   const snap = fakeProcesses();
-  snap.processes.push(proc(500, 4, 'AIGroupChatHub.exe', 250, { startedAt: NOW - 90000000 }), proc(501, 500, 'AIGroupChatHub.exe', 300, { cmd: 'x --type=renderer' }),
-    proc(502, 500, 'powershell.exe', 30), proc(503, 502, 'node.exe', 700, { cmd: 'node codeagent serve' }));
+  snap.processes.push(
+    // 另一个正在运行的 Hub（父进程早已退出，同 bootstrap 拉起后退出的情形）：名下界面、会话、CodeAgent
+    proc(500, 9, 'AIGroupChatHub.exe', 250, { startedAt: NOW - 90000000 }), proc(501, 500, 'AIGroupChatHub.exe', 300, { cmd: 'x --type=renderer' }),
+    proc(502, 500, 'powershell.exe', 30), proc(503, 502, 'node.exe', 700, { cmd: 'node codeagent serve' }),
+    // 开着窗口、没有子进程的 Hub 主进程；空空的 Hub 主进程
+    { ...proc(510, 9, 'electron.exe', 120, { cmd: 'electron.exe C:\\Users\\x\\claude-session-hub' }), hasWindow: true },
+    proc(600, 9, 'AIGroupChatHub.exe', 90),
+    // 孤立的 Electron 子进程；父进程活着的 node（别的程序起的）
+    proc(700, 9999, 'AIGroupChatHub.exe', 60, { cmd: 'AIGroupChatHub.exe --type=gpu-process' }), proc(800, 302, 'node.exe', 40, { cmd: 'node tool.js' }));
   const a = D.analyzeProcesses(snap, { hubPid: 100, hubExe: 'AIGroupChatHub.exe', now: NOW });
-  assert.ok(!a.leftovers.some(x => [501, 503].includes(x.pid)), '别的 Hub 名下的进程不进残留');
-  const main = a.leftovers.find(x => x.pid === 500);
-  assert.equal(main.kind, 'hub'); assert.match(main.hint, /AI Hub 主进程（另一个实例或没退出的旧进程，下面还有 3 个进程共 1030 MB）/);
-  assert.deepEqual(a.summary.otherHubs, { count: 1, processes: 3, memMB: 1030 });
-  assert.equal(a.leftovers[0].pid, 300, 'CodeAgent 残留仍排最前');
+  assert.deepEqual(a.leftovers.map(x => [x.pid, x.kind]), [[300, 'codeagent'], [400, 'node'], [700, 'electron-helper']]);
+  assert.match(a.leftovers[2].hint, /孤立的 Electron 子进程/);
+  for (const pid of [500, 501, 502, 503, 510, 600, 800]) assert.ok(!a.leftovers.some(x => x.pid === pid), pid + ' 不该算残留');
+  const others = Object.fromEntries(a.otherHubs.map(x => [x.pid, x]));
+  assert.deepEqual([others[500].processes, others[500].treeMemMB, others[500].idle], [3, 1280, false]);
+  assert.equal(others[510].hasWindow, true); assert.equal(others[510].idle, false); assert.equal(others[600].idle, true);
+  assert.deepEqual(a.summary.otherHubs, { count: 3, processes: 6, memMB: 1490 });
+  for (const pid of [100, 101, 102, 200, 201, 202, 500, 501, 503, 510, 600]) assert.ok(a.protectedPids.has(pid), pid + ' 应在保护名单');
+  for (const pid of [300, 400, 700]) assert.ok(!a.protectedPids.has(pid));
+  assert.equal(a.top.find(x => x.pid === 503).otherHub, true);
 });
 
 test('脱敏：号身份、口令/令牌样式、配对码、网址、本机用户目录；UUID 与普通文字保留', () => {
@@ -181,7 +193,7 @@ test('端到端（内存通道）：家里发 diag → 公司直接采集、压�
   assert.ok(!r.notices.some(n => /公司联动/.test(n.title) && /这台电脑的状态/.test(n.text)), '直查结果不弹通知');
   assert.equal(r.home.status().companyHub.pending.length, 0);
   assert.equal(r.home.status().companyDiag.latest.id, sent.id);
-  assert.match(view.summary, /内存可用 13%.*CodeAgent 3 个.*树外残留嫌疑 3 个.*通道 1 个在跑、1 个排队（上限 1，受内存余量限制）/);
+  assert.match(view.summary, /内存可用 13%.*CodeAgent 3 个.*残留嫌疑 2 个.*通道 1 个在跑、1 个排队（上限 1，受内存余量限制）/);
   assert.ok(view.bytes > 0 && view.bytes < 60000);
 });
 

@@ -48,7 +48,10 @@
   → 脱敏 → JSON → gzip → base64url → `{ type:'hub-admin-status', phase:'diag', note:摘要, diag, diagBytes, elapsedMs, degraded? }`。
   不开 CodeAgent 会话、不占并行名额、不排队；老版本家里只看到 note 摘要（照常通知），新版家里解压存最近 5 份、不弹通知。
 - 段落（白名单，各自 try/catch）：machine（内存、CPU 0.5 秒采样、开机时长、C/D 盘）、processes（`core/process-inspector.js` 的 Win32_Process 快照，15 秒超时；
-  前 20、CodeAgent 数与内存、Hub 自身、按会话终端 PID 归属的会话内存、不在当前 Hub 进程树里的 CodeAgent/node/electron 残留嫌疑，CodeAgent 排前；不回传命令行）、
+  前 20、CodeAgent 数与内存、Hub 自身、按会话终端 PID 归属的会话内存；不回传命令行）。
+  「别的 Hub」：当前 Hub 进程树外的 Hub 主进程（不带 --type=）连同它整棵进程树，一律不算残留、进保护名单（`protectedPids`），名下空空又没窗口的单独提示「可能是没退出的旧主进程」；
+  「残留嫌疑」只有一种：父进程已经不在、不在当前 Hub 和任何别的 Hub 进程树里、自己不是 Hub 主进程的 CodeAgent / node，孤立的 Electron 子进程（--type=）单独标注；CodeAgent 排前（2026-10-18 审核：开发机上把正在运行的生产 Hub 误标成残留）。
+  
   hub（版本、启动时间、`parallelLimitSafe()`、通道队列快照、会话列表含 PID 与内存）、pool（只用「个人 / 号 1 / 号 2」，字段白名单）、
   logs（company-bridge.log、company-session-care.log、window-events.log 最后 N 行，默认 80、上限 200）。
 - 脱敏：所有字符串过 `scrubText`（号身份）+ 口令/令牌样式、配对码、网址、本机用户名与用户目录；UUID 保留。

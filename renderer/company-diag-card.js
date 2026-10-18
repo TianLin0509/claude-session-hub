@@ -12,7 +12,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   const PHASE = { running: '在跑', queued: '排队', replied: '已回执', failed: '没答上' };
   const STATE = { active: '开着', dormant: '休眠', closed: '已关闭' };
   const PURPOSE = { 'company-bridge': '特战通道', 'company-assistant': '助理' };
-  const KIND = { codeagent: 'CodeAgent', hub: 'AI Hub', electron: 'Electron', node: 'Node' };
+  const KIND = { codeagent: 'CodeAgent', node: 'Node', 'electron-helper': '孤立的 Electron 子进程' };
   let dialog = null, timer = null, waitingSince = 0, currentId = null, previous = null;
 
   const table = (head, rows) => rows.length ? `<table class="cl-diag-table"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '';
@@ -32,18 +32,19 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     if (!p) return '';
     if (p.error) return block('内存都去哪了', failed(p));
     const s = p.summary;
-    const leftovers = table(['名称', 'PID', '内存', '启动于', '已运行', '父进程', '看起来是'], (p.leftovers || []).map(x => [esc(x.name), esc(x.pid), gb(x.memMB), time(x.startedAt),
-      x.startedAt ? dur(Math.max(0, (p.sampledAt || Date.now()) - x.startedAt) / 1000) : '—',
-      x.parentAlive ? '在' : '<span class="bad">已退出</span>', esc(x.hint || KIND[x.kind] || x.kind)]));
+    const leftovers = table(['名称', 'PID', '内存', '启动于', '已运行', '看起来是'], (p.leftovers || []).map(x => [esc(x.name), esc(x.pid), gb(x.memMB), time(x.startedAt),
+      x.startedAt ? dur(Math.max(0, (p.sampledAt || Date.now()) - x.startedAt) / 1000) : '—', esc(x.hint || KIND[x.kind] || x.kind)]));
+    const others = table(['名称', '主进程 PID', '启动于', '名下进程', '整棵树内存', '状态'], (p.otherHubs || []).map(x => [esc(x.name), esc(x.pid), time(x.startedAt), esc(x.processes), gb(x.treeMemMB),
+      x.idle ? '没有子进程也没有窗口（可能是没退出的旧主进程，不会被自动结束）' : x.hasWindow ? '开着窗口' : '在运行']));
     const tops = table(['名称', 'PID', '内存', '启动于', '归属'], (p.top || []).map(x => [esc(x.name), esc(x.pid), gb(x.memMB), time(x.startedAt),
-      [x.hubCore ? 'Hub 自身' : '', x.session ? '会话 ' + esc(x.session) : '', x.codeAgent ? 'CodeAgent' : '', x.leftover ? '<span class="bad">树外残留嫌疑</span>' : ''].filter(Boolean).join(' · ') || '其他']));
+      [x.hubCore ? 'Hub 自身' : '', x.session ? '会话 ' + esc(x.session) : '', x.codeAgent ? 'CodeAgent' : '', x.otherHub ? '别的 Hub' : '', x.leftover ? '<span class="bad">残留嫌疑</span>' : ''].filter(Boolean).join(' · ') || '其他']));
     return block('内存都去哪了', `<div class="wp-strip">${row('CodeAgent', `${esc(s.codeAgent.count)} 个进程，共 <b>${gb(s.codeAgent.memMB)}</b>（Hub 会话里 ${esc(s.codeAgent.inHub)} 个，Hub 进程树外 ${esc(s.codeAgent.outside)} 个）`)}
       ${row('Hub 自身', `${esc(s.hubSelf.count)} 个进程（主进程、界面、隐藏窗口），共 <b>${gb(s.hubSelf.memMB)}</b>`)}
       ${row('Hub 会话', `${esc(s.hubSessions.sessions)} 个会话的 ${esc(s.hubSessions.processes)} 个进程，共 ${gb(s.hubSessions.memMB)}`)}
-      ${row('树外残留', s.leftovers.count ? `<span class="bad">${esc(s.leftovers.count)} 个</span>，共 ${gb(s.leftovers.memMB)}（不在当前 Hub 进程树里的 CodeAgent / Node / Electron，多半是重启残留）` : '没有')}
-      ${s.otherHubs?.count ? row('别的 Hub', `${esc(s.otherHubs.count)} 个 Hub 主进程在当前 Hub 之外，名下 ${esc(s.otherHubs.processes)} 个进程共 ${gb(s.otherHubs.memMB)}（不算残留）`) : ''}
+      ${row('残留嫌疑', s.leftovers.count ? `<span class="bad">${esc(s.leftovers.count)} 个</span>，共 ${gb(s.leftovers.memMB)}（父进程已经不在、也不属于任何 Hub 的 CodeAgent / Node，多半是重启残留）` : '没有')}
+      ${s.otherHubs?.count ? row('别的 Hub', `${esc(s.otherHubs.count)} 个 Hub 主进程在当前 Hub 之外，连同名下共 ${esc(s.otherHubs.processes)} 个进程、${gb(s.otherHubs.memMB)}（另一个实例，不算残留）`) : ''}
       ${row('全机', `${esc(p.total)} 个进程${p.hubFound ? '' : ' · <span class="bad">没在进程表里找到 Hub 主进程</span>'}`)}</div>
-      ${leftovers ? '<h4>树外残留嫌疑</h4>' + leftovers : ''}${tops ? `<details class="cl-details"><summary>按内存排的前 ${(p.top || []).length} 个进程</summary>${tops}</details>` : ''}`);
+      ${leftovers ? '<h4>残留嫌疑</h4>' + leftovers : ''}${others ? '<h4>别的 Hub（不算残留）</h4>' + others : ''}${tops ? `<details class="cl-details"><summary>按内存排的前 ${(p.top || []).length} 个进程</summary>${tops}</details>` : ''}`);
   }
   function hub(h) {
     if (!h) return '';
