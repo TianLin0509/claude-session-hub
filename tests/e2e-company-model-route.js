@@ -71,7 +71,6 @@ async function main() {
     // 个人账号 settings.json 写的是分档名 GLM-5.2-WX（菜单里只有 GLM-5.2-WX-Auto）：2.1.11 因此把个人账号从模型表里整个去掉（田哥 2026-10-18 反馈）。
     const PERSONAL_TIER = 'GLM-5.2-WX';
     const personal = standinConfig(path.join(root, 'company-cac'), { accountId: 'w00111111', model: PERSONAL_TIER });
-    const personalSettingsBefore = fs.readFileSync(path.join(personal, 'settings.json'), 'utf8');
     probed(path.join(cdata, 'codeagent-pool', 'personal-models.json'), [GLM]);
     const poolDir = path.join(cdata, 'codeagent-pool', 'accounts', POOL_ID);
     standinConfig(poolDir, { accountId: 'z00222222', model: DS });
@@ -159,7 +158,8 @@ async function main() {
     result.replyDs = { text: String(replyDs.reply).slice(0, 300), meta: replyDs.meta };
     check(new RegExp(tokenDs).test(replyDs.reply), '家里收到 DS 这一轮的回执');
     check(replyDs.meta && replyDs.meta.requestedModel === DS && replyDs.meta.model, `回执元数据带模型：指定 ${replyDs.meta.requestedModel}，会话模型 ${replyDs.meta.model}，回答里实际 ${replyDs.meta.actualModel || '（未记录）'}`);
-    check(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8') === personalSettingsBefore, '个人账号的 settings.json 没被改写（仍是分档名 GLM-5.2-WX）');
+    // Hub 启动时会往个人账号 settings.json 补 hook 配置（原有行为），这里只核对模型没被改。
+    check(JSON.parse(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8')).model === PERSONAL_TIER, '个人账号 settings.json 的模型没被改写（仍是分档名 GLM-5.2-WX）');
 
     // ---- 3. 指定 GLM：开在个人账号 ----
     const tokenGlm = 'MODEL-ROUTE-GLM-' + nonce;
@@ -183,7 +183,9 @@ async function main() {
       const file = path.join(root, `q-plain-${n}.md`);
       fs.writeFileSync(file, `这是 AI Hub「不指定模型轮转」的端到端测试。不需要读任何文件、不需要运行命令，只回答一行：${token}\n`);
       const asked = cli(['ask', '--file', file, '--title', `轮转 ${n}`]);
-      check(asked.ok && !asked.model, `家里不指定模型发出第 ${n} 个问题 ${asked.thread}`);
+      result[`plainAsk${n}`] = asked;
+      const sentPlain = asked.ok && asked.model === '公司默认' && /^Q-/.test(asked.thread || '');
+      check(sentPlain, `家里不指定模型发出第 ${n} 个问题 ${asked.thread}（模型：公司默认）` + (sentPlain ? '' : ' ' + j(asked)));
       const ct = await until(`company plain ${n}`, async () => (await status(cc)).threads.find(t => t.id === asked.thread && t.sessionId), 4 * 60000, 2000);
       const launch = await until(`standin launch plain ${n}`, async () => readLines(launchLog).find(x => x.hubSession === ct.sessionId), 60000, 1000);
       plain.push({ thread: asked.thread, token, configDir: path.resolve(launch.configDir).toLowerCase() });
