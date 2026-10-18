@@ -29,6 +29,11 @@ const { HubAdmin } = require('./hub-admin');
 const route = require('../codeagent-model-route');
 // 模型表「明显变化」时推给家里，最快 10 分钟一次；启动后（或换了配对）先推一次，每份回执也带一份最新的。
 const MODELS_PUSH_MIN_MS = 10 * 60000;
+// 指定模型的轮次最多等多久「能跑它的号池号空出来切模型」（2026-10-18 审核：号一直有会话时不能无限排队）。
+const MODEL_SWITCH_WAIT_MS = 10 * 60000;
+// 发回家里前要去掉号身份的消息类型，和工号掩码的样子（codeagent-pool.js maskAccountId：头 4 位 + **** + 尾 2 位，或 1 位 + ***）。
+const SCRUB_TYPES = new Set(['status', 'reply', 'hub-admin-status']);
+const MASKED_ID = /[A-Za-z0-9]{1,4}\*{3,4}[A-Za-z0-9]{0,2}/g;
 
 const PURPOSE = 'company-bridge';
 // 特战会话名（2026-10-18 田哥：「在公司侧 session 名字里直接看出对应家里哪个」）：家里编号 Q-1018-01、
@@ -203,7 +208,13 @@ class CompanyBridge {
     this.store.db.exec('CREATE TABLE IF NOT EXISTS bridge_threads(id TEXT PRIMARY KEY,payload TEXT NOT NULL,state TEXT NOT NULL,open INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL)');
     ensureOpenColumn(this.store.db, t => ['queued', 'running'].includes(deriveState(t)));
     this.link = new BridgeLink({ side: 'company', store: this.store, fetchImpl: deps.fetchImpl, now: () => this.now() });
+    // 发回家里的文字统一去掉号的身份（2026-10-18 审核：开会话失败的报错带着「号池账号 w001****11（同事备注）」原样回了家里）。
+    // 报错、进度说明里的工号掩码、号主备注、号池编号都换掉。
+    const rawPrepare = this.link.prepare.bind(this.link);
+    this.link.prepare = (type, payload = {}, ...rest) => rawPrepare(type, SCRUB_TYPES.has(type) ? this.scrubPayload(payload) : payload, ...rest);
     this.busy = null; this.advanceBusy = null; this.deliverBusy = null; this.timer = null; this.nextPullAt = 0; this.lastPullAt = 0;
+    // 本进程启动的时刻：上一个进程记下的「CLI 没就绪从何时起」「等切模型从何时起」在新进程里从头算（审核 2026-10-18）。
+    this.bootAt = this.now();
     this.askHome = new AskHome({ bridge: this, deps });
     this.images = new (require('./images').BridgeImages)(this);
     this.hubAdmin = new HubAdmin({ bridge: this, deps });
@@ -214,6 +225,27 @@ class CompanyBridge {
     if (!deps.noTimer) claimTimers(this.store);
   }
   now() { return this.deps.now ? this.deps.now() : Date.now(); }
+  // 本机各号的身份字样（工号掩码、备注、号池编号、显示名），由 main 从号池登记和个人账号凭证里取；读不到就只按掩码样式换。
+  accountSecrets() {
+    let list = [];
+    try { list = (this.deps.accountSecrets?.() || []).map(String).filter(s => s.trim().length >= 2); } catch { list = []; }
+    return [...new Set(list)].sort((a, b) => b.length - a.length);
+  }
+  scrubText(text) {
+    let s = String(text);
+    for (const secret of this.accountSecrets()) {
+      const isNote = !/\*|^[a-z0-9]{6,16}$/.test(secret);
+      s = s.split(secret).join(isNote ? '（号主备注）' : '号池里的一个号');
+    }
+    return s.replace(MASKED_ID, '号池里的一个号').replace(/号池账号\s*号池里的一个号/g, '号池里的一个号');
+  }
+  scrubPayload(payload) {
+    const out = { ...payload };
+    // 回答正文是 CodeAgent 写的，里面不会有 Hub 自己的号身份，不动（免得改坏正文）。
+    for (const key of ['note', 'error']) if (typeof out[key] === 'string') out[key] = this.scrubText(out[key]);
+    if (out.meta && typeof out.meta === 'object') { const { poolLabel: _p, account: _a, ...meta } = out.meta; out.meta = meta; }
+    return out;
+  }
   // 隐藏入口：本机解锁过一次就一直显示（存在本机数据目录）。
   unlocked() { return !!this.store.get('featureUnlock'); }
   unlock(text) {
@@ -434,12 +466,19 @@ class CompanyBridge {
     let waiting = 0;
     // 家里要求重启、正在等手上的任务答完：新任务先排队，重启后接着做。
     if (this.hubAdmin.holdingDispatch()) { this.careSessions(); return; }
-    for (const t of queue) {
+    for (let t of queue) {
       if (t.sessionId && this.sessionBusy(t.sessionId)) continue; // 追问时原会话还在忙（例如改写上一轮），等它停下
       if (t.rounds.some(x => roundPhase(x) === 'queued' && x.retryAt > this.now())) continue; // CLI 还没就绪，到点再发
       // 家里指定了模型、要新开会话：只等有这个模型的号空出来，不占别的问题的名额（没有哪个号有它的，交给 dispatch 报回）。
       if (t.model && !t.sessionId) {
         const pick = this.pickModelRoute(t.model);
+        // 等「能跑它的号池号空出来切模型」最多 MODEL_SWITCH_WAIT_MS：号一直有会话就别无限排队，回家里说明并给出现在能直接用的模型。
+        const qr = t.rounds.find(x => roundPhase(x) === 'queued');
+        if (pick && pick.reason === 'switch' && qr) {
+          const since = qr.switchWaitSince && qr.switchWaitSince >= this.bootAt ? qr.switchWaitSince : this.now();
+          if (!qr.switchWaitSince || qr.switchWaitSince !== since) t = this.patchRound(t, qr.round, { switchWaitSince: since });
+          if (this.now() - since >= MODEL_SWITCH_WAIT_MS) { this.rejectModel(t, qr, this.routeAccounts(), 'switch'); continue; }
+        } else if (qr && qr.switchWaitSince) t = this.patchRound(t, qr.round, { switchWaitSince: null });
         if (pick && !pick.ok && pick.reason !== 'none') {
           waiting += 1;
           this.reportQueue(t, waiting, limit, working, `排队：等 ${pick.model} 的号空出来（${pick.reason === 'switch' ? '有它权限的号正在跑别的模型的会话' : `有它权限的号都在处理 ${this.perAccountCap()} 个问题`}）`);
@@ -531,9 +570,11 @@ class CompanyBridge {
     this.modelsPush = { gen, sig, at: this.now() };
   }
   // 指定的模型没有哪个号有：不开会话，回家里写明原因和可选模型（家里换模型重问）；不静默换模型。
-  rejectModel(t, r, accounts) {
-    const options = route.listModels(accounts || []);
-    const why = `指定的模型 ${t.model} 在公司这边没有可用的号${options.length ? `（可选：${options.join('、')}）` : '（公司这边暂时没有可用的号）'}；没有开会话，可以换一个模型重问，或不指定模型用公司默认`;
+  rejectModel(t, r, accounts, reason = 'none') {
+    const options = reason === 'switch' ? route.servableNow(accounts || []) : route.listModels(accounts || []);
+    const why = reason === 'switch'
+      ? `指定的模型 ${t.model}：能跑它的号一直在用别的模型跑会话，等了 ${MODEL_SWITCH_WAIT_MS / 60000} 分钟仍切不过去；没有开会话。${options.length ? `现在可直接用的模型：${options.join('、')}，` : ''}可以换一个模型重问，或不指定模型用公司默认`
+      : `指定的模型 ${t.model} 在公司这边没有可用的号${options.length ? `（可选：${options.join('、')}）` : '（公司这边暂时没有可用的号）'}；没有开会话，可以换一个模型重问，或不指定模型用公司默认`;
     this.patchRound(t, r.round, { error: why, failedAt: this.now() });
     const models = this.modelTableSafe();
     void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'error', note: why, ...(models ? { models } : {}) }).catch(() => {});
@@ -645,7 +686,7 @@ class CompanyBridge {
       // CLI 还没就绪（发送入口等了 60 秒没见到输入框，明确没发）：不判失败，退回排队，隔 15 秒再发，最多等 5 分钟。
       // 2026-10-18 v2.1.10 真机 Q-1017-23 第 13 轮：远程重启后恢复出来的会话启动慢，派发直接报「cli-not-ready」判了失败。
       if (receipt && receipt.notSent && receipt.error === 'cli-not-ready') {
-        const since = r.notReadySince || this.now();
+        const since = r.notReadySince && r.notReadySince >= this.bootAt ? r.notReadySince : this.now(); // 上一个进程记的从头算
         if (this.now() - since < NOT_READY_MAX_MS) {
           this.bridgeLog(`cli-not-ready ${t.id}#${r.round} session=${String(sessionId).slice(0, 8)} 已等 ${Math.round((this.now() - since) / 1000)} 秒，${NOT_READY_RETRY_MS / 1000} 秒后再发`);
           this.patchRound(this.thread(t.id) || t, r.round, { sentAt: null, notReadySince: since, retryAt: this.now() + NOT_READY_RETRY_MS });
@@ -764,7 +805,9 @@ class CompanyBridge {
     if (!fresh || fresh.state === 'cancelled' || fresh.gen !== this.link.gen()) return;
     const session = this.deps.getSession(t.sessionId);
     // 家里指定了模型的：另记指定的和回答里实际出现的模型，家里据此提示「指定 X、实际 Y」（不一致时）。
-    const routed = t.model ? { requestedModel: t.model, actualModel: session?.codeagentActualModel || null } : {};
+    // 没指定、却落在为通道切过模型的号上（session-manager codeagentLaunchModel）：也写明实际模型，免得家里以为用的是默认。
+    const routed = t.model ? { requestedModel: t.model, actualModel: session?.codeagentActualModel || null }
+      : session?.codeagentLaunchModel ? { actualModel: session.codeagentActualModel || session.codeagentLaunchModel } : {};
     const meta = { model: session?.currentModel?.id || session?.model || null, ...routed, elapsedSec: Math.round((this.now() - (r.firstSentAt || r.sentAt || r.receivedAt || this.now())) / 1000), codeLinesRemoved: removed, rewritten: !!r.rewriteAsked, ...extraMeta };
     // 回答落账和回执入发件箱放在同一个事务：要么都成，要么都不成（下一轮再收）。之后发件箱负责重发。
     // 每份回执带一份最新的模型表（家里据此更新本地存的那份）。

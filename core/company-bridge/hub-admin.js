@@ -353,7 +353,7 @@ class HubAdmin {
           // 2026-10-18 v2.1.10 真机：重启后恢复出来的 CodeAgent 会话启动慢，「继续」和随后的派发都撞上 cli-not-ready。
           if (receipt && receipt.notSent && receipt.error === 'cli-not-ready') {
             const { NOT_READY_RETRY_MS, NOT_READY_MAX_MS } = require('./company');
-            const since = item.notReadySince || this.now();
+            const since = item.notReadySince && item.notReadySince >= this.bridge.bootAt ? item.notReadySince : this.now(); // 上一个进程记的从头算
             if (this.now() - since < NOT_READY_MAX_MS) return { state: 'waiting-ready', notReadySince: since, retryAt: this.now() + NOT_READY_RETRY_MS, note: '会话已恢复，CLI 还没就绪，稍后再发「继续」' };
             throw new Error(`会话恢复后 CodeAgent 等了 ${Math.round((this.now() - since) / 60000)} 分钟仍没启动就绪（cli-not-ready），「继续」没有发出`);
           }

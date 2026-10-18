@@ -197,3 +197,22 @@ test('重启后恢复一直不就绪：5 分钟后这一轮按失败流程报回
   assert.match(r.home.thread(thread).rounds[0].error, /cli-not-ready/);
   assert.equal(continues(r).length, 0);
 });
+
+// 2026-10-18 审核：上一个进程记下的「CLI 没就绪从何时起」不跨重启沿用，新进程第一次重试从头计时。
+test('cli-not-ready 的计时不跨重启：重启后第一次没就绪从头算，不会因为上一个进程的计时立刻判失败', async t => {
+  const r = setup(t); await pair(r);
+  notReadyFirst(r, r.company, Infinity);
+  r.hs.map.set('home-s', { id: 'home-s', kind: 'claude', status: 'idle' });
+  const { thread } = await r.home.ask('home-s', { question: '请帮我看一下公司 L2 的 HARQ 合并逻辑' });
+  await r.company.checkNow(); await r.company.checkNow();
+  const first = r.company.thread(thread).rounds[0].notReadySince;
+  assert.ok(first);
+  r.clock.now += 6 * MIN;
+  const again = restartCompany(r, { keep: () => true });
+  const calls = notReadyFirst(r, again, Infinity);
+  await again.checkNow(); await again.checkNow();
+  const round = again.thread(thread).rounds[0];
+  assert.ok(calls.length >= 1, '重启后重试了');
+  assert.ok(!round.error, '没有因为上一个进程的计时判失败');
+  assert.equal(round.notReadySince, r.clock.now, '从这个进程第一次重试算起');
+});

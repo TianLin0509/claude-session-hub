@@ -2390,6 +2390,14 @@ try {
         return pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {} })
           .filter(a => a.state === 'ready' && !a.sameAsPersonal && !a.duplicateOf).length;
       },
+      // 发回家里的文字里要去掉的号身份：号池各号的编号、工号掩码、备注、显示名，个人账号的工号掩码（company.js scrubPayload）。
+      accountSecrets: () => {
+        const pool = require('./core/codeagent-pool');
+        const personalDir = require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
+        const out = [pool.maskAccountId(pool.readCredentials(personalDir).accountId)];
+        for (const a of pool.listAccounts(getHubDataDir())) out.push(a.id, a.accountLabel, a.note, pool.label(a));
+        return out.filter(Boolean);
+      },
       // 家里按模型派活（core/codeagent-model-route.js）：个人账号 + 号池各号的模型、此刻的默认模型、进行中会话数（休眠的不算）。
       routeAccounts: ({ usePool = true } = {}) => {
         const personalDir = require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;

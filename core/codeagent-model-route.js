@@ -44,28 +44,36 @@ function routeAccounts({ dataDir, personalDir = '', activeCounts = {}, personalA
   return out;
 }
 
+// 这个号能不能用来跑该模型（审核 2026-10-18：个人账号不切默认模型，只算它此刻的默认；号池的号清单里有就算）。
+// 不能的号不进模型表、不参与挑号，免得家里看到「能用」却永远派不出去。
+function canEverServe(account, model) {
+  if (!hasModel(account, model)) return false;
+  return account.pool ? true : eq(account.defaultModel, model);
+}
 // 这个号现在能不能开一个用该模型的会话：默认模型就是它；或是号池的号、手上没有进行中的会话（可以切默认模型）。
 function canServe(account, model) {
-  if (!hasModel(account, model)) return false;
+  if (!canEverServe(account, model)) return false;
   return eq(account.defaultModel, model) || (account.pool && account.activeSessions === 0);
 }
 
-// 各号模型的合集（第一次见到的写法为准）。
+// 能派的模型合集（第一次见到的写法为准）：个人账号只算它的默认模型。
 function listModels(accounts) {
   const seen = new Map();
-  for (const a of accounts) for (const m of a.models || []) if (!seen.has(m.toLowerCase())) seen.set(m.toLowerCase(), m);
+  for (const a of accounts) for (const m of a.models || []) if (canEverServe(a, m) && !seen.has(m.toLowerCase())) seen.set(m.toLowerCase(), m);
   return [...seen.values()];
 }
+// 此刻就能开会话的模型（有号的默认就是它，或有空闲的号池号可以切过去）：等不到切换时回执里告诉家里可以换哪个。
+function servableNow(accounts) { return listModels(accounts).filter(m => accounts.some(a => canServe(a, m))); }
 function canonicalModel(accounts, model) { return listModels(accounts).find(m => eq(m, model)) || ''; }
 
 // 挑号。working：各号上通道正在处理的问题数（键 personal / 号池编号）；cap：每号同时处理的上限。
 // 返回 { ok, account, model, switchModel } 或 { ok:false, reason }：
-//   none   = 没有哪个号有这个模型的权限（不开会话，回家里写明可选模型）；
-//   switch = 有权限的号都在跑别的模型的会话（排队等它们空出来）；
+//   none   = 没有哪个号能跑这个模型（不开会话，回家里写明可选模型）；
+//   switch = 能跑它的号池号都在跑别的模型的会话（排队等它们空出来，最多等一阵，见 company.js）；
 //   busy   = 能用的号都到了每号上限（排队）。
 // 同等条件下：进行中会话少的优先，其次不用切模型的，再次号池优先（个人账号留给号主自己），最后按上次分配时间轮转。
 function pickRoute(accounts, model, { working = {}, cap = Infinity } = {}) {
-  const all = accounts.filter(a => hasModel(a, model));
+  const all = accounts.filter(a => canEverServe(a, model));
   if (!all.length) return { ok: false, reason: 'none', model: '' };
   const canonical = canonicalModel(accounts, model);
   const ready = all.filter(a => canServe(a, canonical));
@@ -79,11 +87,11 @@ function pickRoute(accounts, model, { working = {}, cap = Infinity } = {}) {
 }
 
 // 发给家里的模型表：按模型聚合，只有模型名、号数、通道在处理几个、还能并行几个；不含账号名、工号、备注。
-// parallel：通道整体 { cap, working }（session-care.js parallelCap）；cap 是每号上限（忙时 / 闲时）。
+// 「几个号能用」只算真能派的号（个人账号只算它的默认模型）。parallel：通道整体 { cap, working }；cap 是每号上限（忙时 / 闲时）。
 function modelTable(accounts, { working = {}, cap = Infinity, peak = false, parallel = null, at = Date.now() } = {}) {
   const globalFree = parallel ? Math.max(0, (Number(parallel.cap) || 0) - (Number(parallel.working) || 0)) : Infinity;
   const models = listModels(accounts).map(id => {
-    const own = accounts.filter(a => hasModel(a, id));
+    const own = accounts.filter(a => canEverServe(a, id));
     const ready = own.filter(a => canServe(a, id));
     const free = ready.reduce((n, a) => n + Math.max(0, (Number.isFinite(cap) ? cap : 0) - (Number(working[a.key]) || 0)), 0);
     const busy = own.filter(a => eq(a.defaultModel, id)).reduce((n, a) => n + (Number(working[a.key]) || 0), 0);
@@ -98,4 +106,4 @@ function tableSignature(table) {
   return JSON.stringify([table.peak, (table.models || []).map(m => [m.id.toLowerCase(), m.accounts, Math.min(2, m.free)])]);
 }
 
-module.exports = { routeAccounts, personalAccount, canServe, pickRoute, modelTable, tableSignature, listModels, canonicalModel, isPrimary, hasModel };
+module.exports = { routeAccounts, personalAccount, canServe, canEverServe, servableNow, pickRoute, modelTable, tableSignature, listModels, canonicalModel, isPrimary, hasModel };

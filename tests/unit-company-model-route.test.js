@@ -68,9 +68,11 @@ test('挑号：GLM 只挑有 GLM 的号、DS 只挑有 DS 的号；没有的报 
   assert.deepEqual(route.pickRoute(accounts, 'MiniMax-M2.7'), { ok: false, reason: 'none', model: '' });
   // 每号上限：DS 号已有 3 个在处理
   assert.equal(route.pickRoute(accounts, DS, { working: { ds: 3 }, cap: 3 }).reason, 'busy');
-  // 个人账号默认 GLM、也有 DS 权限：不切个人账号的默认模型
+  // 个人账号默认 GLM、也有 DS 权限：不切个人账号的默认模型——DS 对它算「不能派」，直接 none（不会永远排队），模型表也不列
   const personalBoth = [a('personal', [GLM, DS], GLM)];
-  assert.equal(route.pickRoute(personalBoth, DS).reason, 'switch');
+  assert.equal(route.pickRoute(personalBoth, DS).reason, 'none');
+  assert.deepEqual(route.modelTable(personalBoth, { cap: 3 }).models.map(m => m.id), [GLM]);
+  assert.deepEqual(route.servableNow([a('both', [GLM, DS], GLM, { activeSessions: 1 })]), [GLM], '号池号有会话时只有它的默认模型能直接用');
   // 号池里两个模型都有的号：空闲时可以切；手上有会话、默认又不是它时等
   assert.equal(route.pickRoute([a('both', [GLM, DS], GLM)], DS).switchModel, true);
   assert.equal(route.pickRoute([a('both', [GLM, DS], GLM, { activeSessions: 1 })], DS).reason, 'switch');
@@ -308,4 +310,88 @@ test('老公司收到带 model 的问题：忽略该字段，照旧用默认模�
   await r.company.checkNow(); await r.home.checkNow();
   assert.match(r.home.thread(res.thread).rounds[0].reply, /rsrp\.cpp/);
   r.company.close();
+});
+
+// ---- 2026-10-18 独立审核的修正 ----
+test('隐私：开会话 / 恢复失败时发回家里的报错不含工号掩码、号主备注、号池编号（公司一端统一脱敏）', async t => {
+  const r = setup(t); await pair(r); await r.company.checkNow(); await r.home.checkNow();
+  r.company.deps.accountSecrets = () => ['w001****11', 'z002****22', '同事张三', 'ds01ab23cd', 'z002****22（同事张三）'];
+  r.company.deps.createSession = async () => { throw new Error('号池账号 z002****22（同事张三） 需要号主重新登录，未启动会话；编号 ds01ab23cd'); };
+  const res = await r.home.invoke({ name: 'ask_company', callerSessionId: 'home-s', arguments: { question: '帮我查一下 AirView 里 RSRP 统计的入口文件', model: DS } });
+  await r.company.checkNow(); await r.company.checkNow(); await r.home.checkNow();
+  const err = r.home.thread(res.thread).rounds[0].error;
+  assert.match(err, /公司这边没能开始：号池里的一个号 需要号主重新登录/);
+  for (const secret of ['z002', '****', '同事张三', 'ds01ab23cd', 'w001']) assert.ok(!err.includes(secret), '回家里的报错不含 ' + secret + '：' + err);
+  // 没有登记清单时也按掩码样式换掉
+  r.company.deps.accountSecrets = () => [];
+  assert.equal(r.company.scrubText('号池账号 w001****11 需要重新登录'), '号池里的一个号 需要重新登录');
+});
+
+test('隐私：session-manager 给通道会话的号池报错不带号的显示名（本机日志里才写明）', t => {
+  const d = diskAccounts(t);
+  const old = process.env.CLAUDE_HUB_DATA_DIR; process.env.CLAUDE_HUB_DATA_DIR = d.dataDir;
+  t.after(() => { if (old === undefined) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = old; });
+  const { SessionManager } = require('../core/session-manager');
+  const sm = Object.create(SessionManager.prototype); sm.sessions = new Map();
+  const config = { configDir: d.personalDir };
+  const warn = console.warn; const logs = []; console.warn = (...a) => logs.push(a.join(' ')); t.after(() => { console.warn = warn; });
+  const cwd = tmp(t);
+  let msg = '';
+  try { sm._resolveCodeAgentPool({ purpose: 'company-bridge', codeagentAccount: 'pool', codeagentPoolPick: d.ds.id, codeagentRouteModel: GLM, cwd }, config); } catch (e) { msg = e.message; }
+  assert.match(msg, /^号池里的一个号 没有 GLM-5\.2-WX-Auto 的权限/);
+  assert.ok(!/w002|同事张三/.test(msg));
+  assert.ok(logs.some(l => /同事张三/.test(l)), '本机日志里写明是哪个号');
+  // 普通会话（本机界面）照旧写明
+  fs.rmSync(path.join(d.ds.dir, '.credentials.json'));
+  assert.throws(() => sm._resolveCodeAgentPool({ codeagentAccount: 'pool', codeagentPoolPick: d.ds.id, cwd }, config), /号池账号 未登录（同事张三） 需要号主重新登录/);
+});
+
+test('指定模型等切换最多 10 分钟：号池号一直有会话就不再排队，回执写原因和现在可直接用的模型', async t => {
+  const r = setup(t, { accounts: () => [r.fake('both', [GLM, DS], GLM)] });
+  r.box.active.both = 1;
+  await pair(r);
+  const res = await r.home.invoke({ name: 'ask_company', callerSessionId: 'home-s', arguments: { question: '帮我查一下 AirView 里 RSRP 统计的入口文件', model: DS } });
+  await r.company.checkNow(); await r.company.checkNow(); await r.home.checkNow();
+  assert.equal(r.company.thread(res.thread).state, 'queued');
+  assert.match(r.home.thread(res.thread).rounds[0].note, /排队：等 deepseek-v4-0731 的号空出来（有它权限的号正在跑别的模型的会话）/);
+  r.clock.now += 9 * MIN; await r.company.checkNow();
+  assert.equal(r.company.thread(res.thread).state, 'queued', '10 分钟内继续等');
+  r.clock.now += 2 * MIN; await r.company.checkNow(); await r.home.checkNow();
+  assert.equal(created(r).length, 0);
+  assert.match(r.home.thread(res.thread).rounds[0].error, /能跑它的号一直在用别的模型跑会话，等了 10 分钟仍切不过去；没有开会话。现在可直接用的模型：GLM-5\.2-WX-Auto/);
+});
+
+test('不指定模型：避开为通道切过模型且还有会话的号；只剩它时照用，回执写明实际模型', async t => {
+  const acct = (id, extra) => ({ id, state: 'ready', models: [GLM, DS], modelsAuthoritative: true, activeSessions: 0, lastAssignedAt: 0, sameAsPersonal: false, duplicateOf: null, routeSwitched: false, ...extra });
+  assert.equal(pool.pickAccount([acct('switched', { routeSwitched: true, activeSessions: 1, lastAssignedAt: 0 }), acct('plain', { activeSessions: 2, lastAssignedAt: 5 })]).id, 'plain');
+  assert.equal(pool.pickAccount([acct('switched', { routeSwitched: true, activeSessions: 1 })]).id, 'switched', '只剩它时照用');
+  assert.equal(pool.pickAccount([acct('switched', { routeSwitched: true, activeSessions: 0 }), acct('plain', { activeSessions: 1 })]).id, 'switched', '空闲的会先换回原模型，照常优先');
+  // 号目录里有切换标记时 listAccounts 标出来
+  const d = diskAccounts(t);
+  pool.syncSharedConfig(d.personalDir, d.both.dir, undefined, { routeModel: DS });
+  assert.equal(pool.listAccounts(d.dataDir).find(a => a.id === d.both.id).routeSwitched, true);
+  // 回执：会话记着 codeagentLaunchModel 时写实际模型
+  const r = setup(t); await pair(r);
+  const { thread } = await r.home.ask('home-s', { question: '请帮我看一下公司 L2 的 HARQ 合并逻辑' });
+  await r.company.checkNow(); await r.company.checkNow();
+  const sid = created(r)[0].id;
+  r.cs.map.get(sid).codeagentLaunchModel = DS;
+  r.cs.answer(sid, 'Chase 合并。'); r.clock.now += 20000;
+  await r.company.checkNow(); await r.home.checkNow();
+  const round = r.home.thread(thread).rounds[0];
+  assert.equal(round.meta.actualModel, DS); assert.equal('requestedModel' in round.meta, false);
+  const { replyMessage } = require('../core/company-bridge/home');
+  assert.match(replyMessage(r.home.thread(thread), round), /公司模型 deepseek-v4-0731/);
+});
+
+test('家里提示：模型表未知时指定模型会提醒可能不生效；回执没确认实际模型 / 公司是旧版时如实写', async t => {
+  const r = setup(t); await pair(r);
+  r.home.store.set('companyModels', null);
+  const res = await r.home.invoke({ name: 'ask_company', callerSessionId: 'home-s', arguments: { question: '帮我查一下 AirView 里 RSRP 统计的入口文件', model: DS } });
+  assert.match(res.modelNote, /公司模型表未知（公司 Hub 可能是旧版），指定的模型可能不生效/);
+  const { replyMessage } = require('../core/company-bridge/home');
+  const t0 = { id: 'Q-1018-09', model: DS };
+  assert.match(replyMessage(t0, { round: 1, reply: 'x', meta: { model: GLM } }), /指定了模型 deepseek-v4-0731，但公司 Hub 没有确认按它作答（可能是旧版，不认指定模型），公司会话模型 GLM-5\.2-WX-Auto/);
+  assert.match(replyMessage(t0, { round: 1, reply: 'x', meta: { model: DS, requestedModel: DS, actualModel: null } }), /指定模型 deepseek-v4-0731，未从回答里确认实际模型/);
+  assert.match(replyMessage({ id: 'Q-1', model: null }, { round: 1, reply: 'x', meta: { model: GLM } }), /公司模型 GLM-5\.2-WX-Auto）/);
 });

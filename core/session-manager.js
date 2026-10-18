@@ -1435,16 +1435,19 @@ class SessionManager extends EventEmitter {
     const personal = pool.readCredentials(personalConfig.configDir);
     const accounts = pool.listAccounts(dataDir, { activeCounts: this.codeagentPoolActiveCounts(), personalAccountId: personal.accountId });
     let account;
+    // 通道会话（替家里办事）的报错会发回家里：不带工号掩码和号主备注（同事的号，隐私），只在本机日志里写明是哪个号。
+    const bridge = codeAgentReadOnly(opts);
+    const who = a => { if (bridge) { console.warn(`[codeagent-pool] 通道会话用的号：${pool.label(a)}（${a.id}）`); return '号池里的一个号'; } return `号池账号 ${pool.label(a)}`; };
     if (opts.codeagentPoolAccount) {
       account = accounts.find(a => a.id === opts.codeagentPoolAccount);
       if (!account) throw new Error('这个会话用的号池账号已移出号池，接不上原来的对话；请新建会话');
-      if (account.state !== 'ready') throw new Error(`号池账号 ${pool.label(account)} 需要号主重新登录，登录后再打开这个会话`);
+      if (account.state !== 'ready') throw new Error(`${who(account)} 需要号主重新登录，登录后再打开这个会话`);
     } else if (opts.codeagentPoolPick) {
       // 手动选择：用户在启动中心点名的号
       account = accounts.find(a => a.id === opts.codeagentPoolPick);
       if (!account) throw new Error('选的号池账号已不在号池里，请重新选择');
-      if (account.state !== 'ready') throw new Error(`号池账号 ${pool.label(account)} 需要号主重新登录，未启动会话`);
-      if (account.sameAsPersonal || account.duplicateOf) throw new Error(`号池账号 ${pool.label(account)} 和别的号重复，不能单独使用`);
+      if (account.state !== 'ready') throw new Error(`${who(account)} 需要号主重新登录，未启动会话`);
+      if (account.sameAsPersonal || account.duplicateOf) throw new Error(`${who(account)} 和别的号重复，不能单独使用`);
     } else {
       if (!accounts.length) throw new Error('号池里还没有账号：到「AI特战队专用功能」里添加号池账号');
       account = pool.pickAccount(accounts, { model: opts.codeagentModelPick === true ? opts.model : '' });
@@ -1457,10 +1460,10 @@ class SessionManager extends EventEmitter {
     // 没指定时，之前为通道切过模型、且号上已没有进行中的会话，换回切之前的模型（syncSharedConfig）。
     const routeModel = codeAgentRouteModel(opts);
     if (routeModel) {
-      if (!account.models.some(m => m.toLowerCase() === routeModel.toLowerCase())) throw new Error(`号池账号 ${pool.label(account)} 没有 ${routeModel} 的权限，未启动会话`);
+      if (!account.models.some(m => m.toLowerCase() === routeModel.toLowerCase())) throw new Error(`${who(account)} 没有 ${routeModel} 的权限，未启动会话`);
       const current = pool.effectiveModel(account.dir);
       if (current.toLowerCase() !== routeModel.toLowerCase() && account.activeSessions > 0) {
-        throw new Error(`号池账号 ${pool.label(account)} 正在用 ${current || '别的模型'} 跑会话，不能切到 ${routeModel}；等它们结束后再试`);
+        throw new Error(`${who(account)} 正在用 ${current || '别的模型'} 跑会话，不能切到 ${routeModel}；等它们结束后再试`);
       }
     }
     const sync = pool.syncSharedConfig(personalConfig.configDir, account.dir, undefined, { routeModel, idle: !routeModel && account.activeSessions === 0 });
@@ -1469,7 +1472,9 @@ class SessionManager extends EventEmitter {
       try { this.deployCodeAgentHooks(account.dir); } catch (error) { console.warn(`[codeagent-pool] ${account.id} hook：${error.message}`); }
     }
     if (!opts.codeagentPoolAccount) pool.markAssigned(dataDir, account.id);
-    return { account, label: pool.label(account) };
+    // 没指定模型、却只能落在为通道切过模型且还有会话的号上（或恢复到这样的号）：记下这次实际启动用的模型，回执里写明（审核 2026-10-18）。
+    const switched = !routeModel && fs.existsSync(path.join(account.dir, pool.ROUTE_MARKER));
+    return { account, label: pool.label(account), launchModel: switched ? sync.model || '' : '' };
   }
 
   _createSession(kind = 'powershell', opts = {}) {
@@ -2194,6 +2199,7 @@ class SessionManager extends EventEmitter {
       ...(isCodeAgent && require('./codeagent-config').EFFORTS.includes(opts.effort) ? { effort: opts.effort } : {}),
       // 身份待绑定：main.js 的 hook 路由据此接受第一个 hook 上报的原生 id（见 codeagentIdentityPending）。
       ...(codeagentPool ? { codeagentPoolAccount: codeagentPool.account.id, codeagentPoolLabel: codeagentPool.label } : {}),
+      ...(codeagentPool && codeagentPool.launchModel ? { codeagentLaunchModel: codeagentPool.launchModel } : {}),
       ...(isCodeAgent ? { codeagentConfigDir: codeagentConfig.configDir, codeagentIdentityPending: !codeagentLaunch.sessionId,
         codeagentForkSourceSessionId: opts.forkCCSessionId || opts.codeagentForkSourceSessionId || undefined,
         codeagentModelPick: shouldPickCodeAgentModel(opts) } : {}),

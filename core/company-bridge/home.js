@@ -28,9 +28,11 @@ const family = id => { const s = String(id || '').toLowerCase(); return s.includ
 function modelNote(t, r) {
   const meta = r.meta || {};
   const used = meta.actualModel || meta.model || '';
-  const asked = meta.requestedModel || t.model || '';
+  const asked = t.model || meta.requestedModel || '';
+  if (asked && !meta.requestedModel) return `；指定了模型 ${asked}，但公司 Hub 没有确认按它作答（可能是旧版，不认指定模型）${used ? '，公司会话模型 ' + used : ''}`;
   if (asked && meta.actualModel && family(asked) !== family(meta.actualModel)) return `；指定的模型是 ${asked}，回答里实际出现的是 ${meta.actualModel}`;
-  return used ? `；公司模型 ${used}` : asked ? `；指定模型 ${asked}` : '';
+  if (asked && !meta.actualModel) return `；指定模型 ${asked}，未从回答里确认实际模型`;
+  return used ? `；公司模型 ${used}` : '';
 }
 function replyMessage(t, r) {
   if (r.error) {
@@ -234,7 +236,9 @@ class HomeBridge {
     this.saveThread(t);
     this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
     this.changed();
-    return { thread: id, status: '已发出', model: model || '公司默认', ...this.peer(),
+    // 模型表未知（公司 Hub 还没报过，多半是旧版）时指定了模型：如实提醒可能不生效（旧版公司忽略 model，照旧用默认）。
+    const caution = model && !this.companyModels() ? { modelNote: '公司模型表未知（公司 Hub 可能是旧版），指定的模型可能不生效；回执末尾会注明公司是否按它作答' } : {};
+    return { thread: id, status: '已发出', model: model || '公司默认', ...caution, ...this.peer(),
       next: '等待回执时每 10 秒检查一次，处理时长取决于公司 Agent 的任务。回执到了会作为一条新消息自动发到本会话，现在请结束本轮（或先做不依赖回执的工作），不要循环等待。' };
   }
   async followup(sessionId, { thread, question }) {

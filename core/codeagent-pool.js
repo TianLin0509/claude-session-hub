@@ -22,6 +22,7 @@ const NOTE_MAX = 24;
 const SHARED_FILES = ['AGENTS.md', 'CLAUDE.md'];
 const SHARED_DIRS = ['skills'];
 
+function fileExists(file, fsModule = fs) { try { return fsModule.statSync(file).isFile(); } catch { return false; } }
 function poolRoot(dataDir) { return path.join(dataDir, POOL_DIR); }
 function accountDir(dataDir, id) {
   if (!ACCOUNT_ID.test(String(id || ''))) throw new Error('号池账号编号无效');
@@ -97,6 +98,8 @@ function listAccounts(dataDir, { activeCounts = {}, personalAccountId = '', now 
       state, method: creds.method || null, accountLabel: maskAccountId(creds.accountId), expiresAt: creds.expiresAt || null,
       models: configured.models, modelsAuthoritative: configured.authoritative, defaultModel: configured.defaultModel || '',
       modelsProbedAt: configured.probedAt || null,
+      // 为通道指定模型切过默认模型、还没换回（hub-route-model.json，见 syncSharedConfig）。
+      routeSwitched: fileExists(path.join(dir, ROUTE_MARKER), fsModule),
       activeSessions: Number(activeCounts[a.id]) || 0,
       sameAsPersonal: !!(creds.accountId && personalAccountId && creds.accountId === personalAccountId),
       duplicateOf: duplicateOf || null,
@@ -133,7 +136,10 @@ function pickAccount(accounts, { model = '' } = {}) {
     : a.models.some(m => m.toLowerCase() === wanted) ? 0 : a.modelsAuthoritative ? 2 : 1;
   const candidates = usable.filter(a => fit(a) < 2);
   if (!candidates.length) return null;
+  // 不指定模型时避开「为通道切了模型、上面还有会话」的号（那个号此刻跑的不是它原来的默认模型）；只剩它时照用（2026-10-18 审核）。
+  const switchedBusy = a => (!wanted && a.routeSwitched && a.activeSessions > 0 ? 1 : 0);
   return candidates.slice().sort((x, y) => fit(x) - fit(y)
+    || switchedBusy(x) - switchedBusy(y)
     || x.activeSessions - y.activeSessions
     || x.lastAssignedAt - y.lastAssignedAt)[0];
 }
