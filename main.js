@@ -2340,6 +2340,7 @@ try {
     onChanged: () => sendToRenderer('bridge:changed', {}),
     onNotify: notice => {
       sendToRenderer('bridge:notification', notice);
+      if (notice?.quiet) return; // 轻提示（对端直查）：只在界面上提一句，不弹系统通知
       try { void desktopNotificationController?.show({ sessionId: notice.sessionId || 'company-bridge', title: notice.title, body: notice.text, kind: 'bridge' }); } catch (error) { console.warn('[company-bridge] notification', error.message); }
     },
   };
@@ -2422,6 +2423,25 @@ try {
       currentVersion: require('./core/distribution').editionVersion || app.getVersion(),
       relaunch: () => { app.relaunch(); app.quit(); },
       listSessionIds: () => [...(sessionManager.sessions?.keys?.() || [])],
+      // 直查（core/company-bridge/diag.js）：Hub 主进程、各会话终端的 PID（算进程树与内存）、号池各号状态（发回前换成「号 1 / 个人」代称）。
+      hubPid: process.pid,
+      hubExecPath: process.execPath,
+      hubStartedAt: Math.round(Date.now() - process.uptime() * 1000),
+      // 残留判定的最短存活时间（默认嫌疑 10 分钟、可结束 30 分钟）：只有隔离测试实例能改短（同 role.js 的做法）。
+      leftoverMinAgeMs: process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS ? Number(process.env.CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS) : undefined,
+      sessionPtyPids: () => [...(sessionManager.sessions?.entries?.() || [])].map(([id, s]) => ({ id, pid: Number(s?.pty?.pid) || 0 })),
+      poolDiag: () => {
+        const pool = require('./core/codeagent-pool');
+        const personalDir = require('./core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
+        const creds = pool.readCredentials(personalDir);
+        const known = pool.accountModels(personalDir, fs, pool.personalModelsFile(getHubDataDir()));
+        const personalActive = sessionManager.getAllSessions().filter(s => /^codeagent(?:-resume)?$/.test(String(s.kind || ''))
+          && !s.codeagentPoolAccount && s.status !== 'dormant' && s.status !== 'closed').length;
+        return {
+          personal: { state: pool.accountState(creds), models: known.models || [], defaultModel: pool.readSettingsModel(personalDir) || known.defaultModel || '', activeSessions: personalActive },
+          accounts: pool.listAccounts(getHubDataDir(), { activeCounts: sessionManager.codeagentPoolActiveCounts?.() || {}, personalAccountId: creds.accountId || '' }),
+        };
+      },
       // 重启后恢复被中断的会话（hub-admin.js resumeInterrupted）：主窗口加载完、钩子服务在听之后再恢复，会话状态才能被界面和 hook 接住。
       appReady: () => !!hookPort && !!mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading(),
     });
