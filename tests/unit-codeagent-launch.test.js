@@ -43,7 +43,9 @@ test('config: defaults, environment overrides and unsafe values', () => {
   assert.equal(base.command, 'codeagent');
   assert.equal(base.configDirEnv, 'CODEAGENT3_CONFIG_DIR');
   assert.equal(base.configDir, path.join(home, '.cac'));
-  assert.equal(resolveCodeAgentConfig({ USERPROFILE: home, CODEAGENT3_CONFIG_DIR: 'D:\\cac' }, {}).configDir, path.resolve('D:\\cac'));
+  // 2026-10-19：Hub 进程继承来的 CODEAGENT3_CONFIG_DIR 不再当个人目录（公司真机：它指向了号池号 1 的目录），只认显式指定
+  assert.equal(resolveCodeAgentConfig({ USERPROFILE: home, CODEAGENT3_CONFIG_DIR: 'D:\\cac' }, {}).configDir, path.join(home, '.cac'));
+  assert.equal(resolveCodeAgentConfig({ USERPROFILE: home, CODEAGENT3_CONFIG_DIR: 'D:\\cac' }, { configDir: 'D:\\hub-set' }).configDir, path.resolve('D:\\hub-set'));
   const custom = resolveCodeAgentConfig({ USERPROFILE: home, AI_HUB_CODEAGENT_COMMAND: 'C:\\tools\\code agent.cmd',
     AI_HUB_CODEAGENT_CONFIG_DIR: 'D:\\test\\.cac' }, {});
   assert.equal(commandHead(custom.command), "& 'C:\\tools\\code agent.cmd'");

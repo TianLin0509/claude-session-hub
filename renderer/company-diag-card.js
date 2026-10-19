@@ -109,6 +109,23 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   }
   // ---- 二期：CodeAgent、仿真、功能 ----
   const okErr = (okAt, err) => `${okAt ? '最近成功 ' + time(okAt) : '还没成功过'}${err ? ` · <span class="bad">最近错误：${esc(err)}</span>` : ''}`;
+  // 个人账号配置目录（2026-10-19）：从哪来、settings.json 写的模型、是否和号池号的目录重叠、继承来的配置目录已忽略（都不带路径）
+  const DIR_SOURCE = { 'hub-env': '由 AI_HUB_CODEAGENT_CONFIG_DIR 指定', 'hub-config': 'Hub 设置里指定', default: '默认 ~/.cac', 'ignored-inherited-env': '默认 ~/.cac',
+    'inherited-user-env': '继承的配置目录（用户级环境变量里设的，已采用）', 'inherited-system-env': '继承的配置目录（系统级环境变量里设的，已采用）',
+    'codeagent-env': '取自 Hub 继承的 CODEAGENT3_CONFIG_DIR（旧版行为）' };
+  const ORIGIN = { 'user-env': '用户级环境变量里设了它', 'system-env': '系统级环境变量里设了它', 'process-only': '不是用户级或系统级环境变量，是启动 Hub 的那个进程带进来的', unknown: '读不到用户级 / 系统级设置，来源未知' };
+  function personalDir(p) {
+    const parts = [esc(DIR_SOURCE[p.configSource] || p.configSource || '未知')];
+    if (p.configModel != null) parts.push('settings.json 的 model：' + (p.configModel ? esc(p.configModel) : '没写'));
+    if (p.inPool) parts.push(`<span class="bad">和${esc(p.inPoolAlias || '号池')}的目录重叠</span>`);
+    else if (p.inPool === false) parts.push('不在号池目录里');
+    const i = p.inheritedConfigDir;
+    if (i) {
+      const inside = i.startedInside ? [i.startedInside.hubSession ? 'Hub 的环境里有 Hub 会话标记' : '', i.startedInside.codeagent ? 'Hub 的环境里有 CodeAgent 启动器标记' : ''].filter(Boolean) : [];
+      parts.push(`${i.adopted ? esc(i.note || '继承的配置目录已采用') : `<span class="bad">${esc(i.note || '继承的配置目录已忽略')}</span>`}（${i.inPool ? `它指向${esc(i.inPoolAlias || '号池')}的目录` : '它不在号池目录里'}；${esc(ORIGIN[i.origin] || ORIGIN.unknown)}${inside.length ? '；' + esc(inside.join('、')) + '，说明 Hub 是从某个会话里启动的' : ''}）`);
+    }
+    return parts.join(' · ');
+  }
   function codeagent(c) {
     if (!c) return '';
     if (c.error) return block('CodeAgent', failed(c));
@@ -116,6 +133,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     const quota = table(['号', '剩余额度', '档位', '读自会话', '读数时间'], (c.quota || []).map(q => [esc(q.account), `<b>${esc(q.pct)}%</b>（${esc(q.remaining)}${q.total ? ' / ' + esc(q.total) : ''}）`, esc(q.bucket || ''), esc(q.session), ago(q.sessionActiveAt)]));
     return block('CodeAgent', `<div class="wp-strip">${row('版本', c.version ? 'v' + esc(c.version) : `<span class="bad">没读到：${esc(c.versionError || '')}</span>`)}
       ${row('个人账号', p ? `${p.ready ? esc(p.state) : `<span class="bad">${esc(p.state)}</span>`}${p.expiresAt ? ' · 登录到期 ' + time(p.expiresAt) : ''}${p.defaultModel ? ' · 默认模型 ' + esc(p.defaultModel) : ''}` : esc(c.loginError || '读不到'))}
+      ${p ? row('个人配置目录', personalDir(p)) : ''}
       ${row('号池', `${esc(c.pool.total)} 个号，可用 ${esc(c.pool.ready)} 个${c.pool.needLogin ? `，<span class="bad">${esc(c.pool.needLogin)} 个需要重新登录</span>` : ''}`)}
       ${row('额度', (c.quota || []).length ? `读了 ${esc(c.quotaScreens.read)} 个会话屏幕` : esc(c.quotaNote || '没读到'))}
       ${Array.isArray(c.avoid) ? row('避让中', c.avoid.length ? c.avoid.map(a => `<span class="bad">${esc(a.account)}</span> ${esc(a.label || '')}`).join('；') : '没有') : ''}</div>${quota}`);
