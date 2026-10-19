@@ -166,12 +166,14 @@ test('openLoginWindow writes fixture credentials only in an isolated test Hub an
   if (process.platform !== 'win32') return;
   const calls = [];
   const spawnFn = (file, args, options) => { calls.push({ file, args, options }); return { on() {}, unref() {} }; };
-  pool.openLoginWindow(data, id, config, { env: { PATH: 'x', CODEAGENT_HUB_PORT: '1' }, spawnFn });
+  pool.openLoginWindow(data, id, config, { env: { PATH: 'x', CODEAGENT_HUB_PORT: '1', CODEAGENT3_X_AUTH_TOKEN: 'fixture-parent', TOOL_GUARD_CODEAGENT3_DATA_DIR: 'fixture-guard' }, spawnFn });
   assert.equal(calls.length, 1);
   assert.match(calls[0].args.join(' '), /auth login --method idaas/);
   assert.equal(calls[0].options.env.CODEAGENT3_CONFIG_DIR, pool.accountDir(data, id));
   assert.equal(calls[0].options.cwd, pool.accountDir(data, id));
   assert.equal('CODEAGENT_HUB_PORT' in calls[0].options.env, false);
+  assert.equal(calls[0].options.env.CODEAGENT3_X_AUTH_TOKEN, undefined);
+  assert.equal(calls[0].options.env.TOOL_GUARD_CODEAGENT3_DATA_DIR, 'fixture-guard');
 });
 
 test('localCandidates lists logged-in .cac* dirs under the scan root and importLocal copies them into the pool', () => {
@@ -226,7 +228,9 @@ test('model probe parses the CodeAgent model menu and probed lists win over conf
 test('model probe drives a CLI through its own /model menu and reports login prompts', async () => {
   const probe = require('../core/codeagent-model-probe');
   const { EventEmitter } = require('node:events');
-  const makePty = script => ({ spawn: () => {
+  let childEnv;
+  const makePty = script => ({ spawn: (_command, _args, options) => {
+    childEnv = options.env;
     const ee = new EventEmitter(); let killed = false;
     const p = { onData: f => ee.on('data', f), onExit: f => ee.on('exit', f), write: data => script.onInput(data, d => ee.emit('data', d)), kill: () => { killed = true; ee.emit('exit'); } };
     setTimeout(() => script.onStart(d => ee.emit('data', d)), 10);
@@ -235,8 +239,13 @@ test('model probe drives a CLI through its own /model menu and reports login pro
   const ready = { onStart: emit => emit('> Anything I can assist you with?\r\n'), onInput: (data, emit) => {
     if (data === '\r') emit('\x1b[2J\x1b[H  Select model    ✕\r\n  ❯  1. deepseek-v4-flash-0731 default ✓\r\n\r\n  Navigate ↑ ↓ | Select enter | Back esc\r\n');
   } };
-  const ok = await probe.probeModels({ command: 'codeagent', configDirEnv: 'CODEAGENT3_CONFIG_DIR', configDir: tmp(), cwd: path.join(tmp(), 'cwd'), ptyModule: makePty(ready), readyTimeoutMs: 3000, menuTimeoutMs: 3000 });
+  const profile = tmp(); writeCreds(profile, 'idaasOAuth', { accountId: 'fixture-probe', expiresAt: 4e12 });
+  const ok = await probe.probeModels({ command: 'codeagent', configDirEnv: 'CODEAGENT3_CONFIG_DIR', configDir: profile,
+    env: { CODEAGENT3_X_AUTH_TOKEN: 'fixture-parent', TOOL_GUARD_CODEAGENT3_DATA_DIR: 'fixture-guard' },
+    cwd: path.join(tmp(), 'cwd'), ptyModule: makePty(ready), readyTimeoutMs: 3000, menuTimeoutMs: 3000 });
   assert.deepEqual(ok, { ok: true, models: ['deepseek-v4-flash-0731'], defaultModel: 'deepseek-v4-flash-0731' });
+  assert.equal(childEnv.CODEAGENT3_X_AUTH_TOKEN, undefined);
+  assert.equal(childEnv.TOOL_GUARD_CODEAGENT3_DATA_DIR, 'fixture-guard');
   const login = { onStart: emit => emit('Starting IDaaS login...\r\nW3 用户名: '), onInput: () => {} };
   const needs = await probe.probeModels({ command: 'codeagent', configDirEnv: 'CODEAGENT3_CONFIG_DIR', configDir: tmp(), cwd: path.join(tmp(), 'cwd'), ptyModule: makePty(login), readyTimeoutMs: 3000 });
   assert.equal(needs.ok, false);
