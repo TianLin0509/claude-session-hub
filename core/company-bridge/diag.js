@@ -140,6 +140,8 @@ function defaultSys() {
     clock: () => Date.now(),
     // 二期
     codeagentVersion: command => codeagentVersion(command),
+    // Hub 主进程启动时继承的原始环境（启动自检会把会话标记从 process.env 删掉，旁证要看自检前的，core/clean-launch-env.js）
+    hubEnv: (() => { try { return require('../clean-launch-env').inheritedEnv(); } catch { return process.env; } })(),
     renderRows: raw => require('../hub-phone/session-chat').renderRows(raw),
     readdir: dir => fs.promises.readdir(dir, { withFileTypes: true }),
     stat: file => fs.promises.stat(file),
@@ -414,6 +416,8 @@ function pool(raw, { avoid = {}, credit = {}, aliases: given = null, ...extra } 
     ...(key === 'personal' && Array.isArray(a.answeredModels) ? { answeredModels: a.answeredModels } : {}),
     ...(key === 'personal' && a.configModel != null ? { configModel: String(a.configModel) } : {}),
     ...(key === 'personal' && a.settingsLastChange ? { settingsLastChange: settingsChangeView(a.settingsLastChange) } : {}),
+    // 凭证读不懂时的原因（2026-10-19：读文件出错 / 不是 JSON / 没有登录项，不含凭证内容）
+    ...(a.state === 'unreadable' && a.credentialsNote ? { credentialsNote: String(a.credentialsNote).slice(0, 120) } : {}),
     ...(key === 'personal' && a.lastBackup ? { lastBackup: { model: a.lastBackup.model == null ? null : String(a.lastBackup.model), at: String(a.lastBackup.name || '').replace(/^settings\.json\.hub-backup-/, '') } } : {}),
     ...(a.routeSwitched ? { routeSwitched: true } : {}), avoid: avoidView(avoid[key]), credit: creditView(credit[key]),
     // 号池号默认模型未知 / 写的不在清单里（账号即模型，2026-10-19 审核）：这样的号不参与按模型派活
@@ -472,6 +476,7 @@ function hub(bridge, deps, sys, ctx) {
       receivedAt: r.receivedAt || null, sentAt: r.sentAt || null, waitedSec: phase === 'queued' && r.receivedAt ? Math.round((now - r.receivedAt) / 1000) : null,
       runningSec: phase === 'running' && r.sentAt ? Math.round((now - r.sentAt) / 1000) : null,
       queueNote: r.queueNote || null, retryAt: r.retryAt || null, resumePending: !!r.resumePending, receiptIssue: r.receiptIssue || null,
+      ...(r.choiceStuck ? { choiceStuck: true } : {}),
       session: t.sessionId ? String(t.sessionId).slice(0, 8) : null, sessionAlive: !!(t.sessionId && deps.getSession?.(t.sessionId)),
       sessionBusy: !!(t.sessionId && bridge.sessionBusy(t.sessionId)), working: (() => { try { return !!bridge.roundWorking(t); } catch { return null; } })(),
       transcriptAt: transcriptAt(meta) };
@@ -521,6 +526,7 @@ async function codeagent(bridge, deps, sys, ctx, poolRaw, poolError) {
   if (poolError) out.loginError = errText(poolError);
   const p = poolRaw?.personal;
   out.personal = p ? { state: POOL_STATE[p.state] || String(p.state || '未知'), ready: p.state === 'ready', expiresAt: Number(p.expiresAt) || null, defaultModel: p.defaultModel || '',
+    ...(p.state === 'unreadable' && p.credentialsNote ? { credentialsNote: String(p.credentialsNote).slice(0, 120) } : {}),
     ...(p.configModel != null ? { configModel: String(p.configModel || '') } : {}), ...(p.configMismatch ? { configNote: require('../codeagent-model-route').describeMismatch(p.configMismatch) } : {}),
     ...(p.configSource ? { configSource: p.configSource } : {}), ...(p.settingsMtime ? { settingsMtime: p.settingsMtime } : {}),
     // settings.json 最近一次被改写：时间、写前写后、来源（Hub 自己的写入按登记认，认不出记 external 并附前后启动的会话）

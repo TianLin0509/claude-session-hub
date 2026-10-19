@@ -349,3 +349,22 @@ test('6. 看守改回失败不停在被改后的值（审核）：写失败下�
   assert.equal(r2.verified, false);
   assert.equal(r2.after, DS);
 });
+
+test('2. 启动中心的预计模型（plannedModel）开关关着时等于号自己写的默认值，和同步配置同一口径', () => {
+  const dir = tmp('planned');
+  writeSettings(dir, { model: DS });
+  require('../core/codeagent-model-probe').writeProbed(path.join(dir, require('../core/codeagent-model-probe').MODELS_FILE), { models: [GLM, DS], defaultModel: GLM });
+  assert.equal(pool.plannedModel(dir, { idle: true }), DS, '号自己写的 DS，不按清单的默认 GLM 推断');
+  writeSettings(dir, {});
+  assert.equal(pool.plannedModel(dir, { idle: true }), '', '没写：未知，不猜');
+  writeSettings(dir, { model: 'GLM-9' });
+  assert.equal(pool.plannedModel(dir, { idle: true }), '', '写的不在清单里：未知');
+  // 遗留标记：满足写回条件且号空闲时是原值；号上有会话时仍是此刻写的值
+  writeSettings(dir, { model: GLM });
+  fs.writeFileSync(path.join(dir, pool.ROUTE_MARKER), JSON.stringify({ original: DS, model: GLM }));
+  assert.equal(pool.plannedModel(dir, { idle: true }), DS);
+  assert.equal(pool.plannedModel(dir, { idle: false }), GLM);
+  const personal = tmp('personal'); writeSettings(personal, { model: GLM });
+  assert.equal(pool.syncSharedConfig(personal, dir, undefined, { idle: true }).model, DS, '同步后实际定下的和预计的一致');
+  assert.equal(settingsModel(dir), DS);
+});
