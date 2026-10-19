@@ -6,7 +6,7 @@ const D = require('./data');
 async function readJson(run, args) {
   let result = await run(args);
   const checkExit = r => {
-    if (r.code !== undefined && Number(r.code) !== 0) throw new Error(String(r.stderr || r.stdout || `查询退出码 ${r.code}`).trim());
+    if (r.code === null || r.code !== undefined && Number(r.code) !== 0) throw new Error(String(r.stderr || r.stdout || `查询退出码 ${r.code}`).trim());
   };
   checkExit(result);
   let data = W.parseJsonBig(result.stdout);
@@ -24,7 +24,7 @@ async function readJson(run, args) {
 function meetingArgs(now, page = 1, size = 100) {
   const date = new Date(now), begin = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
   const end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime() - 1;
-  return ['meeting', 'query-list', '--page', String(page), '--size', String(size), '--meeting-start-time', String(begin), '--meeting-end-time', String(end), '--type', '1', '--meeting-sort', '0'];
+  return ['meeting', 'query-list', '--page', String(page), '--size', String(size), '--meeting-start-time', String(begin), '--meeting-end-time', String(end), '--type', '1', '--meeting-sort', 'asc'];
 }
 
 async function collectMeetings(runJson, now, { size = 100, maxPages = 30 } = {}) {

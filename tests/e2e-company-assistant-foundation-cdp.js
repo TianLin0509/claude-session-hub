@@ -94,6 +94,17 @@ const output = path.join(__dirname, '..', 'artifacts', '20261019-welink-foundati
     await shot('02-assistant-answer');
     assert.equal(await c.eval('document.documentElement.scrollWidth > innerWidth + 1'), false);
     result.checks.push('1440×900 无整页横向溢出');
+    fs.writeFileSync(state, 'conversations-failed');
+    await click('[data-ca="refresh"]');
+    await until(`!document.querySelector('[data-ca="refresh"]')?.disabled && /上次数据/.test(document.querySelector('.ca-coverage')?.innerText || '')`, '查询失败仍显示旧消息', 90000);
+    const stale = readSnapshot();
+    assert.equal(stale.messages['g-100'].find(m => m.sourceId === long.sourceId).text, long.text);
+    assert.equal(stale.scope.stale, true); assert.ok(stale.scope.partial > 0);
+    await click('.ca-coverage summary');
+    assert.ok(await c.eval(`/可能已过期/.test(document.querySelector('.ca-coverage').innerText)`));
+    await shot('03-failure-preserves-messages');
+    fs.writeFileSync(state, 'ok');
+    result.checks.push('合成查询故障：旧消息全文保留，页面展示原采集时间与可能过期提示');
     result.coldContactCalls = cold; result.status = 'passed';
   } catch (error) {
     result.status = 'failed'; result.error = error.stack;
@@ -101,7 +112,10 @@ const output = path.join(__dirname, '..', 'artifacts', '20261019-welink-foundati
     process.exitCode = 1;
   } finally {
     if (c) await c.close().catch(() => {});
-    if (hub) await gracefulQuit(hub);
+    if (hub) {
+      try { result.teardown = await gracefulQuit(hub); }
+      catch (error) { result.status = 'failed'; result.teardownError = error.message; result.hubLogTail = hub.log().slice(-20); process.exitCode = 1; }
+    }
     if (fs.existsSync(copiedAuth)) fs.unlinkSync(copiedAuth);
     fs.writeFileSync(path.join(output, '20261019-welink-foundation-e2e-codex1.json'), JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify(result, null, 2));

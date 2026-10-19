@@ -266,8 +266,23 @@ class CompanyAssistant {
       }
       snap.calendarNeedsSetup = errors.some(e => e.calendar);
       const convRaw = await runJson('最近会话', ['im', 'query-recent-conversation', '--count', String(CONVERSATION_LIMIT)]);
-      if (convRaw) snap.conversations = D.conversations(convRaw);
-      await this.collectMessages(snap, s, now, runJson);
+      if (convRaw && D.conversationRecords(convRaw) !== null) {
+        snap.conversations = D.conversations(convRaw);
+        await this.collectMessages(snap, s, now, runJson);
+      } else {
+        if (convRaw) errors.push({ label: '最近会话', text: '无法识别会话列表结构，保留此前记录' });
+        // 会话目录失败不能把此前已取得的聊天覆盖成空结果；身份不明或换号时不复用。
+        const previous = snap.login.uid && this.snapshotDays().map(d => this.snapshot(d)).find(p => p?.login?.uid === snap.login.uid);
+        if (previous) {
+          snap.conversations = previous.conversations || []; snap.messages = previous.messages || {};
+          snap.nameResolution = previous.nameResolution;
+        }
+        const coverage = (previous?.scope?.conversations || []).map(c => ({ ...c, status: 'partial', reason: 'query-failed', reasonLabel: '最近会话查询失败，显示上次取得的记录' }));
+        snap.scope = { ...(previous?.scope || {}), lookbackHours: previous?.scope?.lookbackHours || s.lookbackHours,
+          fetched: 0, messages: Object.values(snap.messages).reduce((n, rows) => n + rows.length, 0),
+          stale: true, capturedAt: previous?.scope?.capturedAt || previous?.at || null,
+          partial: Math.max(1, coverage.length), conversations: coverage };
+      }
       const mailRaw = await runJson('未读邮件', ['mail', 'list', '--is-read', '0', '--max', '20']);
       if (mailRaw) snap.mails = D.mails(mailRaw);
       snap.calendarNeedsSetup = errors.some(e => e.calendar);
@@ -289,7 +304,7 @@ class CompanyAssistant {
     const stored = this.read('message-cache.json', {}), previous = this.snapshot(snap.day);
     const sameOwner = !!me && (stored.identity === me || (!stored.identity && stored.version !== 2 && previous?.login?.uid === me));
     const cache = sameOwner ? (stored.version === 2 ? stored.conversations || {} : stored) : {};
-    const next = { version: 2, identity: me || null, conversations: { ...cache } }, names = D.namesOf(snap.conversations);
+    const next = { version: 2, identity: me || null, conversations: {} }, names = D.namesOf(snap.conversations);
     const coverage = [];
     for (const conv of list) {
       const got = await this.conversationHistory(conv, cache[conv.id], cutoff, me, s.myName, runJson, names);
@@ -298,7 +313,7 @@ class CompanyAssistant {
       coverage.push({ id: conv.id, name: conv.name, ...got.coverage });
       if (got.coverage.status !== 'complete' && got.coverage.reason !== 'query-failed') snap.errors.push({ label: `消息（${conv.name}）`, text: `只取到部分消息：${got.coverage.reasonLabel}` });
     }
-    for (const m of Object.values(snap.messages).flat()) if (!m.mine && m.sender && m.sender !== m.account) names.set(m.account, m.senderName || m.sender);
+    for (const m of Object.values(snap.messages).flat()) if (!m.nameSource && !m.mine && m.sender && m.sender !== m.account) names.set(m.account, m.senderName || m.sender);
     const resolution = await Identity.resolveNames({ run: (args, opts) => this.welink(args, opts), cacheDir: this.dir, identity: me,
       accounts: Object.values(snap.messages).flat().map(m => m.account), seeds: names, now });
     for (const [id, rows] of Object.entries(snap.messages)) { snap.messages[id] = Identity.applyNames(rows, resolution); next.conversations[id].messages = snap.messages[id]; }
@@ -312,8 +327,8 @@ class CompanyAssistant {
   }
   async conversationHistory(conv, cached, cutoff, me, myName, runJson, names = null) {
     // 老缓存曾截断正文，必须重新拉；部分失败也要补齐旧页，不能只向前增量。
-    const incremental = cached?.version === 2 && cached.coverage?.status === 'complete' && cached.since <= cutoff + 60000 && cached.newest;
-    const since = incremental ? cached.since : cutoff;
+    const incremental = cached?.version === 2 && cached.coverage?.status === 'complete' && cached.since <= cutoff && cached.newest;
+    const since = cutoff; // 输出缓存已经裁到 cutoff，覆盖起点必须同步，扩大窗口才能触发回填。
     const base = ['im', 'query-history-message', conv.group ? '--group-id' : '--user-account', conv.id, '--query-count', String(HISTORY_PAGE)];
     const label = `消息（${conv.name}）`;
     const norm = raw => D.messages(raw, conv, me, { myName, names });
@@ -325,7 +340,9 @@ class CompanyAssistant {
       const raw = await runJson(label, cursor ? [...base, '--message-id', cursor, '--query-direction', incremental ? '1' : '0'] : base);
       coverage.pages += 1;
       if (!raw) { coverage.status = keep.size ? 'partial' : 'failed'; coverage.reason = 'query-failed'; coverage.failedPage = i + 1; break; }
-      const original = D.messageRecords(raw), page = norm(raw);
+      const original = D.messageRecords(raw);
+      if (original === null) { coverage.status = keep.size ? 'partial' : 'failed'; coverage.reason = 'invalid-shape'; break; }
+      const page = norm(raw);
       add(page); coverage.rawCount += original.length;
       const ids = original.map(D.messageId).filter(id => id !== undefined && id !== null && id !== '').map(String);
       const next = ids.reduce((x, id) => !x || (incremental ? idCmp(id, x) > 0 : idCmp(id, x) < 0) ? id : x, null);
@@ -348,7 +365,7 @@ class CompanyAssistant {
     coverage.incompleteText = messages.filter(m => m.contentComplete === false).length;
     if (coverage.incompleteText && coverage.status === 'complete') { coverage.status = 'partial'; coverage.reason = 'legacy-text'; }
     coverage.reasonLabel = { 'page-limit': '已到本轮 30 页上限，所选范围未取全', 'query-failed': '某页查询失败，保留已取到的记录', 'missing-cursor': '返回记录缺少翻页编号',
-      'repeated-cursor': '服务端重复返回同一页', 'legacy-text': '部分旧记录仍是截断内容', exhausted: '已到查询结果末尾', 'window-reached': '已覆盖所选回看时间' }[coverage.reason];
+      'repeated-cursor': '服务端重复返回同一页', 'invalid-shape': '无法识别消息返回结构，保留此前记录', 'legacy-text': '部分旧记录仍是截断内容', exhausted: '已到查询结果末尾', 'window-reached': '已覆盖所选回看时间' }[coverage.reason];
     return { messages, coverage, cache: { version: 2, newest, since, messages, coverage } };
   }
   // 本人邮箱：设置里填过的优先；否则读 WeLink 账号信息（onebox user-info，只读）。读到的存进设置，下次不再查。
@@ -444,11 +461,23 @@ class CompanyAssistant {
     return { ok: true };
   }
 
+  snapshotDays() {
+    const today = D.dayKey(this.now()), oldest = D.dayKey(this.now() - 14 * 86400000);
+    try { return fs.readdirSync(this.dir).map(f => /^raw-(\d{4}-\d{2}-\d{2})\.json$/.exec(f)?.[1]).filter(d => d && d >= oldest && d <= today).sort().reverse(); } catch { return []; }
+  }
   sourceContext(source, day = D.dayKey(this.now())) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day)) || typeof source !== 'string' || !source || source.length > 1000) throw new Error('出处参数无效');
-    const snap = this.snapshot(day);
-    if (!snap) throw new Error('这天的本机原文已不在保留范围内，无法展示。');
-    const entry = D.sourceIndex(snap).get(source);
+    const login = this.snapshot(D.dayKey(this.now()))?.login;
+    if (!login?.ok || !login.uid) throw new Error('请先刷新数据确认当前账号，再查看本机原文。');
+    const days = this.snapshotDays();
+    if (days.includes(day)) { days.splice(days.indexOf(day), 1); days.unshift(day); }
+    let snap, entry;
+    for (const candidateDay of days) {
+      const candidate = this.snapshot(candidateDay);
+      if (candidate?.login?.uid !== login.uid) continue;
+      const found = D.sourceIndex(candidate).get(source);
+      if (found) { snap = candidate; entry = found; day = candidateDay; break; }
+    }
     if (!entry) throw new Error('本机资料中没有这条原文。可刷新数据后重试；较早的承诺可能已超出消息保留范围。');
     let context = [], coverage = null;
     if (entry.kind === 'message') {
@@ -533,13 +562,14 @@ class CompanyAssistant {
       const id = await this.ensureSession();
       if (this.sessionBusy(id)) { this.queue.unshift(job); this.job = null; return; }
       const st = this.state();
-      const prompt = st.primed === id && st.instructionsVersion === INSTRUCTIONS_VERSION ? job.prompt : this.instructions() + '\n\n---\n\n' + job.prompt;
+      const instructionsDay = D.dayKey(this.now());
+      const prompt = st.primed === id && st.instructionsVersion === INSTRUCTIONS_VERSION && st.instructionsDay === instructionsDay ? job.prompt : this.instructions() + '\n\n---\n\n' + job.prompt;
       job.baseline = this.lastFinal(id)?.id || null;
       job.sessionId = id;
       job.sentAt = this.now();
       const receipt = await this.deps.sendPrompt(id, prompt, randomUUID());
       if (!receipt || receipt.notSent || (receipt.ok === false && !receipt.unconfirmed && receipt.sendStatus !== 'stuck')) throw new Error(receipt?.error || '问题没有发进助理会话');
-      this.saveState({ primed: id, instructionsVersion: INSTRUCTIONS_VERSION });
+      this.saveState({ primed: id, instructionsVersion: INSTRUCTIONS_VERSION, instructionsDay });
     } catch (error) {
       this.failJob(job, error.message);
     } finally { this.pumping = false; this.changed(); }

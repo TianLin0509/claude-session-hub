@@ -13,7 +13,7 @@ async function runReadOnly(args, { run = W.run, cli = W.resolveCli({ configured:
   const raw = W.parseJsonBig(result.stdout);
   if (!raw || (raw.resultCode !== undefined && String(raw.resultCode) !== '0') || (raw.code !== undefined && !['0', '200'].includes(String(raw.code)))) return result;
   const rows = D.messageRecords(raw);
-  if (!rows.length) return result;
+  if (!rows?.length) return result;
   let identity;
   try { const auth = await execute(['auth', 'status'], { timeoutMs: 5000 }); const state = W.loginState(auth.stdout + '\n' + auth.stderr); if (Number(auth.code || 0) === 0 && state.ok) identity = state.uid; } catch { /* 姓名不可查时保留消息 */ }
   const accounts = rows.map(m => String(m.sender ?? m.sender_account ?? m.senderAccount ?? ''));

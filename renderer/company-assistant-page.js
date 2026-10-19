@@ -168,10 +168,10 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   function coverageNote() {
     const s = data.scope, errors = data.errors || [], names = data.nameResolution;
     if (!s && !errors.length) return '';
-    const counts = s ? `最近 ${s.lookbackHours} 小时 · ${s.fetched} 个会话 · ${s.messages} 条消息` : '采集情况';
+    const counts = s ? `${s.stale ? '上次数据' : '最近 ' + s.lookbackHours + ' 小时'} · ${s.stale ? s.conversations?.length || 0 : s.fetched} 个会话 · ${s.messages} 条消息` : '采集情况';
     const issues = [s?.partial ? `${s.partial} 个会话未取全` : '', errors.length ? `${errors.length} 项查询异常` : '', names?.unresolved ? `${names.unresolved} 个发言人姓名未确认` : ''].filter(Boolean);
     const rows = (s?.conversations || []).map(c => `<li><b>${esc(c.name)}</b> · ${c.status === 'complete' ? '读取完成' : '部分结果'} · ${esc(c.reasonLabel || '')}${c.oldestAt ? ' · 最早 ' + when(c.oldestAt) : ''}${c.newestAt ? '，最新 ' + when(c.newestAt) : ''}${c.unknownTime ? ` · ${c.unknownTime} 条缺少时间` : ''}</li>`).join('');
-    return `<details class="ca-coverage"><summary>${esc(counts)}${issues.length ? ' · ' + esc(issues.join('，')) : ''}</summary><p class="ca-note">范围是 CLI 列出的最近 ${s?.listCap || 50} 个会话${s?.limited ? '中你设置的前 ' + s.maxConversations + ' 个' : ''}；专用手机群不参与简报。查询失败时保留已取到的内容。</p>${errors.map(e => `<p class="ca-note bad">${esc(e.label)}：${esc(e.text)}</p>`).join('')}${rows ? `<ul>${rows}</ul>` : ''}</details>`;
+    return `<details class="ca-coverage"><summary>${esc(counts)}${issues.length ? ' · ' + esc(issues.join('，')) : ''}</summary>${s?.stale ? `<p class="ca-note bad">最近会话查询失败。${s.capturedAt ? '以下消息取自 ' + esc(new Date(s.capturedAt).toLocaleString('zh-CN', { hour12: false })) + '，可能已过期。' : '尚无可复用的当前账号聊天记录。'}</p>` : ''}<p class="ca-note">范围是 CLI 列出的最近 ${s?.listCap || 50} 个会话${s?.limited ? '中你设置的前 ' + s.maxConversations + ' 个' : ''}；专用手机群不参与简报。查询失败时保留已取到的内容。</p>${errors.map(e => `<p class="ca-note bad">${esc(e.label)}：${esc(e.text)}</p>`).join('')}${rows ? `<ul>${rows}</ul>` : ''}</details>`;
   }
 
   async function openSource(source, day) {
@@ -194,7 +194,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
         const m = result.entry.item;
         body = `<h3>${esc(m.subject || result.entry.label)}</h3><p>${esc(m.from || '')} ${esc(fullWhen(m.start || m.at))}${m.end ? ' — ' + esc(fullWhen(m.end)) : ''}</p><p>${esc(m.location || '')}</p>${m.preview ? `<p class="ca-note">以下为邮件预览，可让助理进一步查询完整邮件。</p><pre class="ca-source-text">${esc(m.preview)}</pre>` : ''}`;
       }
-      panel.innerHTML = `<div class="ca-source"><div class="ca-source-head"><h2>查看出处</h2><button class="ca-btn" data-ca="close-panel">关闭</button></div><p class="ca-note">${esc(result.entry.label)}</p>${result.coverage?.status && result.coverage.status !== 'complete' ? `<p class="ca-note bad">该会话只取到部分消息：${esc(result.coverage.reasonLabel)}</p>` : ''}${body}<p class="ca-note">显示本机已获取的原文与前后各两条消息。</p></div>`;
+      panel.innerHTML = `<div class="ca-source"><div class="ca-source-head"><h2>查看出处</h2><button class="ca-btn" data-ca="close-panel">关闭</button></div><p class="ca-note">${esc(result.entry.label)} · 采集于 ${esc(fullWhen(result.capturedAt))}</p>${result.coverage?.status && result.coverage.status !== 'complete' ? `<p class="ca-note bad">该会话只取到部分消息：${esc(result.coverage.reasonLabel)}</p>` : ''}${body}<p class="ca-note">${result.entry.kind === 'message' ? '显示本机已获取的原文与前后各两条消息。' : '显示本机已获取的这条记录。'}</p></div>`;
       panel.scrollTop = 0; panel.querySelector('[data-ca="close-panel"]').focus();
     } catch (error) {
       if (panel.dataset.kind === 'source' && panel.dataset.source === source) panel.innerHTML = `<div class="ca-source"><div class="ca-source-head"><h2>查看出处</h2><button class="ca-btn" data-ca="close-panel">关闭</button></div><p>${esc(error.message)}</p></div>`;

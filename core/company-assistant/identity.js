@@ -11,6 +11,42 @@ const cleanName = v => typeof v === 'string' ? v.replace(/[\x00-\x1f]/g, '').tri
 const hasChinese = v => /\p{Script=Han}/u.test(v || '');
 const readCache = file => { try { const c = JSON.parse(fs.readFileSync(file, 'utf8')); return c.version === 1 && c.entries && typeof c.entries === 'object' ? c.entries : {}; } catch { return {}; } };
 
+async function mergeCache(file, updates, now) {
+  // Hub 与 CLI 是不同进程。锁内只做同步读改写，防止两份旧副本相互覆盖。
+  const lock = file + '.lock', deadline = Date.now() + 500;
+  let fd, tmp;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    while (fd === undefined) {
+      try { fd = fs.openSync(lock, 'wx'); }
+      catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        // 临时写锁不包含资料；上个进程崩溃遗留的锁可回收。
+        try { if (Date.now() - fs.statSync(lock).mtimeMs > 30000) fs.unlinkSync(lock); } catch { /* 下轮再试 */ }
+        if (Date.now() >= deadline) return readCache(file);
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+    const merged = readCache(file);
+    for (const [account, incoming] of Object.entries(updates)) {
+      const latest = merged[account];
+      const keepLatest = latest?.name && latest.status === 'resolved' && latest.expiresAt > now &&
+        (incoming.status !== 'resolved' || latest.resolvedAt > incoming.resolvedAt ||
+          latest.resolvedAt === incoming.resolvedAt && latest.source === 'contact-detail' && incoming.source !== 'contact-detail');
+      merged[account] = keepLatest ? latest : incoming;
+    }
+    for (const [account, value] of Object.entries(merged)) if (!value || Number(value.expiresAt) < now - 7 * DAY) delete merged[account];
+    tmp = file + '.' + randomUUID() + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries: merged }), 'utf8');
+    fs.renameSync(tmp, file); tmp = null;
+    return merged;
+  } catch { return readCache(file); }
+  finally {
+    if (tmp) try { fs.unlinkSync(tmp); } catch { /* 下次清理 */ }
+    if (fd !== undefined) { try { fs.closeSync(fd); } finally { try { fs.unlinkSync(lock); } catch { /* 锁会过期 */ } } }
+  }
+}
+
 async function resolveNames({ run, cacheDir, identity, accounts, seeds = new Map(), now = Date.now(), batchSize = 10, maxCalls = 16, budgetMs = 15000 }) {
   const wanted = [...new Set(accounts.filter(a => typeof a === 'string' && a))];
   const entries = new Map(), updates = Object.create(null);
@@ -71,15 +107,11 @@ async function resolveNames({ run, cacheDir, identity, accounts, seeds = new Map
   }
   for (const account of chunks.flat()) entries.set(account, { ...entries.get(account), status: entries.get(account)?.name ? 'stale' : 'pending' });
   if (file && Object.keys(updates).length) {
-    try {
-      fs.mkdirSync(cacheDir, { recursive: true });
-      // 写前合并其他查询的结果；唯一临时文件避免 Hub 与 CLI 包装撞文件。
-      const merged = { ...readCache(file), ...updates };
-      for (const [account, value] of Object.entries(merged)) if (!value || Number(value.expiresAt) < now - 7 * DAY) delete merged[account];
-      const tmp = file + '.' + randomUUID() + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries: merged }), 'utf8');
-      fs.renameSync(tmp, file);
-    } catch { /* 缓存写失败不影响本次姓名与消息 */ }
+    const merged = await mergeCache(file, updates, now);
+    for (const account of wanted) {
+      const latest = merged[account], own = entries.get(account);
+      if (latest?.name && latest.status === 'resolved' && latest.expiresAt > now && (own?.status !== 'resolved' || latest.resolvedAt >= own.resolvedAt)) entries.set(account, latest);
+    }
   }
   const duplicates = new Map();
   for (const [account, entry] of entries) if (entry.name) { const ids = duplicates.get(entry.name) || new Set(); ids.add(account); duplicates.set(entry.name, ids); }
