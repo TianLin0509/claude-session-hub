@@ -1482,7 +1482,8 @@ class SessionManager extends EventEmitter {
     // 新开的通道会话只开在默认模型就是指定模型的号上，恢复的会话按号此刻的默认模型照常起（不「选回」旧模型）。
     const routeSwitch = require('./codeagent-model-route').routeSwitchEnabled();
     if (routeModel && !routeSwitch && !opts.codeagentPoolAccount) {
-      const current = pool.effectiveModel(account.dir);
+      // 和号表同一口径：号自己写了、且在清单里的才算默认模型（pool.strictDefaultModel），不按清单猜。
+      const current = pool.strictDefaultModel(pool.readSettingsModel(account.dir), account.models).model;
       if (current.toLowerCase() !== routeModel.toLowerCase()) throw new Error(`${who(account)} 的默认模型是 ${current || '未知'}，不是 ${routeModel}；不改号的默认模型，未启动会话`);
     } else if (routeModel && routeSwitch) {
       if (!account.models.some(m => m.toLowerCase() === routeModel.toLowerCase())) throw new Error(`${who(account)} 没有 ${routeModel} 的权限，未启动会话`);
@@ -1493,9 +1494,13 @@ class SessionManager extends EventEmitter {
     }
     const sync = pool.syncSharedConfig(personalConfig.configDir, account.dir, undefined, { routeModel: routeSwitch ? routeModel : '', routeSwitch,
       idle: !(routeSwitch && routeModel) && account.activeSessions === 0,
-      onRouteRestore: ({ before, after }) => require('./codeagent-default-model-guard').recordChange(dataDir,
-        { account: require('./codeagent-default-model-guard').accountOf({ codeagentPoolAccount: account.id }, dataDir).alias, before, after,
-          source: 'route-marker-restore', extra: { note: '账号即模型：按 hub-route-model.json 记下的原值写回一次并删除记录' } }, { persist: false }) });
+      onRouteRestore: ({ before, after, original, restored, reason }) => {
+        const alias = require('./codeagent-default-model-guard').accountOf({ codeagentPoolAccount: account.id }, dataDir).alias;
+        if (restored) require('./codeagent-default-model-guard').recordChange(dataDir, { account: alias, before, after,
+          source: 'route-marker-restore', extra: { note: '账号即模型：按 hub-route-model.json 记下的原值写回一次并删除记录' } }, { persist: false });
+        // 不满足写回条件：只删了记录，记一行原因（原值为空 / 号的 model 切过之后又被改过 / 原值不在权限清单里）
+        else require('./codeagent-models').appendModelLog(dataDir, { event: 'route-marker-drop', account: alias.replace(/\s+/g, ''), model: before || '(空)', original: original || '(空)', reason });
+      } });
     if (sync.errors.length) console.warn(`[codeagent-pool] ${account.id} 同步配置：${sync.errors.join('；')}`);
     if (typeof this.deployCodeAgentHooks === 'function') {
       try { this.deployCodeAgentHooks(account.dir); } catch (error) { console.warn(`[codeagent-pool] ${account.id} hook：${error.message}`); }

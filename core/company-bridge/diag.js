@@ -416,6 +416,8 @@ function pool(raw, { avoid = {}, credit = {}, aliases: given = null, ...extra } 
     ...(key === 'personal' && a.settingsLastChange ? { settingsLastChange: settingsChangeView(a.settingsLastChange) } : {}),
     ...(key === 'personal' && a.lastBackup ? { lastBackup: { model: a.lastBackup.model == null ? null : String(a.lastBackup.model), at: String(a.lastBackup.name || '').replace(/^settings\.json\.hub-backup-/, '') } } : {}),
     ...(a.routeSwitched ? { routeSwitched: true } : {}), avoid: avoidView(avoid[key]), credit: creditView(credit[key]),
+    // 号池号默认模型未知 / 写的不在清单里（账号即模型，2026-10-19 审核）：这样的号不参与按模型派活
+    ...(key !== 'personal' && a.defaultNote ? { defaultNote: String(a.defaultNote) } : {}),
     // 默认模型和权限不符（个人账号，2026-10-19）：settings.json 里写的值和权限清单，号表据此提示、可远程修正（set-personal-model）
     ...(a.configMismatch ? { configMismatch: { written: String(a.configMismatch.written || ''), models: (a.configMismatch.models || []).map(String).slice(0, 12), suggest: String(a.configMismatch.suggest || ''),
       note: require('../codeagent-model-route').describeMismatch(a.configMismatch) } } : {}) });

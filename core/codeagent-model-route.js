@@ -71,6 +71,15 @@ function routeAccounts({ dataDir, personalDir = '', activeCounts = {}, personalA
     const personalAccountId = personalDir ? pool.readCredentials(personalDir, fsModule).accountId : '';
     for (const a of pool.listAccounts(dataDir, { activeCounts, personalAccountId, now, fsModule })) {
       if (a.state !== 'ready' || a.sameAsPersonal || a.duplicateOf) continue;
+      // 切号开关关着（账号即模型）：默认模型和个人号一样严格，写了且在清单里才算已知；configModel 取号目录里写的值。
+      if (!routeSwitchEnabled()) {
+        const written = pool.readSettingsModel(a.dir, fsModule);
+        const strict = pool.strictDefaultModel(written, a.models || []);
+        out.push({ key: a.id, pool: true, models: a.models || [], defaultModel: strict.model, configModel: written || strict.model,
+          activeSessions: a.activeSessions || 0, lastAssignedAt: a.lastAssignedAt || 0, routeSwitched: !!a.routeSwitched,
+          ...(strict.note ? { defaultNote: pool.describeDefaultNote(strict.note, written) } : {}) });
+        continue;
+      }
       const own = pool.effectiveModel(a.dir, fsModule);
       out.push({ key: a.id, pool: true, models: a.models || [], defaultModel: own, configModel: own,
         activeSessions: a.activeSessions || 0, lastAssignedAt: a.lastAssignedAt || 0, routeSwitched: !!a.routeSwitched });
@@ -160,7 +169,8 @@ function pickAnyRoute(accounts, { working = {}, cap = Infinity, only = '' } = {}
   const free = all.filter(a => (Number(working[a.key]) || 0) < cap);
   const candidates = free.length ? free : all;
   // 个人账号默认模型不确定（personalDefaultModel 留空）时同样排到后面，仍可兜底（2026-10-18 独立审核）。
-  const avoid = a => (a.pool ? ((a.routeSwitched && a.activeSessions > 0) || !(a.models || []).length) : !a.defaultModel) ? 1 : 0;
+  // 账号即模型（2026-10-19）：号池号默认模型未知时也排到后面兜底，和个人号同一套规则。
+  const avoid = a => (a.pool ? ((a.routeSwitched && a.activeSessions > 0) || !(a.models || []).length || !a.defaultModel) : !a.defaultModel) ? 1 : 0;
   const account = candidates.slice().sort((x, y) => avoid(x) - avoid(y)
     || (Number(x.activeSessions) || 0) - (Number(y.activeSessions) || 0)
     || (Number(x.lastAssignedAt) || 0) - (Number(y.lastAssignedAt) || 0)
@@ -196,6 +206,7 @@ function modelTable(accounts, { working = {}, cap = Infinity, peak = false, para
         avoid: av ? { kind: av.kind || 'quota', source: av.source || 'error', since: av.since || null, until: untilOf(av) == null ? null : Number(untilOf(av)),
           reason: describe ? describe(av) : String(av.reason || '') } : null,
         ...(a.configMismatch ? { configNote: describeMismatch(a.configMismatch) } : {}),
+        ...(a.defaultNote ? { defaultNote: a.defaultNote } : {}),
         credit: c && Number.isFinite(Number(c.remaining)) ? { remaining: Number(c.remaining), pct: Number(c.pct), bucket: c.bucket || '', at: c.at || null } : null };
     }).sort((x, y) => Number(x.pool) - Number(y.pool) || x.alias.localeCompare(y.alias, 'zh'));
   }
@@ -210,7 +221,7 @@ function tableSignature(table) {
 // 避让状态的签名（哪些号在避让、到什么时候）：变了就尽快推给家里，不等 10 分钟节流（额度感知，2026-10-18）。
 function avoidSignature(table) {
   if (!table || !Array.isArray(table.accountRows)) return '';
-  return JSON.stringify(table.accountRows.filter(r => r.avoid || r.configNote).map(r => [r.alias, r.avoid && r.avoid.source, r.avoid && r.avoid.kind, r.avoid && r.avoid.until, r.configNote || '']));
+  return JSON.stringify(table.accountRows.filter(r => r.avoid || r.configNote || r.defaultNote).map(r => [r.alias, r.avoid && r.avoid.source, r.avoid && r.avoid.kind, r.avoid && r.avoid.until, r.configNote || '', r.defaultNote || '']));
 }
 
 module.exports = { routeSwitchEnabled, routeAccounts, personalAccount, personalModels, describeMismatch, canServe, canEverServe, servableNow, pickRoute, pickAnyRoute, modelTable, tableSignature, avoidSignature, listModels, canonicalModel, isPrimary, hasModel, earliestUntil, avoidFor, requestModel };

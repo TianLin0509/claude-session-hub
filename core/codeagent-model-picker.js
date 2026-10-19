@@ -271,9 +271,11 @@ async function guardDefaults(snapshot, { durationMs = 3500, intervalMs = 150, on
       if (before.unreadable) continue;
       const now = readModelKey(before.file);
       if (!now.exists || now.unreadable || now.model === before.model) continue;
-      const done = restoreDefaults([before]);
+      // 改回失败（文件被占用、权限等）不能停在被改后的值：记下原因，下一拍接着重试，看守结束时仍没改回就由 verified:false 报出。
+      let done = [], error = '';
+      try { done = restoreDefaults([before]); } catch (e) { error = e && e.message ? e.message : String(e); }
       const after = readModelKey(before.file).model;
-      const change = { file: path.basename(before.file), written: now.model, restoredTo: before.model, ok: after === before.model };
+      const change = { file: path.basename(before.file), written: now.model, restoredTo: before.model, ok: after === before.model, ...(error ? { error } : {}) };
       changes.push(change);
       if (done.length) restored.add(change.file);
       try { onChange && onChange(change); } catch { /* 只是记日志 */ }

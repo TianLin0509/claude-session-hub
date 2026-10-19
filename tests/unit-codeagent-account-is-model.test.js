@@ -140,7 +140,7 @@ test('2. 遗留的 hub-route-model.json：号空闲时按原值写回一次再�
   pool.syncSharedConfig(personal, target, undefined, { idle: true, onRouteRestore: x => restored.push(x) });
   assert.equal(settingsModel(target), DS, '空闲：写回切之前的原值');
   assert.equal(fs.existsSync(path.join(target, pool.ROUTE_MARKER)), false, '记录删掉');
-  assert.deepEqual(restored, [{ before: GLM, after: DS, original: DS }]);
+  assert.deepEqual(restored, [{ before: GLM, after: DS, original: DS, restored: true }]);
   pool.syncSharedConfig(personal, target, undefined, { idle: true, onRouteRestore: x => restored.push(x) });
   assert.equal(restored.length, 1, '只写回一次');
 });
@@ -250,4 +250,102 @@ test('7. 远程维护 set-personal-model 写入留一行日志（写前、写后
   const tail = fs.readFileSync(path.join(dataDir, 'logs', 'codeagent-model.log'), 'utf8').trim().split('\n').pop();
   assert.match(tail, /event=default-model account=个人 before=deepseek-v4-flash-0731 after=GLM-5\.2-WX-Auto source=remote:set-personal-model/);
   assert.equal(guard.lastChange(dataDir).after, GLM);
+});
+
+
+test('2. 遗留标记写回要过校验（审核）：号的 model 切过之后又被改过、原值不在权限清单里、原值为空，都只删标记不写，并给出原因', () => {
+  const personal = tmp('personal');
+  writeSettings(personal, { model: GLM });
+  const run = ({ own, marker, models = null }) => {
+    const target = tmp('acct');
+    writeSettings(target, own === undefined ? {} : { model: own });
+    if (models) fs.writeFileSync(path.join(target, '.cac.json'), JSON.stringify({ enterpriseModelOptionsCache: models.map(value => ({ value })) }));
+    fs.writeFileSync(path.join(target, pool.ROUTE_MARKER), JSON.stringify(marker));
+    const seen = [];
+    pool.syncSharedConfig(personal, target, undefined, { idle: true, onRouteRestore: x => seen.push(x) });
+    return { model: settingsModel(target), marker: fs.existsSync(path.join(target, pool.ROUTE_MARKER)), seen };
+  };
+  let r = run({ own: 'MiniMax-M2.7', marker: { original: DS, model: GLM } });
+  assert.deepEqual([r.model, r.marker, r.seen[0].restored, r.seen[0].reason], ['MiniMax-M2.7', false, false, 'model-changed-since-switch'], '切过之后号的 model 被改过：不写');
+  r = run({ own: GLM, marker: { original: DS, model: GLM }, models: [GLM] });
+  assert.deepEqual([r.model, r.marker, r.seen[0].restored, r.seen[0].reason], [GLM, false, false, 'original-not-in-list'], '原值不在清单里：不写');
+  r = run({ own: GLM, marker: { original: '', model: GLM } });
+  assert.deepEqual([r.model, r.marker, r.seen[0].restored, r.seen[0].reason], [GLM, false, false, 'original-empty'], '原值为空：不写成 before==after');
+  r = run({ own: GLM, marker: { model: GLM } });
+  assert.equal(r.seen[0].reason, 'original-empty');
+  // 清单未知、号的 model 仍是当初切过去的值：写回
+  r = run({ own: GLM, marker: { original: DS, model: GLM } });
+  assert.deepEqual([r.model, r.marker, r.seen[0].restored], [DS, false, true]);
+  // 清单已知且含原值：写回
+  r = run({ own: GLM, marker: { original: DS, model: GLM }, models: [GLM, DS] });
+  assert.deepEqual([r.model, r.seen[0].restored], [DS, true]);
+});
+
+test('2. 号池号默认模型和个人号一样严格（审核）：写了且在清单里才算已知；没写 / 不在清单里不参与按模型派活，不指定模型时排后兜底，号表标出', () => {
+  const d = path.join(root, 'strict-data');
+  fs.mkdirSync(path.join(d, 'codeagent-pool'), { recursive: true });
+  const ids = ['ok0001', 'miss01', 'bad001'];
+  fs.writeFileSync(path.join(d, 'codeagent-pool', 'pool.json'), JSON.stringify({ schema: 1, accounts: ids.map(id => ({ id, note: '', createdAt: '', lastAssignedAt: 0 })) }));
+  const probe = require('../core/codeagent-model-probe');
+  for (const [id, written] of [['ok0001', DS], ['miss01', undefined], ['bad001', 'GLM-9']]) {
+    const dir = pool.accountDir(d, id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ idaasOAuth: { xAuthToken: 'x', accountId: 'acc' + id, expiresAt: Date.now() + 72 * 3600000 } }));
+    writeSettings(dir, written ? { model: written } : {});
+    probe.writeProbed(path.join(dir, probe.MODELS_FILE), { models: [DS], defaultModel: DS });
+  }
+  const accounts = route.routeAccounts({ dataDir: d, personalDir: '' });
+  const by = id => accounts.find(a => a.key === id);
+  assert.equal(by('ok0001').defaultModel, DS);
+  assert.equal(by('miss01').defaultModel, '', '没写：未知（不按清单猜成 DS）');
+  assert.match(by('miss01').defaultNote, /没写 model/);
+  assert.equal(by('bad001').defaultModel, '');
+  assert.equal(by('bad001').configModel, 'GLM-9', 'configModel 取号目录里写的值');
+  assert.match(by('bad001').defaultNote, /GLM-9 不在权限清单里/);
+  // 按模型派活只挑默认已知的号
+  const only = accounts.filter(a => a.key !== 'ok0001');
+  assert.equal(route.pickRoute(only, DS).reason, 'none');
+  assert.equal(route.pickRoute(accounts, DS).account.key, 'ok0001');
+  // 不指定模型：默认未知的号排后兜底（哪怕它会话更少）
+  const busyOk = accounts.map(a => (a.key === 'ok0001' ? { ...a, activeSessions: 5 } : a));
+  assert.equal(route.pickAnyRoute(busyOk).account.key, 'ok0001');
+  assert.equal(route.pickAnyRoute(only).ok, true, '只剩它们时照用');
+  // 号表标出
+  const table = route.modelTable(accounts, { aliases: new Map([['ok0001', '号 1'], ['miss01', '号 2'], ['bad001', '号 3']]) });
+  assert.match(table.accountRows.find(r => r.alias === '号 2').defaultNote, /默认模型未知/);
+  assert.equal(table.accountRows.find(r => r.alias === '号 1').defaultNote, undefined);
+  assert.match(require('../core/company-bridge/model-table-text').describeAccounts(table).join('\n'), /号 3：默认模型未知，.*不在权限清单里），不参与按模型派活/);
+  // 开会话时同一口径：没写默认的号，指定 DS 也不开
+  const prev = process.env.CLAUDE_HUB_DATA_DIR; process.env.CLAUDE_HUB_DATA_DIR = d;
+  try {
+    const fake = { codeagentPoolActiveCounts: () => ({}), deployCodeAgentHooks: null };
+    const personalDir = tmp('personal'); writeSettings(personalDir, { model: GLM });
+    assert.throws(() => SessionManager.prototype._resolveCodeAgentPool.call(fake, { cwd: root, purpose: 'company-bridge', codeagentAccount: 'pool', codeagentPoolPick: 'miss01', codeagentRouteModel: DS },
+      { ...config, configDir: personalDir }), /默认模型是 未知，不是 deepseek/);
+    assert.equal(settingsModel(pool.accountDir(d, 'miss01')), undefined, '也没替它写');
+  } finally { process.env.CLAUDE_HUB_DATA_DIR = prev; }
+});
+
+test('6. 看守改回失败不停在被改后的值（审核）：写失败下一拍重试；一直失败就 verified:false 报出', async t => {
+  const dir = tmp('cac-fail');
+  writeSettings(dir, { model: GLM });
+  const snapshot = picker.snapshotDefaults(dir);
+  writeSettings(dir, { model: DS });
+  const realWrite = fs.writeFileSync;
+  let failures = 2;
+  t.mock.method(fs, 'writeFileSync', function (file, ...rest) {
+    if (String(file).includes('.hub-model-') && failures > 0) { failures -= 1; throw Object.assign(new Error('EBUSY: 被占用'), { code: 'EBUSY' }); }
+    return realWrite.call(fs, file, ...rest);
+  });
+  const seen = [];
+  const r = await picker.guardDefaults(snapshot, { durationMs: 600, intervalMs: 50, onChange: c => seen.push(c) });
+  assert.equal(r.verified, true, '前两次写失败，之后重试成功');
+  assert.equal(settingsModel(dir), GLM);
+  assert.ok(seen.filter(c => c.error).length >= 2 && seen.some(c => c.ok), '失败的那几拍带原因');
+  // 一直写不进去：看守结束报 verified:false，after 是被改后的值
+  failures = Infinity;
+  writeSettings(dir, { model: DS });
+  const r2 = await picker.guardDefaults(picker.snapshotDefaults(dir).map(x => ({ ...x, model: GLM })), { durationMs: 300, intervalMs: 50 });
+  assert.equal(r2.verified, false);
+  assert.equal(r2.after, DS);
 });

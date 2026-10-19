@@ -46,6 +46,11 @@ test('_createSession 的显示名：号池号用同步配置定下的模型，�
   });
   const cwd = path.join(root, 'work'); fs.mkdirSync(cwd, { recursive: true });
 
+  // 账号即模型（2026-10-19 审核）：号自己没写默认模型时不按清单猜，显示占位；Hub 也不替它写
+  const guessed = manager.getSession(manager.createSession('codeagent', { cwd, codeagentAccount: 'pool' }).id);
+  assert.deepEqual(guessed.currentModel, { id: '', displayName: models.PLACEHOLDER_LABEL }, '号没写默认模型：不猜成 DS');
+  assert.equal(pool.readSettingsModel(pool.accountDir(dataDir, id)), '', '号的 settings.json 没被写 model');
+  fs.writeFileSync(path.join(pool.accountDir(dataDir, id), 'settings.json'), JSON.stringify({ model: DS }));
   const poolSession = manager.getSession(manager.createSession('codeagent', { cwd, codeagentAccount: 'pool' }).id);
   assert.equal(poolSession.codeagentPoolAccount, id);
   assert.deepEqual(poolSession.currentModel, { id: '', displayName: DS }, '号池号：显示 DS，内部模型为空');

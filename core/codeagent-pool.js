@@ -97,6 +97,8 @@ function listAccounts(dataDir, { activeCounts = {}, personalAccountId = '', now 
       id: a.id, note: a.note, createdAt: a.createdAt, lastAssignedAt: a.lastAssignedAt, dir,
       state, method: creds.method || null, accountLabel: maskAccountId(creds.accountId), expiresAt: creds.expiresAt || null,
       models: configured.models, modelsAuthoritative: configured.authoritative, defaultModel: configured.defaultModel || '',
+      // 号自己 settings.json 写的模型与严格判定的说明（账号即模型，号表和直查标「默认模型未知 / 写的不在清单里」）
+      ...(() => { const written = readSettingsModel(dir, fsModule); const d = strictDefaultModel(written, configured.models); return { configModel: written, ...(d.note ? { defaultNote: describeDefaultNote(d.note, written) } : {}) }; })(),
       modelsProbedAt: configured.probedAt || null,
       // 为通道指定模型切过默认模型、还没换回（hub-route-model.json，见 syncSharedConfig）。
       routeSwitched: fileExists(path.join(dir, ROUTE_MARKER), fsModule),
@@ -244,6 +246,21 @@ function personalDefaultModel(own, known) {
   if (written) return pick(written) || pick(written + '-Auto');
   return (known && known.probedAt ? pick(known.defaultModel) : '') || pick(require('./codeagent-models').DEFAULT_MODEL);
 }
+// 号池号的默认模型（账号即模型、切号开关关着时，2026-10-19 审核）：和个人号一样严格——settings.json 写了 model、且在清单里
+// （分档名 GLM-5.2-WX 算清单里的 GLM-5.2-WX-Auto）才算已知；没写、清单未知或写的不在清单里都算未知，不参与按模型派活，
+// 免得「判断是 DS、实际启动退回 CodeAgent 自己的默认 GLM」（2.1.8 修过的问题）。note：missing / not-in-list。
+function strictDefaultModel(written, models) {
+  const w = typeof written === 'string' ? written.trim() : '';
+  if (!w) return { model: '', note: 'missing' };
+  const list = models || [];
+  const hit = list.find(m => String(m).toLowerCase() === w.toLowerCase()) || list.find(m => String(m).toLowerCase() === (w + '-Auto').toLowerCase());
+  return hit ? { model: hit, note: '' } : { model: '', note: 'not-in-list', written: w };
+}
+function describeDefaultNote(note, written = '') {
+  if (note === 'missing') return '默认模型未知（settings.json 没写 model）';
+  if (note === 'not-in-list') return `默认模型未知（settings.json 写的 ${written || '模型'} 不在权限清单里）`;
+  return '';
+}
 function readSettingsModel(dir, fsModule = fs) {
   try { const v = JSON.parse(fsModule.readFileSync(path.join(dir, 'settings.json'), 'utf8')); return v && typeof v.model === 'string' ? v.model.trim() : ''; }
   catch { return ''; }
@@ -288,10 +305,17 @@ function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = 
     const marker = readJson(markerFile);
     if (!routeSwitch) {
       if (marker && idle) {
-        const original = typeof marker.original === 'string' ? marker.original : '';
-        if (original) model = original;
+        // 只在两条都满足时写回原值（2026-10-19 审核，最保守）：号此刻的 model 仍是当初切过去的值（之后没人改过），
+        // 且权限清单未知或原值在清单里。原值为空、号的 model 已被别处改过、原值不在清单里：只删记录，不写，回调里给原因。
+        const original = typeof marker.original === 'string' ? marker.original.trim() : '';
+        const switchedTo = typeof marker.model === 'string' ? marker.model : '';
+        const listKnown = !!(known.authoritative && known.models.length);
+        const reason = !original ? 'original-empty'
+          : ownModel.toLowerCase() !== switchedTo.toLowerCase() ? 'model-changed-since-switch'
+            : listKnown && !known.models.some(m => m.toLowerCase() === original.toLowerCase()) ? 'original-not-in-list' : '';
+        if (!reason) model = original;
         try { fsModule.rmSync(markerFile, { force: true }); } catch { /* 删不掉下次再删 */ }
-        try { onRouteRestore && onRouteRestore({ before: ownModel, after: model, original }); } catch { /* 只是记日志 */ }
+        try { onRouteRestore && onRouteRestore({ before: ownModel, after: model, original, restored: !reason, ...(reason ? { reason } : {}) }); } catch { /* 只是记日志 */ }
       }
     } else if (routeModel) {
       const want = known.models.find(m => m.toLowerCase() === String(routeModel).toLowerCase()) || String(routeModel);
@@ -325,7 +349,9 @@ function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = 
     catch (error) { errors.push(`${name}：${error.message}`); }
   }
   // model：这次启动会用的模型（显示用）；号没写默认模型时按清单推一个，只作显示，不写进配置。
-  return { errors, model: model || (() => { try { return chooseAccountModel("", accountModels(targetDir, fsModule)); } catch { return ""; } })() };
+  // 开关关着时只认号自己写的、在清单里的默认模型（strictDefaultModel），不猜；开关打开时沿用以前的推断。
+  if (!routeSwitch) { try { model = strictDefaultModel(model, accountModels(targetDir, fsModule).models).model; } catch { model = ''; } }
+  return { errors, model };
 }
 
 // 本机号池里各号的模型合集（启动中心选「号池」时的模型菜单）。
@@ -419,5 +445,5 @@ module.exports = {
   listAccounts, label, pickAccount, markAssigned, addAccount, setNote, removeAccount,
   personalLastAssignedAt, markPersonalAssigned,
   projectCredentialsOverride, syncSharedConfig, poolModelOptions, poolDirMatch,
-  chooseAccountModel, personalDefaultModel, readSettingsModel, effectiveModel, ROUTE_MARKER,
+  chooseAccountModel, personalDefaultModel, readSettingsModel, effectiveModel, strictDefaultModel, describeDefaultNote, ROUTE_MARKER,
 };
