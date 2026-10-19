@@ -1581,6 +1581,8 @@ class SessionManager extends EventEmitter {
 
     const sessionEnv = { ...process.env };
     applyInteractiveTerminalEnv(sessionEnv, { truecolor: isPtyAgent && (isClaude || isDeepSeekClaude || isCodexRuntime || isCodeAgent) });
+    // 自动派活的 CodeAgent 会话：给 ask-gate hook 的标记（拒绝提问工具，core/auto-dispatch-rules.js）；其余会话去掉继承来的标记。
+    require('./auto-dispatch-rules').applySessionEnv(sessionEnv, isCodeAgent ? opts.purpose : null);
     let codexProfile = null;
     let codeagentConfig = isCodeAgent ? require('./codeagent-config').resolveCodeAgentConfig(process.env) : null;
     // 号池（core/codeagent-pool.js）：新建时挑一个号，恢复/分支时回到原来那个号；换的只是配置目录。
@@ -2171,7 +2173,7 @@ class SessionManager extends EventEmitter {
       completionNotificationEnabled: opts.completionNotificationEnabled === true,
       ...(opts.purpose ? { purpose: String(opts.purpose) } : {}),
       ...(writingContextWarning ? { writingContextWarning } : {}),
-      ...(hubRulesSystem ? { hubRulesSystem: { version: hubRulesSystem.version, label: hubRulesSystem.label } } : {}),
+      ...(hubRulesSystem ? { hubRulesSystem: SessionManager.hubRulesRecord(hubRulesSystem) } : {}),
       ...(opts.researchSessionId ? { researchSessionId: String(opts.researchSessionId) } : {}),
       ...(opts.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       currentModel,
@@ -3484,18 +3486,31 @@ class SessionManager extends EventEmitter {
   //   命令前导空格抑制 shell 历史记录，避免污染。
   // 返回 true 已写命令，false 找不到 session 或 kind 不支持。
   // 返回要写进 Claude 系统提示的规则文件；不适用时返回 null（见 _createSession 的说明）。
+  // 自动派活会话（AI特战队通道、公司助理、论坛摘要）另带「不出选择题」一段（core/auto-dispatch-rules.js），规则页全关时也带。
+  // version 仍是通用规则那一版（随消息补送靠它判断「系统提示里已有同一版」），文件本身的版本另记 fileVersion。
   hubRulesSystemPrompt(opts = {}, purpose = opts.purpose) {
     const store = this.memoryService?.hubRules;
     if (!store) return null;
     if (require('./hub-rules').skipsHubRules(purpose)) return null;
     if (opts.appendSystemPromptFile && !store.isSystemPromptFile(opts.appendSystemPromptFile)) return null;
+    const extra = require('./auto-dispatch-rules').autoRuleFor(purpose);
+    let rules = null;
+    try { rules = store.injection(); }
+    catch (error) { console.warn('[hub-rules] 读取规则失败：', error && error.message); }
+    if (!rules && !extra) return null;
     try {
-      const rules = store.injection();
-      return rules ? { file: store.systemPromptFile(rules), version: rules.version, label: rules.label } : null;
+      const file = store.systemPromptFile(rules, { extra });
+      const label = [rules && rules.label, extra && extra.label].filter(Boolean).join(' + ');
+      const fileVersion = (/rules-([0-9a-f]{16})\.md$/.exec(file) || [])[1];
+      return { file, version: rules ? rules.version : undefined, label, ...(extra && fileVersion ? { fileVersion, autoRule: extra.version } : {}) };
     } catch (error) {
       console.warn('[hub-rules] 规则写入系统提示失败，改为随第一条消息送达：', error && error.message);
       return null;
     }
+  }
+  // 会话记录里的「启动时写进系统提示的规则」
+  static hubRulesRecord(r) {
+    return r ? { version: r.version, label: r.label, ...(r.fileVersion ? { fileVersion: r.fileVersion, autoRule: r.autoRule } : {}) } : undefined;
   }
 
   // CLI 自己退出后原地重拉：场景会话照样换上场景的系统提示（环境变量在 PTY 建立时已写进 shell，沿用）。
@@ -3545,7 +3560,7 @@ class SessionManager extends EventEmitter {
         ...(s.info && s.info.codeagentConfigDir ? { configDir: s.info.codeagentConfigDir } : {}) };
       // 原地重拉是一个全新的 CodeAgent 进程，按当前规则重新写进系统提示（同 Claude）。
       const relaunchRules = this.hubRulesSystemPrompt({}, s.info && s.info.purpose);
-      if (s.info) s.info.hubRulesSystem = relaunchRules ? { version: relaunchRules.version, label: relaunchRules.label } : undefined;
+      if (s.info) s.info.hubRulesSystem = SessionManager.hubRulesRecord(relaunchRules);
       const launch = buildCodeAgentPtyLaunch(sessionId, 'codeagent', {
         model: modelId, effort: s.info && s.info.effort, mcpConfigFile: s.claudeMcpConfigFile,
         mcpProfile: s.info && s.info.mcpProfile, appendSystemPromptFile: relaunchRules ? relaunchRules.file : undefined,
@@ -3624,7 +3639,7 @@ class SessionManager extends EventEmitter {
       const relaunchPermissionFlag = claudePermissionModeArg({ autonomous });
       // 原地重拉是一个全新的 Claude 进程，按当前规则重新写进系统提示。
       const relaunchRules = this.hubRulesSystemPrompt({}, s.info && s.info.purpose);
-      if (s.info) s.info.hubRulesSystem = relaunchRules ? { version: relaunchRules.version, label: relaunchRules.label } : undefined;
+      if (s.info) s.info.hubRulesSystem = SessionManager.hubRulesRecord(relaunchRules);
       const rulesFlag = relaunchRules ? ` --append-system-prompt-file "${relaunchRules.file}"` : '';
       const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
       cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${addDirFlag}${rulesFlag}${this._sceneRelaunchFlags(s, 'claude')}${isolation}\r\n`;
@@ -3632,7 +3647,7 @@ class SessionManager extends EventEmitter {
       // PTY 的环境变量（接入端点、Key、模型名、配置目录）在会话创建时已经写好，原地重拉只需同一套参数。
       const route = s.info && (s.info.deepseekActiveRoute || s.info.deepseekRoute);
       const relaunchRules = this.hubRulesSystemPrompt({}, s.info && s.info.purpose);
-      if (s.info) s.info.hubRulesSystem = relaunchRules ? { version: relaunchRules.version, label: relaunchRules.label } : undefined;
+      if (s.info) s.info.hubRulesSystem = SessionManager.hubRulesRecord(relaunchRules);
       const rulesFlag = relaunchRules ? ` --append-system-prompt-file "${relaunchRules.file}"` : '';
       const wire = deepseekClaude.wireModel(modelId, route);
       const effort = CLAUDE_EFFORT_LEVELS.has(s.info && s.info.effort) ? s.info.effort : DEEPSEEK_CLAUDE_DEFAULT_EFFORT;
