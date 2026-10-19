@@ -16,7 +16,33 @@ const {
   LINK_GROUP_MAX_LINES,
   LINK_GROUP_MAX_CHARS,
   LINK_SCAN_BUDGET_MS,
+  LINK_MAX_STATS,
 } = require('../renderer/terminal-link-provider.js');
+const { collectPathCandidates } = require('../renderer/path-candidates.js');
+
+function fakeTerminal(lineTexts, cols, wrapped = true) {
+  const lines = lineTexts.map((text, i) => ({ isWrapped: wrapped && i > 0, translateToString: () => text }));
+  return {
+    cols,
+    buffer: { active: { length: lines.length, getLine: i => lines[i] || null } },
+    registerLinkProvider() { return { dispose() {} }; },
+  };
+}
+
+// 统计（并可拖慢）同步磁盘查询：path-candidates 调用时才取 fs.existsSync / fs.statSync，替换模块属性即可。
+function withFsSpy(onCall, fn) {
+  const origExists = fs.existsSync;
+  const origStat = fs.statSync;
+  fs.existsSync = (...args) => { onCall(args[0]); return origExists(...args); };
+  fs.statSync = (...args) => { onCall(args[0]); return origStat(...args); };
+  try { return fn(); } finally { fs.existsSync = origExists; fs.statSync = origStat; }
+}
+
+const quietWarn = (fn) => {
+  const orig = console.warn;
+  console.warn = () => {};
+  try { return fn(); } finally { console.warn = orig; }
+};
 
 const B = '\\';
 const ESC = '\x1b[';
@@ -190,10 +216,68 @@ test('time budget: an over-budget scan gives up, logs session + line count only,
     assert.deepEqual(provide(provider, 15), []);
   } finally { console.warn = origWarn; }
   assert.equal(reports.length, 1, 'second over-budget scan within a minute is not logged again');
-  assert.deepEqual(Object.keys(reports[0]).sort(), ['lines', 'ms', 'sessionId']);
+  assert.deepEqual(Object.keys(reports[0]).sort(), ['lines', 'ms', 'reason', 'sessionId']);
+  assert.equal(reports[0].reason, 'time');
   assert.equal(reports[0].sessionId, 'budget-session');
   assert.ok(reports[0].ms > LINK_SCAN_BUDGET_MS);
   assert.ok(Number.isInteger(reports[0].lines) && reports[0].lines < lines.length);
+});
+
+test('giving up on the line / char cap is logged with its reason only; the log throttle is shared by all terminals', () => {
+  const reports = [];
+  const registrar = createTerminalLinkRegistrar({
+    getCwd: () => null, openPathInHub: async () => {}, onScanBudgetExceeded: d => reports.push(d),
+  });
+  const tall = fakeTerminal(Array.from({ length: 100 }, () => 'a'.repeat(80)), 80);
+  const wide = fakeTerminal(Array.from({ length: 50 }, () => 'b'.repeat(200)), 200);
+  quietWarn(() => {
+    assert.deepEqual(provide(registrar(tall, 's-tall'), 90), []);
+    assert.deepEqual(provide(registrar(wide, 's-wide'), 1), []);
+  });
+  assert.equal(reports.length, 1, 'second session within a minute is throttled by the shared limiter');
+  assert.equal(reports[0].reason, 'lines');
+  assert.equal(reports[0].sessionId, 's-tall');
+  assert.deepEqual(Object.keys(reports[0]).sort(), ['lines', 'ms', 'reason', 'sessionId']);
+
+  const reportsWide = [];
+  const fresh = createTerminalLinkRegistrar({
+    getCwd: () => null, openPathInHub: async () => {}, onScanBudgetExceeded: d => reportsWide.push(d),
+  });
+  quietWarn(() => assert.deepEqual(provide(fresh(wide, 's-wide'), 1), []));
+  assert.equal(reportsWide[0].reason, 'chars');
+});
+
+test('time budget covers candidate parsing: slow disk lookups make this scan give up', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-link-slowfs-'));
+  const tag = Date.now().toString(36);
+  const text = `see docs/${tag}-a.md docs/${tag}-b.md docs/${tag}-c.md`;
+  const term = fakeTerminal([text], 120, false);
+  let fakeNow = 1000;
+  const reports = [];
+  const provider = createTerminalLinkRegistrar({
+    getCwd: () => cwd, openPathInHub: async () => {}, now: () => fakeNow, onScanBudgetExceeded: d => reports.push(d),
+  })(term, 's-slow');
+  // 每次磁盘查询假装花 30 ms（杀软较重的电脑）。拼行几乎不花时间，超时全在解析候选里。
+  const links = withFsSpy(p => { if (String(p).startsWith(cwd)) fakeNow += 30; }, () => quietWarn(() => provide(provider, 1)));
+  assert.deepEqual(links, []);
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].reason, 'time');
+  assert.ok(reports[0].ms > LINK_SCAN_BUDGET_MS);
+});
+
+test(`one scan does at most ${LINK_MAX_STATS} synchronous disk lookups; card parsing (no budget) is unchanged`, () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-link-stats-'));
+  const tag = Date.now().toString(36);
+  const text = Array.from({ length: 40 }, (_, i) => `w${tag}x${i}`).join(' ');
+  const term = fakeTerminal([text], 2000, false);
+  const provider = createTerminalLinkRegistrar({ getCwd: () => cwd, openPathInHub: async () => {} })(term, 's-stats');
+  let terminalCalls = 0;
+  withFsSpy(p => { if (String(p).startsWith(cwd)) terminalCalls += 1; }, () => provide(provider, 1));
+  assert.ok(terminalCalls > 0 && terminalCalls <= LINK_MAX_STATS, `terminal lookups ${terminalCalls}`);
+  let cardCalls = 0;
+  const text2 = Array.from({ length: 40 }, (_, i) => `v${tag}y${i}`).join(' ');
+  withFsSpy(p => { if (String(p).startsWith(cwd)) cardCalls += 1; }, () => collectPathCandidates(text2, cwd));
+  assert.ok(cardCalls >= 40, `card lookups ${cardCalls}`);
 });
 
 test('normal content keeps the exact pre-fix results (Chinese, wide-glyph wrap, spaces, URL, relative path)', async () => {

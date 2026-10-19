@@ -262,7 +262,11 @@ function sampleWorkingSetMB(pid) {
       ok(result.scenarios.B.memPeakMB - memBefore < 300, 'B：界面进程内存没有上涨', { beforeMB: memBefore, peakMB: result.scenarios.B.memPeakMB });
     }
 
-    ok(!/ terminal-link-budget /.test(readLog()), '正常机器上没有触发识别超时保护');
+    const skips = readLog().split(/\r?\n/).filter(l => / page-terminal-link-budget /.test(l));
+    ok(!skips.some(l => /"reason":"time"/.test(l)), '正常机器上没有触发识别超时保护', skips.map(l => l.slice(0, 200)));
+    if (!ONLY || ONLY === 'B') {
+      ok(skips.some(l => /"reason":"lines"/.test(l) && !/xxxx/.test(l)), 'B：超长逻辑行放弃识别时记了一条只含原因和行数的日志', skips.map(l => l.slice(0, 200)));
+    }
     ok(!/ (render-process-gone|renderer-stall-rescue) /.test(readLog()), '全程没有界面崩溃或卡死自救');
     console.log(`\nPASS ${passed.length} checks`);
   } catch (error) {

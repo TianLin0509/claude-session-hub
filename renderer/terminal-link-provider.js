@@ -82,8 +82,9 @@ function _trimWideWrapPadding(line, nextLine, text, cols) {
 // 根因：xterm 5.5 的 buffer.getLine(i) 越过末行时不返回空值，而是绕回开头（备用屏幕总是如此，普通屏幕在
 // 滚动缓冲写满后也如此）。旧代码往下拼行只靠 `if (!l) break` 收尾，遇到每一行都算续行的内容（四周有边框
 // 的全屏 TUI；或一整行不换行、写满滚动缓冲的长输出）就绕圈拼接、永不结束。
-// 做法（稳定优先，最小改动）：拼行不越过 buffer.length；一组超过 64 行或 8000 字符、或单次识别超过 50 ms，
-// 就放弃这一次识别（这组行不出链接），超时另记一条只含会话和行数的日志。正常长度的识别结果不变。
+// 做法（稳定优先，最小改动）：拼行不越过 buffer.length；一组超过 64 行或 8000 字符、或单次识别（拼行加
+// 解析候选）超过 50 ms，就放弃这一次识别（这组行不出链接）；每次识别最多做 20 次同步磁盘查询。放弃时记一条
+// 日志（原因、会话、行数、耗时，不记内容），所有终端共用一个节流，每分钟最多一条。正常长度的识别结果不变。
 // 取值依据：可点的路径/网址极少超过几百字符（Windows 传统路径上限 260，浏览器网址实用上限约 2083），
 // 8000 字符留出 3 倍余量；64 行在 120 列下约 7700 字符，与字符上限同一量级。正常一次识别在 1 ms 量级，
 // 50 ms 只在异常内容或机器极慢时触发，下次悬停会重新识别。
@@ -91,6 +92,7 @@ const LINK_GROUP_MAX_LINES = 64;
 const LINK_GROUP_MAX_CHARS = 8000;
 const LINK_SCAN_BUDGET_MS = 50;
 const LINK_BUDGET_LOG_INTERVAL_MS = 60 * 1000;
+const LINK_MAX_STATS = 20;
 
 const defaultClock = () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
   ? performance.now() : Date.now());
@@ -98,6 +100,17 @@ const defaultClock = () => (typeof performance !== 'undefined' && typeof perform
 function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onError, onScanBudgetExceeded, now }) {
   const clock = typeof now === 'function' ? now : defaultClock;
   const activeLinkGroups = new Map();
+  // 放弃识别的日志：所有终端共用一个节流，异常内容同时出现在多个会话里也不会刷屏。
+  let lastBudgetReportAt = -Infinity;
+  const reportBudget = (detail) => {
+    const at = clock();
+    if (at - lastBudgetReportAt < LINK_BUDGET_LOG_INTERVAL_MS) return;
+    lastBudgetReportAt = at;
+    try { console.warn('[terminal-link] scan skipped', detail); } catch {}
+    if (typeof onScanBudgetExceeded === 'function') {
+      try { onScanBudgetExceeded(detail); } catch {}
+    }
+  };
 
   function registerLinkInGroup(fullPath, link) {
     let set = activeLinkGroups.get(fullPath);
@@ -280,17 +293,6 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onE
       return nearRightEdge;
     };
 
-    let lastBudgetReportAt = -Infinity;
-    const reportBudget = (detail) => {
-      const at = clock();
-      if (at - lastBudgetReportAt < LINK_BUDGET_LOG_INTERVAL_MS) return;
-      lastBudgetReportAt = at;
-      try { console.warn('[terminal-link] scan over budget', detail); } catch {}
-      if (typeof onScanBudgetExceeded === 'function') {
-        try { onScanBudgetExceeded(detail); } catch {}
-      }
-    };
-
     provider = {
       provideLinks(lineNumber, callback) {
         const buf = terminal.buffer.active;
@@ -301,19 +303,16 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onE
         const line = buf.getLine(lineNumber - 1);
         if (!line) { callback(undefined); return; }
         const startedAt = clock();
-        const overBudget = (lines) => {
-          const ms = clock() - startedAt;
-          if (ms <= LINK_SCAN_BUDGET_MS) return false;
-          reportBudget({ sessionId, lines, ms: Math.round(ms) });
-          return true;
+        const giveUp = (reason, lines) => {
+          reportBudget({ reason, sessionId, lines, ms: Math.round(clock() - startedAt) });
+          callback(undefined);
         };
+        const overBudget = () => clock() - startedAt > LINK_SCAN_BUDGET_MS;
 
         let groupIdx = lineNumber - 1;
         while (groupIdx > 0) {
-          if (lineNumber - 1 - groupIdx >= LINK_GROUP_MAX_LINES || overBudget(lineNumber - groupIdx)) {
-            callback(undefined);
-            return;
-          }
+          if (lineNumber - 1 - groupIdx >= LINK_GROUP_MAX_LINES) { giveUp('lines', lineNumber - groupIdx); return; }
+          if (overBudget()) { giveUp('time', lineNumber - groupIdx); return; }
           const cur = buf.getLine(groupIdx);
           if (cur && cur.isWrapped) { groupIdx--; continue; }
           const prev = buf.getLine(groupIdx - 1);
@@ -334,11 +333,9 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onE
             const prev = buf.getLine(i - 1);
             heuristicCont = !l.isWrapped && isHeuristicCont(prev, l);
             if (!l.isWrapped && !heuristicCont) break;
-            if (i - groupIdx >= LINK_GROUP_MAX_LINES || text.length >= LINK_GROUP_MAX_CHARS
-                || overBudget(i - groupIdx)) {
-              callback(undefined);
-              return;
-            }
+            if (i - groupIdx >= LINK_GROUP_MAX_LINES) { giveUp('lines', i - groupIdx); return; }
+            if (text.length >= LINK_GROUP_MAX_CHARS) { giveUp('chars', i - groupIdx); return; }
+            if (overBudget()) { giveUp('time', i - groupIdx); return; }
           }
           const nextLine = i + 1 < bufLength ? buf.getLine(i + 1) : null;
           const raw = _trimWideWrapPadding(
@@ -362,7 +359,9 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onE
         const cwd = typeof getCwd === 'function' ? getCwd(sessionId) : null;
         // CLI 与卡片共用同一解析器，避免双反斜杠/空格/drive-relative
         // 只在某一视图被修复、另一视图继续失效。
-        const candidates = collectPathCandidates(text, cwd);
+        const candidates = collectPathCandidates(text, cwd, { statBudget: { remaining: LINK_MAX_STATS } });
+        // 时间预算包括解析候选（会同步查磁盘）：拼行加解析合计超时，这一次也不出链接。
+        if (overBudget()) { giveUp('time', lineWidths.length); return; }
 
         const links = [];
         for (const c of candidates) {
@@ -483,4 +482,5 @@ module.exports = {
   LINK_GROUP_MAX_LINES,
   LINK_GROUP_MAX_CHARS,
   LINK_SCAN_BUDGET_MS,
+  LINK_MAX_STATS,
 };
