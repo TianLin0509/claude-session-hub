@@ -213,6 +213,21 @@ async function main() {
     await key('Escape', 'Escape', 27);
     const kbClosed = await c.eval(`!document.querySelector('.launch-select-popover') && getComputedStyle(document.getElementById('new-session-menu')).display !== 'none' && document.getElementById('new-session-codeagent-account').value === 'pool-manual'`);
     check(kbOpen === 'new-session-codeagent-account' && kbClosed, 'Alt+↓ 打开「用量账号」列表；Esc 只关列表，启动中心和所选值不变', { kbOpen, kbClosed });
+    // 按字母找项：列表开着时敲字母只移动高亮、不改值；回车才选中（「思考强度」下拉，选项是英文开头）
+    const effortSel = '#new-session-effort';
+    const e0 = await c.eval(`document.querySelector(${j(effortSel)}).value`);
+    const target = await c.eval(`(()=>{const s=document.querySelector(${j(effortSel)});const all=[...s.options],i=s.selectedIndex;const o=all.find(o=>o.value!==s.value&&/^[a-z]/i.test(o.textContent.trim()));if(!o)return null;const ch=o.textContent.trim()[0].toLowerCase();
+      for(let k=1;k<=all.length;k++){const x=all[(i+k)%all.length];if(x.textContent.trim().toLowerCase().startsWith(ch))return{value:x.value,ch}}return null})()`);
+    await c.eval(`document.querySelector(${j(effortSel)}).focus()`);
+    await key('ArrowDown', 'ArrowDown', 40, 1);
+    await soft(`document.querySelector('.launch-select-popover')?.dataset.for === 'new-session-effort' || ''`, 'effort popover', 5000);
+    for (const type of ['keyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: target.ch, code: 'Key' + target.ch.toUpperCase(), text: type === 'keyDown' ? target.ch : undefined, windowsVirtualKeyCode: target.ch.toUpperCase().charCodeAt(0) });
+    await sleep(200);
+    const typed = JSON.parse(await c.eval(`JSON.stringify((()=>{const s=document.querySelector(${j(effortSel)});const a=document.querySelector('.launch-select-option.active');return{value:s.value,active:a?a.dataset.value:null,desc:s.getAttribute('aria-activedescendant'),activeId:a?a.id:null}})())`));
+    await key('Enter', 'Enter', 13);
+    const afterEnter = await c.eval(`(!document.querySelector('.launch-select-popover')) && document.querySelector(${j(effortSel)}).value`);
+    check(typed.value === e0 && typed.active === target.value && typed.desc === typed.activeId && afterEnter === target.value,
+      `列表开着时敲「${target.ch}」只把高亮移到「${target.value}」、值不变（读屏引用在 select 上）；回车后才选中`, { e0, typed, afterEnter });
     const before2 = await c.eval('[...sessions.keys()].join(",")');
     await click('#new-session-submit');
     const poolId = await until(`(()=>{const b=${j(before2)}.split(',');return [...sessions.keys()].find(k=>!b.includes(k))||''})()`, 'pool session', 30000);

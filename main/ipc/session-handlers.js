@@ -49,6 +49,9 @@ function registerSessionIpc(ipcMain, deps) {
     getPersistedSessions = () => [],
     ensureLaunchAuth,
     prepareLaunchAuth,
+    // 登录窗口打开后多久看一次凭证（单测可缩短）；获取模型权限的实现（单测可替换）。
+    codeagentLoginPollMs = 3000,
+    codeagentProbeModels = null,
   } = deps;
   require('./codex-backstage-handlers').registerCodexBackstageIpc(ipcMain, { sessionManager });
   require('../../core/codex-fast-command').registerCodexSpeedIpc(ipcMain,{sessionManager,sendToRenderer});
@@ -513,17 +516,17 @@ function registerSessionIpc(ipcMain, deps) {
       const pool = require('../../core/codeagent-pool');
       const asOptions = ids => ids.map(id => ({ id, label: require('../../core/codeagent-models').modelLabel(id), source: 'account' }));
       // defaultModel：不选具体模型时这个号启动会用的模型（启动中心把「沿用」那一项标成它，2026-10-19 田哥：选了号就默认选中该号的默认模型）。
-      // 号池号 = 启动前同步配置会定下的模型（effectiveModel）；个人账号 = 纠正后的默认模型（不确定时为空，界面仍写「沿用 CodeAgent 当前模型」）。
+      // 号池号 = 启动前同步配置会定下的模型（plannedModel，和 syncSharedConfig 同一口径：为通道切过模型、号上没有会话时按切之前的）；个人账号 = 纠正后的默认模型（不确定时为空，界面仍写「沿用 CodeAgent 当前模型」）。
       const sameCase = (list, id) => (list || []).find(m => String(m).toLowerCase() === String(id || '').toLowerCase()) || '';
       if (payload && payload.account === 'pool' && payload.poolAccount) {
         const account = codeagentPoolAccounts().find(a => a.id === payload.poolAccount);
         if (!account) return { options: [] };
-        return { options: asOptions(account.models), defaultModel: sameCase(account.models, pool.effectiveModel(account.dir)) };
+        return { options: asOptions(account.models), defaultModel: sameCase(account.models, pool.plannedModel(account.dir, { idle: !account.activeSessions })) };
       }
       if (payload && payload.account === 'pool') {
         // 自动挑号：各个可用号的默认模型都一样时才能说定
         const usable = codeagentPoolAccounts().filter(a => a.state === 'ready' && !a.sameAsPersonal && !a.duplicateOf);
-        const defaults = [...new Set(usable.map(a => sameCase(a.models, pool.effectiveModel(a.dir))))];
+        const defaults = [...new Set(usable.map(a => sameCase(a.models, pool.plannedModel(a.dir, { idle: !a.activeSessions }))))];
         return { options: pool.poolModelOptions(getHubDataDir(), usable), defaultModel: defaults.length === 1 ? defaults[0] : '' };
       }
       const personalDir = require('../../core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
@@ -611,7 +614,7 @@ function registerSessionIpc(ipcMain, deps) {
           if (account.state !== 'ready') throw new Error('这个号需要先重新登录');
           configDir = account.dir; file = require('path').join(account.dir, probe.MODELS_FILE);
         }
-        const result = await probe.probeModels({ command: config.command, configDirEnv: config.configDirEnv, configDir, cwd: pool.probeCwd(dataDir) });
+        const result = await (codeagentProbeModels || probe.probeModels)({ command: config.command, configDirEnv: config.configDirEnv, configDir, cwd: pool.probeCwd(dataDir) });
         if (!result.ok) throw new Error(result.error);
         probe.writeProbed(file, result);
         return result.models;
@@ -631,17 +634,23 @@ function registerSessionIpc(ipcMain, deps) {
       .catch(error => sendToRenderer('codeagent-pool:changed', { id, ok: false, error: error.message, auto: true }));
   }
   // 号主在登录窗口里登录完成前凭证文件还不存在：每 3 秒看一次，最多 10 分钟，出现了就自动获取模型权限。
+  // id = 'personal' 时看个人账号的配置目录（个人账号重新登录，2026-10-19）。
   function autoProbeAfterLogin(id) {
     codeagentAutoTried.delete(id);
     const deadline = Date.now() + 10 * 60 * 1000;
-    const tick = () => {
-      let account = null;
-      try { account = codeagentPoolAccounts().find(a => a.id === id); } catch { return; }
-      if (!account) return;
-      if (account.state === 'ready') { sendToRenderer('codeagent-pool:changed', { id, loggedIn: true }); autoProbeCodeAgentAccount(id); return; }
-      if (Date.now() < deadline) setTimeout(tick, 3000).unref?.();
+    const stateOf = () => {
+      if (id !== 'personal') { const account = codeagentPoolAccounts().find(a => a.id === id); return account ? account.state : null; }
+      const pool = require('../../core/codeagent-pool');
+      return pool.accountState(pool.readCredentials(require('../../core/codeagent-config').resolveCodeAgentConfig(process.env).configDir));
     };
-    setTimeout(tick, 3000).unref?.();
+    const tick = () => {
+      let state = null;
+      try { state = stateOf(); } catch { return; }
+      if (!state) return;
+      if (state === 'ready') { sendToRenderer('codeagent-pool:changed', { id, loggedIn: true }); autoProbeCodeAgentAccount(id); return; }
+      if (Date.now() < deadline) setTimeout(tick, codeagentLoginPollMs).unref?.();
+    };
+    setTimeout(tick, codeagentLoginPollMs).unref?.();
   }
   // 列表里从没获取过模型权限的号（含个人账号）自动补一次。
   function autoProbeMissing(status) {
@@ -702,6 +711,8 @@ function registerSessionIpc(ipcMain, deps) {
     try {
       const { getHubDataDir } = require('../../core/data-dir');
       require('../../core/codeagent-pool').openLoginWindow(getHubDataDir(), 'personal', require('../../core/codeagent-config').resolveCodeAgentConfig(process.env), { personal: true });
+      // 凭证出现后推送 codeagent-pool:changed（账号与号池、启动中心据此刷新），并重新获取模型权限
+      autoProbeAfterLogin('personal');
       return codeagentPoolStatus();
     } catch (error) { return { ok: false, error: error.message }; }
   });

@@ -1673,6 +1673,11 @@
       // Never discard that newer account notification.
       void loadHubDefaultModels({refreshAccount:true}).then(()=>loadCodexTuningCatalog()).then(paint).catch(error=>setError(error.message));
     });
+    // 号池或个人账号登录完成、模型权限获取完：启动中心开着且选的是 CodeAgent 时重新取账号状态和模型（2026-10-19 审核）
+    ipcRenderer.on('codeagent-pool:changed', (_event, change) => {
+      if (!menuEl || menuEl.style.display === 'none' || selectedKind !== 'codeagent' || (change && change.probing)) return;
+      void loadModelCatalog('codeagent').then(paint).catch(() => {});
+    });
 
     menuEl.querySelectorAll('.new-session-option').forEach(button => {
       button.addEventListener('click', () => {

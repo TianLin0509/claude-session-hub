@@ -269,6 +269,19 @@ function effectiveModel(dir, fsModule = fs) { return chooseAccountModel(readSett
 // 之后不指定模型、且这个号上没有进行中的会话时换回去（不指定时的行为与以前相同）。
 const ROUTE_MARKER = 'hub-route-model.json';
 
+// 不指定模型开会话时这个号会用的模型（syncSharedConfig 与启动中心「默认模型」共用一套口径，审核 2026-10-19）：
+// 号自己存的模型（不在清单里换成清单里的）；为通道切过模型（有 ROUTE_MARKER）且号上没有进行中的会话时，换回切之前的模型。
+function plannedModelFrom(own, known, marker, { idle = false } = {}) {
+  if (marker && idle) return chooseAccountModel(typeof marker.original === 'string' ? marker.original : '', known);
+  return chooseAccountModel(own, known);
+}
+// 只读不写：idle = 这个号上没有进行中的会话。
+function plannedModel(dir, { idle = false, fsModule = fs } = {}) {
+  let marker = null;
+  try { marker = JSON.parse(fsModule.readFileSync(path.join(dir, ROUTE_MARKER), 'utf8')); } catch { marker = null; }
+  return plannedModelFrom(readSettingsModel(dir, fsModule), accountModels(dir, fsModule), marker, { idle });
+}
+
 // 启动前把与账号无关的配置同步进号的目录：settings.json 以个人账号为准，但去掉 hooks（由 Hub 按本目录部署，
 // 避免指向个人目录的 hook 与本目录的重复触发）和 model（每个号能用的模型不同，保留号自己的）；
 // 号自己没有默认模型、而账号清单里有模型时，用清单第一个，避免回落到这个号没有权限的模型。
@@ -293,9 +306,9 @@ function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = 
     // 以前只看配置文件里的账号清单，没读「一键获取模型权限」探测到的清单（hub-models.json），没定下模型时
     // CodeAgent 退回它自己的默认 GLM。现在探测清单优先；号自己存的模型不在清单里也换掉。
     const known = accountModels(targetDir, fsModule);
-    model = chooseAccountModel(own.model, known);
     const markerFile = path.join(targetDir, ROUTE_MARKER);
     const marker = readJson(markerFile);
+    model = plannedModelFrom(own.model, known, marker, { idle: !routeModel && idle });
     if (routeModel) {
       const want = known.models.find(m => m.toLowerCase() === String(routeModel).toLowerCase()) || String(routeModel);
       if (model.toLowerCase() !== want.toLowerCase()) {
@@ -304,7 +317,6 @@ function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = 
         model = want;
       }
     } else if (marker && idle) {
-      model = chooseAccountModel(typeof marker.original === 'string' ? marker.original : '', known);
       try { fsModule.rmSync(markerFile, { force: true }); } catch { /* 删不掉下次再删 */ }
     }
     if (model) next.model = model;
@@ -423,5 +435,5 @@ module.exports = {
   listAccounts, label, pickAccount, markAssigned, addAccount, setNote, removeAccount,
   personalLastAssignedAt, markPersonalAssigned,
   projectCredentialsOverride, syncSharedConfig, poolModelOptions, poolDirMatch,
-  chooseAccountModel, personalDefaultModel, readSettingsModel, effectiveModel, ROUTE_MARKER,
+  chooseAccountModel, personalDefaultModel, readSettingsModel, effectiveModel, plannedModel, ROUTE_MARKER,
 };
