@@ -37,22 +37,34 @@ if (group === '__test' && sub === 'say') {
 } else if (!loggedIn()) {
   process.stderr.write('Token expired, please run: welink-cli auth login\n');
   process.exitCode = 1;
+} else if (group === 'meeting' && sub === 'query-list' && ['--page', '--size', '--meeting-start-time', '--meeting-end-time', '--type', '--meeting-sort'].some(k => !arg(k))) {
+  process.stderr.write(['--page', '--size', '--meeting-start-time', '--meeting-end-time', '--type', '--meeting-sort'].find(k => !arg(k)) + ' is required\n');
+  process.exitCode = 106;
 } else if (group === 'meeting' && sub === 'query-list') {
   // 「马上要开的会」定在第一次查询后 12 分钟，之后每次查询返回同一时间（Hub 取数和助理会话自己查，时间要一致）。
   const anchorFile = stateFile ? require('node:path').join(require('node:path').dirname(stateFile), 'welink-anchor') : null;
   if (anchorFile && !fs.existsSync(anchorFile)) fs.writeFileSync(anchorFile, String(now + 12 * M));
   const soon = anchorFile ? Number(fs.readFileSync(anchorFile, 'utf8')) : now + 10 * M;
-  out({ meetings: [
+  const all = [
     { enMeetingId: 'e1', meetingId: 'm-soon', subject: '方案评审（占位）', location: '会议室A', meetingStartTime: soon, meetingEndTime: soon + H, meetingUsers: [{}, {}, {}], files: [{}] },
     { enMeetingId: 'e2', meetingId: 'm-a', subject: '周例会（占位）', location: '会议室B', meetingStartTime: today(13, 0), meetingEndTime: today(14, 30), meetingUsers: [{}, {}] },
     { enMeetingId: 'e3', meetingId: 'm-b', subject: '对齐会（占位）', location: '线上', meetingStartTime: today(14, 30), meetingEndTime: today(16, 0), meetingUsers: [{}] },
     { enMeetingId: 'e4', meetingId: 'm-c', subject: '一对一（占位）', location: '线上', meetingStartTime: today(15, 30), meetingEndTime: today(16, 30), meetingUsers: [{}] },
-  ], totalSize: 4 });
+  ];
+  const page = Number(arg('--page')), size = Number(arg('--size'));
+  out({ code: 200, data: { data: all.slice((page - 1) * size, page * size), page, size, start: (page - 1) * size, total: all.length } });
+} else if (group === 'contact' && sub === 'detail') {
+  const names = { user001: '用户甲', colleague_a: '同事甲', colleague_b: '同事乙', colleague_c: '同事丙', colleague_d: '同事丁', colleague_e: '同事戊', colleague_f: '同事己', colleague_g: '同事庚', colleague_h: '同事辛', colleague_z: '示例发言人' };
+  const accounts = args.slice(2);
+  out(accounts.some(a => names[a]) ? { code: '0', message: 'SUCCESS', users: accounts.filter(a => names[a]).map(a => ({ w3Account: a, personAccount: a, chineseName: names[a], workId: '00000001', employeeNumber: '12345678912345678' })) }
+    : { code: '47111', message: 'Query users info does not exist or has been deleted.', users: [] });
 } else if (group === 'calendar' && sub === 'list') {
   if (!exchangeReady()) needExchange();
   else out({ items: [{ id: 'cal-1', subject: '晨会（日历占位）', start: { dateTime: new Date(today(6, 0)).toISOString() }, end: { dateTime: new Date(today(6, 30)).toISOString() }, location: '线上' }] });
 } else if (group === 'onebox' && sub === 'user-info') {
   out({ accountId: 1, name: '用户甲', loginName: 'user001', email: process.env.WELINK_STANDIN_NO_EMAIL === '1' ? '' : 'user001@example.com', status: 'normal' });
+} else if (group === 'im' && sub === 'query-recent-conversation' && stateFile && fs.existsSync(stateFile) && fs.readFileSync(stateFile, 'utf8').trim() === 'conversations-failed') {
+  process.stderr.write('合成故障：最近会话查询暂时失败\n'); process.exitCode = 1;
 } else if (group === 'im' && sub === 'query-recent-conversation') {
   // 和真机同形（Q-1018-10）：每个会话 8 个字段，没有时间、免打扰、置顶、未读；单聊 group_id 是 "0"。
   // --count 默认 10、上限 50：中间垫 12 个没有消息往来的旧单聊，不带 --count 时只能拿到前 10 个，正好漏掉后面的会话。
@@ -93,6 +105,9 @@ if (group === '__test' && sub === 'say') {
     colleague_d: [msg(1, 'colleague_d', 50, '下午的对齐会挪到 4 点了')],
   };
   const all = lists[conv] || [];
+  if (process.env.WELINK_STANDIN_FOUNDATION === '1' && conv === 'g-100') {
+    all.push(msg(50, 'colleague_z', 1, '本轮验收材料\n' + '背景说明  '.repeat(100) + '\n最终决定：周三交付。'));
+  }
   const from = arg('--message-id'), dir = arg('--query-direction'), count = Number(arg('--query-count') || 20);
   // 真机往更旧翻时把起点那条也带上（Q-1018-10：重叠 1 条），往更新翻时同样处理，Hub 要按编号去重。
   let list = from ? all.filter(m => dir === '1' ? BigInt(m.msgId) >= BigInt(from) : BigInt(m.msgId) <= BigInt(from)) : all;

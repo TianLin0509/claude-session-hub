@@ -37,14 +37,15 @@ test('只读包装 welink-ro.js：查询命令照常输出，写命令在调用 
   const dir = tmp(), log = path.join(dir, 'calls.log');
   const env = { ...process.env, CLAUDE_HUB_WELINK_CLI: STANDIN, WELINK_STANDIN_LOG: log };
   const script = path.join(__dirname, '..', 'core', 'company-assistant', 'welink-ro.js');
-  const ok = spawnSync(process.execPath, [script, 'meeting', 'query-list', '--type', '1'], { env, encoding: 'utf8' });
+  const query = ['meeting', 'query-list', '--page', '1', '--size', '100', '--meeting-start-time', '1792339200000', '--meeting-end-time', '1792425599999', '--type', '1', '--meeting-sort', 'asc'];
+  const ok = spawnSync(process.execPath, [script, ...query], { env, encoding: 'utf8' });
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(W.parseJson(ok.stdout).meetings.length, 4);
+  assert.equal(W.parseJson(ok.stdout).data.data.length, 4);
   const bad = spawnSync(process.execPath, [script, 'im', 'send-message', '--user-account', 'x', '--content', 'hi'], { env, encoding: 'utf8' });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /拒绝执行：im send-message/);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(calls, [['meeting', 'query-list', '--type', '1']], '写命令不应到达 welink-cli');
+  assert.deepEqual(calls, [query], '写命令不应到达 welink-cli');
 });
 
 test('回执解析：带提示文字的 JSON、登录状态、日历未初始化、二维码三种形式', () => {
@@ -209,7 +210,9 @@ function fakeDeps(dataDir, log, extraEnv = {}) {
   };
 }
 
-test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核对出处后换成 AI 简报；提问走同一会话；只调了查询命令', async () => {
+test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核对出处后换成 AI 简报；提问走同一会话；只调了查询命令', async t => {
+  // 服务与进程内 CLI 共用时钟，避免 23:48 后「12 分钟后的会」落入明天。
+  t.mock.timers.enable({ apis: ['Date'], now: NOW });
   const dir = tmp(), log = path.join(dir, 'calls.log');
   const f = fakeDeps(dir, log);
   const bus = new NoticeBus();
@@ -271,6 +274,26 @@ test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核�
   assert.equal(calls.filter(c => c[1] === 'autodiscover').length, 1, '自动配置只跑一次');
   assert.ok(calls.some(c => c[0] === 'im' && c[1] === 'query-history-message' && c.includes('g-100')), '关注的群取了历史消息');
   svc.close();
+});
+
+test('午夜前生成今天简报：次日即将开始的会保留在快照中，不混入今天的简报出处', async t => {
+  const now = at(23, 55);
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const dir = tmp(), f = fakeDeps(dir, path.join(dir, 'calls.log'));
+  const svc = new CompanyAssistant({ ...f.deps, bus: new NoticeBus() });
+  t.after(() => svc.close());
+  svc.start();
+  svc.setSettings({ workdays: [0, 1, 2, 3, 4, 5, 6] });
+  const first = await svc.generateBrief();
+  const soon = svc.snapshot().meetings.find(m => m.sourceId === 'meeting:m-soon');
+  assert.equal(soon.start, at(24, 7), '23:55 后 12 分钟属于次日 00:07');
+  const items = first.sections.find(section => section.key === 'meetings').items;
+  assert.ok(items.some(item => item.source === 'meeting:m-a'));
+  assert.ok(!items.some(item => item.source === 'meeting:m-soon'));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].text, /\[meeting:m-a\]/);
+  assert.doesNotMatch(f.sent[0].text, /\[meeting:m-soon\]/);
 });
 
 test('服务：WeLink 登录过期时简报提示扫码；扫码登录拿到二维码，登录后状态变为已登录', async () => {
