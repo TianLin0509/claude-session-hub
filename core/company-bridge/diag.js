@@ -138,6 +138,8 @@ function defaultSys() {
     clock: () => Date.now(),
     // 二期
     codeagentVersion: command => codeagentVersion(command),
+    // Hub 主进程启动时继承的原始环境（启动自检会把会话标记从 process.env 删掉，旁证要看自检前的，core/clean-launch-env.js）
+    hubEnv: (() => { try { return require('../clean-launch-env').inheritedEnv(); } catch { return process.env; } })(),
     renderRows: raw => require('../hub-phone/session-chat').renderRows(raw),
     readdir: dir => fs.promises.readdir(dir, { withFileTypes: true }),
     stat: file => fs.promises.stat(file),
