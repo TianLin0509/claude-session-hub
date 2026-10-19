@@ -524,8 +524,15 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config) {
   // 其余情况（含「有 id 但没有落盘记录」）都是全新会话：不能用 --continue，它会接上这个目录里最近的别人的对话。
   const quote = value => /^[A-Za-z0-9_.:=\/\\-]+$/.test(String(value)) ? String(value) : quotePowerShellLiteral(value);
   const cmd = ' ' + commandHead(config.command) + ' ' + [...identity, ...args].map(quote).join(' ') + '\r\n';
+  // 账号代称（个人 / 号N）：默认模型看护按启动记录找「改写前后启动了哪些会话」（core/codeagent-default-model-guard.js）。
+  let account = '个人';
+  try {
+    const match = require('./codeagent-pool').poolDirMatch(hubDataDir, config.configDir);
+    if (match) account = match.id ? require('./codeagent-default-model-guard').accountOf({ codeagentPoolAccount: match.id }, hubDataDir).alias : '号池';
+  } catch { /* 只影响日志 */ }
   require('./codeagent-models').appendModelLog(hubDataDir, {
-    event: 'launch', session: String(id || '').slice(0, 8), kind,
+    event: 'launch', session: String(id || '').slice(0, 8), account: account.replace(/\s+/g, ''), kind,
+    ...(opts.purpose ? { purpose: opts.purpose } : {}),
     requested: inheritModel ? '(inherit)' : opts.model || '(default)', model: requestedModel || '(inherit)', resume: identity.length ? identity[0] : '',
     ...(codeAgentRouteModel(opts) ? { route: codeAgentRouteModel(opts) } : {}),
   });
@@ -1471,14 +1478,29 @@ class SessionManager extends EventEmitter {
     // 家里指定了模型：这个号得有它的权限；默认模型不是它时，只在号上没有进行中的会话时切（不影响正在跑的会话）。
     // 没指定时，之前为通道切过模型、且号上已没有进行中的会话，换回切之前的模型（syncSharedConfig）。
     const routeModel = codeAgentRouteModel(opts);
-    if (routeModel) {
+    // 账号即模型（2026-10-19，开关见 core/codeagent-model-route.js routeSwitchEnabled，默认关）：不切号的默认模型；
+    // 新开的通道会话只开在默认模型就是指定模型的号上，恢复的会话按号此刻的默认模型照常起（不「选回」旧模型）。
+    const routeSwitch = require('./codeagent-model-route').routeSwitchEnabled();
+    if (routeModel && !routeSwitch && !opts.codeagentPoolAccount) {
+      // 和号表同一口径：号自己写了、且在清单里的才算默认模型（pool.strictDefaultModel），不按清单猜。
+      const current = pool.strictDefaultModel(pool.readSettingsModel(account.dir), account.models).model;
+      if (current.toLowerCase() !== routeModel.toLowerCase()) throw new Error(`${who(account)} 的默认模型是 ${current || '未知'}，不是 ${routeModel}；不改号的默认模型，未启动会话`);
+    } else if (routeModel && routeSwitch) {
       if (!account.models.some(m => m.toLowerCase() === routeModel.toLowerCase())) throw new Error(`${who(account)} 没有 ${routeModel} 的权限，未启动会话`);
       const current = pool.effectiveModel(account.dir);
       if (current.toLowerCase() !== routeModel.toLowerCase() && account.activeSessions > 0) {
         throw new Error(`${who(account)} 正在用 ${current || '别的模型'} 跑会话，不能切到 ${routeModel}；等它们结束后再试`);
       }
     }
-    const sync = pool.syncSharedConfig(personalConfig.configDir, account.dir, undefined, { routeModel, idle: !routeModel && account.activeSessions === 0 });
+    const sync = pool.syncSharedConfig(personalConfig.configDir, account.dir, undefined, { routeModel: routeSwitch ? routeModel : '', routeSwitch,
+      idle: !(routeSwitch && routeModel) && account.activeSessions === 0,
+      onRouteRestore: ({ before, after, original, restored, reason }) => {
+        const alias = require('./codeagent-default-model-guard').accountOf({ codeagentPoolAccount: account.id }, dataDir).alias;
+        if (restored) require('./codeagent-default-model-guard').recordChange(dataDir, { account: alias, before, after,
+          source: 'route-marker-restore', extra: { note: '账号即模型：按 hub-route-model.json 记下的原值写回一次并删除记录' } }, { persist: false });
+        // 不满足写回条件：只删了记录，记一行原因（原值为空 / 号的 model 切过之后又被改过 / 原值不在权限清单里）
+        else require('./codeagent-models').appendModelLog(dataDir, { event: 'route-marker-drop', account: alias.replace(/\s+/g, ''), model: before || '(空)', original: original || '(空)', reason });
+      } });
     if (sync.errors.length) console.warn(`[codeagent-pool] ${account.id} 同步配置：${sync.errors.join('；')}`);
     if (typeof this.deployCodeAgentHooks === 'function') {
       try { this.deployCodeAgentHooks(account.dir); } catch (error) { console.warn(`[codeagent-pool] ${account.id} hook：${error.message}`); }
@@ -1590,8 +1612,9 @@ class SessionManager extends EventEmitter {
     if (isCodeAgent && (opts.codeagentAccount === 'pool' || opts.codeagentPoolAccount)) {
       codeagentPool = this._resolveCodeAgentPool(opts, codeagentConfig);
       codeagentConfig = { ...codeagentConfig, configDir: codeagentPool.account.dir };
-    } else if (isCodeAgent && codeAgentRouteModel(opts)) {
+    } else if (isCodeAgent && codeAgentRouteModel(opts) && freshLaunch) {
       // 个人账号不切默认模型（号主自己日常用的配置）：此刻的默认就是指定模型才开，否则明确报错，不静默换模型。
+      // 恢复的会话不核对：按个人账号此刻的默认模型照常起，不「选回」当初的模型（2026-10-19 账号即模型）。
       const routeModel = codeAgentRouteModel(opts);
       const personal = require('./codeagent-model-route').personalAccount({ dataDir: getHubDataDir(), personalDir: codeagentConfig.configDir });
       if (!personal) throw new Error('个人账号没有有效的登录，未启动会话');

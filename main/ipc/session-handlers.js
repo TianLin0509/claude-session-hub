@@ -571,7 +571,8 @@ function registerSessionIpc(ipcMain, deps) {
       const configModelOf = key => {
         if (key === 'personal') return personalCheck ? (personalCheck.written || personalCheck.defaultModel || '') : '';
         const a = codeagentPoolAccounts().find(x => x.id === key);
-        return a ? pool.effectiveModel(a.dir) : null;
+        // 账号即模型（切号开关关着）：号此刻会请求的就是它自己写的值，不推断
+        return a ? (require('../../core/codeagent-model-route').routeSwitchEnabled() ? pool.effectiveModel(a.dir) : pool.readSettingsModel(a.dir)) : null;
       };
       for (const key of Object.keys(all)) {
         if (avoid[key]) continue;
@@ -762,12 +763,38 @@ function registerSessionIpc(ipcMain, deps) {
     const session = sessionManager.getSession(sessionId);
     if (!session) return { ok: false, message: '会话已经关闭' };
     const { getHubDataDir } = require('../../core/data-dir');
+    const dataDir = getHubDataDir();
+    const guard = require('../../core/codeagent-default-model-guard');
+    // 自动会话（通道、公司助理、论坛）一律用号自己的默认模型，绝不驱动菜单（2026-10-19 账号即模型）。
+    if (['company-bridge', 'company-assistant', 'company-forum'].includes(session.purpose)) {
+      codeagentModels.appendModelLog(dataDir, { event: 'pick', session: String(sessionId).slice(0, 8), reason, model: modelId, ok: false, error: 'automatic-session' });
+      return { ok: false, inputReady: true, message: '自动会话用账号自己的默认模型，不切换模型' };
+    }
+    // 菜单回车会写这个会话的 CodeAgent 实际用的配置目录：启动时记下的那个，规范化后快照、改回、核对都用它。
+    const configDir = codeagentPicker.normalizeConfigDir(guard.sessionConfigDir(session, { dataDir }));
+    const account = guard.accountOf(session, dataDir).alias;
+    const permitted = guard.permittedModels(session, configDir, { dataDir });
+    let before = '';
+    try { before = String(JSON.parse(require('fs').readFileSync(require('path').join(configDir, 'settings.json'), 'utf8')).model || ''); } catch { before = ''; }
+    // 菜单回车（CodeAgent 写）和改回原值（Hub 写）都是这次选择引起的：先登记，看护看到时认得出来源，这里自己记日志。
+    guard.noteHubWrite(configDir, modelId, `codeagent-menu-enter:${reason}`, { logged: true, session: String(sessionId).slice(0, 8) });
+    guard.noteHubWrite(configDir, before, `picker-restore:${reason}`, { logged: true, session: String(sessionId).slice(0, 8) });
     let result;
     try {
       result = await codeagentPicker.pickModel({ manager: sessionManager, sid: sessionId, kind: session.kind, modelId,
-        configDir: session.codeagentConfigDir || null, sendToPty: require('../../core/group-chat-watcher').sendToPty });
+        configDir, allowedModels: permitted.authoritative ? permitted.models : null,
+        onDefaultChange: change => guard.recordChange(dataDir, { account, session: String(sessionId).slice(0, 8), before: change.restoredTo || '', after: change.written || '',
+          source: `codeagent-menu-enter:${reason}`, extra: { file: change.file, restoredTo: change.restoredTo || '(空)', restoreOk: change.ok, ...(change.error ? { restoreError: change.error } : {}) } }, { persist: false }),
+        sendToPty: require('../../core/group-chat-watcher').sendToPty });
     } catch (error) { result = { ok: false, message: error && error.message ? error.message : String(error) }; }
-    codeagentModels.appendModelLog(getHubDataDir(), { event: 'pick', session: String(sessionId).slice(0, 8), reason, model: modelId,
+    if (result.defaults) {
+      guard.recordChange(dataDir, { account, session: String(sessionId).slice(0, 8), before: result.defaults.before || '', after: result.defaults.after || '',
+        source: `picker:${reason}`, extra: { verified: result.defaults.verified, changes: result.defaults.changes.length } }, { persist: account === '个人' && result.defaults.changes.length > 0 });
+      // 看守结束仍没改回：单独记一行，直查和排查一眼能看到这个号的默认模型停在了菜单改后的值
+      if (!result.defaults.verified) codeagentModels.appendModelLog(dataDir, { event: 'default-model-restore-failed', session: String(sessionId).slice(0, 8), account: account.replace(/\s+/g, ''),
+        want: result.defaults.before || '(空)', now: result.defaults.after || '(空)', reason });
+    }
+    codeagentModels.appendModelLog(dataDir, { event: 'pick', session: String(sessionId).slice(0, 8), account: account.replace(/\s+/g, ''), reason, model: modelId,
       ok: result.ok, mode: result.mode, confirmed: result.confirmed, restored: (result.restored || []).join('+'), menu: (result.menu || []).join('+'), error: result.ok ? '' : result.message });
     // 菜单里实际能选的模型：新建会话的模型下拉以它为准（core/codeagent-models.js 的 modelOptions）。
     if (result.menu) { try { codeagentModels.recordMenu(getHubDataDir(), result.menu); } catch { /* 只影响下次的模型下拉，不影响本次选择 */ } }

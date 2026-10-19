@@ -1,4 +1,6 @@
 'use strict';
+// 这份用例覆盖「切号默认模型」开关打开时（2.1.11 起的旧行为）；默认关（账号即模型，2026-10-19）的行为见 unit-codeagent-account-is-model.test.js。
+process.env.AI_HUB_CODEAGENT_ROUTE_SWITCH = '1';
 // 家里按模型给公司派活（2026-10-18 田哥：GLM / DeepSeek 分流）：模型表聚合、按模型挑号、号的默认模型切换与换回、
 // 家里 ask_company 的 model 参数、MCP 工具描述、公司按模型开会话 / 排队 / 拒绝、追问不换模型、老格式兼容。
 const test = require('node:test');

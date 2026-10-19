@@ -1,4 +1,6 @@
 'use strict';
+// 这份用例覆盖「切号默认模型」开关打开时（2.1.11 起的旧行为）；默认关（账号即模型，2026-10-19）的行为见 unit-codeagent-account-is-model.test.js。
+process.env.AI_HUB_CODEAGENT_ROUTE_SWITCH = '1';
 // CodeAgent 号池（core/codeagent-pool.js）：挑号、凭证读取、配置同步、工作目录凭证拦截、登记增删。
 const test = require('node:test');
 const assert = require('node:assert/strict');
