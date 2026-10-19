@@ -37,7 +37,7 @@ test('只读包装 welink-ro.js：查询命令照常输出，写命令在调用 
   const dir = tmp(), log = path.join(dir, 'calls.log');
   const env = { ...process.env, CLAUDE_HUB_WELINK_CLI: STANDIN, WELINK_STANDIN_LOG: log };
   const script = path.join(__dirname, '..', 'core', 'company-assistant', 'welink-ro.js');
-  const query = ['meeting', 'query-list', '--page', '1', '--size', '100', '--meeting-start-time', '1792339200000', '--meeting-end-time', '1792425599999', '--type', '1', '--meeting-sort', '0'];
+  const query = ['meeting', 'query-list', '--page', '1', '--size', '100', '--meeting-start-time', '1792339200000', '--meeting-end-time', '1792425599999', '--type', '1', '--meeting-sort', 'asc'];
   const ok = spawnSync(process.execPath, [script, ...query], { env, encoding: 'utf8' });
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(W.parseJson(ok.stdout).data.data.length, 4);
