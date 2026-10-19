@@ -66,6 +66,23 @@ try {
     env.ANTHROPIC_BASE_URL = `${perm.base}/m/${encodeURIComponent(written)}`;
   }
 } catch { /* 没有这个文件：正常调用 */ }
+// 登录失效 / 刷屏的号（2026-10-19 启动中心按账号建会话的排查）：配置目录里有 standin-mode.txt 时不启动真 CLI：
+//   login：像登录失效的 CodeAgent 一样停在登录提示上，等输入；flood：持续大量输出（模拟报错循环刷屏）。
+try {
+  const mode = require('fs').readFileSync(require('path').join(env.CODEAGENT3_CONFIG_DIR || '', 'standin-mode.txt'), 'utf8').trim();
+  if (mode === 'login') {
+    process.stdout.write('\x1b[1mCodeAgent\x1b[0m v1.2615.02.01\r\n\r\n登录已失效，请重新登录。\r\n  1. 账号密码登录\r\n  2. 浏览器登录\r\n\r\n请选择登录方式 (1/2): ');
+    process.stdin.resume();
+    process.stdin.on('data', () => process.stdout.write('\r\n请选择登录方式 (1/2): '));
+    return;
+  }
+  if (mode === 'flood') {
+    let n = 0;
+    const tick = () => { let s = ''; for (let i = 0; i < 200; i++) s += `[${++n}] 刷新登录凭证失败，重试中…… ${'x'.repeat(80)}\r\n`; process.stdout.write(s, () => setImmediate(tick)); };
+    tick();
+    return;
+  }
+} catch { /* 没有这个文件：正常启动 */ }
 const command = env.CODEAGENT_STANDIN_CLAUDE || 'claude';
 // Let the child own Ctrl+C, like the real CLI does.
 process.on('SIGINT', () => {});

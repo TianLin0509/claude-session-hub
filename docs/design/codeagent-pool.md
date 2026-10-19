@@ -37,6 +37,15 @@
 - 直查 CodeAgent 段的 `personal`：`configSource`（`hub-env` / `hub-config` / `inherited-user-env` / `inherited-system-env` / `ignored-inherited-env` / `default`）、`configModel`（个人 settings.json 里写的 model）、`inPool` / `inPoolAlias`（个人目录是否和某个号的目录重叠，只给代称）、`inheritedConfigDir`：`adopted` / `ignored`、`reason`（`adopted-user-env` / `adopted-system-env` 采用；`process-only` 忽略：只在进程里出现；`in-pool` 忽略：落在号池；`unverified` 忽略：读不到注册表；`explicit` 忽略：个人目录已显式指定）、`origin`（`user-env` / `system-env` / `process-only` / `unknown`：读注册表出错）、是否指向号池（代称）、`startedInside`（Hub 自己的环境里有没有 Hub 会话标记 `CLAUDE_HUB_SESSION_ID` 或 CodeAgent 启动器标记——有就说明 Hub 是从某个会话的进程树里启动的），都不带路径。判定和直查共用启动时那一次注册表读取。Hub 日志在启动后记一笔同样的说明。
 - 已知影响：事故期间（10-17 晚到 10-19 修正版装上之前）开的「个人」会话，原生记录在号 1 的目录里，修正后按个人目录找不到，恢复时会报找不到原会话（这些会话本来也都失败了）。号 1 目录里还留着 09:55 远程修正时的备份 `settings.json.hub-backup-20261019-095502-033`，无害。
 
+## 启动中心按账号建会话（2026-10-19，田哥公司真机 2.1.15）
+
+- 选了号，模型下拉只列这个号有权限的模型；「沿用」那一项（值为空、启动后不切换）写成这个号的默认模型，例如「GLM-5.2 Auto（默认）」。默认模型：个人账号 = 纠正后的默认（`codeagent-model-route.js personalModels`），号池号 = 启动前同步配置会定下的模型（`effectiveModel`），号池自动挑号只在各号默认一样时写出。换号时模型回到新号的默认；点选的正好是默认模型时按「沿用」处理，不走 `/model` 菜单。
+- 启动中心的下拉（账号、号池账号、模型等）点开后，选项列表画在页面里、控件正下方（`renderer/launch-select-popover.js`），不再用系统弹层：公司电脑的窗口事件日志显示 Hub 每次启动后窗口按 100% 缩放报尺寸（2578×1398），最小化再还原后才按 125%（2064×1120），系统弹层按错的比例算位置，跑到窗口中间。启动中心的代码和样式从 2.1.8 起没变过。
+- 个人账号的登录状态写进账号下拉和说明（登录已过期 / 还没登录 / 登录凭证读不懂），「账号与号池」里个人一行按状态显示并给「重新登录」（同号池的登录窗口，目录是个人配置目录，和号池重叠时拒绝）。凭证读不懂时带原因（读文件出错 / 不是 JSON / 没有登录项及顶层键名，不含内容），直查 pool 段和 CodeAgent 段的 `credentialsNote` 带出；读取时去掉 BOM、登录项键名大小写不敏感（CodeAgent 自己的 `xxxOAuth` 优先，Claude 的 `claudeAiOauth` 不算）。
+- 点「后台」的回执写进窗口事件日志（`page-backstage`：会话类型、个人 / 号池、终端层尺寸与是否在最上层、行数、绘制方式、devicePixelRatio；点了没反应时记原因），直查 logs 段能读到。
+- 通道指定号、但读不到账号清单（老环境）时：指定个人只开个人，指定号池里的号只开那个号，不再改成号池自动挑号。
+- 验证：`node tests/e2e-codeagent-launch-account.js`（公司版导出物、真实点击：个人账号建会话 → GLM，号 1 建会话 → DS，两个会话的后台都能打开、来回切和从各整页切回都能再开，下拉列表在控件正下方），`node --test tests/unit-codeagent-credentials-read.test.js`。
+
 ## 不在一期
 
 - 撞到分钟额度时自动换号（需要先在真机上看到 `quota_auto_resume_*` 事件的样子）。

@@ -84,7 +84,12 @@ async function main() {
     const status = c => c.eval('require("electron").ipcRenderer.invoke("bridge:status")');
     await until('renderers', async () => (await hc.eval('typeof window.__wirelessHide==="function"')) && (await cc.eval('typeof sessions!=="undefined" && location.href.includes("index.html")')), 90000, 300);
     check(true, '两台 Hub 都连到主窗口');
-    check((await cc.eval('process.env.CODEAGENT3_CONFIG_DIR')) && same(await cc.eval('process.env.CODEAGENT3_CONFIG_DIR'), poolDir), '公司 Hub 的进程环境里确实带着指向号 1 目录的 CODEAGENT3_CONFIG_DIR（事故现场）');
+    // 事故现场：公司 Hub 启动时继承了指向号 1 目录的 CODEAGENT3_CONFIG_DIR。2026-10-19 起判定出「落在号池里」后从 Hub 主进程环境里去掉
+    // （core/clean-launch-env.js），Hub 的终端和之后的再启动都不再带；直查照旧按启动时继承的那份报告。
+    const launchEnv = await until('configdir dropped', async () => { const v = await cc.eval('require("electron").ipcRenderer.invoke("debug:launch-env", ["CODEAGENT3_CONFIG_DIR"])'); return v && v.startup && v.startup.configDir ? v : null; }, 60000, 500);
+    result.launchEnv = launchEnv;
+    check(launchEnv.env.CODEAGENT3_CONFIG_DIR === null && launchEnv.startup.configDir.reason === 'in-pool' && launchEnv.startup.configDir.removed.includes('CODEAGENT3_CONFIG_DIR'),
+      '公司 Hub 启动时继承了指向号 1 目录的 CODEAGENT3_CONFIG_DIR（事故现场）；判定落在号池里后已从 Hub 主进程环境去掉');
 
     // ---- 1. 公司 Hub 开个人账号会话：注入的是真正的个人目录，模型 GLM ----
     const ps = await cc.eval(`require("electron").ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd: work, title: '个人会话' } })})`);

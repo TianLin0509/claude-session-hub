@@ -42,6 +42,7 @@ Codex / Kimi 等直接读本文件，Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导
 - Bug 先复现、看日志、追调用链找到根因再改，不做猜测式补丁。默认窄改动、行为保持，不顺手重构无关模块。
 - 语法级改动至少跑 `node --check` 或相关单测。UI 行为改动要在隔离实例上用 CDP/Playwright 模拟真人操作或留截图证据，不用后端 IPC 冒充 E2E；无法运行时说明原因。
 - 最终回答列出实际执行的验证命令和结果；只做了静态检查就不说 E2E 通过。
+- 由 Hub 拉起自己（2026-10-19，「用户不从桌面打开就有 bug」）：新增的再启动路径一律走 `main.js` 的 `relaunchHubClean` / `prepareHubLaunchClean`（`core/clean-launch-env.js`），不直接 `app.relaunch()` 或 spawn 自己的 exe；`tests/unit-clean-launch-env.test.js` 的调用点契约会拦。窗口缩放兜底在 `core/window-scale-guard.js`，只在缩放不一致时动作，日志事件 `scale-*` 记在 `window-events.log`。
 
 ## 往 CLI 输入框发 prompt
 
