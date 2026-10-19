@@ -1219,7 +1219,14 @@ function hubLaunchTarget() {
   };
 }
 function relaunchHubClean(options = {}) {
-  return require('./core/clean-launch-env').relaunchApp(app, options, hubLaunchTarget(), { dataDir: getHubDataDir() });
+  // 清环境出任何错都不能影响 Hub 被拉起：退回原来的 app.relaunch（relaunchApp 内部对准备阶段也有同样的兜底）。
+  try {
+    return require('./core/clean-launch-env').relaunchApp(app, options, hubLaunchTarget(), { dataDir: getHubDataDir() });
+  } catch (error) {
+    console.warn('[launch-env] 干净再启动失败，按原环境再启动：' + (error && error.message));
+    app.relaunch(options && Object.keys(options).length ? options : undefined);
+    return { removed: [], cwd: null, fallback: true, error: String(error && error.message || error) };
+  }
 }
 function prepareHubLaunchClean() {
   return require('./core/clean-launch-env').prepareHubLaunch(hubLaunchTarget());

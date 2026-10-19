@@ -120,7 +120,7 @@ test('契约：五处再启动路径都经过干净启动环境', () => {
   const main = read('main.js');
   // 1. 远程重启（hub-admin）
   assert.match(main, /relaunch: \(\) => \{ relaunchHubClean\(\); app\.quit\(\); \}/);
-  assert.match(main, /function relaunchHubClean\([^)]*\) \{\s*return require\('\.\/core\/clean-launch-env'\)\.relaunchApp\(app,/);
+  assert.match(main, /function relaunchHubClean\([^)]*\) \{[\s\S]{0,200}return require\('\.\/core\/clean-launch-env'\)\.relaunchApp\(app,/);
   // 2. 重启并继续
   assert.match(main, /registerHubRestartIpc\(ipcMain, \{[\s\S]{0,400}relaunchHub: relaunchHubClean/);
   assert.match(read('main/ipc/hub-restart-handlers.js'), /relaunchHub\(\{args:\[\.\.\.args,ARG\+plan\.token\]\}\)/);
@@ -149,7 +149,11 @@ test('契约：源码里没有别处直接 app.relaunch（新增再启动路径�
     }
   };
   walk('core'); walk('main'); scan('main.js'); scan('main-bootstrap.js');
-  assert.deepEqual(offenders, ['main/ipc/hub-restart-handlers.js: const relaunchHub = deps.relaunchHub || (options => app.relaunch(options));'], offenders.join('\n'));
+  // 允许的只有两处兜底：重启处理器没拿到 relaunchHub 时（单测）、relaunchHubClean 清环境出错时
+  assert.deepEqual(offenders, [
+    'main/ipc/hub-restart-handlers.js: const relaunchHub = deps.relaunchHub || (options => app.relaunch(options));',
+    'main.js: app.relaunch(options && Object.keys(options).length ? options : undefined);',
+  ], offenders.join('\n'));
 });
 
 test('增量更新：替换脚本拿到的是干净环境（真跑一遍，新程序里没有会话标记、PATH 不变）', { skip: process.platform !== 'win32', timeout: 90000 }, async t => {
@@ -174,4 +178,38 @@ test('增量更新：替换脚本拿到的是干净环境（真跑一遍，新�
   const pathKey = o => Object.keys(o).find(k => k.toUpperCase() === 'PATH');
   assert.ok(String(got.env[pathKey(got.env)]).includes(String(process.env[pathKey(process.env)]).split(';')[0]), 'PATH 原样带下去');
   assert.equal(fs.readFileSync(path.join(installed, 'app.asar'), 'utf8'), 'NEW');
+});
+
+test('兜底：准备干净环境出错（prepare 或读工作目录抛错）时退回原来的 app.relaunch，并记日志；Hub 照样被拉起', () => {
+  process.env.CODEAGENT_HUB_UNIT_FB = '1';
+  try {
+    for (const [label, opts] of [
+      ['prepare 抛错', { prepare: () => { throw new Error('boom-prepare'); } }],
+      ['读工作目录抛错', { prepare: () => ({ removed: [], cwd: null, env: {} }), cwd: () => { throw new Error('boom-cwd'); } }],
+      ['prepare 返回坏结果', { prepare: () => ({}) }],
+    ]) {
+      const calls = [], warns = [];
+      const summary = L.relaunchApp({ relaunch: o => calls.push({ o, marker: process.env.CODEAGENT_HUB_UNIT_FB }) }, { args: ['x'] }, {}, { ...opts, logger: { warn: m => warns.push(m) } });
+      assert.equal(calls.length, 1, label + '：app.relaunch 只调一次');
+      assert.deepEqual(calls[0].o, { args: ['x'] }, label + '：参数原样');
+      assert.equal(summary.fallback, true, label);
+      assert.ok(warns.some(m => /准备干净启动环境失败/.test(m)), label + '：记了日志');
+      assert.equal(process.env.CODEAGENT_HUB_UNIT_FB, '1', label + '：本进程环境没被动过');
+    }
+    // 没有参数时按无参调用（和改动前的 app.relaunch() 一致）
+    const calls = [];
+    L.relaunchApp({ relaunch: (...a) => calls.push(a) }, {}, {}, { prepare: () => { throw new Error('x'); }, logger: {} });
+    assert.deepEqual(calls, [[undefined]]);
+  } finally { delete process.env.CODEAGENT_HUB_UNIT_FB; }
+});
+
+test('契约：main.js 的 relaunchHubClean 整段兜底，出错退回 app.relaunch', () => {
+  const main = read('main.js');
+  const body = main.slice(main.indexOf('function relaunchHubClean('), main.indexOf('function prepareHubLaunchClean('));
+  assert.match(body, /try \{[\s\S]*relaunchApp\(app, options[\s\S]*\} catch \(error\) \{[\s\S]*app\.relaunch\(/);
+});
+
+test('清单注释：AI_HUB_NO_CHOICE 是自动派活会话的内部标记，无条件清掉', () => {
+  assert.match(read('core/clean-launch-env.js'), /fix\/no-choice-prompt[\s\S]{0,120}用户不会持久设置这个开关/);
+  assert.equal(L.isSessionMarker('AI_HUB_NO_CHOICE'), true);
 });

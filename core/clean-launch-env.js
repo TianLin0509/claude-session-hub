@@ -22,7 +22,9 @@ const SESSION_VARS = {
   CLAUDE_HUB_PORT: 'Hub 会话的 hook 端口：指向启动它的那个 Hub',
   CLAUDE_HUB_TOKEN: 'Hub 会话的 hook 口令：属于启动它的那个 Hub',
   CODEAGENT3_LAUNCHER_PID: 'CodeAgent 启动器标记：说明 Hub 是从某个 CodeAgent 会话里拉起的',
-  AI_HUB_NO_CHOICE: 'CodeAgent 会话标记',
+  // 「禁止选择题」分支（fix/no-choice-prompt）给自动派活会话设的会话内部标记，hook 靠它判断要不要拦；
+  // 用户不会持久设置这个开关，所以无条件清掉（审核 2026-10-19 确认）。
+  AI_HUB_NO_CHOICE: '自动派活会话的「禁止选择题」内部标记：带着它，Hub 里所有会话都会被当成自动派活会话拦选择题',
 };
 const SESSION_PREFIXES = {
   CODEAGENT_HUB_: 'CodeAgent / CodeTeam 会话的 hook 标记：带着它，会话事件会投给别的程序',
@@ -164,18 +166,35 @@ function prepareHubLaunch({ execPath = process.execPath, appRoot, isPackaged = f
 
 // app.relaunch 没有传环境和工作目录的参数，新进程继承调用那一刻的进程环境与工作目录（Electron 在 relaunch() 里就拉起
 // 等待老进程退出的助手进程）。所以临时删掉要去掉的变量、必要时换工作目录 → app.relaunch → 立刻恢复。
-function relaunchApp(app, options = {}, target = {}, { prepare = prepareHubLaunch, logger = console, dataDir = null } = {}) {
-  const launch = prepare(target);
+// 兜底（审核 2026-10-19）：准备干净环境这一步（prepare、读工作目录、删变量）出错时，退回原来的 app.relaunch(options)
+// 并记一条日志——清环境失败也不能影响 Hub 被拉起。app.relaunch 本身出错照原样抛出（和改动前一致）。
+function relaunchApp(app, options = {}, target = {}, { prepare = prepareHubLaunch, logger = console, dataDir = null, cwd = () => process.cwd() } = {}) {
+  const relaunchOptions = options && Object.keys(options).length ? options : undefined;
+  let launch = null, beforeCwd = null;
   const saved = {};
-  for (const r of launch.removed) if (process.env[r.name] !== undefined) saved[r.name] = process.env[r.name];
-  const beforeCwd = process.cwd();
   try {
-    for (const name of Object.keys(saved)) delete process.env[name];
-    if (launch.cwd) { try { process.chdir(launch.cwd); } catch {} }
-    app.relaunch(options && Object.keys(options).length ? options : undefined);
+    launch = prepare(target);
+    for (const r of launch.removed) if (process.env[r.name] !== undefined) saved[r.name] = process.env[r.name];
+    beforeCwd = cwd();
+  } catch (error) {
+    const message = String(error && error.message || error).slice(0, 200);
+    try { logger.warn?.(`[launch-env] 准备干净启动环境失败，按原环境再启动：${message}`); } catch {}
+    const log = eventLogWriter(dataDir);
+    if (log) log('relaunch-clean-env-failed', { error: message });
+    app.relaunch(relaunchOptions);
+    return { removed: [], cwd: null, fallback: true, error: message };
+  }
+  try {
+    try {
+      for (const name of Object.keys(saved)) delete process.env[name];
+      if (launch.cwd) { try { process.chdir(launch.cwd); } catch {} }
+    } catch (error) {
+      try { logger.warn?.(`[launch-env] 去掉会话标记失败，按原环境再启动：${error && error.message}`); } catch {}
+    }
+    app.relaunch(relaunchOptions);
   } finally {
-    for (const [k, v] of Object.entries(saved)) process.env[k] = v;
-    if (launch.cwd) { try { process.chdir(beforeCwd); } catch {} }
+    for (const [k, v] of Object.entries(saved)) { try { process.env[k] = v; } catch {} }
+    if (launch.cwd && beforeCwd) { try { process.chdir(beforeCwd); } catch {} }
   }
   const summary = { removed: launch.removed.map(r => r.name), cwd: launch.cwd || null };
   try { logger.log?.(`[launch-env] 再启动：去掉 ${summary.removed.join('、') || '（无）'}${summary.cwd ? '；工作目录异常，改为安装目录' : ''}`); } catch {}

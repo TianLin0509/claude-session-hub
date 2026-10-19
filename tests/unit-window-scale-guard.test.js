@@ -102,3 +102,18 @@ test('契约：主窗口装了兜底；测试窗口默认不装，隔离实例�
   assert.match(main, /e2eScaleGuard = isIsolatedHub\(\) && process\.env\.CLAUDE_HUB_E2E_SCALE_GUARD === '1'/);
   assert.match(main, /if \(e2eScaleGuard \|\| \(!mainWindow\.__hubBackgroundE2E && !keepIsolatedE2EWindowHidden\(\)\)\)/);
 });
+
+test('全屏时不判断、不动作', async () => {
+  assert.equal(G.detectScaleMismatch({ ...BAD, fullScreen: true }), null);
+  const win = fakeWin(null);
+  Object.assign(win, { getBounds: () => BAD.bounds, isMaximized: () => false, isMinimized: () => false, isVisible: () => true, isFullScreen: () => true,
+    webContents: { executeJavaScript: async () => ({ dpr: 1, zoom: 1 }), getZoomFactor: () => 1 } });
+  const screen = { getDisplayMatching: () => COMPANY_DISPLAY };
+  const state = await G.readWindowScaleState(win, screen);
+  assert.equal(state.fullScreen, true);
+  assert.equal(G.detectScaleMismatch(state), null);
+  const logs = [];
+  const guard = G.installWindowScaleGuard(win, { screen: Object.assign(new EventEmitter(), screen), log: (e, d) => logs.push(e), setTimeoutImpl: immediate, clearTimeoutImpl: () => {} });
+  assert.equal(await guard.check('display-changed'), null);
+  assert.deepEqual(win.calls, []);
+});

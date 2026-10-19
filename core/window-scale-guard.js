@@ -22,8 +22,9 @@ const SHOW_DELAY_MS = 1500;
 const DISPLAY_DEBOUNCE_MS = 1000;
 
 // 纯函数：给定读数判断是否不一致。返回 null（一致或不该判断）或 { reasons, windowScale, displayScale }。
-function detectScaleMismatch({ bounds, maximized = false, minimized = false, visible = true, display, windowScale } = {}) {
-  if (!visible || minimized || !bounds || !display) return null;
+function detectScaleMismatch({ bounds, maximized = false, minimized = false, visible = true, fullScreen = false, display, windowScale } = {}) {
+  // 全屏时窗口尺寸由系统定，不做处理（审核 2026-10-19）
+  if (!visible || minimized || fullScreen || !bounds || !display) return null;
   const displayScale = Number(display.scaleFactor);
   const reasons = [];
   const ws = Number(windowScale);
@@ -49,6 +50,7 @@ async function readWindowScaleState(win, screen, { probeOverride = null } = {}) 
     if (Number(r && r.dpr) > 0 && zoom > 0) windowScale = Number(r.dpr) / zoom;
   } catch { windowScale = null; }
   const state = { bounds, maximized: win.isMaximized(), minimized: win.isMinimized(), visible: win.isVisible(),
+    fullScreen: typeof win.isFullScreen === 'function' ? win.isFullScreen() : false,
     display: { id: display.id, scaleFactor: display.scaleFactor, workArea: display.workArea, bounds: display.bounds }, windowScale };
   if (probeOverride && typeof probeOverride === 'object') Object.assign(state, probeOverride);
   return state;
