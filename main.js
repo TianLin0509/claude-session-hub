@@ -1309,6 +1309,23 @@ function createWindow() {
       enabled: keepRendering.shouldKeepRendering({ community: require('./core/distribution').community }),
     })?.log || null;
   } catch (error) { console.warn('[window] keep-rendering setup failed:', error && error.message); }
+  // 窗口缩放兜底（core/window-scale-guard.js，2026-10-19 公司真机「自动拉起后按 100% 排版」）：
+  // 只在检测到窗口缩放和所在显示器不一致时做一次 setBounds / 重新最大化，正常启动只读不改。
+  // 测试窗口（屏幕外的后台窗口、隐藏窗口）不装；隔离实例设 CLAUDE_HUB_E2E_SCALE_GUARD=1 才装，
+  // CLAUDE_HUB_E2E_SCALE_PROBE 可覆盖读数来模拟不一致。
+  try {
+    const e2eScaleGuard = isIsolatedHub() && process.env.CLAUDE_HUB_E2E_SCALE_GUARD === '1';
+    if (e2eScaleGuard || (!mainWindow.__hubBackgroundE2E && !keepIsolatedE2EWindowHidden())) {
+      let probeOverride = null;
+      if (e2eScaleGuard && process.env.CLAUDE_HUB_E2E_SCALE_PROBE) {
+        try { probeOverride = JSON.parse(process.env.CLAUDE_HUB_E2E_SCALE_PROBE); } catch { probeOverride = null; }
+      }
+      require('./core/window-scale-guard.js').installWindowScaleGuard(mainWindow, {
+        screen, powerMonitor, probeOverride,
+        log: windowEventLog || ((event, detail) => console.warn('[window]', event, JSON.stringify(detail))),
+      });
+    }
+  } catch (error) { console.warn('[window] scale guard setup failed:', error && error.message); }
   // 界面进程崩溃（公司真机 crashed -36861，原因待崩溃转储区分）后自动重新载入界面，会话都在主进程里不受影响；
   // 卡住时记下界面正在跑的代码和内存（见该模块注释）。
   try {
