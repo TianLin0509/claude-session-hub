@@ -31,6 +31,28 @@ test('strip markers: removed in export, else-lines uncommented, malformed region
   assert.throws(() => applyStripMarkers('// @community-strip\n// @community-else\nnotComment();\n// @community-end', 'x'), /必须是注释/);
 });
 
+// 2026-10-19：无线助理的声明被剥，退出清理里的引用没剥，公司版「重启并继续」报 wirelessService is not defined 被取消。
+test('main.js 剥离段里的顶层声明，剥离后不再被引用', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const names = new Set();
+  let state = 'keep';
+  for (const line of src.split(/\r?\n/)) {
+    const marker = /^[ \t]*\/\/\s*@community-(strip|else|end)\b/.exec(line);
+    if (marker) { state = marker[1] === 'end' ? 'keep' : marker[1]; continue; }
+    const decl = state === 'strip' && /^(?:let|const|var|class|(?:async )?function\*?)\s+([A-Za-z_$][\w$]*)/.exec(line);
+    if (decl) names.add(decl[1]);
+  }
+  assert.ok(names.has('wirelessService'), '样本：无线助理的声明在剥离段里');
+  const kept = applyStripMarkers(src, 'main.js').text.split(/\r?\n/).map(l => l.replace(/\/\/.*$/, ''));
+  const dangling = [];
+  for (const name of names) {
+    if (kept.some(l => new RegExp(`^(?:let|const|var|class|(?:async )?function\\*?)\\s+${name}\\b`).test(l))) continue;
+    const ref = new RegExp(`(^|[^\\w$.'"\`-])${name}\\b`);
+    kept.forEach((l, i) => { if (ref.test(l)) dangling.push(`${name} @ 导出后第 ${i + 1} 行：${l.trim().slice(0, 80)}`); });
+  }
+  assert.deepEqual(dangling, [], '这些名字的声明被剥了，引用也要包进剥离标记');
+});
+
 test('公司版产品名放行只对传了 leakAllow 的导出生效，社区版照拦；放行项必须是带 Huawei/华为 的完整名字', () => {
   const line = '窗口标题：AI HUB-Huawei 内测先锋版；安装包 AIHubHuawei-Setup-1.0.1.exe';
   assert.ok(scanText(line, 'f').some(h => h.rule === 'personal-preference'), '社区版不传放行，照拦');

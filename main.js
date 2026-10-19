@@ -4527,7 +4527,9 @@ async function runFinalShutdownCleanup() {
   capture('terminal-output-batcher', () => terminalOutputBatcher.dispose({ flush: true }));
   capture('dev-workbench', () => devWorkbench?.dispose());
   capture('hub-assistant', () => assistantService?.close());
+  // @community-strip 无线助理只在自用版（声明在上面同名剥离段里，这里一起剥，否则导出版退出清理报 wirelessService is not defined）
   capture('wireless-assistant', () => wirelessService?.close());
+  // @community-end
   capture('company-bridge', () => companyBridgeService?.close());
   capture('company-assistant', () => companyAssistantService?.close());
   capture('company-forum', () => { companyForumService?.close(); companyForumBrowser?.close(); });
