@@ -13,6 +13,10 @@ const fs = require('fs');
 const pool = require('./codeagent-pool');
 
 const eq = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+// 账号即模型（2026-10-19 田哥：「每个账号现在都只有一个模型……起一个会话，直接用默认的模型就可以了，根本不用选模型」
+// 「唯一需要的就是一开始选账号」）：通道按模型派活只挑默认模型就是它的号，不再为凑模型切号池号的默认模型。
+// 2.1.11 起的「切号默认模型 + hub-route-model.json 写回」保留在开关后面，默认关：AI_HUB_CODEAGENT_ROUTE_SWITCH=1 才打开。
+function routeSwitchEnabled(env = process.env) { return String(env.AI_HUB_CODEAGENT_ROUTE_SWITCH || '') === '1'; }
 const hasModel = (account, model) => (account.models || []).some(m => eq(m, model));
 // 日常主力（2026-10-18 田哥：大家平时优先用 GLM）：GLM 一族标主力，其余是分流用的模型。
 const isPrimary = model => /^glm/i.test(String(model || ''));
@@ -78,13 +82,13 @@ function routeAccounts({ dataDir, personalDir = '', activeCounts = {}, personalA
 // 这个号能不能用来跑该模型（审核 2026-10-18：个人账号不切默认模型，只算它此刻的默认；号池的号清单里有就算）。
 // 不能的号不进模型表、不参与挑号，免得家里看到「能用」却永远派不出去。
 function canEverServe(account, model) {
-  if (!hasModel(account, model)) return false;
-  return account.pool ? true : eq(account.defaultModel, model);
+  if (!hasModel(account, model) && !eq(account.defaultModel, model)) return false;
+  return account.pool && routeSwitchEnabled() ? hasModel(account, model) : eq(account.defaultModel, model);
 }
 // 这个号现在能不能开一个用该模型的会话：默认模型就是它；或是号池的号、手上没有进行中的会话（可以切默认模型）。
 function canServe(account, model) {
   if (!canEverServe(account, model)) return false;
-  return eq(account.defaultModel, model) || (account.pool && account.activeSessions === 0);
+  return eq(account.defaultModel, model) || (account.pool && routeSwitchEnabled() && account.activeSessions === 0);
 }
 
 // 能派的模型合集（第一次见到的写法为准）：个人账号只算它的默认模型。
@@ -209,4 +213,4 @@ function avoidSignature(table) {
   return JSON.stringify(table.accountRows.filter(r => r.avoid || r.configNote).map(r => [r.alias, r.avoid && r.avoid.source, r.avoid && r.avoid.kind, r.avoid && r.avoid.until, r.configNote || '']));
 }
 
-module.exports = { routeAccounts, personalAccount, personalModels, describeMismatch, canServe, canEverServe, servableNow, pickRoute, pickAnyRoute, modelTable, tableSignature, avoidSignature, listModels, canonicalModel, isPrimary, hasModel, earliestUntil, avoidFor, requestModel };
+module.exports = { routeSwitchEnabled, routeAccounts, personalAccount, personalModels, describeMismatch, canServe, canEverServe, servableNow, pickRoute, pickAnyRoute, modelTable, tableSignature, avoidSignature, listModels, canonicalModel, isPrimary, hasModel, earliestUntil, avoidFor, requestModel };

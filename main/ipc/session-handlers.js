@@ -728,12 +728,35 @@ function registerSessionIpc(ipcMain, deps) {
     const session = sessionManager.getSession(sessionId);
     if (!session) return { ok: false, message: '会话已经关闭' };
     const { getHubDataDir } = require('../../core/data-dir');
+    const dataDir = getHubDataDir();
+    const guard = require('../../core/codeagent-default-model-guard');
+    // 自动会话（通道、公司助理、论坛）一律用号自己的默认模型，绝不驱动菜单（2026-10-19 账号即模型）。
+    if (['company-bridge', 'company-assistant', 'company-forum'].includes(session.purpose)) {
+      codeagentModels.appendModelLog(dataDir, { event: 'pick', session: String(sessionId).slice(0, 8), reason, model: modelId, ok: false, error: 'automatic-session' });
+      return { ok: false, inputReady: true, message: '自动会话用账号自己的默认模型，不切换模型' };
+    }
+    // 菜单回车会写这个会话的 CodeAgent 实际用的配置目录：启动时记下的那个，规范化后快照、改回、核对都用它。
+    const configDir = codeagentPicker.normalizeConfigDir(guard.sessionConfigDir(session, { dataDir }));
+    const account = guard.accountOf(session, dataDir).alias;
+    const permitted = guard.permittedModels(session, configDir, { dataDir });
+    let before = '';
+    try { before = String(JSON.parse(require('fs').readFileSync(require('path').join(configDir, 'settings.json'), 'utf8')).model || ''); } catch { before = ''; }
+    // 菜单回车（CodeAgent 写）和改回原值（Hub 写）都是这次选择引起的：先登记，看护看到时认得出来源，这里自己记日志。
+    guard.noteHubWrite(configDir, modelId, `codeagent-menu-enter:${reason}`, { logged: true, session: String(sessionId).slice(0, 8) });
+    guard.noteHubWrite(configDir, before, `picker-restore:${reason}`, { logged: true, session: String(sessionId).slice(0, 8) });
     let result;
     try {
       result = await codeagentPicker.pickModel({ manager: sessionManager, sid: sessionId, kind: session.kind, modelId,
-        configDir: session.codeagentConfigDir || null, sendToPty: require('../../core/group-chat-watcher').sendToPty });
+        configDir, allowedModels: permitted.authoritative ? permitted.models : null,
+        onDefaultChange: change => guard.recordChange(dataDir, { account, session: String(sessionId).slice(0, 8), before: change.restoredTo || '', after: change.written || '',
+          source: `codeagent-menu-enter:${reason}`, extra: { file: change.file, restoredTo: change.restoredTo || '(空)', restoreOk: change.ok } }, { persist: false }),
+        sendToPty: require('../../core/group-chat-watcher').sendToPty });
     } catch (error) { result = { ok: false, message: error && error.message ? error.message : String(error) }; }
-    codeagentModels.appendModelLog(getHubDataDir(), { event: 'pick', session: String(sessionId).slice(0, 8), reason, model: modelId,
+    if (result.defaults) {
+      guard.recordChange(dataDir, { account, session: String(sessionId).slice(0, 8), before: result.defaults.before || '', after: result.defaults.after || '',
+        source: `picker:${reason}`, extra: { verified: result.defaults.verified, changes: result.defaults.changes.length } }, { persist: account === '个人' && result.defaults.changes.length > 0 });
+    }
+    codeagentModels.appendModelLog(dataDir, { event: 'pick', session: String(sessionId).slice(0, 8), account: account.replace(/\s+/g, ''), reason, model: modelId,
       ok: result.ok, mode: result.mode, confirmed: result.confirmed, restored: (result.restored || []).join('+'), menu: (result.menu || []).join('+'), error: result.ok ? '' : result.message });
     // 菜单里实际能选的模型：新建会话的模型下拉以它为准（core/codeagent-models.js 的 modelOptions）。
     if (result.menu) { try { codeagentModels.recordMenu(getHubDataDir(), result.menu); } catch { /* 只影响下次的模型下拉，不影响本次选择 */ } }

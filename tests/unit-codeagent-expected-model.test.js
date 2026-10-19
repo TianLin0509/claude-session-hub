@@ -66,6 +66,16 @@ test('_createSession 的显示名：号池号用同步配置定下的模型，�
   assert.ok(stamped > 0, '通道新开个人账号会话记下分配时间');
   manager.createSession('codeagent', { cwd, purpose: 'company-bridge', resumeCCSessionId: 'de2b2941-1234-4567-89ab-123456789abc' });
   assert.equal(pool.personalLastAssignedAt(dataDir), stamped, '恢复不算新分配');
+  // 账号即模型（2026-10-19）：个人号上当初按 DS 派的通道会话，恢复时按个人账号此刻的默认模型照常起，
+  // 不报「通道不改个人账号的默认模型」，不驱动菜单，不改 settings.json；新开仍要求默认就是指定模型。
+  const picks = [];
+  manager.on('codeagent-model-pick', event => picks.push(event));
+  const routeResumed = manager.createSession('codeagent', { cwd, purpose: 'company-bridge', codeagentRouteModel: DS, model: DS, codeagentModelPick: true,
+    resumeCCSessionId: 'fe2b2941-1234-4567-89ab-123456789abc' });
+  assert.ok(manager.getSession(routeResumed.id), '恢复照常起');
+  assert.throws(() => manager.createSession('codeagent', { cwd, purpose: 'company-bridge', codeagentRouteModel: DS }), /个人账号/);
+  assert.deepEqual(picks, [], '自动会话不驱动 /model 菜单');
+  assert.match(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8'), /"GLM-5\.2-WX"/, '个人账号 settings.json 没被改写');
 
   // 什么都不知道时才写占位
   fs.rmSync(pool.personalModelsFile(dataDir));

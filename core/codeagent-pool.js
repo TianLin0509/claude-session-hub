@@ -259,7 +259,10 @@ const ROUTE_MARKER = 'hub-route-model.json';
 // 避免指向个人目录的 hook 与本目录的重复触发）和 model（每个号能用的模型不同，保留号自己的）；
 // 号自己没有默认模型、而账号清单里有模型时，用清单第一个，避免回落到这个号没有权限的模型。
 // routeModel：家里指定的模型（调用方已核对这个号有它的权限）；idle：这个号上没有进行中的会话（可以换回切之前的模型）。
-function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = '', idle = false } = {}) {
+// routeSwitch：是否允许为通道指定的模型切号的默认模型（默认跟 core/codeagent-model-route.js routeSwitchEnabled，2026-10-19 起默认关）。
+// 关着时（账号即模型）不改号自己 settings.json 的 model（原样保留，没写就不写）；只有以前切过、留着 hub-route-model.json 的号，
+// 空闲时按记下的原值写回一次再删掉记录（onRouteRestore 回调记日志）。
+function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = '', idle = false, routeSwitch = require('./codeagent-model-route').routeSwitchEnabled(), onRouteRestore = null } = {}) {
   const errors = [];
   let model = '';
   // 来源和目标是同一个目录（或互相包含）时一个字都不写（2026-10-19 公司真机：个人目录被继承的环境变量指到了号 1 的目录，
@@ -279,10 +282,18 @@ function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = 
     // 以前只看配置文件里的账号清单，没读「一键获取模型权限」探测到的清单（hub-models.json），没定下模型时
     // CodeAgent 退回它自己的默认 GLM。现在探测清单优先；号自己存的模型不在清单里也换掉。
     const known = accountModels(targetDir, fsModule);
-    model = chooseAccountModel(own.model, known);
+    const ownModel = typeof own.model === 'string' ? own.model : '';
+    model = routeSwitch ? chooseAccountModel(own.model, known) : ownModel;
     const markerFile = path.join(targetDir, ROUTE_MARKER);
     const marker = readJson(markerFile);
-    if (routeModel) {
+    if (!routeSwitch) {
+      if (marker && idle) {
+        const original = typeof marker.original === 'string' ? marker.original : '';
+        if (original) model = original;
+        try { fsModule.rmSync(markerFile, { force: true }); } catch { /* 删不掉下次再删 */ }
+        try { onRouteRestore && onRouteRestore({ before: ownModel, after: model, original }); } catch { /* 只是记日志 */ }
+      }
+    } else if (routeModel) {
       const want = known.models.find(m => m.toLowerCase() === String(routeModel).toLowerCase()) || String(routeModel);
       if (model.toLowerCase() !== want.toLowerCase()) {
         const original = marker && typeof marker.original === 'string' ? marker.original : model;
@@ -294,6 +305,7 @@ function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = 
       try { fsModule.rmSync(markerFile, { force: true }); } catch { /* 删不掉下次再删 */ }
     }
     if (model) next.model = model;
+    else delete next.model;
     const text = JSON.stringify(next, null, 2) + '\n';
     const file = path.join(targetDir, 'settings.json');
     let current = null; try { current = fsModule.readFileSync(file, 'utf8'); } catch { /* 新目录 */ }
@@ -312,7 +324,8 @@ function syncSharedConfig(personalDir, targetDir, fsModule = fs, { routeModel = 
     try { if (fsModule.existsSync(src)) fsModule.cpSync(src, path.join(targetDir, name), { recursive: true, force: true }); }
     catch (error) { errors.push(`${name}：${error.message}`); }
   }
-  return { errors, model };
+  // model：这次启动会用的模型（显示用）；号没写默认模型时按清单推一个，只作显示，不写进配置。
+  return { errors, model: model || (() => { try { return chooseAccountModel("", accountModels(targetDir, fsModule)); } catch { return ""; } })() };
 }
 
 // 本机号池里各号的模型合集（启动中心选「号池」时的模型菜单）。

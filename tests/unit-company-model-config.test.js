@@ -1,4 +1,6 @@
 'use strict';
+// 这份用例覆盖「切号默认模型」开关打开时（2.1.11 起的旧行为）；默认关（账号即模型，2026-10-19）的行为见 unit-codeagent-account-is-model.test.js。
+process.env.AI_HUB_CODEAGENT_ROUTE_SWITCH = '1';
 // 模型配置有误的避让与个人账号默认模型修正（2026-10-19）：
 //   真实样本（公司 v2.1.13 直查 errors 段）：个人账号只有 GLM-5.2-WX-Auto 权限，settings.json 的 model 却是 deepseek-v4-flash-0731，
 //   个人账号开的会话一启动就报「API Error: 模型 "deepseek-v4-flash-0731" 不存在或配置有误，请检查模型配置」。

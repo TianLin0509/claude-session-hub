@@ -481,6 +481,7 @@ const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 
 let hookPort = null;  // set after listen() succeeds
 let claudeHookWatchdog = null;
+let codeagentSettingsWatch = null; // 个人账号 settings.json 默认模型的留痕（core/codeagent-default-model-guard.js）
 let windowsShellWatchdog = null;
 
 let mainWindow;
@@ -4324,6 +4325,10 @@ app.whenReady().then(async () => {
         sourceScriptsDir: hookSourceScriptsDir, logger: console, settingsOptions });
       if (result.errors.length) console.warn(`[codeagent-hooks] ${codeagentConfig.configDir}: ${result.errors.join('；')}`);
       codeagentHookTargets.push({ dir: codeagentConfig.configDir, settingsOptions });
+      // 个人账号默认模型的留痕（2026-10-19）：settings.json 的 model 每变一次记一行来源，只看不改。
+      // 只读文件、只写 Hub 自己的日志，不碰账号配置；AI_HUB_CODEAGENT_SETTINGS_WATCH=0 可关。
+      if (process.env.AI_HUB_CODEAGENT_SETTINGS_WATCH !== '0') try { codeagentSettingsWatch = require('./core/codeagent-default-model-guard').watchPersonal({ dataDir: getHubDataDir(), dir: codeagentConfig.configDir }); }
+      catch (error) { console.warn('[codeagent-default-model] 看护没启动：' + error.message); }
     }
   } catch (error) { console.warn('[codeagent-hooks] skipped:', error.message); }
   // CodeAgent 号池（core/codeagent-pool.js）：每个号的配置目录在启动会话前按同样方式部署 Hub 的 hook。
@@ -4450,6 +4455,7 @@ async function runFinalShutdownCleanup() {
   capture('completion-notifier', () => completionNotifier.dispose());
   capture('session-auto-suspend', () => sessionAutoSuspendScheduler?.stop());
   capture('claude-hook-watchdog', () => claudeHookWatchdog?.stop());
+  capture('codeagent-settings-watch', () => codeagentSettingsWatch?.stop());
   claudeHookWatchdog = null;
   capture('windows-shell-watchdog', () => windowsShellWatchdog?.stop());
   windowsShellWatchdog = null;
