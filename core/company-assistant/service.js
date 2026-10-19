@@ -485,7 +485,8 @@ class CompanyAssistant {
       context = rows.slice(Math.max(0, index - 2), index + 3);
       coverage = snap.scope?.conversations?.find(c => c.id === entry.item.conv) || null;
     }
-    return { ok: true, day, entry, context, coverage, capturedAt: snap.at };
+    const capturedAt = entry.kind === 'message' && snap.scope?.stale ? snap.scope.capturedAt : snap.at;
+    return { ok: true, day, entry, context, coverage, capturedAt };
   }
 
   // ---- 提醒 ----

@@ -244,6 +244,7 @@ test('最近会话查询失败保留同账号原快照并标过期，不带入�
   };
   const kept = await svc.collect();
   assert.equal(kept.messages[conv.id].length, 1); assert.equal(kept.scope.stale, true); assert.equal(kept.scope.capturedAt, prior.at); assert.equal(kept.scope.partial, 1);
+  assert.equal(svc.sourceContext(rows[0].sourceId).capturedAt, prior.at, '出处也标旧消息的采集时间，不能用失败刷新时间');
   login = 'other'; const other = await svc.collect();
   assert.equal(Object.keys(other.messages).length, 0);
 });
