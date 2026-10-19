@@ -2519,6 +2519,7 @@ try {
             modelsAuthoritative: !!known.authoritative, modelsProbedAt: known.probedAt || null,
             lastBackup: (() => { try { const b = require('./core/codeagent-personal-model').latestBackup(personalDir); return b ? { model: b.model, name: b.name } : null; } catch { return null; } })(),
             configSource: require('./core/codeagent-config').configDirSource(process.env),
+            settingsLastChange: (() => { try { return require('./core/codeagent-default-model-guard').lastChange(getHubDataDir()); } catch { return null; } })(),
             // 个人目录是否和某个号池号的目录相同 / 互相包含（号的编号，diag.js 换成代称）；继承来的配置目录已忽略的说明（不带路径）
             ...(() => { try { const m = pool.poolDirMatch(getHubDataDir(), personalDir); return m ? { poolDirMatch: { account: m.id || null } } : {}; } catch { return {}; } })(),
             ...(() => { try { const i = require('./core/codeagent-config').inheritedConfigDirInfo(process.env, undefined, { dataDir: getHubDataDir() }); return i ? { inheritedConfigDir: i } : {}; } catch { return {}; } })() },

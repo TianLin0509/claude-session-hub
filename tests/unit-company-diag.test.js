@@ -463,3 +463,21 @@ test('二期 features：论坛、简报、手机对话、桌宠下载的最近�
   assert.deepEqual([f2.forum.enabled, f2.brief.lastSuccessAt, f2.pet.note], [false, null, '桌宠没启动']);
   assert.match(f2.brief.lastError, /WeLink 没登录/);
 });
+test('直查 logs 段带 CodeAgent 模型日志（脱敏、最后 N 行）；个人号行带 settings 最近一次被改写的来源（2026-10-19）', async t => {
+  const change = { at: '2026-10-19T06:17:24.100Z', mtime: '2026-10-19T06:17:24.000Z', account: '个人', before: 'GLM-5.2-WX-Auto', after: 'deepseek-v4-flash-0731',
+    source: 'external', launches: ['a1b2c3d4@个人(--resume)-3s'] };
+  const r = setup(t, { poolDiag: () => ({ ...POOL(), personal: { ...POOL().personal, settingsLastChange: change } }) });
+  await pair(r);
+  const logs = path.join(r.root, 'company', 'logs'); fs.mkdirSync(logs, { recursive: true });
+  fs.writeFileSync(path.join(logs, 'codeagent-model.log'), Array.from({ length: 30 }, (_, i) => `2026-10-19T06:17:${String(i).padStart(2, '0')}.000Z event=launch session=a1b2c3d4 account=个人 kind=codeagent cwd=${path.join(os.homedir(), 'work')}`).join('\n')
+    + '\n2026-10-19T06:17:24.100Z event=default-model account=个人 before=GLM-5.2-WX-Auto after=deepseek-v4-flash-0731 source=external near=a1b2c3d4@个人(--resume)-3s\n');
+  const { view } = await diagRound(r, { sections: ['logs', 'codeagent', 'pool'], lines: 10 });
+  const model = view.diag.logs.files.find(f => f.key === 'model');
+  assert.ok(model, 'logs 段有 CodeAgent 模型日志');
+  assert.equal(model.lines.length, 10, '只回最后 N 行');
+  assert.match(model.lines[model.lines.length - 1], /event=default-model account=个人 before=GLM-5\.2-WX-Auto after=deepseek-v4-flash-0731 source=external/);
+  assert.ok(!model.lines.join('\n').includes(os.homedir()) && !model.lines.join('\n').includes(path.basename(os.homedir())), '用户目录和用户名已脱敏');
+  for (const p of [view.diag.codeagent.personal, view.diag.pool.accounts.find(a => a.alias === '个人')]) {
+    assert.deepEqual(p.settingsLastChange, { at: change.at, mtime: change.mtime, before: change.before, after: change.after, source: 'external', launches: change.launches });
+  }
+});
