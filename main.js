@@ -2565,7 +2565,7 @@ try {
         let settingsMtime = null;
         try { settingsMtime = Math.round(fs.statSync(path.join(personalDir, 'settings.json')).mtimeMs); } catch { settingsMtime = null; }
         return {
-          personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive,
+          personal: { state: pool.accountState(creds), expiresAt: creds.expiresAt || null, ...(creds.detail ? { credentialsNote: creds.detail } : {}), models: known.models || [], defaultModel: known.defaultModel || '', activeSessions: personalActive,
             configModel: known.written || '', ...(known.configMismatch ? { configMismatch: known.configMismatch } : {}), settingsMtime,
             // 权限清单是否来自探测文件（set-personal-model 的权限依据之一）、最近一次修改前的备份（家里卡片据此给「撤销」）
             modelsAuthoritative: !!known.authoritative, modelsProbedAt: known.probedAt || null,

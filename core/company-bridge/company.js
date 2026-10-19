@@ -1078,7 +1078,10 @@ class CompanyBridge {
           // 号池开失败时退回个人账号：个人账号在避让中、或指定的是号池里的号时不退
           const personal = (accounts || []).find(a => a.key === 'personal');
           if (personal && route.avoidFor(personal, '')) fallbackPersonal = false;
+          // 挑不出号（读不到账号清单的老环境）时：指定了个人就只开个人；指定了号池里的号就只开那个号，不改成号池自动挑号（2026-10-19）。
           const poolOpts = pick && pick.ok ? (pick.account.pool ? { codeagentAccount: 'pool', codeagentPoolPick: pick.account.key } : null)
+            : only === 'personal' ? null
+            : only ? { codeagentAccount: 'pool', codeagentPoolPick: only }
             : poolLanes > 0 ? { codeagentAccount: 'pool' } : null;
           if (pick && pick.ok) this.bridgeLog(`route ${t.id} model=(default) account=${pick.account.pool ? 'pool' : 'personal'} active=${pick.account.activeSessions || 0}`);
           if (pick && pick.ok) this.noteProbe(pick.account, '');
