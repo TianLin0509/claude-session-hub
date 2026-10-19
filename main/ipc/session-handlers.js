@@ -512,15 +512,28 @@ function registerSessionIpc(ipcMain, deps) {
       const { getHubDataDir } = require('../../core/data-dir');
       const pool = require('../../core/codeagent-pool');
       const asOptions = ids => ids.map(id => ({ id, label: require('../../core/codeagent-models').modelLabel(id), source: 'account' }));
+      // defaultModel：不选具体模型时这个号启动会用的模型（启动中心把「沿用」那一项标成它，2026-10-19 田哥：选了号就默认选中该号的默认模型）。
+      // 号池号 = 启动前同步配置会定下的模型（effectiveModel）；个人账号 = 纠正后的默认模型（不确定时为空，界面仍写「沿用 CodeAgent 当前模型」）。
+      const sameCase = (list, id) => (list || []).find(m => String(m).toLowerCase() === String(id || '').toLowerCase()) || '';
       if (payload && payload.account === 'pool' && payload.poolAccount) {
         const account = codeagentPoolAccounts().find(a => a.id === payload.poolAccount);
-        return { options: account ? asOptions(account.models) : [] };
+        if (!account) return { options: [] };
+        return { options: asOptions(account.models), defaultModel: sameCase(account.models, pool.effectiveModel(account.dir)) };
       }
-      if (payload && payload.account === 'pool') return { options: pool.poolModelOptions(getHubDataDir(), codeagentPoolAccounts()) };
+      if (payload && payload.account === 'pool') {
+        // 自动挑号：各个可用号的默认模型都一样时才能说定
+        const usable = codeagentPoolAccounts().filter(a => a.state === 'ready' && !a.sameAsPersonal && !a.duplicateOf);
+        const defaults = [...new Set(usable.map(a => sameCase(a.models, pool.effectiveModel(a.dir))))];
+        return { options: pool.poolModelOptions(getHubDataDir(), usable), defaultModel: defaults.length === 1 ? defaults[0] : '' };
+      }
+      const personalDir = require('../../core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
+      let defaultModel = '';
+      try { defaultModel = require('../../core/codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir }).defaultModel || ''; } catch { defaultModel = ''; }
       // 个人账号：一键获取过模型权限就用读到的菜单，否则沿用原来的清单
       const probed = require('../../core/codeagent-model-probe').readProbed(pool.personalModelsFile(getHubDataDir()));
-      if (probed) return { options: asOptions(probed.models) };
-      return { options: require('../../core/codeagent-config').localModelOptions(getHubDataDir()) };
+      if (probed) return { options: asOptions(probed.models), defaultModel: sameCase(probed.models, defaultModel) };
+      const options = require('../../core/codeagent-config').localModelOptions(getHubDataDir());
+      return { options, defaultModel: sameCase(options.map(o => o.id), defaultModel) };
     } catch (error) { return { options: [], error: error.message }; }
   });
   // CodeAgent 号池（core/codeagent-pool.js）：列表、添加（开登录窗口）、重新登录、备注、移出。
@@ -570,6 +583,8 @@ function registerSessionIpc(ipcMain, deps) {
     return { ok: true, accounts: accounts.map(a => ({ ...a, ...quotaOf(a.id) })), checkedAt: new Date().toISOString(),
       usable: accounts.filter(a => a.state === 'ready' && !a.sameAsPersonal && !a.duplicateOf).length, quotaRules: rules,
       personal: { accountLabel: pool.maskAccountId(personal.accountId), method: personal.method || null, present: !!personal.present,
+        // 登录状态（2026-10-19）：ready / expired / login-required / unreadable；启动中心据此提示「个人账号要重新登录」
+        state: pool.accountState(personal), expiresAt: personal.expiresAt || null, ...(personal.detail ? { credentialsNote: personal.detail } : {}),
         activeSessions: personalActive, models: personalModels.models, modelsProbedAt: personalModels.probedAt || null, ...quotaOf('personal'),
         ...(personalCheck && personalCheck.configMismatch ? { configNote: require('../../core/codeagent-model-route').describeMismatch(personalCheck.configMismatch) } : {}) } };
   }
@@ -679,6 +694,14 @@ function registerSessionIpc(ipcMain, deps) {
       if (!pool.readRegistry(getHubDataDir()).accounts.some(a => a.id === payload?.id)) throw new Error('号池里没有这个账号');
       pool.openLoginWindow(getHubDataDir(), payload.id, require('../../core/codeagent-config').resolveCodeAgentConfig(process.env));
       autoProbeAfterLogin(payload.id);
+      return codeagentPoolStatus();
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  // 个人账号重新登录（2026-10-19）：登录过期、凭证读不懂时，开同样的登录窗口，目录是个人账号的配置目录。
+  ipcMain.handle('codeagent-pool:personal-login', () => {
+    try {
+      const { getHubDataDir } = require('../../core/data-dir');
+      require('../../core/codeagent-pool').openLoginWindow(getHubDataDir(), 'personal', require('../../core/codeagent-config').resolveCodeAgentConfig(process.env), { personal: true });
       return codeagentPoolStatus();
     } catch (error) { return { ok: false, error: error.message }; }
   });

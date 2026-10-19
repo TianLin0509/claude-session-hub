@@ -411,6 +411,8 @@ function pool(raw, { avoid = {}, credit = {}, aliases: given = null, ...extra } 
     ...(a.duplicateOf ? { duplicate: true } : {}), ...(a.sameAsPersonal ? { sameAsPersonal: true } : {}),
     ...(key === 'personal' && Array.isArray(a.answeredModels) ? { answeredModels: a.answeredModels } : {}),
     ...(key === 'personal' && a.configModel != null ? { configModel: String(a.configModel) } : {}),
+    // 凭证读不懂时的原因（2026-10-19：读文件出错 / 不是 JSON / 没有登录项，不含凭证内容）
+    ...(a.state === 'unreadable' && a.credentialsNote ? { credentialsNote: String(a.credentialsNote).slice(0, 120) } : {}),
     ...(key === 'personal' && a.lastBackup ? { lastBackup: { model: a.lastBackup.model == null ? null : String(a.lastBackup.model), at: String(a.lastBackup.name || '').replace(/^settings\.json\.hub-backup-/, '') } } : {}),
     ...(a.routeSwitched ? { routeSwitched: true } : {}), avoid: avoidView(avoid[key]), credit: creditView(credit[key]),
     // 默认模型和权限不符（个人账号，2026-10-19）：settings.json 里写的值和权限清单，号表据此提示、可远程修正（set-personal-model）
@@ -510,6 +512,7 @@ async function codeagent(bridge, deps, sys, ctx, poolRaw, poolError) {
   if (poolError) out.loginError = errText(poolError);
   const p = poolRaw?.personal;
   out.personal = p ? { state: POOL_STATE[p.state] || String(p.state || '未知'), ready: p.state === 'ready', expiresAt: Number(p.expiresAt) || null, defaultModel: p.defaultModel || '',
+    ...(p.state === 'unreadable' && p.credentialsNote ? { credentialsNote: String(p.credentialsNote).slice(0, 120) } : {}),
     ...(p.configModel != null ? { configModel: String(p.configModel || '') } : {}), ...(p.configMismatch ? { configNote: require('../codeagent-model-route').describeMismatch(p.configMismatch) } : {}),
     ...(p.configSource ? { configSource: p.configSource } : {}), ...(p.settingsMtime ? { settingsMtime: p.settingsMtime } : {}),
     // 个人目录是否等于（或包含于）某个号池号的目录：只回是否和号的代称（2026-10-19）
