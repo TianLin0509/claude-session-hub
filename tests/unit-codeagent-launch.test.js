@@ -157,6 +157,18 @@ test('launch never passes --session-id or --settings and always disables the upd
     const other = buildCodeAgentPtyLaunch('hub-7', 'codeagent', { purpose, mcpConfigFile: extra }, cwd, env, config);
     assert.ok(!other.cmd.includes(extra), purpose + ' stays without Hub MCP');
   }
+
+  // 2026-10-20：三类自动会话只读账号自己的配置，工作目录里别的号回写的项目级模型带不偏它（公司真机 Q-1020-01）。
+  for (const purpose of ['company-bridge', 'company-assistant', 'company-forum']) {
+    for (const kind of ['codeagent', 'codeagent-resume']) {
+      const auto = buildCodeAgentPtyLaunch('hub-8', kind, { purpose, resumeCCSessionId: seat }, cwd, env, config);
+      assert.match(auto.cmd, / --setting-sources user /, `${purpose} ${kind} reads only the account's own settings`);
+      assert.doesNotMatch(auto.cmd, /--model/, `${purpose} still does not pass --model`);
+    }
+  }
+  for (const own of [fresh, resumed, fork, picker, spaced, unknownModel]) {
+    assert.doesNotMatch(own.cmd, /--setting-sources/, 'sessions the user opens keep project settings');
+  }
 });
 
 test('hook deployment for codeagent keeps foreign hooks and leaves status line and permissions alone', t => {
