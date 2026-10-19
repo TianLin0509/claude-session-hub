@@ -19,6 +19,10 @@
 //                       | pause-account --account 号1 [--hours 2] [--reason 原因] | resume-account --account 号1
 //                       | set-personal-model --model GLM-5.2-WX-Auto [--force-unverified] | set-personal-model --restore   [--id HA-xxxx 取之前那次的结果]
 //     （远程维护：会改动公司电脑状态，先 --diag 看清楚再做）
+//   node company-ask.js --files list [--dir <路径>] [--depth 0-4] [--all] [--limit 200]
+//                       | --files search (--name "*.txt" | --content 关键词) [--root <目录>] [--limit 50] [--maxkb 2048]
+//                       | --files read --file <路径> [--from 1] [--lines 600] [--chars 30000]   [--id HA-xxxx 取之前那次的结果]
+//     （读公司电脑上的文本文件：秒级、不排队、不占公司 CodeAgent；只读、永不写；拿回来的正文直接给家里用）
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -34,10 +38,11 @@ async function main() {
   const hubOp = ['update', 'restart', 'status'].find(op => process.argv.includes('--hub-' + op));
   const diag = process.argv.includes('--diag');
   const actOp = process.argv.includes('--act') ? arg('act') : undefined;
-  const command = actOp ? 'act' : diag ? 'diag' : hubOp ? 'hub' : process.argv[2];
+  const filesOp = process.argv.includes('--files') ? arg('files') : undefined;
+  const command = actOp ? 'act' : filesOp ? 'files' : diag ? 'diag' : hubOp ? 'hub' : process.argv[2];
   if (command === 'models') return showModels();
-  const tool = actOp ? 'company_act' : diag ? 'company_diag' : hubOp ? 'company_hub_update' : { ask: 'ask_company', followup: 'followup_company', show: 'company_thread', recollect: 'recollect_company', image: 'send_image_company', images: 'company_images' }[command];
-  if (!tool) throw new Error('用法：ask --file q.md [--title t] [--model m] [--account 号1] | models | followup --thread Q-xxxx --file f.md [--account 号1] | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx] | --hub-update [--force] | --hub-restart [--force] | --hub-status | --diag [machine,processes,hub,pool,logs,codeagent,airview,features,errors] [--lines N] [--errors N] [--id HA-xxxx] | --act <suspend-idle|kill-orphans|set-parallel|cancel-queued|retry|pause-account|resume-account|set-personal-model> [...]');
+  const tool = actOp ? 'company_act' : filesOp ? 'company_files' : diag ? 'company_diag' : hubOp ? 'company_hub_update' : { ask: 'ask_company', followup: 'followup_company', show: 'company_thread', recollect: 'recollect_company', image: 'send_image_company', images: 'company_images' }[command];
+  if (!tool) throw new Error('用法：ask --file q.md [--title t] [--model m] [--account 号1] | models | followup --thread Q-xxxx --file f.md [--account 号1] | show [--thread Q-xxxx] | recollect --thread Q-xxxx | image --thread Q/H-xxxx --path <本机图片> [--allow-resize] | images [--thread Q/H-xxxx] | --hub-update [--force] | --hub-restart [--force] | --hub-status | --diag [machine,processes,hub,pool,logs,codeagent,airview,features,errors] [--lines N] [--errors N] [--id HA-xxxx] | --act <suspend-idle|kill-orphans|set-parallel|cancel-queued|retry|pause-account|resume-account|set-personal-model> [...] | --files <list|search|read> [...]');
   // 会话身份与通行证由 Hub 在开会话时注入；只能代表本会话提问。
   const session = process.env.HUB_BRIDGE_SESSION_ID, pass = process.env.HUB_BRIDGE_SESSION_PASS;
   if (!session || !pass) throw new Error('这个会话没有家里联动的通行证：请在家里和公司配对之后、由 AI Hub 新开（或重开）的 Codex / Claude 会话里使用');
@@ -61,7 +66,19 @@ async function main() {
     if (arg('id')) a.id = arg('id');
     return a;
   };
-  const args = actOp ? actArgs() : diag ? { ...(diagList && !diagList.startsWith('--') ? { sections: diagList.split(/[,，]/).map(s => s.trim()).filter(Boolean) } : {}),
+  const filesArgs = () => {
+    const a = { action: filesOp };
+    if (arg('dir')) a.dir = arg('dir');
+    if (arg('root')) a.root = arg('root');
+    if (arg('name')) a.name = arg('name');
+    if (arg('content')) a.content = arg('content');
+    if (arg('file')) a.file = arg('file');
+    if (process.argv.includes('--all')) a.all = true;
+    for (const [flag, key] of [['depth', 'depth'], ['limit', 'limit'], ['from', 'from'], ['lines', 'lines'], ['chars', 'chars'], ['maxkb', 'maxKB']]) if (num(flag) !== undefined) a[key] = num(flag);
+    if (arg('id')) a.id = arg('id');
+    return a;
+  };
+  const args = actOp ? actArgs() : filesOp ? filesArgs() : diag ? { ...(diagList && !diagList.startsWith('--') ? { sections: diagList.split(/[,，]/).map(s => s.trim()).filter(Boolean) } : {}),
       ...(arg('lines') ? { lines: Number(arg('lines')) } : {}), ...(arg('errors') ? { errors: Number(arg('errors')) } : {}), ...(arg('id') ? { id: arg('id') } : {}) }
     : hubOp ? { op: hubOp, force: process.argv.includes('--force') }
     : command === 'ask' ? { question: text(), ...(arg('title') ? { title: arg('title') } : {}), ...(arg('model') ? { model: arg('model') } : {}), ...(arg('account') ? { account: arg('account') } : {}) }
@@ -69,7 +86,7 @@ async function main() {
     : command === 'image' ? { thread: arg('thread'), path: arg('path'), caption: arg('caption') || '', allow_resize: process.argv.includes('--allow-resize'), ...(arg('round') ? { round: Number(arg('round')) } : {}) }
     : (arg('thread') ? { thread: arg('thread') } : {});
   const response = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + pass, 'Content-Type': 'application/json', 'X-Hub-Bridge-Session': session },
-    body: JSON.stringify({ name: tool, arguments: args }), signal: AbortSignal.timeout(diag || actOp ? 90000 : 60000) }); // 直查会等回报最多约 45 秒
+    body: JSON.stringify({ name: tool, arguments: args }), signal: AbortSignal.timeout(diag || actOp || filesOp ? 90000 : 60000) }); // 直查 / 远程维护 / 读文件会等回报最多约 45 秒
   const data = await response.json();
   process.stdout.write(JSON.stringify(data.ok ? { ok: true, ...data.result } : { ok: false, error: data.error }, null, 1) + '\n');
   if (!data.ok) process.exitCode = 1;

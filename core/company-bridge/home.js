@@ -159,7 +159,7 @@ class HomeBridge {
   getMcpEntry(sessionId) {
     return { name: 'company_bridge', command: this.deps.nodeExecutable || 'node', args: [this.deps.mcpScript || path.resolve(__dirname, '../../scripts/company-bridge-mcp.js')],
       env: { HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile, HUB_BRIDGE_SESSION_ID: sessionId || '', HUB_BRIDGE_SESSION_PASS: this.passFor(sessionId || '') },
-      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve', company_hub_update: 'approve', company_diag: 'approve', company_act: 'approve', send_image_company: 'approve', company_images: 'approve' } };
+      toolApprovalModes: { ask_company: 'approve', followup_company: 'approve', company_thread: 'approve', recollect_company: 'approve', company_hub_update: 'approve', company_diag: 'approve', company_act: 'approve', company_files: 'approve', send_image_company: 'approve', company_images: 'approve' } };
   }
   wantsMcp({ kind, opts = {} }) {
     if (!this.link.paired()) return false;
@@ -209,6 +209,10 @@ class HomeBridge {
     if (request.name === 'company_act') {
       const { action, id, ...params } = args;
       return this.act({ action, id, params });
+    }
+    if (request.name === 'company_files') {
+      const { action, id, ...params } = args;
+      return this.files({ action, params, id });
     }
     throw new Error('未知工具');
   }
@@ -345,7 +349,7 @@ class HomeBridge {
   adminState() { return this.store.get('hubAdmin') || {}; }
   async hubAdmin({ op = 'update', force = false, sections, lines, errors, action, params } = {}) {
     if (!this.link.paired()) throw new Error('家里和公司还没配对');
-    if (!['update', 'restart', 'status', 'diag', 'act'].includes(op)) throw new Error('op 只能是 update / restart / status / diag / act');
+    if (!['update', 'restart', 'status', 'diag', 'act', 'files'].includes(op)) throw new Error('op 只能是 update / restart / status / diag / act / files');
     let extra = {};
     if (op === 'diag') {
       // 段落只认白名单（公司那边同样再核一遍）；不认识的直接报错，免得 Agent 以为查了。
@@ -375,13 +379,26 @@ class HomeBridge {
       }
       extra = { action, params: checked };
     }
+    if (op === 'files') {
+      // 读公司电脑上的文件（2026-10-20 田哥，公司一端 file-query.js）：动作白名单、参数先在家里核一遍（公司那边再核）。
+      const F = require('./file-query');
+      if (!F.ACTIONS.includes(action)) throw new Error('action 只能是 ' + F.ACTIONS.join(' / '));
+      const checked = F.parseParams(action, params || {});
+      const company = this.adminState().company || {};
+      if (company.current && !(company.caps || []).includes('files')) throw Object.assign(new Error(`公司 Hub 版本过旧（v${company.current}），不支持读文件；先让它更新（company_hub_update op=update）`), { code: 'files-unsupported' });
+      extra = { action, params: checked };
+    }
     const d = new Date(this.now() + 8 * 3600000);
     const id = 'HA-' + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0') + '-' + randomBytes(3).toString('hex');
     await this.link.send('hub-admin', { id, gen: this.link.gen(), op, force: force === true, ...extra });
     const st = this.adminState();
     this.store.set('hubAdmin', { ...st, commands: [{ id, op, force: force === true, sentAt: this.now(), ...extra }, ...(st.commands || [])].slice(0, 20) });
-    this.nextPullAt = Math.min(this.nextPullAt, this.now() + (op === 'diag' || op === 'act' ? DIAG_POLL_MS : ACTIVE_POLL_MS));
+    this.nextPullAt = Math.min(this.nextPullAt, this.now() + (['diag', 'act', 'files'].includes(op) ? DIAG_POLL_MS : ACTIVE_POLL_MS));
     this.changed();
+    if (op === 'files') {
+      return { id, op, action, params: extra.params, status: '已发出', ...this.peer(),
+        next: '公司 Hub 下一次检查通道时直接读盘回报（秒级，不开 CodeAgent、不排队）；公司检查通道的间隔是 10 秒，空闲时按公司设置，默认 30 秒。用 company_files 带上 id 取结果。' };
+    }
     if (op === 'act') {
       return { id, op, action, status: '已发出', ...this.peer(), next: '公司 Hub 下一次检查通道时执行并回报结果和前后对比；用 company_act 带上 id 取结果。' };
     }
@@ -400,9 +417,9 @@ class HomeBridge {
     const st = this.adminState();
     const recent = (st.statuses || []).slice(0, 5).map(x => ({ id: x.id, phase: x.phase, note: x.note, at: x.at }));
     return { version: st.company?.current || null, latest: st.company?.latest || null, reportedAt: st.company?.at || null, caps: st.company?.caps || null, recent,
-      pending: (st.commands || []).filter(c => !['status', 'diag', 'act'].includes(c.op) && !this.adminDone(c.id)).map(c => c.id) };
+      pending: (st.commands || []).filter(c => !['status', 'diag', 'act', 'files'].includes(c.op) && !this.adminDone(c.id)).map(c => c.id) };
   }
-  adminDone(id) { return (this.adminState().statuses || []).some(x => x.id === id && ['up-to-date', 'failed', 'refused', 'busy', 'unsupported', 'updated', 'rolled-back', 'restarted', 'superseded', 'diag', 'status', 'act'].includes(x.phase)); }
+  adminDone(id) { return (this.adminState().statuses || []).some(x => x.id === id && ['up-to-date', 'failed', 'refused', 'busy', 'unsupported', 'updated', 'rolled-back', 'restarted', 'superseded', 'diag', 'status', 'act', 'files'].includes(x.phase)); }
   receiveAdmin(message) {
     if (message.gen && message.gen !== this.link.gen()) return;
     const st = this.adminState();
@@ -420,15 +437,24 @@ class HomeBridge {
     // 远程维护结果（2026-10-18 三期）：存最近 10 条，给 company_act / 卡片取
     let acts = st.acts || [];
     if (message.act && typeof message.act === 'object') acts = [{ id: entry.id, at: this.now(), phase: entry.phase, note: entry.note, act: message.act }, ...acts.filter(x => !entry.id || x.id !== entry.id)].slice(0, 10);
-    this.store.set('hubAdmin', { ...st, statuses: [entry, ...(st.statuses || [])].slice(0, 20), diags, acts,
+    // 读文件结果（2026-10-20，file-query.js）：和直查一样解压后存最近几份，不进 statuses 的大字段。
+    let fileResults = st.files || [];
+    if (entry.phase === 'files') {
+      let result = null, error = null;
+      try { result = require('./diag').decode(message.files); } catch (e) { error = '结果解不开：' + e.message; }
+      fileResults = [{ id: entry.id, at: this.now(), companyAt: entry.companyAt, note: entry.note, action: message.action || null, bytes: Number(message.filesBytes) || null,
+        degraded: Array.isArray(message.degraded) ? message.degraded.map(String).slice(0, 10) : [], result, error }, ...fileResults.filter(x => x.id !== entry.id)].slice(0, DIAG_KEEP);
+    }
+    this.store.set('hubAdmin', { ...st, statuses: [entry, ...(st.statuses || [])].slice(0, 20), diags, acts, files: fileResults,
       company: { current: entry.current || st.company?.current || null, latest: entry.latest || st.company?.latest || null, at: this.now(),
         // 公司认得的远程指令能力（新版每条回报都带；老版不带 = 不支持直查）
         caps: Array.isArray(message.caps) ? message.caps.map(String).slice(0, 20) : (entry.current && entry.current !== st.company?.current ? null : st.company?.caps || null) } });
     // 「在线」只更新版本，不打扰；直查结果由等它的地方拿；其余都发通知。
-    if (entry.phase !== 'online' && entry.phase !== 'diag' && !(entry.phase === 'refused' && this.isDiag(entry.id))) this.notify('公司 Hub', entry.note || entry.phase);
+    if (entry.phase !== 'online' && entry.phase !== 'diag' && entry.phase !== 'files' && !(entry.phase === 'refused' && (this.isDiag(entry.id) || this.isFiles(entry.id)))) this.notify('公司 Hub', entry.note || entry.phase);
     this.changed();
   }
   isDiag(id) { return (this.adminState().commands || []).some(c => c.id === id && c.op === 'diag'); }
+  isFiles(id) { return (this.adminState().commands || []).some(c => c.id === id && c.op === 'files'); }
 
   // ---- 直查公司电脑与公司 Hub（2026-10-18；公司一端 hub-admin.js diag、diag.js）----
   // MCP / 命令行默认等回报（最多约 45 秒，期间每 2.5 秒看一次通道），到了直接返回结果；超时返回编号，之后带 id 再取。
@@ -496,7 +522,47 @@ class HomeBridge {
     if (!want) return { status: '还没查过' };
     try { return this.diagView(want); } catch (error) { return { status: '还没查过', error: error.message }; }
   }
-  diagPending() { return (this.adminState().commands || []).some(c => ['diag', 'act'].includes(c.op) && this.now() - c.sentAt < DIAG_WAIT_MS * 2 && !this.adminDone(c.id)); }
+  diagPending() { return (this.adminState().commands || []).some(c => ['diag', 'act', 'files'].includes(c.op) && this.now() - c.sentAt < DIAG_WAIT_MS * 2 && !this.adminDone(c.id)); }
+
+  // ---- 读公司电脑上的文件（2026-10-20 田哥；公司一端 file-query.js）----
+  // 和直查一样默认等回报（最多约 45 秒，期间每 2.5 秒看一次通道）；到了直接返回内容，超时返回编号，之后带 id 再取。
+  async files({ action, params, id, wait = true, waitMs = DIAG_WAIT_MS } = {}) {
+    if (id) return this.filesView(String(id));
+    const sent = await this.hubAdmin({ op: 'files', action, params });
+    if (!wait) return sent;
+    const sleep = this.deps.sleep || (ms => new Promise(r => setTimeout(r, ms)));
+    const until = Date.now() + Math.max(0, Number(waitMs) || 0);
+    for (;;) {
+      await this.checkNow().catch(() => {});
+      const view = this.filesView(sent.id);
+      if (view.status !== '等待回报') return view;
+      if (Date.now() + DIAG_POLL_MS / 2 >= until) return { ...view, next: `等了 ${Math.round((Number(waitMs) || 0) / 1000)} 秒公司还没回报（公司空闲时按它的设置检查通道，默认 30 秒一次）；稍后用 company_files 带 id「${sent.id}」再取，不要重复发同一条。` };
+      await sleep(DIAG_POLL_MS / 2);
+    }
+  }
+  filesEntry(id) { return (this.adminState().files || []).find(x => x.id === id) || null; }
+  filesView(id) {
+    const st = this.adminState();
+    const cmd = (st.commands || []).find(c => c.id === id && c.op === 'files');
+    if (!cmd) throw new Error('找不到读文件编号 ' + id);
+    const entry = this.filesEntry(id);
+    const status = (st.statuses || []).find(x => x.id === id && x.phase !== 'files');
+    const base = { id, action: cmd.action, params: cmd.params, sentAt: cmd.sentAt, ...this.peer() };
+    if (entry) {
+      if (entry.error) return { ...base, status: '结果解不开', error: entry.error, note: entry.note };
+      return { ...base, status: '已回报', receivedAt: entry.at, waitedSec: Math.round((entry.at - cmd.sentAt) / 1000), bytes: entry.bytes, degraded: entry.degraded,
+        summary: entry.note, result: entry.result };
+    }
+    if (status) return { ...base, status: status.phase === 'refused' ? '公司没处理' : '公司报错', note: status.note };
+    return { ...base, status: '等待回报' };
+  }
+  // 界面用：最近一份读文件结果（没有带 id 时）。
+  filesLatest(id) {
+    const st = this.adminState();
+    const want = id || (st.commands || []).find(c => c.op === 'files')?.id;
+    if (!want) return { status: '还没读过' };
+    try { return this.filesView(want); } catch (error) { return { status: '还没读过', error: error.message }; }
+  }
   // 告诉公司哪些问题的发问会话还在活动（2026-10-16，设计第 1 块）：答完的公司会话据此多保温一会儿。
   // 只报最近 3 小时内有回执的线索；集合变了立刻报，没变每 10 分钟报一次，没有就不报。
   async reportAskers() {
