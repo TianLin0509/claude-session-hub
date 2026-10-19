@@ -37,14 +37,15 @@ test('只读包装 welink-ro.js：查询命令照常输出，写命令在调用 
   const dir = tmp(), log = path.join(dir, 'calls.log');
   const env = { ...process.env, CLAUDE_HUB_WELINK_CLI: STANDIN, WELINK_STANDIN_LOG: log };
   const script = path.join(__dirname, '..', 'core', 'company-assistant', 'welink-ro.js');
-  const ok = spawnSync(process.execPath, [script, 'meeting', 'query-list', '--type', '1'], { env, encoding: 'utf8' });
+  const query = ['meeting', 'query-list', '--page', '1', '--size', '100', '--meeting-start-time', '1792339200000', '--meeting-end-time', '1792425599999', '--type', '1', '--meeting-sort', '0'];
+  const ok = spawnSync(process.execPath, [script, ...query], { env, encoding: 'utf8' });
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(W.parseJson(ok.stdout).meetings.length, 4);
+  assert.equal(W.parseJson(ok.stdout).data.data.length, 4);
   const bad = spawnSync(process.execPath, [script, 'im', 'send-message', '--user-account', 'x', '--content', 'hi'], { env, encoding: 'utf8' });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /拒绝执行：im send-message/);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(calls, [['meeting', 'query-list', '--type', '1']], '写命令不应到达 welink-cli');
+  assert.deepEqual(calls, [query], '写命令不应到达 welink-cli');
 });
 
 test('回执解析：带提示文字的 JSON、登录状态、日历未初始化、二维码三种形式', () => {
