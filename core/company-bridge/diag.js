@@ -141,7 +141,29 @@ function defaultSys() {
     renderRows: raw => require('../hub-phone/session-chat').renderRows(raw),
     readdir: dir => fs.promises.readdir(dir, { withFileTypes: true }),
     stat: file => fs.promises.stat(file),
+    // 某个环境变量是不是持久设置在用户级 / 系统级（注册表），值只在本机比对、不回传
+    persistentEnv: name => persistentEnv(name),
   };
+}
+
+// 读注册表里用户级（HKCU\Environment）和系统级环境变量的值（只读，隐藏窗口，5 秒超时）；没有返回 null。
+// 值只在本机和继承来的值比对，不回传。reg.exe 按本机代码页输出，非 ASCII 路径可能比不上，比不上按 process-only 报。
+function persistentEnv(name) {
+  if (process.platform !== 'win32' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name || ''))) return Promise.resolve({ user: null, system: null });
+  const { execFile } = require('node:child_process');
+  const query = key => new Promise(resolve => {
+    execFile('reg.exe', ['query', key, '/v', name], { windowsHide: true, timeout: 5000, encoding: 'utf8' }, (error, stdout) => {
+      if (error) return resolve(null);
+      // 输出行形如「    NAME    REG_SZ    值」
+      const line = String(stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().startsWith(name.toLowerCase() + ' ') && /\sREG_(EXPAND_)?SZ\s/i.test(l));
+      const m = line && /^\s*\S+\s+(REG_EXPAND_SZ|REG_SZ)\s+(.*)$/i.exec(line);
+      if (!m) return resolve(null);
+      const value = m[2].trim();
+      resolve(/EXPAND/i.test(m[1]) ? value.replace(/%([^%]+)%/g, (all, k) => process.env[k] != null ? process.env[k] : all) : value);
+    });
+  });
+  return Promise.all([query('HKCU\\Environment'), query('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment')])
+    .then(([user, system]) => ({ user, system }));
 }
 
 // CodeAgent 版本：跑一次「<命令> --version」（隐藏窗口、8 秒超时），10 分钟内复用。命令取本机配置（codeagent-config.js 已拦掉特殊字符），不来自对端。
@@ -510,7 +532,28 @@ async function codeagent(bridge, deps, sys, ctx, poolRaw, poolError) {
   const p = poolRaw?.personal;
   out.personal = p ? { state: POOL_STATE[p.state] || String(p.state || '未知'), ready: p.state === 'ready', expiresAt: Number(p.expiresAt) || null, defaultModel: p.defaultModel || '',
     ...(p.configModel != null ? { configModel: String(p.configModel || '') } : {}), ...(p.configMismatch ? { configNote: require('../codeagent-model-route').describeMismatch(p.configMismatch) } : {}),
-    ...(p.configSource ? { configSource: p.configSource } : {}), ...(p.settingsMtime ? { settingsMtime: p.settingsMtime } : {}) } : null;
+    ...(p.configSource ? { configSource: p.configSource } : {}), ...(p.settingsMtime ? { settingsMtime: p.settingsMtime } : {}),
+    // 个人目录是否等于（或包含于）某个号池号的目录：只回是否和号的代称（2026-10-19）
+    inPool: !!p.poolDirMatch, ...(p.poolDirMatch ? { inPoolAlias: p.poolDirMatch.account ? (ctx.aliases?.get(p.poolDirMatch.account) || '号池里的一个号') : '号池目录' } : {}) } : null;
+  // Hub 进程继承了一个指向别处的配置目录（已忽略，不当个人目录）：说明、是否落在号池里、来自哪一层环境变量（不带路径）
+  const inh = p && p.inheritedConfigDir;
+  if (out.personal && inh) {
+    const view = { ignored: true, note: String(inh.note || ''), variable: String(inh.variable || ''), inPool: !!inh.inPool,
+      ...(inh.inPool ? { inPoolAlias: inh.inPoolAccount ? (ctx.aliases?.get(inh.inPoolAccount) || '号池里的一个号') : '号池目录' } : {}) };
+    const env = sys.hubEnv || process.env; // Hub 主进程自己的环境（单测可替换）
+    try {
+      const inherited = require('../codeagent-config').inheritedConfigDir(env);
+      let timer = null;
+      const persisted = inherited && sys.persistentEnv ? await Promise.race([sys.persistentEnv(view.variable), new Promise(r => { timer = setTimeout(() => r(null), 6000); timer.unref?.(); })]) : null;
+      if (timer) clearTimeout(timer);
+      const same = v => !!v && require('../codeagent-config').sameDir(v, inherited);
+      view.origin = !persisted ? 'unknown' : same(persisted.user) ? 'user-env' : same(persisted.system) ? 'system-env' : 'process-only';
+    } catch { view.origin = 'unknown'; }
+    // 旁证（只给是否）：Hub 自己的环境里有 Hub 会话标记 / CodeAgent 启动器标记，说明这个 Hub 是从某个会话的进程树里启动的
+    // （之后的远程重启、更新都会把同一份环境带下去）
+    view.startedInside = { hubSession: !!env.CLAUDE_HUB_SESSION_ID, codeagent: !!env.CODEAGENT3_LAUNCHER_PID || Object.keys(env).some(k => /^CODEAGENT_HUB_/.test(k)) };
+    out.personal.inheritedConfigDir = view;
+  }
   const accounts = poolRaw?.accounts || [];
   out.pool = { total: accounts.length, ready: accounts.filter(a => a.state === 'ready').length, needLogin: accounts.filter(a => a.state !== 'ready').length };
   // 额度
@@ -747,6 +790,8 @@ function summarize(d) {
   }
   const c = d.codeagent;
   if (c && !c.error) parts.push(`CodeAgent ${c.version ? 'v' + c.version : '版本没读到'}${(c.quota || []).length ? ' · 额度 ' + c.quota.map(q => `${q.account} ${q.pct}%`).join('、') : ''}`);
+  if (c && c.personal && c.personal.inPool) parts.push(`个人配置目录和${c.personal.inPoolAlias || '号池'}的目录重叠`);
+  if (c && c.personal && c.personal.inheritedConfigDir) parts.push(c.personal.inheritedConfigDir.note + (c.personal.inheritedConfigDir.inPool ? `（它指向${c.personal.inheritedConfigDir.inPoolAlias || '号池'}的目录）` : ''));
   const avoiding = (d.pool && Array.isArray(d.pool.accounts) ? d.pool.accounts.filter(a => a.avoid).map(a => a.alias) : (c && c.avoid || []).map(a => a.account));
   if (avoiding.length) parts.push(`避让中：${avoiding.join('、')}`);
   const e = d.errors;

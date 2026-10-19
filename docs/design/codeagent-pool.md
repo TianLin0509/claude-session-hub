@@ -22,8 +22,19 @@
 - 挑号：只在可用的号里挑；指定了模型时优先挑清单里明确有这个模型的号；然后没有进行中会话的优先，其次会话最少的，最后按上次分配时间轮转。会话整段固定用这个号。
 - 启动前：工作目录里有 `.cac/.credentials.json` 时拒绝启动并说明原因；把个人账号的 `settings.json`（去掉 hooks 和 model）、`AGENTS.md`、`CLAUDE.md`、`skills/` 同步进号的目录，号自己的默认模型保留（没有时取它账号清单的第一个）；按个人账号目录同样的方式部署 Hub 的 hook。
 - AI特战队通道按家里指定的模型开会话（2026-10-18，`docs/design/tezhan-model-route.md`）：号的默认模型不是指定模型、且号上没有进行中的会话时，同步配置把它切过去，切之前的模型记在号目录的 `hub-route-model.json`；之后不指定模型、号空闲时换回。个人账号不切。
+- 同步时个人目录和号的目录相同或互相包含（先 realpath，Windows 上不分大小写和分隔符）就一个字都不写，只在日志里记一笔。
 - 会话记下 `codeagentPoolAccount`（号的编号）和 `codeagentPoolLabel`（脱敏工号与备注）。休眠唤醒、恢复、原地重启、分支都回到同一个号的目录（会话记录在那里）；号已移出或需要重登时明确报错，不换到别的号。
 - 卡片标题前一个「池」字，悬停和输入框旁的模型提示里写明用的是哪个号。
+
+## 个人账号的配置目录（2026-10-19，v2.1.14 公司真机事故后）
+
+- 只认三个来源，按优先级：环境变量 `AI_HUB_CODEAGENT_CONFIG_DIR` → Hub 设置 `providers.codeagent.configDir` → 默认 `~/.cac`。Hub 进程从启动它的环境继承来的 `CODEAGENT3_CONFIG_DIR` 不再当个人目录；这个变量名照旧用来在启动 CodeAgent 时由 Hub 显式写入真正的配置目录（个人会话写个人目录，号池会话写号的目录）。
+- 事故：公司 Hub 带着继承来的 `CODEAGENT3_CONFIG_DIR`（指向号池号 1 的目录或等价路径）运行，「个人账号」会话实际开在号 1 的目录里、请求号 1 的 DS 模型，又拿个人账号的 GLM 权限清单比对，从 10-17 晚起每个个人会话都报「模型不存在」；远程修正把 model 改成 GLM 后，号 1 一开新会话，同步配置又把 DS 写了回去。
+- 继承从哪来：Hub 自己的代码不往 `process.env` 写这个变量；Hub 派生的子进程（个人 / 号池会话、模型探测、号池登录窗口、自动标题）都是在子进程的环境里显式设，不回流到 Hub。但 Hub 的重启（远程重启、重启并继续的 `app.relaunch`）和更新（增量替换脚本、完整安装包）都把当前进程的环境原样带给新进程，所以只要 Hub 曾经从某个号池会话的进程树里被启动过一次（例如在 CodeAgent 会话里运行安装包或 Hub 程序），这个值就会一直跟下去。直查的「个人配置目录」一行会报出它是不是用户级 / 系统级环境变量。
+- 想用自定义个人目录：在 Hub 设置里填 `providers.codeagent.configDir`，或设 `AI_HUB_CODEAGENT_CONFIG_DIR`；只设 `CODEAGENT3_CONFIG_DIR` 不再生效（Hub 日志和直查会标出「Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略」）。
+- 加固：远程维护 `set-personal-model` 先 realpath 再比，个人目录和号池根目录或任何一个号的目录相同、互相包含都拒绝；号池同步遇到来源等于目标不写。
+- 直查 CodeAgent 段的 `personal`：`configSource`（`hub-env` / `hub-config` / `default` / `ignored-inherited-env`）、`configModel`（个人 settings.json 里写的 model）、`inPool` / `inPoolAlias`（个人目录是否和某个号的目录重叠，只给代称）、`inheritedConfigDir`（已忽略的说明、是否指向号池、`origin`：`user-env` / `system-env` / `process-only`，`startedInside`：Hub 自己的环境里有没有 Hub 会话标记 `CLAUDE_HUB_SESSION_ID` 或 CodeAgent 启动器标记——有就说明 Hub 是从某个会话的进程树里启动的），都不带路径。
+- 已知影响：事故期间开的「个人账号」会话，记录落在号 1 的目录里，修正后按个人目录找不到，恢复时会报找不到原会话（这些会话本来也都失败了）。
 
 ## 不在一期
 
