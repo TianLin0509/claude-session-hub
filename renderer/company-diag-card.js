@@ -111,8 +111,9 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
   const okErr = (okAt, err) => `${okAt ? '最近成功 ' + time(okAt) : '还没成功过'}${err ? ` · <span class="bad">最近错误：${esc(err)}</span>` : ''}`;
   // 个人账号配置目录（2026-10-19）：从哪来、settings.json 写的模型、是否和号池号的目录重叠、继承来的配置目录已忽略（都不带路径）
   const DIR_SOURCE = { 'hub-env': '由 AI_HUB_CODEAGENT_CONFIG_DIR 指定', 'hub-config': 'Hub 设置里指定', default: '默认 ~/.cac', 'ignored-inherited-env': '默认 ~/.cac',
+    'inherited-user-env': '继承的配置目录（用户级环境变量里设的，已采用）', 'inherited-system-env': '继承的配置目录（系统级环境变量里设的，已采用）',
     'codeagent-env': '取自 Hub 继承的 CODEAGENT3_CONFIG_DIR（旧版行为）' };
-  const ORIGIN = { 'user-env': '用户级环境变量里设了它', 'system-env': '系统级环境变量里设了它', 'process-only': '不是用户级或系统级环境变量，是启动 Hub 的那个进程带进来的', unknown: '没查到来源' };
+  const ORIGIN = { 'user-env': '用户级环境变量里设了它', 'system-env': '系统级环境变量里设了它', 'process-only': '不是用户级或系统级环境变量，是启动 Hub 的那个进程带进来的', unknown: '读不到用户级 / 系统级设置，来源未知' };
   function personalDir(p) {
     const parts = [esc(DIR_SOURCE[p.configSource] || p.configSource || '未知')];
     if (p.configModel != null) parts.push('settings.json 的 model：' + (p.configModel ? esc(p.configModel) : '没写'));
@@ -121,7 +122,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
     const i = p.inheritedConfigDir;
     if (i) {
       const inside = i.startedInside ? [i.startedInside.hubSession ? 'Hub 的环境里有 Hub 会话标记' : '', i.startedInside.codeagent ? 'Hub 的环境里有 CodeAgent 启动器标记' : ''].filter(Boolean) : [];
-      parts.push(`<span class="bad">${esc(i.note || '继承的配置目录已忽略')}</span>（${i.inPool ? `它指向${esc(i.inPoolAlias || '号池')}的目录` : '它不在号池目录里'}；${esc(ORIGIN[i.origin] || ORIGIN.unknown)}${inside.length ? '；' + esc(inside.join('、')) + '，说明 Hub 是从某个会话里启动的' : ''}）`);
+      parts.push(`${i.adopted ? esc(i.note || '继承的配置目录已采用') : `<span class="bad">${esc(i.note || '继承的配置目录已忽略')}</span>`}（${i.inPool ? `它指向${esc(i.inPoolAlias || '号池')}的目录` : '它不在号池目录里'}；${esc(ORIGIN[i.origin] || ORIGIN.unknown)}${inside.length ? '；' + esc(inside.join('、')) + '，说明 Hub 是从某个会话里启动的' : ''}）`);
     }
     return parts.join(' · ');
   }

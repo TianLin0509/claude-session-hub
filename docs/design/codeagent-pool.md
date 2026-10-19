@@ -28,13 +28,14 @@
 
 ## 个人账号的配置目录（2026-10-19，v2.1.14 公司真机事故后）
 
-- 只认三个来源，按优先级：环境变量 `AI_HUB_CODEAGENT_CONFIG_DIR` → Hub 设置 `providers.codeagent.configDir` → 默认 `~/.cac`。Hub 进程从启动它的环境继承来的 `CODEAGENT3_CONFIG_DIR` 不再当个人目录；这个变量名照旧用来在启动 CodeAgent 时由 Hub 显式写入真正的配置目录（个人会话写个人目录，号池会话写号的目录）。
+- 来源按优先级：环境变量 `AI_HUB_CODEAGENT_CONFIG_DIR` → Hub 设置 `providers.codeagent.configDir` → Hub 进程继承来的 `CODEAGENT3_CONFIG_DIR`（有条件采用，见下条）→ 默认 `~/.cac`。这个变量名照旧用来在启动 CodeAgent 时由 Hub 显式写入真正的配置目录（个人会话写个人目录，号池会话写号的目录）。
+- 继承值只有同时满足两条才采用（审核 2026-10-19：有的同事在用户级 / 系统级环境变量里把它指向自己的 CodeAgent 目录）：①注册表里的用户级或系统级环境变量就是它（同一目录：realpath 后比，Windows 不分大小写和分隔符）；②它和号池（根目录或任一号目录）不重叠。判定在 Hub 启动时做一次（`loadInheritedDecision`：只在有继承值、且不是默认 `~/.cac` 时用 PowerShell 读 `[Environment]::GetEnvironmentVariable(name,'User'/'Machine')`，输出转 UTF-8 再 base64，中文路径不受代码页影响；8 秒超时），结果缓存；部署 CodeAgent hook 前等它出结果，之后 `resolveCodeAgentConfig` 只比缓存，不读注册表。注册表读不出来、出错、超时一律忽略（宁可落到 `~/.cac`，也不回到号 1）。
 - 事故：公司 Hub 带着继承来的 `CODEAGENT3_CONFIG_DIR`（指向号池号 1 的目录或等价路径）运行，「个人账号」会话实际开在号 1 的目录里、请求号 1 的 DS 模型，又拿个人账号的 GLM 权限清单比对，从 10-17 晚起每个个人会话都报「模型不存在」；远程修正把 model 改成 GLM 后，号 1 一开新会话，同步配置又把 DS 写了回去。
-- 继承从哪来：Hub 自己的代码不往 `process.env` 写这个变量；Hub 派生的子进程（个人 / 号池会话、模型探测、号池登录窗口、自动标题）都是在子进程的环境里显式设，不回流到 Hub。但 Hub 的重启（远程重启、重启并继续的 `app.relaunch`）和更新（增量替换脚本、完整安装包）都把当前进程的环境原样带给新进程，所以只要 Hub 曾经从某个号池会话的进程树里被启动过一次（例如在 CodeAgent 会话里运行安装包或 Hub 程序），这个值就会一直跟下去。直查的「个人配置目录」一行会报出它是不是用户级 / 系统级环境变量。
-- 想用自定义个人目录：在 Hub 设置里填 `providers.codeagent.configDir`，或设 `AI_HUB_CODEAGENT_CONFIG_DIR`；只设 `CODEAGENT3_CONFIG_DIR` 不再生效（Hub 日志和直查会标出「Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略」）。
-- 加固：远程维护 `set-personal-model` 先 realpath 再比，个人目录和号池根目录或任何一个号的目录相同、互相包含都拒绝；号池同步遇到来源等于目标不写。
-- 直查 CodeAgent 段的 `personal`：`configSource`（`hub-env` / `hub-config` / `default` / `ignored-inherited-env`）、`configModel`（个人 settings.json 里写的 model）、`inPool` / `inPoolAlias`（个人目录是否和某个号的目录重叠，只给代称）、`inheritedConfigDir`（已忽略的说明、是否指向号池、`origin`：`user-env` / `system-env` / `process-only`，`startedInside`：Hub 自己的环境里有没有 Hub 会话标记 `CLAUDE_HUB_SESSION_ID` 或 CodeAgent 启动器标记——有就说明 Hub 是从某个会话的进程树里启动的），都不带路径。
-- 已知影响：事故期间开的「个人账号」会话，记录落在号 1 的目录里，修正后按个人目录找不到，恢复时会报找不到原会话（这些会话本来也都失败了）。
+- 继承从哪来：Hub 自己的代码不往 `process.env` 写这个变量；Hub 派生的子进程（个人 / 号池会话、模型探测、号池登录窗口、自动标题）都是在子进程的环境里显式设，不回流到 Hub。但 Hub 的重启（远程重启、重启并继续的 `app.relaunch`）和更新（增量替换脚本、完整安装包）都把当前进程的环境原样带给新进程，所以只要 Hub 曾经从某个号池会话的进程树里被启动过一次（例如在 CodeAgent 会话里运行安装包或 Hub 程序），这个值就会一直跟下去。
+- 想用自定义个人目录：在 Hub 设置里填 `providers.codeagent.configDir`，或设 `AI_HUB_CODEAGENT_CONFIG_DIR`；也可以在用户级 / 系统级环境变量里设 `CODEAGENT3_CONFIG_DIR`（不能落在号池里）。只在启动 Hub 的那个进程里临时设的不再生效。
+- 加固：远程维护 `set-personal-model` 先 realpath 再比，个人目录和号池根目录或任何一个号的目录相同、互相包含都拒绝；号池同步遇到来源等于目标不写。UNC 路径（`\\server\share`）不做 realpath、只按字面比，避免网络盘不通时卡住。
+- 直查 CodeAgent 段的 `personal`：`configSource`（`hub-env` / `hub-config` / `inherited-user-env` / `inherited-system-env` / `ignored-inherited-env` / `default`）、`configModel`（个人 settings.json 里写的 model）、`inPool` / `inPoolAlias`（个人目录是否和某个号的目录重叠，只给代称）、`inheritedConfigDir`：`adopted` / `ignored`、`reason`（`adopted-user-env` / `adopted-system-env` 采用；`process-only` 忽略：只在进程里出现；`in-pool` 忽略：落在号池；`unverified` 忽略：读不到注册表；`explicit` 忽略：个人目录已显式指定）、`origin`（`user-env` / `system-env` / `process-only` / `unknown`：读注册表出错）、是否指向号池（代称）、`startedInside`（Hub 自己的环境里有没有 Hub 会话标记 `CLAUDE_HUB_SESSION_ID` 或 CodeAgent 启动器标记——有就说明 Hub 是从某个会话的进程树里启动的），都不带路径。判定和直查共用启动时那一次注册表读取。Hub 日志在启动后记一笔同样的说明。
+- 已知影响：事故期间（10-17 晚到 10-19 修正版装上之前）开的「个人」会话，原生记录在号 1 的目录里，修正后按个人目录找不到，恢复时会报找不到原会话（这些会话本来也都失败了）。号 1 目录里还留着 09:55 远程修正时的备份 `settings.json.hub-backup-20261019-095502-033`，无害。
 
 ## 不在一期
 

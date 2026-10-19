@@ -4162,6 +4162,12 @@ function startAgentScanner() {
 
 app.whenReady().then(async () => {
   traceStartup('app.whenReady');
+  // 继承来的 CODEAGENT3_CONFIG_DIR 采用还是忽略（core/codeagent-config.js loadInheritedDecision）：只在有继承值、且不是默认 ~/.cac 时
+  // 读一次注册表（PowerShell，8 秒超时），和下面的启动工作并行；部署 CodeAgent hook 前等它出结果，之后的会话、hook、直查用同一个判定。
+  const codeagentInheritedReady = (async () => {
+    try { return await require('./core/codeagent-config').loadInheritedDecision({ env: process.env, dataDir: getHubDataDir() }); }
+    catch (error) { console.warn('[codeagent-config] 判定继承的配置目录失败（按忽略处理）：' + error.message); return null; }
+  })();
   // Source-mode Electron has no installed exe identity of its own. Keep a
   // branded Start Menu shortcut + Jump List relaunch task bound to the Hub
   // AUMID, or Windows can cache a bare electron.exe relaunch command. Isolated
@@ -4301,12 +4307,15 @@ app.whenReady().then(async () => {
   // 隔离 Hub 只在测试显式指定了它的配置目录时部署，绝不碰真实 home。
   const codeagentHookTargets = [];
   try {
+    await codeagentInheritedReady;
     const codeagentConfig = require('./core/codeagent-config').resolveCodeAgentConfig(process.env);
-    // 继承来的 CODEAGENT3_CONFIG_DIR 不当个人目录（core/codeagent-config.js）：指向别处时在日志里记一笔（不写路径）
-    try {
-      const inherited = require('./core/codeagent-config').inheritedConfigDirInfo(process.env, undefined, { dataDir: getHubDataDir() });
-      if (inherited) console.warn(`[codeagent-config] ${inherited.note}（变量 ${inherited.variable}，${inherited.inPool ? '它落在号池目录里' : '它不在号池目录里'}）；个人账号目录来源：${require('./core/codeagent-config').configDirSource(process.env)}`);
-    } catch (error) { console.warn('[codeagent-config] 核对继承的配置目录失败：' + error.message); }
+    // 继承来的配置目录采用 / 忽略都在日志里记一笔（不写路径）；放到下一轮事件循环，不占启动时间
+    setImmediate(() => {
+      try {
+        const inherited = require('./core/codeagent-config').inheritedConfigDirInfo(process.env, undefined, { dataDir: getHubDataDir() });
+        if (inherited) console.warn(`[codeagent-config] ${inherited.note}（变量 ${inherited.variable}，来源 ${inherited.origin}，${inherited.inPool ? '它落在号池目录里' : '它不在号池目录里'}）；个人账号目录来源：${require('./core/codeagent-config').configDirSource(process.env)}`);
+      } catch (error) { console.warn('[codeagent-config] 核对继承的配置目录失败：' + error.message); }
+    });
     const allowed = isIsolatedHub() ? !!process.env.AI_HUB_CODEAGENT_CONFIG_DIR : true;
     if (allowed && fs.existsSync(codeagentConfig.configDir)) {
       const settingsOptions = { events: require('./core/codeagent-config').HOOK_EVENTS,

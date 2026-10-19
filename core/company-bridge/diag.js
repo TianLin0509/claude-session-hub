@@ -141,30 +141,9 @@ function defaultSys() {
     renderRows: raw => require('../hub-phone/session-chat').renderRows(raw),
     readdir: dir => fs.promises.readdir(dir, { withFileTypes: true }),
     stat: file => fs.promises.stat(file),
-    // 某个环境变量是不是持久设置在用户级 / 系统级（注册表），值只在本机比对、不回传
-    persistentEnv: name => persistentEnv(name),
   };
 }
 
-// 读注册表里用户级（HKCU\Environment）和系统级环境变量的值（只读，隐藏窗口，5 秒超时）；没有返回 null。
-// 值只在本机和继承来的值比对，不回传。reg.exe 按本机代码页输出，非 ASCII 路径可能比不上，比不上按 process-only 报。
-function persistentEnv(name) {
-  if (process.platform !== 'win32' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name || ''))) return Promise.resolve({ user: null, system: null });
-  const { execFile } = require('node:child_process');
-  const query = key => new Promise(resolve => {
-    execFile('reg.exe', ['query', key, '/v', name], { windowsHide: true, timeout: 5000, encoding: 'utf8' }, (error, stdout) => {
-      if (error) return resolve(null);
-      // 输出行形如「    NAME    REG_SZ    值」
-      const line = String(stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().startsWith(name.toLowerCase() + ' ') && /\sREG_(EXPAND_)?SZ\s/i.test(l));
-      const m = line && /^\s*\S+\s+(REG_EXPAND_SZ|REG_SZ)\s+(.*)$/i.exec(line);
-      if (!m) return resolve(null);
-      const value = m[2].trim();
-      resolve(/EXPAND/i.test(m[1]) ? value.replace(/%([^%]+)%/g, (all, k) => process.env[k] != null ? process.env[k] : all) : value);
-    });
-  });
-  return Promise.all([query('HKCU\\Environment'), query('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment')])
-    .then(([user, system]) => ({ user, system }));
-}
 
 // CodeAgent 版本：跑一次「<命令> --version」（隐藏窗口、8 秒超时），10 分钟内复用。命令取本机配置（codeagent-config.js 已拦掉特殊字符），不来自对端。
 // cmd.exe 用 windowsVerbatimArguments 原样传命令行（同 codeagent-pool.js 的号池登录）；超时只按 PID 用 taskkill /T 结束我们自己刚起的这一个 cmd 进程树
@@ -535,24 +514,17 @@ async function codeagent(bridge, deps, sys, ctx, poolRaw, poolError) {
     ...(p.configSource ? { configSource: p.configSource } : {}), ...(p.settingsMtime ? { settingsMtime: p.settingsMtime } : {}),
     // 个人目录是否等于（或包含于）某个号池号的目录：只回是否和号的代称（2026-10-19）
     inPool: !!p.poolDirMatch, ...(p.poolDirMatch ? { inPoolAlias: p.poolDirMatch.account ? (ctx.aliases?.get(p.poolDirMatch.account) || '号池里的一个号') : '号池目录' } : {}) } : null;
-  // Hub 进程继承了一个指向别处的配置目录（已忽略，不当个人目录）：说明、是否落在号池里、来自哪一层环境变量（不带路径）
+  // Hub 进程继承的配置目录：采用还是忽略、原因、来自哪一层环境变量、是否落在号池（代称），都不带路径。
+  // 判定在 Hub 启动时读一次注册表做好（codeagent-config.js loadInheritedDecision，和个人目录的判定共用），这里不再读。
   const inh = p && p.inheritedConfigDir;
   if (out.personal && inh) {
-    const view = { ignored: true, note: String(inh.note || ''), variable: String(inh.variable || ''), inPool: !!inh.inPool,
-      ...(inh.inPool ? { inPoolAlias: inh.inPoolAccount ? (ctx.aliases?.get(inh.inPoolAccount) || '号池里的一个号') : '号池目录' } : {}) };
     const env = sys.hubEnv || process.env; // Hub 主进程自己的环境（单测可替换）
-    try {
-      const inherited = require('../codeagent-config').inheritedConfigDir(env);
-      let timer = null;
-      const persisted = inherited && sys.persistentEnv ? await Promise.race([sys.persistentEnv(view.variable), new Promise(r => { timer = setTimeout(() => r(null), 6000); timer.unref?.(); })]) : null;
-      if (timer) clearTimeout(timer);
-      const same = v => !!v && require('../codeagent-config').sameDir(v, inherited);
-      view.origin = !persisted ? 'unknown' : same(persisted.user) ? 'user-env' : same(persisted.system) ? 'system-env' : 'process-only';
-    } catch { view.origin = 'unknown'; }
-    // 旁证（只给是否）：Hub 自己的环境里有 Hub 会话标记 / CodeAgent 启动器标记，说明这个 Hub 是从某个会话的进程树里启动的
-    // （之后的远程重启、更新都会把同一份环境带下去）
-    view.startedInside = { hubSession: !!env.CLAUDE_HUB_SESSION_ID, codeagent: !!env.CODEAGENT3_LAUNCHER_PID || Object.keys(env).some(k => /^CODEAGENT_HUB_/.test(k)) };
-    out.personal.inheritedConfigDir = view;
+    const origin = ['user-env', 'system-env', 'process-only', 'unknown'].includes(inh.origin) ? inh.origin : 'unknown';
+    out.personal.inheritedConfigDir = { adopted: !!inh.adopted, ignored: !inh.adopted, reason: String(inh.reason || ''), note: String(inh.note || ''), variable: String(inh.variable || ''),
+      origin, inPool: !!inh.inPool, ...(inh.inPool ? { inPoolAlias: inh.inPoolAccount ? (ctx.aliases?.get(inh.inPoolAccount) || '号池里的一个号') : '号池目录' } : {}),
+      // 旁证（只给是否）：Hub 自己的环境里有 Hub 会话标记 / CodeAgent 启动器标记，说明这个 Hub 是从某个会话的进程树里启动的
+      // （之后的远程重启、更新都会把同一份环境带下去）
+      startedInside: { hubSession: !!env.CLAUDE_HUB_SESSION_ID, codeagent: !!env.CODEAGENT3_LAUNCHER_PID || Object.keys(env).some(k => /^CODEAGENT_HUB_/.test(k)) } };
   }
   const accounts = poolRaw?.accounts || [];
   out.pool = { total: accounts.length, ready: accounts.filter(a => a.state === 'ready').length, needLogin: accounts.filter(a => a.state !== 'ready').length };

@@ -20,7 +20,7 @@ const repo = path.resolve(__dirname, '..');
 const out = path.resolve(argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : path.join(repo, 'artifacts', '20261019-personal-configdir-claude1'));
 const GLM = 'GLM-5.2-WX-Auto', DS = 'deepseek-v4-flash-0731';
 const POOL_ID = 'inh0e2e1';
-const NOTE = 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略';
+const NOTE = 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录（落在号池里），已忽略';
 const j = JSON.stringify;
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const readLines = file => { try { return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; } };
@@ -123,7 +123,7 @@ async function main() {
     result.personalDiag = pers;
     check(pers.configSource === 'ignored-inherited-env' && pers.configModel === GLM && pers.inPool === false,
       `直查：个人目录来源 ignored-inherited-env、settings.json 的 model 是 ${GLM}、个人目录不在号池目录里`);
-    check(pers.inheritedConfigDir && pers.inheritedConfigDir.note === NOTE && pers.inheritedConfigDir.inPool === true && pers.inheritedConfigDir.inPoolAlias === '号 1'
+    check(pers.inheritedConfigDir && pers.inheritedConfigDir.note === NOTE && pers.inheritedConfigDir.reason === 'in-pool' && pers.inheritedConfigDir.adopted === false && pers.inheritedConfigDir.inPool === true && pers.inheritedConfigDir.inPoolAlias === '号 1'
       && ['process-only', 'user-env', 'system-env', 'unknown'].includes(pers.inheritedConfigDir.origin),
       `直查标出「${NOTE}」，它指向号 1 的目录；来源层级：${pers.inheritedConfigDir && pers.inheritedConfigDir.origin}`);
     check(pers.inheritedConfigDir.origin === 'process-only', '这台测试机的用户级 / 系统级环境变量里没有它，直查判为「启动 Hub 的进程带进来的」');

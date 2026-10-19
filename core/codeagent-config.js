@@ -5,7 +5,7 @@
 // Hub 按 Claude 家族接入，只在这里集中描述它与 Claude 不同的地方：
 //   - 命令名默认 `codeagent`（安装目录里的 .bat 包装，负责企业证书与代理环境）；
 //   - 配置目录由 CODEAGENT3_CONFIG_DIR 指定，默认 ~/.cac（相当于 CLAUDE_CONFIG_DIR / ~/.claude）；Hub 启动会话时显式写这个变量，
-//     个人账号目录本身不从 Hub 继承来的这个变量取（见 resolveCodeAgentConfig），
+//     Hub 继承来的这个变量只在注册表里也这样设、且不在号池里时才当个人目录（见 resolveCodeAgentConfig），
 //     状态文件是 .cac.json（相当于 .claude.json）；
 //   - 不认 --session-id 与 --settings：会话身份只能等第一个 hook 上报后绑定，Hub 的 hook
 //     只能写进配置目录的 settings.json；
@@ -49,27 +49,46 @@ function configDirEnvName(env = process.env, provider = hubProviderConfig()) {
   return name;
 }
 
-// 个人账号的配置目录只认三个来源（2026-10-19 公司真机事故后收紧）：AI_HUB_CODEAGENT_CONFIG_DIR、Hub 设置
-// providers.codeagent.configDir、默认 ~/.cac。Hub 进程从启动它的环境里继承来的 CODEAGENT3_CONFIG_DIR 不再当个人目录——
-// 公司 Hub 曾带着号池号 1 的目录启动（从某个 CodeAgent 会话的进程树里启动、之后的远程重启 / 更新又原样带下去），
-// 结果「个人账号」会话全开在号 1 的目录里、号池同步又把号 1 的模型写回「个人」settings.json。
-// 变量名本身照旧用：启动 CodeAgent 时由 Hub 把真正的配置目录显式写进这个变量。想用自定义个人目录就显式指定上面两项。
-function resolveCodeAgentConfig(env = process.env, provider = hubProviderConfig()) {
+// 个人账号的配置目录（2026-10-19 公司真机事故后收紧），按优先级：
+//   1. AI_HUB_CODEAGENT_CONFIG_DIR；2. Hub 设置 providers.codeagent.configDir；
+//   3. Hub 进程继承来的 CODEAGENT3_CONFIG_DIR——只有它同时满足两条才采用：①注册表里的用户级或系统级环境变量就是它（同一目录）；
+//      ②它和号池不重叠。判定在 Hub 启动时做一次（loadInheritedDecision，读注册表），结果缓存；这里只比缓存，不读注册表；
+//   4. 默认 ~/.cac。
+// 事故：公司 Hub 曾带着号池号 1 的目录启动（从某个号池会话的进程树里启动，之后的远程重启 / 更新又原样带下去），
+// 「个人账号」会话全开在号 1 的目录里、号池同步又把号 1 的模型写回「个人」settings.json。
+// 有的同事在用户级 / 系统级环境变量里把它指向自己的 CodeAgent 目录（不在号池里），这种照旧采用（审核 2026-10-19）。
+// 注册表读不出来、出错时一律忽略：宁可落到 ~/.cac，也不回到号 1。
+// 变量名本身照旧用：启动 CodeAgent 时由 Hub 把真正的配置目录显式写进这个变量。
+function resolveCodeAgentConfig(env = process.env, provider = hubProviderConfig(), { decision = inheritedDecision } = {}) {
   const command = cleanString(env.AI_HUB_CODEAGENT_COMMAND) || cleanString(provider.command) || DEFAULT_COMMAND;
   const configDirEnv = configDirEnvName(env, provider);
   if (/[\r\n"`$;&|<>]/.test(command)) throw new Error('CodeAgent 命令包含不允许的字符');
   const home = env.USERPROFILE || env.HOME || os.homedir();
-  const configDir = path.resolve(cleanString(env.AI_HUB_CODEAGENT_CONFIG_DIR) || cleanString(provider.configDir) || path.join(home, '.cac'));
+  const explicit = cleanString(env.AI_HUB_CODEAGENT_CONFIG_DIR) || cleanString(provider.configDir);
+  let configDir = explicit ? path.resolve(explicit) : '';
+  if (!configDir) {
+    const adopted = adoptedInheritedDir(env, provider, decision);
+    configDir = adopted || path.resolve(path.join(home, '.cac'));
+  }
   return { command, configDirEnv, configDir, stateFile: STATE_FILE };
+}
+
+// 缓存的判定只认当时那一份继承值（变量名与值都要一样）：不读注册表、不碰磁盘，纯字符串比较。
+function adoptedInheritedDir(env, provider, decision) {
+  if (!decision || !decision.adopt) return '';
+  const inherited = inheritedConfigDir(env, provider);
+  return inherited && decision.variable === configDirEnvName(env, provider) && decision.inherited === inherited ? inherited : '';
 }
 
 // 比较两个目录是否同一个 / 互相包含：先 realpath（解开 junction、符号链接和 8.3 短名；目录还不存在时解开它最近的已存在上级），
 // Windows 上再统一分隔符、转小写。只用于判定，不用于拼路径。
+// UNC 路径（\\server\share）不做 realpath，只按字面比：网络盘不通时 realpath 会卡住（审核 2026-10-19）。
 function canonicalDir(dir, { fsModule = fs, platform = process.platform } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
   let abs = p.resolve(String(dir || ''));
+  const unc = platform === 'win32' && /^[\\/]{2}/.test(abs);
   const tail = [];
-  for (let cur = abs; ;) {
+  for (let cur = abs; !unc;) {
     let real = null;
     try { real = (fsModule.realpathSync && (fsModule.realpathSync.native || fsModule.realpathSync))(cur); } catch { real = null; }
     if (typeof real === 'string' && real) { abs = tail.length ? p.join(real, ...tail.slice().reverse()) : real; break; }
@@ -78,7 +97,7 @@ function canonicalDir(dir, { fsModule = fs, platform = process.platform } = {}) 
     tail.push(p.basename(cur));
     cur = parent;
   }
-  if (platform === 'win32') abs = abs.replace(/\//g, '\\').replace(/^\\\\\?\\/, '').toLowerCase();
+  if (platform === 'win32') abs = abs.replace(/\//g, '\\').replace(/^\\\\\?\\(UNC\\)?/i, (m, u) => (u ? '\\\\' : '')).toLowerCase();
   const sep = platform === 'win32' ? '\\' : '/';
   while (abs.length > 1 && abs.endsWith(sep) && !/^[a-z]:\\$/i.test(abs)) abs = abs.slice(0, -1);
   return abs;
@@ -97,7 +116,7 @@ function dirsOverlap(a, b, opts = {}) {
   return under(x, y) || under(y, x);
 }
 
-// Hub 进程继承来的配置目录变量（已不再当个人目录）：没有返回 ''。
+// Hub 进程继承来的配置目录变量：没有返回 ''。
 function inheritedConfigDir(env = process.env, provider = hubProviderConfig()) {
   let name;
   try { name = configDirEnvName(env, provider); } catch { return ''; }
@@ -105,41 +124,111 @@ function inheritedConfigDir(env = process.env, provider = hubProviderConfig()) {
   return value ? path.resolve(value) : '';
 }
 
+// 读注册表里用户级、系统级环境变量（.NET [Environment]::GetEnvironmentVariable(name, 'User'/'Machine')，隐藏窗口，有超时）。
+// 输出先转 UTF-8 再 base64，和本机代码页无关，中文用户名路径也比得上（reg.exe 的输出是 GBK，审核 2026-10-19）。
+// 返回 { user, system, error }：没设置是 null；读取出错 / 超时 error 是原因（调用方按「读不到」处理，不当成「没设置」）。
+function readPersistentEnv(name, { execFileImpl = null, timeoutMs = 8000, platform = process.platform } = {}) {
+  if (platform !== 'win32') return Promise.resolve({ user: null, system: null, error: '不是 Windows' });
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name || ''))) return Promise.resolve({ user: null, system: null, error: '变量名无效' });
+  const run = execFileImpl || require('child_process').execFile;
+  const script = `$u=[Environment]::GetEnvironmentVariable('${name}','User');$m=[Environment]::GetEnvironmentVariable('${name}','Machine');`
+    + `[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -Compress @{u=$u;m=$m})))`;
+  return new Promise(resolve => {
+    let done = false;
+    const finish = value => { if (!done) { done = true; resolve(value); } };
+    try {
+      run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, timeout: timeoutMs, encoding: 'utf8' }, (error, stdout) => {
+          if (error) return finish({ user: null, system: null, error: error.killed || error.signal ? '读取超时' : String(error.message || error).slice(0, 200) });
+          try {
+            const parsed = JSON.parse(Buffer.from(String(stdout || '').trim(), 'base64').toString('utf8'));
+            const pick = v => (typeof v === 'string' && v.trim() ? v.trim() : null);
+            finish({ user: pick(parsed && parsed.u), system: pick(parsed && parsed.m), error: null });
+          } catch (e) { finish({ user: null, system: null, error: '输出解析不了：' + String(e.message || e).slice(0, 120) }); }
+        });
+    } catch (error) { finish({ user: null, system: null, error: String(error.message || error).slice(0, 200) }); }
+  });
+}
+
+// 对继承值下结论（纯函数，给定注册表读数）。返回 null（没有继承值，或它就是默认 ~/.cac）或：
+//   { variable, inherited, adopt, reason, origin, inPool, inPoolAccount }
+// reason：adopted-user-env / adopted-system-env（采用）；process-only（只在进程里出现，忽略）；in-pool（落在号池，忽略）；
+//         unverified（注册表读不到，忽略）；explicit（个人目录已显式指定，不看它）。
+// origin：user-env / system-env / process-only / unknown（读注册表出错）。
+function decideInherited({ env = process.env, provider = hubProviderConfig(), dataDir = null, persisted = null } = {}) {
+  const inherited = inheritedConfigDir(env, provider);
+  if (!inherited) return null;
+  let variable = DEFAULT_CONFIG_ENV;
+  try { variable = configDirEnvName(env, provider); } catch { return null; }
+  const home = env.USERPROFILE || env.HOME || os.homedir();
+  const explicit = cleanString(env.AI_HUB_CODEAGENT_CONFIG_DIR) || cleanString(provider.configDir);
+  const base = { variable, inherited, adopt: false, inPool: false, inPoolAccount: null };
+  if (explicit && sameDir(inherited, explicit)) return null;
+  if (!explicit && sameDir(inherited, path.join(home, '.cac'))) return null;
+  const origin = !persisted || persisted.error ? 'unknown'
+    : sameDir(persisted.user, inherited) ? 'user-env' : sameDir(persisted.system, inherited) ? 'system-env' : 'process-only';
+  let match = null, poolError = false;
+  if (dataDir) { try { match = require('./codeagent-pool').poolDirMatch(dataDir, inherited); } catch { poolError = true; } }
+  const out = { ...base, origin, inPool: !!match, inPoolAccount: match && match.id ? match.id : null };
+  if (explicit) return { ...out, reason: 'explicit' };
+  if (match) return { ...out, reason: 'in-pool' };
+  if (origin === 'unknown' || poolError || !dataDir) return { ...out, reason: 'unverified' };
+  if (origin === 'user-env' || origin === 'system-env') return { ...out, adopt: true, reason: 'adopted-' + origin };
+  return { ...out, reason: 'process-only' };
+}
+
+// Hub 启动时调用一次：只有继承值存在且不是默认目录时才读注册表；结果缓存给 resolveCodeAgentConfig 用。
+let inheritedDecision = null;
+async function loadInheritedDecision({ env = process.env, provider = hubProviderConfig(), dataDir = null, read = readPersistentEnv } = {}) {
+  let decision = decideInherited({ env, provider, dataDir, persisted: { user: null, system: null, error: '还没读' } });
+  // 落在号池、或个人目录已显式指定时也读一次：结论不变（忽略），但直查要报它来自哪一层，用来查继承从哪来
+  if (decision) {
+    let persisted;
+    try { persisted = await read(decision.variable); } catch (error) { persisted = { user: null, system: null, error: String(error.message || error) }; }
+    decision = decideInherited({ env, provider, dataDir, persisted });
+  }
+  inheritedDecision = decision;
+  return decision;
+}
+function setInheritedDecision(decision) { inheritedDecision = decision || null; }
+function getInheritedDecision() { return inheritedDecision; }
+
 // 个人账号配置目录从哪来（直查用，不带路径）：hub-env = AI_HUB_CODEAGENT_CONFIG_DIR；hub-config = config.json 的 providers.codeagent.configDir；
-// default = ~/.cac；ignored-inherited-env = 默认 ~/.cac，并且 Hub 进程继承了一个指向别处的 CODEAGENT3_CONFIG_DIR（已忽略）。
-// 2.1.14 以前继承来的值会被当成个人目录（当时这里报 codeagent-env）。
-function configDirSource(env = process.env, provider = hubProviderConfig()) {
+// inherited-user-env / inherited-system-env = 采用了继承来的值（注册表里用户级 / 系统级设置的就是它）；
+// ignored-inherited-env = 默认 ~/.cac，Hub 进程继承了一个指向别处的值但没采用；default = ~/.cac。
+// 2.1.14 以前继承来的值一律当成个人目录（当时这里报 codeagent-env）。
+function configDirSource(env = process.env, provider = hubProviderConfig(), { decision = inheritedDecision } = {}) {
   if (cleanString(env.AI_HUB_CODEAGENT_CONFIG_DIR)) return 'hub-env';
   if (cleanString(provider.configDir)) return 'hub-config';
+  if (adoptedInheritedDir(env, provider, decision)) return decision.origin === 'system-env' ? 'inherited-system-env' : 'inherited-user-env';
   const inherited = inheritedConfigDir(env, provider);
   if (inherited) {
-    let personal = '';
-    try { personal = resolveCodeAgentConfig(env, provider).configDir; } catch { personal = ''; }
-    if (!sameDir(inherited, personal)) return 'ignored-inherited-env';
+    const home = env.USERPROFILE || env.HOME || os.homedir();
+    if (!sameDir(inherited, path.join(home, '.cac'))) return 'ignored-inherited-env';
   }
   return 'default';
 }
 
-const INHERITED_NOTE = 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略';
-// 继承来的配置目录和真正的个人目录不一样时给出说明（不带路径）；inPoolAccount：它落在哪个号池号的目录里（号的编号，调用方换成代称）。
-// 一样或没有继承时返回 null。
-function inheritedConfigDirInfo(env = process.env, provider = hubProviderConfig(), { dataDir = null } = {}) {
+const INHERITED_NOTE = 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录';
+const INHERITED_NOTES = {
+  'adopted-user-env': 'Hub 进程继承的 CodeAgent 配置目录就是用户级环境变量里设的，已采用为个人目录',
+  'adopted-system-env': 'Hub 进程继承的 CodeAgent 配置目录就是系统级环境变量里设的，已采用为个人目录',
+  'process-only': INHERITED_NOTE + '（只在进程里出现），已忽略',
+  'in-pool': INHERITED_NOTE + '（落在号池里），已忽略',
+  unverified: INHERITED_NOTE + '（读不到用户级 / 系统级设置，无法确认），已忽略',
+  explicit: INHERITED_NOTE + '（个人目录已显式指定），已忽略',
+};
+// 直查与日志用的说明（不带路径）：{ adopted, ignored, reason, origin, variable, note, inPool, inPoolAccount }；
+// inPoolAccount 是号的编号（调用方换成代称）。没有继承值或它就是默认目录时返回 null。
+// decision 默认用启动时缓存的；还没缓存（启动判定没跑完）时按「读不到注册表」现算。
+function inheritedConfigDirInfo(env = process.env, provider = hubProviderConfig(), { dataDir = null, decision } = {}) {
+  let d = decision !== undefined ? decision : inheritedDecision;
   const inherited = inheritedConfigDir(env, provider);
   if (!inherited) return null;
-  let personal = '';
-  try { personal = resolveCodeAgentConfig(env, provider).configDir; } catch { personal = ''; }
-  if (personal && sameDir(inherited, personal)) return null;
-  let variable = DEFAULT_CONFIG_ENV;
-  try { variable = configDirEnvName(env, provider); } catch { /* 用默认名 */ }
-  const out = { ignored: true, variable, note: INHERITED_NOTE, inPool: false, inPoolAccount: null };
-  if (dataDir) {
-    try {
-      const match = require('./codeagent-pool').poolDirMatch(dataDir, inherited);
-      out.inPool = !!match;
-      out.inPoolAccount = match && match.id ? match.id : null;
-    } catch { /* 读不了号池：只报已忽略 */ }
-  }
-  return out;
+  if (!d || d.inherited !== inherited) d = decideInherited({ env, provider, dataDir, persisted: { user: null, system: null, error: '还没读' } });
+  if (!d) return null;
+  return { adopted: !!d.adopt, ignored: !d.adopt, reason: d.reason, origin: d.origin, variable: d.variable,
+    note: INHERITED_NOTES[d.reason] || INHERITED_NOTE, inPool: !!d.inPool, inPoolAccount: d.inPoolAccount || null };
 }
 
 // PowerShell 里键入的命令头：普通命令名原样；带路径或空格的用调用运算符。
@@ -187,6 +276,12 @@ module.exports = {
   inheritedConfigDir,
   inheritedConfigDirInfo,
   INHERITED_NOTE,
+  INHERITED_NOTES,
+  readPersistentEnv,
+  decideInherited,
+  loadInheritedDecision,
+  setInheritedDecision,
+  getInheritedDecision,
   canonicalDir,
   sameDir,
   dirsOverlap,

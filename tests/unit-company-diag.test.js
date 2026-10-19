@@ -382,34 +382,38 @@ test('二期 codeagent：版本、个人账号登录、按号读各会话屏幕�
   assert.ok(!JSON.stringify(view).includes('abc123'));
 });
 
-test('codeagent 个人配置目录（2026-10-19）：继承的配置目录已忽略、指向号 1、来自哪一层；个人目录和号重叠；只回是否和代称、不带路径', async t => {
-  const inheritedDir = String.raw`C:\Users\w00999888\.claude-session-hub\codeagent-pool\accounts\abc123`;
+test('codeagent 个人配置目录（2026-10-19）：继承的配置目录「采用 / 忽略（只在进程里）/ 忽略（落在号池）」分开报；个人目录和号重叠；只回是否和代称、不带路径', async t => {
+  const POOL_NOTE = 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录（落在号池里），已忽略';
   const r = setup(t, { poolDiag: () => ({ ...POOL(), personal: { ...POOL().personal, configModel: 'GLM-4.6', configSource: 'ignored-inherited-env', poolDirMatch: { account: 'abc123' },
-    inheritedConfigDir: { ignored: true, variable: 'CODEAGENT3_CONFIG_DIR', note: 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略', inPool: true, inPoolAccount: 'abc123' } } }) });
+    inheritedConfigDir: { adopted: false, ignored: true, reason: 'in-pool', origin: 'process-only', variable: 'CODEAGENT3_CONFIG_DIR', note: POOL_NOTE, inPool: true, inPoolAccount: 'abc123' } } }) });
   await pair(r);
-  const queried = [];
-  r.box.sys = fakeSys(t, { hubEnv: { CODEAGENT3_CONFIG_DIR: inheritedDir, CLAUDE_HUB_SESSION_ID: 'x', CODEAGENT3_LAUNCHER_PID: '42' },
-    persistentEnv: async name => { queried.push(name); return { user: null, system: null }; } });
+  r.box.sys = fakeSys(t, { hubEnv: { CODEAGENT3_CONFIG_DIR: String.raw`C:\Users\w00999888\.claude-session-hub\codeagent-pool\accounts\abc123`, CLAUDE_HUB_SESSION_ID: 'x', CODEAGENT3_LAUNCHER_PID: '42' } });
   const { view } = await diagRound(r, { sections: ['codeagent'] });
   const p = view.diag.codeagent.personal;
   assert.equal(p.configSource, 'ignored-inherited-env');
   assert.equal(p.configModel, 'GLM-4.6', '个人 settings.json 里写的 model');
   assert.deepEqual([p.inPool, p.inPoolAlias], [true, '号 1']);
-  assert.deepEqual(p.inheritedConfigDir, { ignored: true, note: 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略', variable: 'CODEAGENT3_CONFIG_DIR', inPool: true, inPoolAlias: '号 1',
-    origin: 'process-only', startedInside: { hubSession: true, codeagent: true } });
-  assert.deepEqual(queried, ['CODEAGENT3_CONFIG_DIR']);
+  assert.deepEqual(p.inheritedConfigDir, { adopted: false, ignored: true, reason: 'in-pool', note: POOL_NOTE, variable: 'CODEAGENT3_CONFIG_DIR',
+    origin: 'process-only', inPool: true, inPoolAlias: '号 1', startedInside: { hubSession: true, codeagent: true } });
   assert.match(view.summary, /个人配置目录和号 1的目录重叠/);
-  assert.match(view.summary, /Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略（它指向号 1的目录）/);
+  assert.match(view.summary, /（落在号池里），已忽略（它指向号 1的目录）/);
   const text = JSON.stringify(view);
   for (const leak of ['abc123', 'codeagent-pool', 'accounts', 'w00999888']) assert.ok(!text.includes(leak), leak);
-  // 用户级环境变量里就设了它
-  const r2 = setup(t, { poolDiag: () => ({ ...POOL(), personal: { ...POOL().personal, configSource: 'ignored-inherited-env',
-    inheritedConfigDir: { ignored: true, variable: 'CODEAGENT3_CONFIG_DIR', note: 'x', inPool: false, inPoolAccount: null } } }) });
-  await pair(r2);
-  r2.box.sys = fakeSys(t, { hubEnv: { CODEAGENT3_CONFIG_DIR: String.raw`D:\cac-team` }, persistentEnv: async () => ({ user: 'd:/CAC-team/', system: null }) });
-  const p2 = (await diagRound(r2, { sections: ['codeagent'] })).view.diag.codeagent.personal;
-  assert.deepEqual([p2.inPool, p2.inheritedConfigDir.origin, p2.inheritedConfigDir.inPool, p2.inheritedConfigDir.startedInside], [false, 'user-env', false, { hubSession: false, codeagent: false }]);
-  assert.equal(p2.inheritedConfigDir.inPoolAlias, undefined);
+  // 采用（用户级设置）；读注册表出错的 origin 原样是 unknown，不认识的值也按 unknown
+  for (const [inh, want] of [
+    [{ adopted: true, reason: 'adopted-user-env', origin: 'user-env', note: '采用', inPool: false }, [true, false, 'adopted-user-env', 'user-env']],
+    [{ adopted: false, reason: 'unverified', origin: 'unknown', note: '读不到', inPool: false }, [false, true, 'unverified', 'unknown']],
+    [{ adopted: false, reason: 'process-only', origin: 'C:\\leak', note: '只在进程里', inPool: false }, [false, true, 'process-only', 'unknown']],
+  ]) {
+    const r2 = setup(t, { poolDiag: () => ({ ...POOL(), personal: { ...POOL().personal, configSource: inh.adopted ? 'inherited-user-env' : 'ignored-inherited-env',
+      inheritedConfigDir: { variable: 'CODEAGENT3_CONFIG_DIR', inPoolAccount: null, ...inh } } }) });
+    await pair(r2);
+    r2.box.sys = fakeSys(t, { hubEnv: {} });
+    const q = (await diagRound(r2, { sections: ['codeagent'] })).view.diag.codeagent.personal;
+    const i = q.inheritedConfigDir;
+    assert.deepEqual([i.adopted, i.ignored, i.reason, i.origin], want);
+    assert.deepEqual([q.inPool, i.inPool, i.inPoolAlias, i.startedInside], [false, false, undefined, { hubSession: false, codeagent: false }]);
+  }
 });
 
 test('二期 airview：仿真进程按名字白名单（不回传命令行）；结果目录只列结果文件的名字、大小、修改时间', async t => {

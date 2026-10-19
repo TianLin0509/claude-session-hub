@@ -42,10 +42,10 @@ test('继承来的 CODEAGENT3_CONFIG_DIR 指向号池号目录：个人目录取
   assert.equal(cfg.configDir, r.personal);
   assert.equal(cfg.configDirEnv, 'CODEAGENT3_CONFIG_DIR', '变量名照旧用于启动时注入');
   assert.equal(C.configDirSource(env, {}), 'ignored-inherited-env');
-  const info = C.inheritedConfigDirInfo(env, {}, { dataDir: r.dataDir });
-  assert.deepEqual(info, { ignored: true, variable: 'CODEAGENT3_CONFIG_DIR', note: C.INHERITED_NOTE, inPool: true, inPoolAccount: POOL_ID });
+  const info = C.inheritedConfigDirInfo(env, {}, { dataDir: r.dataDir, decision: null });
+  assert.deepEqual(info, { adopted: false, ignored: true, reason: 'in-pool', origin: 'unknown', variable: 'CODEAGENT3_CONFIG_DIR',
+    note: 'Hub 进程继承了一个指向别处的 CodeAgent 配置目录（落在号池里），已忽略', inPool: true, inPoolAccount: POOL_ID });
   assert.ok(!JSON.stringify(info).includes(r.root), '说明里不带路径');
-  assert.match(C.INHERITED_NOTE, /Hub 进程继承了一个指向别处的 CodeAgent 配置目录，已忽略/);
   // 继承来的值指向号池以外的别处
   const other = path.join(r.root, 'elsewhere', '.cac-x');
   const info2 = C.inheritedConfigDirInfo({ ...env, CODEAGENT3_CONFIG_DIR: other }, {}, { dataDir: r.dataDir });
@@ -160,4 +160,121 @@ test('启动个人会话注入的配置目录：继承的值指向号目录时�
   sessionEnv[cfg.configDirEnv] = cfg.configDir;
   assert.equal(sessionEnv.CODEAGENT3_CONFIG_DIR, r.personal);
   assert.equal(pool.readSettingsModel(sessionEnv.CODEAGENT3_CONFIG_DIR), GLM);
+});
+
+// ---- 审核 2026-10-19：用户级 / 系统级环境变量里设的合法目录照旧采用；注册表读不到一律忽略 ----
+const reading = (user, system = null) => ({ user, system, error: null });
+
+test('用户级变量指向非号池目录：采用为个人目录（来源 inherited-user-env）；系统级同理', async t => {
+  t.after(() => C.setInheritedDecision(null));
+  const r = rig(t);
+  const mine = path.join(r.root, 'team-cac');
+  fs.mkdirSync(mine, { recursive: true });
+  const env = { USERPROFILE: r.home, CODEAGENT3_CONFIG_DIR: mine };
+  const asked = [];
+  const d = await C.loadInheritedDecision({ env, provider: {}, dataDir: r.dataDir, read: async name => { asked.push(name); return reading(respell(mine)); } });
+  assert.deepEqual(asked, ['CODEAGENT3_CONFIG_DIR'], '有继承值才读，读一次');
+  assert.deepEqual([d.adopt, d.reason, d.origin, d.inPool], [true, 'adopted-user-env', 'user-env', false]);
+  // 缓存生效：resolveCodeAgentConfig 默认用启动时的判定，不再读注册表
+  assert.equal(C.resolveCodeAgentConfig(env, {}).configDir, mine);
+  assert.equal(C.configDirSource(env, {}), 'inherited-user-env');
+  const info = C.inheritedConfigDirInfo(env, {}, { dataDir: r.dataDir });
+  assert.deepEqual([info.adopted, info.ignored, info.reason, info.origin], [true, false, 'adopted-user-env', 'user-env']);
+  assert.match(info.note, /用户级环境变量里设的，已采用为个人目录/);
+  // 缓存只认当时那一份值：换了值不采用
+  assert.equal(C.resolveCodeAgentConfig({ ...env, CODEAGENT3_CONFIG_DIR: path.join(r.root, 'other') }, {}).configDir, r.personal);
+  // 显式指定仍然优先
+  assert.equal(C.resolveCodeAgentConfig({ ...env, AI_HUB_CODEAGENT_CONFIG_DIR: r.personal }, {}).configDir, r.personal);
+  // 系统级
+  const ds = C.decideInherited({ env, provider: {}, dataDir: r.dataDir, persisted: reading(null, mine) });
+  assert.deepEqual([ds.adopt, ds.reason, ds.origin], [true, 'adopted-system-env', 'system-env']);
+  assert.equal(C.configDirSource(env, {}, { decision: ds }), 'inherited-system-env');
+  // 没有继承值：不读注册表
+  let reads = 0;
+  assert.equal(await C.loadInheritedDecision({ env: { USERPROFILE: r.home }, provider: {}, dataDir: r.dataDir, read: async () => { reads += 1; return reading(null); } }), null);
+  assert.equal(reads, 0);
+});
+
+test('用户级变量指向号池目录：忽略（落在号池），来源照报；只在进程里出现：忽略', async t => {
+  t.after(() => C.setInheritedDecision(null));
+  const r = rig(t);
+  const env = { USERPROFILE: r.home, CODEAGENT3_CONFIG_DIR: r.acct };
+  const dPool = C.decideInherited({ env, provider: {}, dataDir: r.dataDir, persisted: reading(r.acct) });
+  assert.deepEqual([dPool.adopt, dPool.reason, dPool.origin, dPool.inPoolAccount], [false, 'in-pool', 'user-env', POOL_ID]);
+  assert.equal(C.resolveCodeAgentConfig(env, {}, { decision: dPool }).configDir, r.personal);
+  let reads = 0;
+  const loaded = await C.loadInheritedDecision({ env, provider: {}, dataDir: r.dataDir, read: async () => { reads += 1; return reading(r.acct); } });
+  assert.deepEqual([loaded.reason, loaded.adopt, loaded.origin], ['in-pool', false, 'user-env']); assert.equal(reads, 1, '落在号池也读一次，只为报来源');
+  assert.equal(C.resolveCodeAgentConfig(env, {}).configDir, r.personal);
+  // 只在进程里出现（注册表里没有，或设的是别的目录）
+  const other = path.join(r.root, 'elsewhere');
+  for (const persisted of [reading(null), reading(path.join(r.root, 'different'))]) {
+    const e2 = { ...env, CODEAGENT3_CONFIG_DIR: other };
+    const d = C.decideInherited({ env: e2, provider: {}, dataDir: r.dataDir, persisted });
+    assert.deepEqual([d.adopt, d.reason, d.origin], [false, 'process-only', 'process-only']);
+    assert.equal(C.resolveCodeAgentConfig(e2, {}, { decision: d }).configDir, r.personal);
+    assert.match(C.inheritedConfigDirInfo(e2, {}, { decision: d }).note, /（只在进程里出现），已忽略/);
+  }
+});
+
+test('注册表读取失败 / 超时 / 抛错：一律忽略，origin 记 unknown，落到 ~/.cac', async t => {
+  t.after(() => C.setInheritedDecision(null));
+  const r = rig(t);
+  const mine = path.join(r.root, 'team-cac');
+  const env = { USERPROFILE: r.home, CODEAGENT3_CONFIG_DIR: mine };
+  for (const read of [async () => ({ user: mine, system: null, error: '读取超时' }), async () => { throw new Error('boom'); }]) {
+    const d = await C.loadInheritedDecision({ env, provider: {}, dataDir: r.dataDir, read });
+    assert.deepEqual([d.adopt, d.reason, d.origin], [false, 'unverified', 'unknown']);
+    assert.equal(C.resolveCodeAgentConfig(env, {}).configDir, r.personal);
+    assert.equal(C.configDirSource(env, {}), 'ignored-inherited-env');
+    assert.match(C.inheritedConfigDirInfo(env, {}, { dataDir: r.dataDir }).note, /读不到用户级 \/ 系统级设置/);
+  }
+  // 读取函数本身：出错、超时和「没设置」分开
+  const fail = await C.readPersistentEnv('CODEAGENT3_CONFIG_DIR', { platform: 'win32', execFileImpl: (f, a, o, cb) => cb(Object.assign(new Error('spawn EPERM'), { code: 'EPERM' })) });
+  assert.deepEqual([fail.user, fail.system], [null, null]); assert.match(fail.error, /EPERM/);
+  const slow = await C.readPersistentEnv('CODEAGENT3_CONFIG_DIR', { platform: 'win32', execFileImpl: (f, a, o, cb) => cb(Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' })) });
+  assert.equal(slow.error, '读取超时');
+  const garbage = await C.readPersistentEnv('CODEAGENT3_CONFIG_DIR', { platform: 'win32', execFileImpl: (f, a, o, cb) => cb(null, '乱码\r\n') });
+  assert.match(garbage.error, /解析不了/);
+  const unset = await C.readPersistentEnv('CODEAGENT3_CONFIG_DIR', { platform: 'win32', execFileImpl: (f, a, o, cb) => cb(null, Buffer.from(JSON.stringify({ u: null, m: null })).toString('base64') + '\r\n') });
+  assert.deepEqual(unset, { user: null, system: null, error: null }, '没设置不是出错');
+  const bad = await C.readPersistentEnv('BAD-NAME', { platform: 'win32' });
+  assert.match(bad.error, /无效/);
+});
+
+test('中文路径：注册表读数按 UTF-8 解出来，和继承值比得上（含 junction）', async t => {
+  t.after(() => C.setInheritedDecision(null));
+  const r = rig(t);
+  const zh = path.join(r.root, '用户 林田', '.cac-团队');
+  fs.mkdirSync(zh, { recursive: true });
+  let argv = null;
+  const stdout = Buffer.from(JSON.stringify({ u: zh, m: null }), 'utf8').toString('base64');
+  const got = await C.readPersistentEnv('CODEAGENT3_CONFIG_DIR', { platform: 'win32', execFileImpl: (f, a, o, cb) => { argv = a; cb(null, stdout + '\r\n'); } });
+  assert.equal(got.user, zh);
+  assert.ok(argv.join(' ').includes("GetEnvironmentVariable('CODEAGENT3_CONFIG_DIR','User')") && argv.join(' ').includes('ToBase64String'), '用 .NET 读用户级 / 系统级，输出 base64 的 UTF-8');
+  const link = path.join(r.root, 'zh-link');
+  fs.symlinkSync(zh, link, 'junction');
+  const d = C.decideInherited({ env: { USERPROFILE: r.home, CODEAGENT3_CONFIG_DIR: link }, provider: {}, dataDir: r.dataDir, persisted: got });
+  assert.deepEqual([d.adopt, d.origin], [true, 'user-env']);
+  if (process.platform === 'win32') {
+    // 真读一次本机注册表：一个不存在的变量是「没设置」，不是出错；本机用户级 TEMP 能读出来
+    assert.deepEqual(await C.readPersistentEnv('AI_HUB_TEST_SURELY_UNSET_X9'), { user: null, system: null, error: null });
+    const temp = await C.readPersistentEnv('TEMP');
+    assert.equal(temp.error, null); assert.ok(temp.user || temp.system);
+  }
+});
+
+test('UNC 路径不做 realpath（网络盘不通会卡住），只按字面比；大小写、分隔符照样统一', () => {
+  let calls = 0;
+  const boom = () => { calls += 1; throw new Error('should not touch'); };
+  const fsModule = { realpathSync: Object.assign(boom, { native: boom }) };
+  const opts = { fsModule, platform: 'win32' };
+  const r = String.raw;
+  assert.equal(C.canonicalDir(r`\\FileSrv\Share\Team\.cac\ `.trim(), opts), r`\\filesrv\share\team\.cac`);
+  assert.equal(C.sameDir(r`\\filesrv\share\team\.cac`, '//FILESRV/share/Team/.cac/', opts), true);
+  assert.equal(C.dirsOverlap(r`\\filesrv\share\team`, r`\\filesrv\share\team\.cac`, opts), true);
+  assert.equal(calls, 0, 'UNC 路径一次 realpath 都没调');
+  // 普通盘符路径照旧 realpath
+  C.canonicalDir(r`C:\x\y`, opts);
+  assert.ok(calls > 0);
 });
