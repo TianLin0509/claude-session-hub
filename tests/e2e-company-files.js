@@ -6,7 +6,7 @@
 // 流程：配对 → 家里用「问公司」那条命令行（真 CLI 子进程，通行证按真 Hub 的算法从本机密钥推导）读一份真文件 → 列目录 → 找文件
 //   → 越界路径被挡 → 凭据被隐去 → 5 秒内重复读被挡 → 关掉开关被挡 → 公司审计日志逐条留痕。
 const fs = require('node:fs'), path = require('node:path'), net = require('node:net'), assert = require('node:assert/strict');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, execFile, execFileSync } = require('node:child_process');
 const { createHmac } = require('node:crypto');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
@@ -35,7 +35,8 @@ function makeFixture(root) {
     'export API_TOKEN=sk-abcdefghijklmnopqrstuvwxyz0123456789',
     'password=SuperSecret12345',
     'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig',
-    'internal_code=q7Zx9Kp2Lm5Nb8Vc4Xd6',
+    'client_secret=q7Zx9Kp2Lm5Nb8Vc4Xd6',
+    'internal_code=0x9f2a',   // 认不出来的键名不动（白名单式脱敏，避免把 zip_code 之类的普通字段吃掉）——下面逐字断言它原样
     '-----BEGIN PRIVATE KEY-----',
     'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ',
     '-----END PRIVATE KEY-----',
@@ -123,6 +124,18 @@ async function main() {
       result.calls = (result.calls || []).concat([{ args, out: raw.trim() }]);
       return JSON.parse(raw);
     };
+    // 同上，但不阻塞：用来让两条读请求同时在途（限频那一段要两条抢同一时刻）
+    const cliAsync = args => new Promise((resolve, reject) => {
+      execFile(process.execPath, [path.join(repo, 'scripts', 'company-ask.js'), ...args], { env: cliEnv, encoding: 'utf8', windowsHide: true, timeout: 120000 }, (error, stdout, stderr) => {
+        if (error) return reject(new Error('company-ask 子进程失败：' + ((stderr || error.message) + '').slice(0, 200)));
+        const raw = (stdout || '').trim();
+        try {
+          const parsed = JSON.parse(raw);
+          result.calls = (result.calls || []).concat([{ args, out: raw }]);
+          resolve(parsed);
+        } catch (e) { reject(new Error('company-ask 输出不是 JSON：' + raw.slice(0, 200))); }
+      });
+    });
 
     // ---- 1. 读一份真文件 ----
     const readAt = Date.now();
@@ -137,9 +150,30 @@ async function main() {
       `一条消息装下整份内容：${first.bytes} 字节（< 60000），没有降级`);
     result.shots.push(await shot(hc, '02-home-after-read'));
 
-    // ---- 2. 5 秒内再读：被挡 ----
-    const again = cli(['--files', 'read', '--file', fixture.secretsFile]);
-    check(again.status === '公司没处理' && /5 秒内只做一次/.test(again.note || ''), '5 秒内重复读被挡：' + again.note);
+    // ---- 2. 限频：两条读请求几乎同时在途，公司只服务一条、另一条被挡 ----
+    // 为什么不用「上一条读完后 5 秒内再发一条」：公司那侧按 10 秒的节奏拉取待办（家里取回报也要 5 秒），
+    // 一条读从发出到回报本身就要 5–10 秒，第二条请求到公司时必然已经过了 5 秒窗口 —— 那个写法在真端到端里
+    // 注定测不到限频（2026-10-20 实测：第一条 9.8 秒才回报，第二条被判「窗口已过」正常放行）。
+    // 改成两条同时在途：第二条落到公司的「上一条还在跑」或「5 秒内只做一次」闸门上，两种都是限频，逐字核。
+    await _waitMs(6000);   // 先让上一段读的 5 秒窗口彻底过期，免得两条同时被挡（那样验不出「一条照读」）
+    const readTwice = async () => {
+      const pendingA = cliAsync(['--files', 'read', '--file', fixture.secretsFile]);   // 先占坑，不等它回来
+      await _waitMs(200);
+      const B = cli(['--files', 'read', '--file', fixture.lutFile]);
+      const A = await pendingA;
+      return [A, B];
+    };
+    let pairA, pairB;
+    for (let round = 1; round <= 3; round++) {   // 谁先被拉走由公司那侧的节奏决定，最多试 3 轮
+      [pairA, pairB] = await readTwice();
+      if (pairA.status === '公司没处理' || pairB.status === '公司没处理') break;
+    }
+    const refusedOnce = [pairA, pairB].find(x => x.status === '公司没处理');
+    const servedOnce = [pairA, pairB].find(x => x.status === '已回报');
+    result.rateLimit = { served: servedOnce ? servedOnce.id : null, refused: refusedOnce ? refusedOnce.id : null, note: refusedOnce ? refusedOnce.note : null };
+    check(!!servedOnce && !!refusedOnce && /(5 秒内只做一次|上一条文件读取还在跑)/.test(refusedOnce.note || ''),
+      '两条读请求同时在途：一条照读（' + (servedOnce ? servedOnce.id : '无') + '），另一条被公司挡住：' + (refusedOnce ? refusedOnce.note : '没有一条被挡'));
+    await _waitMs(6000);   // 让限频窗口彻底过期，后面几段读才不会被误挡
 
     // ---- 3. 列目录 + 找文件（各算各的限频：列目录 10 秒、找文件 20 秒）----
     const listed = cli(['--files', 'list', '--dir', fixture.readDir, '--depth', '1', '--limit', '50']);
@@ -148,16 +182,20 @@ async function main() {
       `列目录：${l.dirs || 0} 个子目录、${l.files || 0} 个可读文件，逐个带名字`);
     const found = cli(['--files', 'search', '--content', 'RRC_FILTER_COEFF', '--root', fixture.readDir, '--limit', '20']);
     const s = found.result || {};
-    check(found.status === '已回报' && (s.matches || []).length === 1 && /readme\.md$/.test(s.matches[0].file || s.matches[0].path || ''),
-      `找文件：内容含 RRC_FILTER_COEFF 的命中 ${(s.matches || []).length} 个，指向 readme.md`);
+    const hit = (s.matches || [])[0] || {};
+    check(found.status === '已回报' && (s.matches || []).length === 1 && hit.rel === 'readme.md' && hit.line === 3 && hit.hits === 1
+      && /RRC_FILTER_COEFF/.test(hit.sample || '') && s.scanned === 3 && s.truncated === false,
+      `找文件：内容含 RRC_FILTER_COEFF 的命中 ${(s.matches || []).length} 个 —— ${hit.rel} 第 ${hit.line} 行（扫了 ${s.scanned} 个文件，样本：${hit.sample || '无'}）`);
 
     // ---- 4. 等过 5 秒，读带凭据的那份：隐去凭据、保留代码与路径 ----
     await _waitMs(Math.max(0, 6000 - (Date.now() - readAt)));
     const sec = cli(['--files', 'read', '--file', fixture.secretsFile]);
     const text = (sec.result?.lines || []).join('\n');
     const leaked = SECRETS.filter(x => text.includes(x));
-    check(sec.status === '已回报' && !leaked.length && /<已隐去>/.test(text) && /<已隐去：私钥 \/ 证书>/.test(text),
-      '凭据类内容都隐去了' + (leaked.length ? '（漏了：' + leaked.join('、') + '）' : '：密钥、密码、Bearer 令牌、私钥块'));
+    check(sec.status === '已回报' && !leaked.length && /<已隐去>/.test(text) && /<已隐去：私钥 \/ 证书>/.test(text)
+      && text.includes('internal_code=0x9f2a'),
+      '凭据类内容都隐去了' + (leaked.length ? '（漏了：' + leaked.join('、') + '）' : '：密钥、密码、Bearer 令牌、私钥块（含跨行的私钥正文）')
+      + '，认不出来的键名原样（internal_code=0x9f2a 这类普通字段不动）');
     check(text.includes('source_path=C:/AirView/src/mac/scheduler.c') && text.includes('artifact_sha256=3b1f4a9c8e2d5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a')
       && text.includes('doc_url=https://github.com/TianLin0509/ai-hub-codeagent/blob/main/README.md'),
       '脱敏只动凭据：源码路径、sha256、文档 URL 原样保留');
@@ -189,8 +227,9 @@ async function main() {
 
     // ---- 8. 公司侧留痕：审计日志、状态、界面提示 ----
     const audit = fs.readFileSync(path.join(cdata, 'logs', 'company-files.log'), 'utf8');
-    check(new RegExp(`files ${first.id} read`).test(audit) && /files .* list /.test(audit) && /files .* search /.test(audit) && /refused .* read/.test(audit),
-      '公司审计日志逐条留痕：成功的 read / list / search 和被挡的都记了');
+    check(new RegExp(`files ${first.id} read`).test(audit) && /files .* list /.test(audit) && /files .* search /.test(audit)
+      && /refused .* read/.test(audit) && /refused .* 不在可读目录里/.test(audit),
+      '公司审计日志逐条留痕：成功的 read / list / search，被挡的（限频、越界路径）都记成 refused');
     const cs2 = await status(cc);
     check(cs2.hubAdmin.lastFiles && cs2.hubAdmin.lastFiles.id === on.id && cs2.hubAdmin.lastFiles.action === 'read',
       '公司状态里记着最近一次读文件：编号 ' + (cs2.hubAdmin.lastFiles || {}).id);

@@ -176,6 +176,35 @@ test('凭据脱敏只动凭据：口令、令牌、私钥块隐去；代码、�
   assert.ok(!withAccount('账号 w001****11 在配 X').includes('w001****11'));
 });
 
+test('读文件在生产调用方式下脱敏：跨行私钥块整块隐去、行号与总行数一个不变', async t => {
+  const { root } = fixture(t);
+  // 2026-10-20：e2e 逮到过——脱敏被按行调用时，跨行的私钥块永远匹配不上，BEGIN/END 之外的正文明晃晃带回来。
+  // 这条用生产真正走的那条路（F.run({..., redact})）守着：整篇先脱敏，再切窗口，且行数不变。
+  const pem = ['server {', '  listen 443 ssl;', '  ssl_certificate_key /etc/ssl/private/hub.key;', '}',
+    '-----BEGIN RSA PRIVATE KEY-----',
+    'MIIEowIBAAKCAQEAx1y2Z3a4B5c6D7e8F9g0H1i2J3k4L5m6N7o8P9q0R1s2T3u4V5w6',
+    'X9y0Z1a2B3c4D5e6F7g8H9i0J1k2L3m4N5o6P7q8R9s0T1u2V3w4X5y6Z7a8B9c0',
+    '-----END RSA PRIVATE KEY-----', 'after = 1'].join('\n') + '\n';
+  fs.writeFileSync(path.join(root, 'out', 'pem.txt'), pem, 'utf8');
+  const redact = F.makeFileRedactor({});
+  const raw = await F.run({ roots: [root], action: 'read', params: { file: path.join(root, 'out', 'pem.txt') }, redact });
+  const text = raw.lines.join('\n');
+  assert.ok(!text.includes('MIIEowIBAAKCAQEAx1y2') && !text.includes('X9y0Z1a2B3c4D5e6'), '私钥正文一个字都不留');
+  assert.ok(!/BEGIN RSA PRIVATE KEY|END RSA PRIVATE KEY/.test(text), 'BEGIN / END 行也换成占位符');
+  assert.equal(raw.lines.filter(l => l === '<已隐去：私钥 / 证书>').length, 4, '整块 4 行逐行换成占位符');
+  assert.equal(raw.totalLines, 9, '总行数不变（行号还指得回真文件）');
+  assert.equal(raw.from, 1); assert.equal(raw.to, 9);
+  assert.equal(raw.lines[8], 'after = 1', '块后面的行还在原位');
+  assert.equal(raw.lines[2], '  ssl_certificate_key /etc/ssl/private/hub.key;', '路径不被脱敏动到');
+  // 截断的块（只有 BEGIN、没有 END）也不许把正文放出去
+  fs.writeFileSync(path.join(root, 'out', 'trunc.txt'),
+    ['-----BEGIN OPENSSH PRIVATE KEY-----', 'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB', 'AAAAdwAAAAdzc2gtcn'].join('\n') + '\n', 'utf8');
+  const cut = await F.run({ roots: [root], action: 'read', params: { file: path.join(root, 'out', 'trunc.txt') }, redact });
+  assert.ok(!cut.lines.join('\n').includes('b3BlbnNzaC1rZXktdjE'), '没有 END 的块：正文行同样隐去');
+  assert.equal(cut.totalLines, 3, '仍然保持行数');
+});
+
+
 test('参数校验：动作白名单、按动作只认自己的字段、范围越界与不认识的参数都拒绝', () => {
   assert.deepEqual(F.ACTIONS, ['list', 'search', 'read']);
   assert.deepEqual(F.parseParams('list', {}), { dir: '.', depth: 0, all: false });
@@ -326,7 +355,9 @@ test('公司端不认识的动作、不在可读目录里的路径：都回报�
   const sent = await r.home.hubAdmin({ op: 'files', action: 'read', params: { file: path.join(outside, 'z.txt') } });
   await r.company.checkNow(); await r.company.hubAdmin.filesTask; await r.home.checkNow();
   const view = r.home.filesView(sent.id);
-  assert.equal(view.status, '公司报错');
+  // 2026-10-20 改口径：路径越界 / 非文本 / 二进制 / 太大这几种「护栏拦下」算拒绝（refused → 家里「公司没处理」），
+  // 不算故障（failed → 「公司报错」）。保安要的证据是「有人读了不该读的东西、被挡了」，不是「这个功能坏了」。
+  assert.equal(view.status, '公司没处理');
   assert.match(view.note, /不在可读目录里/);
   assert.ok(!view.note.includes('ENOENT:'), '不回传原始系统错误字样');
 });

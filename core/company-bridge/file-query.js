@@ -139,11 +139,14 @@ function decodeText(buf) {
 const looksBinary = buf => buf.subarray(0, Math.min(buf.length, 8192)).includes(0);
 
 // ---- 按行读一个窗口 ----
-function readWindow(full, st, { from = 1, lines = DEFAULT_READ_LINES, chars = DEFAULT_READ_CHARS }) {
+function readWindow(full, st, { from = 1, lines = DEFAULT_READ_LINES, chars = DEFAULT_READ_CHARS }, redact) {
   if (st.size > MAX_FILE_BYTES) throw Object.assign(new Error(`文件 ${mb(st.size)} MB，超过单次读取上限 ${mb(MAX_FILE_BYTES)} MB；先按更小的范围读（这类大文件多半是结果数据，先看它的同名 .txt / .log 说明）`), { code: 'too-big' });
   const buf = fs.readFileSync(full);
   if (looksBinary(buf)) throw Object.assign(new Error('这是二进制文件（内容里有 0 字节），不读'), { code: 'binary' });
-  const text = decodeText(buf);
+  const plain = decodeText(buf);
+  // 脱敏在**切窗口之前**对整篇做：私钥 / 证书块可能跨行，也可能只被读到半截（窗口从块中间开始）。
+  // 代价是要整篇过一遍正则；redact 保证行数不变，所以 from / to / next 与真实文件行号仍然对得上。
+  const text = typeof redact === 'function' ? redact(plain) : plain;
   const all = text.split('\n');
   const total = all.length - (all[all.length - 1] === '' ? 1 : 0);
   const start = Math.max(1, Math.min(Number(from) || 1, Math.max(1, total)));
@@ -361,8 +364,12 @@ function makeFileRedactor({ scrub = s => s, extra = [] } = {}) {
     try { s = String(scrub(s)); } catch { /* 脱敏回调出错就用原文，后面的规则照跑 */ }
     for (const w of words) s = s.split(w).join('<已隐去>');
     return s
-      // 私钥 / 证书整块
-      .replace(/-----BEGIN [^-]{0,60}(?:PRIVATE KEY|CERTIFICATE)-----[\s\S]*?-----END [^-]{0,60}(?:PRIVATE KEY|CERTIFICATE)-----/g, '<已隐去：私钥 / 证书>')
+      // 私钥 / 证书整块：BEGIN 到 END 之间的**每一行**都换成占位符（保持行数，切窗口的 from/to/next 才不会错位）
+      .replace(/-----BEGIN [^-]{0,60}(?:PRIVATE KEY|CERTIFICATE)-----[\s\S]*?-----END [^-]{0,60}(?:PRIVATE KEY|CERTIFICATE)-----/g,
+        m => m.split('\n').map(() => '<已隐去：私钥 / 证书>').join('\n'))
+      // 只有 BEGIN、没有 END（文件被截断）：紧跟其后的 base64 正文行也一律隐去，别只藏个头
+      .replace(/(?:^|\n)-----BEGIN [^-]{0,60}(?:PRIVATE KEY|CERTIFICATE)-----((?:\n[A-Za-z0-9+/=]{16,})*)/g,
+        (m, body) => (m.startsWith('\n') ? '\n' : '') + '<已隐去：私钥 / 证书>' + body.replace(/[^\n]+/g, '<已隐去：私钥 / 证书>'))
       // 键值型凭据（保留键名，值换成占位）；值前面可能还有个前缀词（Authorization: Bearer xxx），连它一起吃掉
       .replace(/((?:pass(?:word|wd)?|pwd|token|secret|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|authorization|auth[_-]?token|cookie|credential|口令|密码|密钥|令牌)\s*["']?\s*[:=：]\s*["']?(?:Bearer|Basic)?\s*)([^\s"',;，；]{4,})/gi, '$1<已隐去>')
       // 没有键名、光是认证头里的令牌
@@ -377,7 +384,7 @@ function makeFileRedactor({ scrub = s => s, extra = [] } = {}) {
 }
 
 // ---- 执行一个动作 ----
-async function run({ roots, action, params }) {
+async function run({ roots, action, params, redact }) {
   if (action === 'list') return { action, ...(await listDir(roots, params)) };
   if (action === 'search') return { action, ...(await search(roots, params)) };
   if (action === 'read') {
@@ -385,7 +392,7 @@ async function run({ roots, action, params }) {
     if (at.st.isDirectory()) throw new Error('这是一个目录，用 action:"list" 看里面有什么');
     const gate = readableName(path.basename(at.full));
     if (!gate.ok) throw Object.assign(new Error(gate.why), { code: 'not-text' });
-    const win = readWindow(at.full, at.st, params);
+    const win = readWindow(at.full, at.st, params, redact);
     return { action, root: at.root, file: at.rel, path: at.full, sizeBytes: at.st.size, mtime: Math.round(at.st.mtimeMs), ...win };
   }
   throw new Error('不认识的动作：' + short(action, 30));

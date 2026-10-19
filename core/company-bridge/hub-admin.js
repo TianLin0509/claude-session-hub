@@ -233,12 +233,12 @@ class HubAdmin {
     b.notify('对端读了这台电脑上的文件', `编号 ${id} · ${F.LABEL[action]}${action === 'read' ? '：' + short(params.file, 80) : action === 'list' ? '：' + short(params.dir, 60) : ''}`, null, { quiet: true });
     try {
       const roots = F.fileRoots(b);
-      const raw = await F.run({ roots, action, params });
       // 正文只脱凭据（账号实值 + key=value / 私钥块 / 各类 key 样式）；不动代码、路径、URL（动 URL 会把源码和报告读成废纸）
       const secrets = b.accountSecrets();
       b.secretsSnapshot = secrets;
       const redact = F.makeFileRedactor({ scrub: s => b.scrubText(s, secrets), extra: process.env.HUB_UNLOCK_PHRASE ? [process.env.HUB_UNLOCK_PHRASE] : [] });
-      if (Array.isArray(raw.lines)) raw.lines = raw.lines.map(redact);
+      // 注意：read 的脱敏交给 file-query 在**整篇**上做（跨行的私钥块按行脱等于没脱，2026-10-20 被 e2e 逮到过）
+      const raw = await F.run({ roots, action, params, redact });
       if (typeof raw.sample === 'string') raw.sample = redact(raw.sample);
       const base = { id, gen: b.link.gen(), phase: 'files', current: this.current(), latest: this.latest(), at: this.now() };
       const draftNote = F.summarize(raw);
@@ -252,6 +252,11 @@ class HubAdmin {
       await this.report(id, 'files', note, { files: fitted.data, filesBytes: fitted.bytes, action, ...(fitted.degraded.length ? { degraded: fitted.degraded } : {}) });
       this.save({ lastFiles: { id, at: this.now(), action, bytes: fitted.bytes, degraded: fitted.degraded.length } });
       return fitted;
+    } catch (error) {
+      // 护栏类拒绝（路径越界 / 不是文本 / 二进制 / 太大）算「拒绝」不算「出错」：审计日志记 refused、
+      // 家里看到的是「公司没处理」。保安要的正是这类「有人试图读不该读的东西、被挡了」的证据。
+      if (error && ['outside', 'not-text', 'binary', 'too-big'].includes(error.code)) return this.refuseFiles(id, action, error.message);
+      throw error;
     } finally {
       this.filesRunning = false; this.bridge.secretsSnapshot = null;
       try { this.save({ lastFilesByAction: { ...(this.state().lastFilesByAction || {}), [action]: this.now() } }); } catch { /* 库已关 */ }
