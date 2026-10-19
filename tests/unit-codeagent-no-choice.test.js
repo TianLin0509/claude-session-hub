@@ -337,11 +337,11 @@ test('通道兜底：重试停在选择题上的那一轮也新开会话；关�
   await r.company.checkNow();
   const sid = r.cs.created[0].opts.id;
   r.cs.busy.add(sid);
-  r.screens.set(sid, PERMISSION);
+  r.screens.set(sid, ASK_MENU);
   r.clock.now += 9000; await r.company.checkNow();
   r.screens.set(sid, '✻ Working…');
   r.clock.now += 9000; await r.company.checkNow();
-  r.screens.set(sid, PERMISSION);
+  r.screens.set(sid, ASK_MENU);
   r.clock.now += 9000; await r.company.checkNow();
   assert.equal(r.company.thread(thread).state, 'running', '菜单中途消失过，重新计时');
   r.clock.now += 9000; await r.company.checkNow();
@@ -353,7 +353,7 @@ test('通道兜底：重试停在选择题上的那一轮也新开会话；关�
   await r.company.checkNow();
   assert.equal(r.cs.created.length, createdBefore + 1, '重试新开会话');
   const prompt = r.cs.sent.at(-1).text;
-  assert.match(prompt, /上一次做这一轮时停在了这道选择题上：\n那道选择题：Do you want to proceed\?/);
+  assert.match(prompt, /上一次做这一轮时停在了这道选择题上：\n那道选择题：选哪个颜色？/);
   assert.match(prompt, /周会定在什么时候合适？$/);
   assert.deepEqual(r.cs.keys, []);
 
@@ -365,7 +365,82 @@ test('通道兜底：重试停在选择题上的那一轮也新开会话；关�
   const q2 = await r2.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '周会定在什么时候合适？' } });
   await r2.company.checkNow();
   const s2 = r2.cs.created[0].opts.id;
-  r2.cs.busy.add(s2); r2.screens.set(s2, PERMISSION);
+  r2.cs.busy.add(s2); r2.screens.set(s2, ASK_MENU);
   for (let i = 0; i < 6; i++) { r2.clock.now += 9000; await r2.company.checkNow(); }
   assert.equal(r2.company.thread(q2.thread).state, 'running');
+});
+
+// ---------- 审核修正（2026-10-19）：清理过时的 ask-gate；权限确认不当选择题 ----------
+test('hook 登记：开关先开后关、改提问工具名之后都不留过时的 ask-gate；别人的条目（含同组的）不动', t => {
+  const { ensureManagedSettings } = require('../core/claude-hook-integration');
+  const { HOOK_EVENTS } = require('../core/codeagent-config');
+  const dir = tmp(t);
+  const file = path.join(dir, 'settings.json');
+  fs.writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'colleague-tool pre' }] }] } }));
+  const base = { logger: {}, events: HOOK_EVENTS, manageStatusLine: false, managePermissionMode: false };
+  const gates = () => JSON.parse(fs.readFileSync(file, 'utf8')).hooks.PreToolUse.filter(g => g.hooks.some(h => /ask-gate$/.test(h.command)));
+  ensureManagedSettings(dir, { ...base, choiceGateMatcher: 'AskUserQuestion' });
+  assert.deepEqual(gates().map(g => g.matcher), ['AskUserQuestion']);
+  // 同事在 Hub 的 ask-gate 组里也挂了自己的条目
+  const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+  s.hooks.PreToolUse.find(g => g.matcher === 'AskUserQuestion').hooks.push({ type: 'command', command: 'colleague-tool ask' });
+  fs.writeFileSync(file, JSON.stringify(s));
+  // 改工具名：旧 matcher 的 ask-gate 摘掉，新 matcher 登记一条
+  assert.equal(ensureManagedSettings(dir, { ...base, choiceGateMatcher: 'AskUserQuestion|ask_user' }).changed, true);
+  assert.deepEqual(gates().map(g => g.matcher), ['AskUserQuestion|ask_user']);
+  let pre = JSON.parse(fs.readFileSync(file, 'utf8')).hooks.PreToolUse;
+  assert.deepEqual(pre.find(g => g.matcher === 'AskUserQuestion').hooks.map(h => h.command), ['colleague-tool ask'], '同组里别人的条目留着');
+  // 关掉：所有 ask-gate 都摘掉
+  assert.equal(ensureManagedSettings(dir, { ...base, choiceGateMatcher: null }).changed, true);
+  assert.deepEqual(gates(), []);
+  pre = JSON.parse(fs.readFileSync(file, 'utf8')).hooks.PreToolUse;
+  assert.ok(pre.some(g => g.matcher === 'Bash' && g.hooks[0].command === 'colleague-tool pre'), '别人的条目原样保留');
+  assert.ok(pre.some(g => g.matcher === 'AskUserQuestion' && g.hooks[0].command === 'colleague-tool ask'));
+  assert.ok(pre.some(g => g.matcher === '' && /tool-start$/.test(g.hooks[0].command)), 'Hub 的 tool-start 不受影响');
+  assert.equal(ensureManagedSettings(dir, { ...base, choiceGateMatcher: null }).changed, false, '再部署一次不变');
+});
+
+test('屏幕识别：工具权限确认归为 permission，AskUserQuestion 归为 question（含真实样本）', async () => {
+  assert.equal(detectChoiceMenu(rowsOf(ASK_MENU)).kind, 'question');
+  assert.equal(detectChoiceMenu(rowsOf(PERMISSION)).kind, 'permission', '旧版权限确认样式');
+  assert.equal(detectChoiceMenu(['允许 CodeAgent 编辑 a.cfg 吗？', '❯ 1. 允许', '  2. 拒绝', 'Esc to cancel']).kind, 'permission');
+  assert.equal(detectChoiceMenu(['Do you want to proceed with option A?', '❯ 1. A', '  2. B', '  3. Type something.', 'Enter to select']).kind, 'question', '带自由输入项的是提问');
+  const { renderRows } = require('../core/hub-phone/session-chat');
+  const file = path.join(__dirname, 'fixtures', 'choice-menu', 'claude-code-2.1-permission-bash.json');
+  const m = detectChoiceMenu(await renderRows(JSON.parse(fs.readFileSync(file, 'utf8'))));
+  assert.equal(m.kind, 'permission', '真实 Claude Code 2.1.303 Bash 权限确认（端到端 A5 抓取）');
+  assert.equal(m.question, 'Do you want to proceed?');
+  assert.deepEqual(m.options.map(o => o.label.split(',')[0]), ['Yes', 'Yes', 'Yes', 'No']);
+});
+
+test('通道兜底：权限确认停 20 秒只报「等待权限确认」不判卡住；停满 5 分钟才报「卡在权限确认」，追问新开会话', async t => {
+  const r = rig(t);
+  await pair(r);
+  r.hs.map.set('h', { id: 'h', kind: 'codex', status: 'idle' });
+  const { thread } = await r.home.invoke({ name: 'ask_company', callerSessionId: 'h', arguments: { question: '帮我清一下 build 目录' } });
+  await r.company.checkNow();
+  const sid = r.cs.created[0].opts.id;
+  r.cs.busy.add(sid);
+  r.screens.set(sid, PERMISSION);
+  for (let i = 0; i < 4; i++) { r.clock.now += 9000; await r.company.checkNow(); }
+  assert.equal(r.company.thread(thread).state, 'running', '权限确认停了 27 秒：不判卡住');
+  await r.company.checkNow();
+  await r.home.checkNow();
+  assert.match(r.home.thread(thread).rounds[0].note, /^等待权限确认：.*Do you want to proceed\?.*没有替它选/);
+  assert.equal(r.home.thread(thread).rounds[0].status, 'running');
+  const logFile = path.join(r.root, 'company', 'logs', 'company-bridge.log');
+  assert.equal((fs.readFileSync(logFile, 'utf8').match(/permission-wait/g) || []).length, 1, '进度说明只发一次');
+  for (let i = 0; i < 31; i++) { r.clock.now += 9000; await r.company.checkNow(); }
+  assert.equal((fs.readFileSync(logFile, 'utf8').match(/permission-wait/g) || []).length, 1);
+  const t1 = r.company.thread(thread);
+  assert.equal(t1.state, 'failed', '停满 5 分钟才报回');
+  assert.match(t1.rounds[0].error, /^卡在权限确认：.*超过 5 分钟/);
+  assert.equal(t1.rounds[0].choiceStuck.kind, 'permission');
+  assert.match(fs.readFileSync(logFile, 'utf8'), new RegExp(`permission-stuck ${thread}#1`));
+  assert.deepEqual(r.cs.keys, [], '没有发按键');
+  await r.home.checkNow();
+  await r.home.invoke({ name: 'followup_company', callerSessionId: 'h', arguments: { thread, question: '不用清了，直接说明 build 目录里有什么' } });
+  await r.company.checkNow();
+  assert.equal(r.cs.created.length, 2);
+  assert.match(r.cs.sent.at(-1).text, /第 1 轮提问（停在权限确认上，没有作答）[\s\S]*那道权限确认：Do you want to proceed\?/);
 });

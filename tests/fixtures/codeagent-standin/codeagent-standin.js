@@ -30,6 +30,9 @@ for (let i = 0; i < input.length; i += 1) {
   }
   args.push(input[i]);
 }
+// CODEAGENT_STANDIN_NO_CHROME=1: skip Claude Code's "use Chrome extension?" startup dialog on machines with the extension
+// (the company CLI has no such dialog).
+if (process.env.CODEAGENT_STANDIN_NO_CHROME === '1' && !args.includes('--no-chrome')) args.push('--no-chrome');
 const env = { ...process.env };
 if (env.CODEAGENT3_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = env.CODEAGENT3_CONFIG_DIR;
 // 按模型派活的端到端（2026-10-18）：真 CLI 交互模式按配置目录 settings.json 的 model 定模型。

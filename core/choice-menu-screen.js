@@ -18,6 +18,10 @@ const DEFAULT_RULES = Object.freeze({
   cursor: '❯›▶►→',
   // 菜单底部的按键提示（正则源码，不区分大小写）
   footer: 'Enter to (?:select|confirm|submit|choose)|Esc to (?:cancel|exit|go back)|↑\\s*/\\s*↓|arrow keys|to navigate|按\\s*(?:Enter|回车)|回车(?:确认|选择)',
+  // 工具权限确认（不是提问）：题目或选项像这样就归为 permission（正则源码，不区分大小写）。
+  // 依据替身真实样本（tests/fixtures/choice-menu/claude-code-2.1-permission-bash.json，Claude Code 2.1.303）：题目「Do you want to proceed?」，
+  // 选项「Yes / Yes, and always allow access to … / Yes, and switch to auto mode … / No」；旧版是「Yes, and don't ask again / No, and tell Claude …」。
+  permission: '^Do you want to\\b|\\bAllow\\b.*\\?|是否允许|允许.*吗|don.t ask again|tell Claude what to do differently|^Yes, (?:allow|and )|^(?:Yes|No)$',
   // 菜单要落在屏幕最后这么多行（非空行）里
   bottomRows: 16,
   minOptions: 2,
@@ -33,6 +37,7 @@ function compile(rules) {
   return {
     option: new RegExp(`^\\s*([${escapeClass(cursor)}])?\\s*(\\d{1,2})[.)]\\s+(\\S.*)$`),
     footer: new RegExp(rules.footer || DEFAULT_RULES.footer, 'i'),
+    permission: new RegExp(rules.permission || DEFAULT_RULES.permission, 'i'),
     bottomRows: Math.max(4, Math.min(60, Number(rules.bottomRows) || DEFAULT_RULES.bottomRows)),
     minOptions: Math.max(2, Math.min(9, Number(rules.minOptions) || DEFAULT_RULES.minOptions)),
   };
@@ -52,13 +57,15 @@ function loadRules(dataDir) {
     if (typeof o.enabled === 'boolean') rules.enabled = o.enabled;
     if (typeof o.cursor === 'string' && o.cursor.trim()) rules.cursor = o.cursor.trim().slice(0, 20);
     if (typeof o.footer === 'string' && o.footer.trim()) { new RegExp(o.footer, 'i'); rules.footer = o.footer.slice(0, 500); }
+    if (typeof o.permission === 'string' && o.permission.trim()) { new RegExp(o.permission, 'i'); rules.permission = o.permission.slice(0, 500); }
     if (Number.isInteger(o.bottomRows)) rules.bottomRows = o.bottomRows;
     if (Number.isInteger(o.minOptions)) rules.minOptions = o.minOptions;
     return { rules, file, error: null };
   } catch (error) { return { rules: { ...DEFAULT_RULES }, file, error: '规则文件写错了，按默认规则识别：' + error.message }; }
 }
 
-// rows：最后一屏的文字行。认出时返回 { question, options: [{ key, label, selected }], footer }，否则 null。
+// rows：最后一屏的文字行。认出时返回 { kind, question, options: [{ key, label, selected }], footer }，否则 null。
+// kind：question（AskUserQuestion 一类提问）或 permission（工具权限确认，通道按等待权限处理，不当选择题）。
 function detectChoiceMenu(rows, rules = DEFAULT_RULES) {
   if (rules && rules.enabled === false) return null;
   const c = compile(rules || DEFAULT_RULES);
@@ -98,7 +105,11 @@ function detectChoiceMenu(rows, rules = DEFAULT_RULES) {
     if (!fallback) fallback = l;
   }
   if (!footerLine && !question) return null;
-  return { question: question || fallback, options: group.map(o => ({ key: String(o.key), label: o.label.slice(0, 120), selected: o.selected })), footer: footerLine.trim() };
+  const q = question || fallback;
+  // 权限确认和提问分开：AskUserQuestion 的选项末尾总有「Type something」一类自由输入项，权限确认没有
+  const freeText = group.some(o => /^(?:Type something|Chat about this|Other)\b/i.test(o.label));
+  const kind = !freeText && (c.permission.test(q) || group.some(o => c.permission.test(o.label))) ? 'permission' : 'question';
+  return { kind, question: q, options: group.map(o => ({ key: String(o.key), label: o.label.slice(0, 120), selected: o.selected })), footer: footerLine.trim() };
 }
 
 module.exports = { DEFAULT_RULES, RULES_FILE, loadRules, detectChoiceMenu };

@@ -91,8 +91,21 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console, eve
   ];
   // 同步执行：要在工具运行前给出拒绝。matcher 只含提问工具，其他工具不经过它。
   // 超时放宽到 20 秒：公司版用 PowerShell 跑，机器忙时光启动就要几秒，超时等于放行。
-  if (typeof choiceGateMatcher === 'string' && /^[A-Za-z0-9_.:|-]{1,300}$/.test(choiceGateMatcher)) {
-    managed.push(['PreToolUse', hook('ask-gate'), choiceGateMatcher, false, 20]);
+  const gateMatcher = typeof choiceGateMatcher === 'string' && /^[A-Za-z0-9_.:|-]{1,300}$/.test(choiceGateMatcher) ? choiceGateMatcher : null;
+  if (gateMatcher) managed.push(['PreToolUse', hook('ask-gate'), gateMatcher, false, 20]);
+  // 清掉过时的 ask-gate（开关关掉、或提问工具名改了之后留下的）：只摘 Hub 自己的 ask-gate 条目，
+  // 同一组里别人的条目原样保留，组空了才删组。
+  if (Array.isArray(settings.hooks.PreToolUse)) {
+    const isGate = h => { const c = String(h && h.command || ''); return c.includes(MANAGED_HOOK_MARKER) && /\sask-gate\s*$/.test(c); };
+    const kept = [];
+    for (const group of settings.hooks.PreToolUse) {
+      const hooks = group && Array.isArray(group.hooks) ? group.hooks : null;
+      if (!hooks || !hooks.some(isGate) || (gateMatcher && String(group.matcher || '') === gateMatcher)) { kept.push(group); continue; }
+      const rest = hooks.filter(h => !isGate(h));
+      changed = true;
+      if (rest.length) kept.push({ ...group, hooks: rest });
+    }
+    settings.hooks.PreToolUse = kept;
   }
   const wanted = Array.isArray(events) ? new Set(events) : null;
   for (const [eventName, command, matcher = '', asyncHook = false, timeout = 5] of managed) {

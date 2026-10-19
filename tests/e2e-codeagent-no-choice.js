@@ -82,7 +82,7 @@ async function partA(ctx) {
   let hub, c;
   try {
     hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'background', label: 'nochoice-a', allowExternalState: true, entryPath: exportDir,
-      extraEnv: { CLAUDE_HUB_E2E: '1', AI_HUB_CODEAGENT_COMMAND: STANDIN, AI_HUB_CODEAGENT_CONFIG_DIR: cac, CODEAGENT_STANDIN_MODEL: 'haiku', CLAUDE_HUB_AGENT_RUNTIME: 'pty',
+      extraEnv: { CLAUDE_HUB_E2E: '1', AI_HUB_CODEAGENT_COMMAND: STANDIN, AI_HUB_CODEAGENT_CONFIG_DIR: cac, CODEAGENT_STANDIN_MODEL: 'haiku', CODEAGENT_STANDIN_NO_CHROME: '1', CLAUDE_HUB_AGENT_RUNTIME: 'pty',
         CLAUDE_HUB_HOME_DIR: path.join(root, 'a-home'), DEEPSEEK_API_KEY: '', ANTHROPIC_API_KEY: '', AI_HUB_RULES_BASE_URL: 'http://127.0.0.1:9/hub-rules/',
         HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'none'), HUB_SESSION_SEARCH_CODEX_ROOTS: path.join(root, 'none'), AI_HUB_UPDATE_STARTUP_DELAY_MS: '600000' } });
     c = await connectFirstPage(hub);
@@ -157,6 +157,17 @@ async function partA(ctx) {
     check(/颜色/.test(menu.m.question) && menu.m.options.some(o => /红/.test(o.label)) && menu.m.options.some(o => /蓝/.test(o.label)), `用户会话：选择菜单照常弹出（hook 放行），屏幕识别认出题目「${menu.m.question}」和选项`);
     const t4 = readTranscript((await info(s4)).transcriptPath);
     check(t4.asks.length >= 1 && !t4.results.some(r => r.text.includes(rules.DENY_REASON)), '用户会话的 AskUserQuestion 没有被拒绝');
+    check(menu.m.kind === 'question', 'AskUserQuestion 菜单归为「提问」');
+
+    // ---- A5 工具权限确认（不是提问）：用户会话按 default 权限模式启动，让它建目录 → 弹权限确认，识别归为 permission ----
+    const s5 = await newSession({ title: 'A5 权限确认', permissionMode: 'default' }, 'A5');
+    // （这台电脑装了 Chrome 扩展，非 bypass 模式的 Claude Code 启动时会先问要不要用它：替身加 --no-chrome 跳过，公司 CLI 没有这一问）
+    await send(s5, '请用 Bash 工具运行命令 mkdir probe-dir-a5，然后只回复 DONE。');
+    const perm = await until('A5 permission', async () => { const raw = await screenOf(s5); const m = detectChoiceMenu(await renderRows(raw)); return m ? { m, raw } : null; }, 180000, 2000)
+      .catch(async error => { const raw = await screenOf(s5); fs.writeFileSync(path.join(out, 'a5-last-screen.txt'), (await renderRows(raw)).join('\n')); throw error; });
+    writeSampleFixture('claude-code-2.1-permission-bash.json', { note: '真实 Claude Code（替身，haiku，--permission-mode default）Bash 权限确认的终端输出，tests/e2e-codeagent-no-choice.js A5 抓取', cols: perm.raw.cols, rows: perm.raw.rows, text: perm.raw.text.slice(-60000) });
+    result.a5Menu = perm.m;
+    check(perm.m.kind === 'permission', `工具权限确认归为「权限确认」，不当选择题（题目「${perm.m.question}」）`);
     const shot = await c.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, 'a-company-hub.png'), Buffer.from(shot.data, 'base64'));
   } finally {
@@ -226,7 +237,11 @@ async function partB(ctx) {
     const oldScreen = await cc.eval(`require("electron").ipcRenderer.invoke("get-ring-buffer", ${j(oldSession)})`) || '';
     const oldRows = await renderRows({ text: oldScreen, cols: widthOf(oldScreen), rows: 40 });
     fs.writeFileSync(path.join(out, 'b-old-session-screen.txt'), `cols=${widthOf(oldScreen)} length=${oldScreen.length}\n` + oldRows.join('\n'));
-    check(!!detectChoiceMenu(oldRows), 'B：旧会话仍停在选择菜单上（公司没有发按键、没有替它选）');
+    // 证据用原生记录：提问工具调用了、却没有对应的工具结果 = 没人（公司也没有）替它选。屏幕回放宽度猜不准，只留作附件
+    const oldTranscript = await cc.eval(`sessions.get(${j(oldSession)})?.transcriptPath || ''`);
+    const ot = readTranscript(oldTranscript);
+    result.bOldSession = { asks: ot.asks.length, answered: ot.results.filter(x => ot.asks.some(a => a.id === x.id)).length };
+    check(ot.asks.length >= 1 && !ot.results.some(x => ot.asks.some(a => a.id === x.id)), 'B：旧会话的提问一直没有答案（公司没有发按键、没有替它选）');
     const companyLog = fs.readFileSync(path.join(cdata, 'logs', 'company-bridge.log'), 'utf8');
     check(new RegExp(`choice-stuck ${asked.thread}#1`).test(companyLog), 'B：公司通道日志记下 choice-stuck');
     const fFile = path.join(root, 'b-f2.md');

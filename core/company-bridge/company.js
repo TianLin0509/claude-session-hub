@@ -36,6 +36,8 @@ const choiceMenu = require('../choice-menu-screen');
 // 菜单要连续出现这么久才判定（一闪而过的不算）；同一会话两次读屏至少隔这么久。
 const CHOICE_STABLE_MS = 20000;
 const CHOICE_CHECK_MS = 8000;
+// 工具权限确认（不是提问）先只报「等待权限确认」，停满这么久才按卡住处理（审核 2026-10-19）。通道会话按 bypass 权限启动，正常不该出现。
+const PERMISSION_STABLE_MS = 5 * 60000;
 // 一轮因额度中断后最多换号重做几次（只重做一次，不循环）。
 const MAX_REHOME = 1;
 // 撞额度后旧会话还在忙（多半在自己重试）时，最多等多久再换号（审核 2026-10-18）。
@@ -861,11 +863,12 @@ class CompanyBridge {
     const stuck = h.kind === 'choice' ? [...t.rounds].reverse().find(x => x.choiceStuck && !x.reply && x.round <= r.round) : null;
     let stuckBlock = '';
     if (stuck) {
-      const menu = `那道选择题：${stuck.choiceStuck.question || '（没认出题目）'}\n选项：${(stuck.choiceStuck.options || []).join(' / ')}`;
-      if (stuck.round === r.round) lines.push('', `上一次做这一轮时停在了这道选择题上：\n${menu}`);
+      const what = stuck.choiceStuck.kind === 'permission' ? '权限确认' : '选择题';
+      const menu = `那道${what}：${stuck.choiceStuck.question || '（没认出题目）'}\n选项：${(stuck.choiceStuck.options || []).join(' / ')}`;
+      if (stuck.round === r.round) lines.push('', `上一次做这一轮时停在了这道${what}上：\n${menu}`);
       else {
         const q = String(stuck.question || '');
-        stuckBlock = `### 第 ${stuck.round} 轮提问（停在选择题上，没有作答）\n${q.length > 4000 ? q.slice(0, 4000) + '…' : q}\n\n${menu}\n\n本轮请求是对方对那道题的选择或补充。`;
+        stuckBlock = `### 第 ${stuck.round} 轮提问（停在${what}上，没有作答）\n${q.length > 4000 ? q.slice(0, 4000) + '…' : q}\n\n${menu}\n\n本轮请求是对方对那道题的选择或补充。`;
       }
     }
     const earlier = t.rounds.filter(x => x.round < r.round && x.reply);
@@ -1379,8 +1382,20 @@ class CompanyBridge {
     } catch { menu = null; }
     const key = menu ? JSON.stringify([menu.question, menu.options.map(o => o.label)]) : '';
     const since = menu && prev && prev.round === r.round && prev.key === key && prev.since ? prev.since : menu ? now : null;
-    memo.set(t.sessionId, { round: r.round, sig, menu, key, since, checkedAt: now });
+    const noted = prev && prev.round === r.round && prev.key === key ? prev.noted : false;
+    memo.set(t.sessionId, { round: r.round, sig, menu, key, since, checkedAt: now, noted });
     if (!menu || now - since < CHOICE_STABLE_MS) return false;
+    // 工具权限确认不是选择题：先只在进度说明里写「等待权限确认」，停满 PERMISSION_STABLE_MS 才按卡住处理
+    if (menu.kind === 'permission' && now - since < PERMISSION_STABLE_MS) {
+      if (!noted) {
+        memo.get(t.sessionId).noted = true;
+        const q = Q.redactSnippet(menu.question, { scrub: x => this.scrubText(x) }).slice(0, 200);
+        this.bridgeLog(`permission-wait ${t.id}#${r.round} session=${String(t.sessionId).slice(0, 8)}`);
+        void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'running',
+          note: `等待权限确认：公司 CodeAgent 停在一个工具权限确认上（${q || '没认出题目'}），没有替它选；停满 ${PERMISSION_STABLE_MS / 60000} 分钟仍没人处理会报回这一轮` }).catch(() => {});
+      }
+      return false;
+    }
     memo.delete(t.sessionId);
     this.markChoiceStuck(t, r, menu);
     return true;
@@ -1390,14 +1405,18 @@ class CompanyBridge {
     const clean = s => Q.redactSnippet(s, { scrub: x => this.scrubText(x, secrets) });
     const question = clean(menu.question).slice(0, 300);
     const options = menu.options.slice(0, 9).map(o => `${o.key}. ${clean(o.label).slice(0, 120)}`);
-    const why = `卡在选择题：公司 CodeAgent 停在一个选择菜单上等人选，这一轮没有作答（没有替它选）。题目：${question || '（没认出题目）'}；选项：${options.join(' / ')}。`
-      + '可以追问给出你的选择（公司新开会话、带上原问题和这道题接着做），或用远程维护的 retry 重做这一轮';
+    const permission = menu.kind === 'permission';
+    const why = permission
+      ? `卡在权限确认：公司 CodeAgent 停在一个工具权限确认上超过 ${PERMISSION_STABLE_MS / 60000} 分钟，这一轮没有作答（没有替它选）。题目：${question || '（没认出题目）'}；选项：${options.join(' / ')}。`
+        + '可以追问说明怎么处理（公司新开会话、带上原问题接着做），或用远程维护的 retry 重做这一轮'
+      : `卡在选择题：公司 CodeAgent 停在一个选择菜单上等人选，这一轮没有作答（没有替它选）。题目：${question || '（没认出题目）'}；选项：${options.join(' / ')}。`
+        + '可以追问给出你的选择（公司新开会话、带上原问题和这道题接着做），或用远程维护的 retry 重做这一轮';
     const fresh = this.thread(t.id) || t;
     this.saveThread({ ...fresh, choiceStuckSession: t.sessionId,
-      rounds: fresh.rounds.map(x => x.round === r.round ? { ...x, error: why, failedAt: this.now(), choiceStuck: { at: this.now(), question, options } } : x) });
-    this.bridgeLog(`choice-stuck ${t.id}#${r.round} session=${String(t.sessionId).slice(0, 8)} options=${options.length}`);
+      rounds: fresh.rounds.map(x => x.round === r.round ? { ...x, error: why, failedAt: this.now(), choiceStuck: { at: this.now(), kind: permission ? 'permission' : 'question', question, options } } : x) });
+    this.bridgeLog(`${permission ? 'permission-stuck' : 'choice-stuck'} ${t.id}#${r.round} session=${String(t.sessionId).slice(0, 8)} options=${options.length}`);
     void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: 'error', note: why }).catch(() => {});
-    this.notify('卡在选择题', `${t.id}：${short(question, 60)}`, t.sessionId);
+    this.notify(permission ? '卡在权限确认' : '卡在选择题', `${t.id}：${short(question, 60)}`, t.sessionId);
     this.changed();
   }
   failRound(t, r, why) {
