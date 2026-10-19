@@ -16,9 +16,13 @@ const input = process.argv.slice(2);
 // CODEAGENT_STANDIN_IGNORE_MODEL=1 reproduces the real CLI's interactive-mode bug (company probe, 2026-10-13):
 // `--model` only works with -p; an interactive session always starts on the configured default model.
 const ignoreModel = process.env.CODEAGENT_STANDIN_IGNORE_MODEL === '1' && !input.some(a => a === '-p' || a === '--print');
+// CODEAGENT_STANDIN_DROP_SYSTEM_PROMPT=1 simulates a CLI that ignores --append-system-prompt-file
+// (used to exercise the stuck-on-a-choice-menu fallback, 2026-10-19).
+const dropSystemPrompt = process.env.CODEAGENT_STANDIN_DROP_SYSTEM_PROMPT === '1';
 for (let i = 0; i < input.length; i += 1) {
   if (DROP_FLAGS.has(input[i])) continue;
   if (DROP_WITH_VALUE.has(input[i])) { i += 1; continue; }
+  if (dropSystemPrompt && input[i] === '--append-system-prompt-file') { i += 1; continue; }
   if (ignoreModel && input[i] === '--model') { i += 1; continue; }
   // The company models do not exist for Claude; run the cheapest Claude model instead.
   if (input[i] === '--model' && /^(?:GLM|MiniMax)/i.test(input[i + 1] || '')) {

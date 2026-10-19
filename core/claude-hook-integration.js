@@ -45,8 +45,10 @@ function readSettings(settingsPath, fsModule) {
 
 // events / manageStatusLine / managePermissionMode：同形态的其他 CLI（公司 Code Agent）共用这套合并，
 // 但只登记它实测支持的事件，不接管状态栏、不改全局权限模式（那份 settings.json 同事的其他工具也在用）。
+// choiceGateMatcher：另登记一条只匹配提问工具的同步 PreToolUse（ask-gate，core/auto-dispatch-rules.js）；
+// 只有 Hub 给自动派活会话设了标记时它才拒绝，其余会话直接放行。
 function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console, events = null,
-  manageStatusLine = true, managePermissionMode = true } = {}) {
+  manageStatusLine = true, managePermissionMode = true, choiceGateMatcher = null } = {}) {
   const settingsPath = path.join(claudeDir, 'settings.json');
   const scriptsDir = path.join(claudeDir, 'scripts');
   let changed = false;
@@ -87,8 +89,13 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console, eve
     ['Notification', hook('notification'),
       'permission_prompt|agent_needs_input|agent_completed|quota_auto_resume_fired|quota_auto_resume_stale|quota_auto_resume_disabled|elicitation_dialog|elicitation_url_dialog'],
   ];
+  // 同步执行：要在工具运行前给出拒绝。matcher 只含提问工具，其他工具不经过它。
+  // 超时放宽到 20 秒：公司版用 PowerShell 跑，机器忙时光启动就要几秒，超时等于放行。
+  if (typeof choiceGateMatcher === 'string' && /^[A-Za-z0-9_.:|-]{1,300}$/.test(choiceGateMatcher)) {
+    managed.push(['PreToolUse', hook('ask-gate'), choiceGateMatcher, false, 20]);
+  }
   const wanted = Array.isArray(events) ? new Set(events) : null;
-  for (const [eventName, command, matcher = '', asyncHook = false] of managed) {
+  for (const [eventName, command, matcher = '', asyncHook = false, timeout = 5] of managed) {
     if (wanted && !wanted.has(eventName)) continue;
     if (!Array.isArray(settings.hooks[eventName])) {
       settings.hooks[eventName] = [];
@@ -102,7 +109,7 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console, eve
     if (!existingGroup) {
       settings.hooks[eventName].push({
         matcher,
-        hooks: [{ type: 'command', command, timeout: 5, ...(asyncHook ? { async: true } : {}) }],
+        hooks: [{ type: 'command', command, timeout, ...(asyncHook ? { async: true } : {}) }],
       });
       changed = true;
     } else if (asyncHook) {

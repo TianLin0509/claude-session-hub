@@ -461,6 +461,7 @@ function hub(bridge, deps, sys, ctx) {
       receivedAt: r.receivedAt || null, sentAt: r.sentAt || null, waitedSec: phase === 'queued' && r.receivedAt ? Math.round((now - r.receivedAt) / 1000) : null,
       runningSec: phase === 'running' && r.sentAt ? Math.round((now - r.sentAt) / 1000) : null,
       queueNote: r.queueNote || null, retryAt: r.retryAt || null, resumePending: !!r.resumePending, receiptIssue: r.receiptIssue || null,
+      ...(r.choiceStuck ? { choiceStuck: true } : {}),
       session: t.sessionId ? String(t.sessionId).slice(0, 8) : null, sessionAlive: !!(t.sessionId && deps.getSession?.(t.sessionId)),
       sessionBusy: !!(t.sessionId && bridge.sessionBusy(t.sessionId)), working: (() => { try { return !!bridge.roundWorking(t); } catch { return null; } })(),
       transcriptAt: transcriptAt(meta) };

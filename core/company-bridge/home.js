@@ -50,6 +50,7 @@ function accountNote(t, r) {
   const parts = [];
   if (meta.rehomedFrom && meta.rehomeKind === 'model-config') parts.push(`原先的号（${meta.rehomedFrom}）报模型配置有误（请求的模型它没有权限），公司自动换到${meta.accountAlias || '另一个号'}新开会话重做了这一轮`);
   else if (meta.rehomedFrom && meta.rehomeKind === 'quota') parts.push(`原先的号（${meta.rehomedFrom}）撞到额度上限，公司自动换到${meta.accountAlias || '另一个号'}新开会话重做了这一轮`);
+  else if (meta.rehomeKind === 'choice') parts.push(`原会话停在一道选择题上，公司新开会话（${meta.accountAlias || '自动挑的号'}）接着做了这一轮，带上了原问题和那道题`);
   else if (meta.rehomedFrom) parts.push(`这一轮从${meta.rehomedFrom}换到${meta.accountAlias || '另一个号'}的新会话作答（带上了前几轮问答）`);
   else if (meta.accountAlias) parts.push(`公司用的号：${meta.accountAlias}`);
   if (asked && !meta.accountAlias) parts.push(`指定了号 ${asked}，但公司 Hub 没有确认（可能是旧版，不认指定号）`);
