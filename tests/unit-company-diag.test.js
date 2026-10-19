@@ -185,6 +185,20 @@ async function diagRound(r, args = {}) {
   return { sent, view: r.home.diagView(sent.id) };
 }
 
+test('account authentication diagnostic reports only presence and policy for new sessions', async t => {
+  for (const state of ['ready', 'expired']) {
+    const r = setup(t, { poolDiag: () => ({ ...POOL(), personal: { ...POOL().personal, state } }) });
+    r.box.sys.hubEnv = { CodeAgent3_X_Auth_Token: 'fixture-secret-must-not-appear', TOOL_GUARD_CODEAGENT3_DATA_DIR: 'fixture-guard-path' };
+    await pair(r);
+    const { view } = await diagRound(r, { sections: ['codeagent'] });
+    const payload = JSON.stringify(view);
+    assert.ok(!payload.includes('fixture-secret-must-not-appear'));
+    assert.ok(!payload.includes('fixture-guard-path'));
+    assert.deepEqual(view.diag.codeagent.personal.inheritedAuthToken, { present: true });
+    assert.match(view.summary, /新会话优先使用完整且可登录的账号凭证/);
+  }
+});
+
 test('端到端（内存通道）：家里发 diag → 公司直接采集、压缩回报 → 家里解开；字段齐全、没有号身份与令牌、不开会话', async t => {
   const r = setup(t); await pair(r);
   // 会话：通道会话 s-1（号池号 abc123），人自己开的 s-2（个人）
@@ -374,7 +388,8 @@ test('二期 codeagent：版本、个人账号登录、按号读各会话屏幕�
   const { view } = await diagRound(r, { sections: ['codeagent'] });
   const c = view.diag.codeagent;
   assert.equal(c.version, '3.2.1-beta');
-  assert.deepEqual(c.personal, { state: '可用', ready: true, expiresAt: NOW + 86400000, defaultModel: 'GLM-4.6', inPool: false }, '个人目录是否和号池重叠总是回是否（2026-10-19）');
+  assert.deepEqual(c.personal, { state: '可用', ready: true, expiresAt: NOW + 86400000, defaultModel: 'GLM-4.6', inPool: false,
+    inheritedAuthToken: { present: false } }, '个人目录重叠和继承认证只回状态，不回身份或令牌');
   assert.deepEqual(c.pool, { total: 2, ready: 1, needLogin: 1 });
   assert.deepEqual(c.quota.map(q => [q.account, q.pct, q.total, q.bucket, q.session]), [['个人', 95.6, 20000, '月度', 's-3-pppp'], ['号 1', 78.2, 2500, '今日忙时', 's-1-abcd']]);
   assert.deepEqual(c.quotaScreens, { live: 3, read: 3 }, '休眠的不读；个人账号最新的会话屏幕上没有面板，再读它的下一个会话；同一个号读到一份就不再读');

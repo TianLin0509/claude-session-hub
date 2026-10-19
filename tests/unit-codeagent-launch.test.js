@@ -22,6 +22,61 @@ function sandbox(t) {
   return { root, configDir, cwd, config };
 }
 
+test('selected logged-in account owns authentication on fresh and resumed CodeAgent launches', t => {
+  const { cwd, config, configDir } = sandbox(t);
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, '.credentials.json'), JSON.stringify({ idaasOAuth: { accountId: 'fixture-personal', xAuthToken: 'fixture-encrypted-token', expiresAt: 4e12 } }));
+  const settings = '{"model":"GLM-5.2-WX-Auto","permissions":{"defaultMode":"probe"}}';
+  fs.writeFileSync(path.join(configDir, 'settings.json'), settings);
+  const parent = {
+    CODEAGENT3_X_AUTH_TOKEN: 'fixture-parent-account-token',
+    CODEAGENT3_CONFIG_DIR: path.join(cwd, 'different-account'),
+    TOOL_GUARD_CODEAGENT3_DATA_DIR: path.join(cwd, 'tool-guard'),
+    HTTPS_PROXY: 'http://fixture-proxy:8080', NODE_EXTRA_CA_CERTS: 'fixture-certificate.pem',
+  };
+  const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
+  for (const kind of ['codeagent', 'codeagent-resume']) {
+    const env = { ...parent };
+    require('../core/codeagent-launch-env').applyAccountEnv(env, config);
+    buildCodeAgentPtyLaunch('auth-fixture', kind, { purpose: 'company-bridge' }, cwd, env, config);
+    assert.equal(env.CODEAGENT3_X_AUTH_TOKEN, undefined, 'parent token must not impersonate the selected account');
+    assert.equal(env.CODEAGENT3_CONFIG_DIR, configDir);
+    for (const key of ['TOOL_GUARD_CODEAGENT3_DATA_DIR', 'HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS']) assert.equal(env[key], parent[key]);
+  }
+  assert.equal(parent.CODEAGENT3_X_AUTH_TOKEN, 'fixture-parent-account-token', 'parent environment stays untouched');
+  assert.equal(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'), settings, 'launch does not rewrite model or permissions');
+});
+
+test('environment-token login remains available without a ready selected profile', t => {
+  const { cwd, config, configDir } = sandbox(t);
+  fs.mkdirSync(configDir, { recursive: true });
+  const { buildCodeAgentPtyLaunch } = require('../core/session-manager')._private;
+  for (const state of ['missing', 'expired', 'unreadable', 'metadata-only', 'empty-token']) {
+    const file = path.join(configDir, '.credentials.json');
+    if (state === 'expired') fs.writeFileSync(file, JSON.stringify({ idaasOAuth: { expiresAt: 1 } }));
+    if (state === 'unreadable') fs.writeFileSync(file, 'invalid fixture');
+    if (state === 'metadata-only') fs.writeFileSync(file, JSON.stringify({ idaasOAuth: { accountId: 'fixture', expiresAt: 4e12 } }));
+    if (state === 'empty-token') fs.writeFileSync(file, JSON.stringify({ idaasOAuth: { xAuthToken: '   ', expiresAt: 4e12 } }));
+    const env = { CODEAGENT3_X_AUTH_TOKEN: 'fixture-env-login' };
+    require('../core/codeagent-launch-env').applyAccountEnv(env, config);
+    buildCodeAgentPtyLaunch('auth-fixture', 'codeagent', {}, cwd, env, config);
+    assert.equal(env.CODEAGENT3_X_AUTH_TOKEN, 'fixture-env-login', state);
+  }
+});
+
+test('account authentication isolation handles Windows environment key casing and custom config variable', t => {
+  const { cwd, config, configDir } = sandbox(t);
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, '.credentials.json'), JSON.stringify({ devUCOAuth: { accountId: 'fixture-pool', refreshToken: 'fixture-refresh', expiresAt: 1 } }));
+  const env = { codeagent3_x_auth_token: 'fixture-parent-account-token', TOOL_GUARD_CODEAGENT3_DATA_DIR: 'guard-fixture' };
+  require('../core/codeagent-launch-env').applyAccountEnv(env, { ...config, configDirEnv: 'FIXTURE_CODEAGENT_CONFIG' });
+  require('../core/session-manager')._private.buildCodeAgentPtyLaunch('auth-fixture', 'codeagent', {}, cwd, env,
+    { ...config, configDirEnv: 'FIXTURE_CODEAGENT_CONFIG' });
+  assert.equal(env.codeagent3_x_auth_token, undefined);
+  assert.equal(env.FIXTURE_CODEAGENT_CONFIG, configDir);
+  assert.equal(env.TOOL_GUARD_CODEAGENT3_DATA_DIR, 'guard-fixture');
+});
+
 test('codeagent is a Claude-family kind with its own label, models and resume variant', () => {
   const kinds = require('../core/ai-kinds');
   for (const kind of ['codeagent', 'codeagent-resume']) {
