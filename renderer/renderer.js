@@ -6278,6 +6278,10 @@ const registerLocalPathLinks = createTerminalLinkRegistrar({
   getCwd: getSessionCwd,
   openPathInHub: (target, opts) => openPathInHub(target, { ...opts, throwOnError: true }),
   onError: message => showPreviewNotice(message, 'error'),
+  // 终端链接识别超时记进 window-events.log：只记会话、读了几行、耗时，不记终端内容。
+  onScanBudgetExceeded: detail => {
+    try { ipcRenderer.send('hub:page-window-event', { event: 'terminal-link-budget', ...detail }); } catch {}
+  },
   onContextMenu: (rawPath, x, y) => {
     // pathLinkContextMenu is initialized later in this file; callback body
     // runs only when user right-clicks, by then it's been assigned.
