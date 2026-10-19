@@ -4380,8 +4380,9 @@ app.whenReady().then(async () => {
     });
     const allowed = isIsolatedHub() ? !!process.env.AI_HUB_CODEAGENT_CONFIG_DIR : true;
     if (allowed && fs.existsSync(codeagentConfig.configDir)) {
+      // choiceGateMatcher：自动派活会话拒绝提问工具的 hook（core/auto-dispatch-rules.js，可关）。
       const settingsOptions = { events: require('./core/codeagent-config').HOOK_EVENTS,
-        manageStatusLine: false, managePermissionMode: false };
+        manageStatusLine: false, managePermissionMode: false, choiceGateMatcher: require('./core/auto-dispatch-rules').gateMatcher() };
       const result = ensureClaudeHookIntegration({ claudeDir: codeagentConfig.configDir,
         sourceScriptsDir: hookSourceScriptsDir, logger: console, settingsOptions });
       if (result.errors.length) console.warn(`[codeagent-hooks] ${codeagentConfig.configDir}: ${result.errors.join('；')}`);
@@ -4391,7 +4392,8 @@ app.whenReady().then(async () => {
   // CodeAgent 号池（core/codeagent-pool.js）：每个号的配置目录在启动会话前按同样方式部署 Hub 的 hook。
   sessionManager.deployCodeAgentHooks = dir => {
     const result = ensureClaudeHookIntegration({ claudeDir: dir, sourceScriptsDir: hookSourceScriptsDir, logger: console,
-      settingsOptions: { events: require('./core/codeagent-config').HOOK_EVENTS, manageStatusLine: false, managePermissionMode: false } });
+      settingsOptions: { events: require('./core/codeagent-config').HOOK_EVENTS, manageStatusLine: false, managePermissionMode: false,
+        choiceGateMatcher: require('./core/auto-dispatch-rules').gateMatcher() } });
     if (result.errors.length) throw new Error(result.errors.join('；'));
   };
   // settings.json can be rewritten by Claude settings/plugin changes while the
