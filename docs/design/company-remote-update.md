@@ -99,6 +99,31 @@
 - 隔离测试实例可用 `CLAUDE_HUB_DIAG_LEFTOVER_MIN_AGE_MS`（残留最短存活时间）、`CLAUDE_HUB_ACT_HOUR_MS`（「1 小时」的长度）缩短等待，只在设了 `CLAUDE_HUB_DATA_DIR` 时生效。
 - 测试：`tests/unit-company-remote-act.test.js`；`tests/e2e-company-remote-act.js`（双 Electron + 通道服务 + CodeAgent 替身 = 真 Claude Code + Haiku 开出真的通道会话 + 人为制造的残留进程）。
 
+## 读文件（2026-10-20 四期，op:'files'）
+
+田哥 2026-10-20：「把 SuperRAN 涉及的 AirView 文本传输到本地，方便后续直接查询」；此前一轮 Opus 因安全护栏两次被拦，本轮按「透明可查」重建：白名单、只读、凭据脱敏、审计日志、界面轻提示、开关，一个不少。
+
+- 链路：家里 `HomeBridge.files({ action, params })`（MCP `company_files`、`company-ask.js --files …`）
+  → `{ type:'hub-admin', op:'files', id, gen, action, params }` → 公司 `hub-admin.js files()` → `file-query.js run()`
+  → 凭据脱敏 → JSON → gzip → base64url → `{ type:'hub-admin-status', phase:'files', note:摘要, files, filesBytes, action, degraded? }`。
+  不开 CodeAgent 会话、不排队、不占并行名额；正文**不进公司本机历史**（只记摘要，同直查）。
+- 三个动作（`core/company-bridge/file-query.js`）：list（列目录，默认只列可读文本、报整棵子树的文件数与各后缀字节数，用来估传输量）、search（按名字或内容找，名字支持 `*` / `?`，内容只搜 2 MB 以内的文本）、read（按行分段读，默认 600 行 / 30000 字，返回总行数与下一段的 `from`）。
+- 能读的范围（`fileRoots`）：公司设置里的「仿真结果目录」（`resultDirs`）+「代码位置」（`codeRoots`）+「额外可读目录」（`readRoots`，界面新增，最多 10 个），去重后最多 20 个。
+  一律用 `realpath` 后的真实路径判断是否落在某个根里面（挡 `../` 与符号链接绕出）；UNC 路径跳过 realpath 但照旧按路径包含判断。
+- 只读文本：后缀白名单（txt / md / log / csv / json 与常见代码、配置）；密钥类后缀（.key/.pem/.pfx/.p12/.jks…）与打包产物、二进制（前 8 KB 有 0 字节）直接拒绝；文件名黑名单（.netrc/.npmrc/id_rsa/credentials.json…）。
+  单次读取上限 8 MB（更大的先按范围分小）；列目录 6 秒 / 3 万条封顶、最多列 200 项（可调到 500），整棵子树统计 4 秒 / 3 万条，找文件 4 秒（按名字 6 秒），每次 readdir / stat 3 秒超时。
+  编码：先按 UTF-8，出现替换字符再试 GBK / GB18030 / Big5（中文 Windows 上的 txt 常见），去掉 BOM、CRLF 归一。
+- 脱敏：只脱凭据——私钥 / 证书整块、`password:`/`token=`/`authorization` 这类键值（值前面带 Bearer / Basic 的连前缀词一起）、`sk-`/`ghp_`/`AKIA` 样式、JSON 里的凭据字段、URL 里的账号密码，再按公司账号实值整篇替换。
+  **不动** URL、路径、长哈希与代码（`makeRedactor` 的换代规则会把源码和报告读成废纸，见 `makeFileRedactor` 的注释）。
+- 开关：公司设置「文件读取」（`allowRemoteFiles`，默认开；田哥当天在外需要取数，故默认开而不是默认关），关了回 refused，一次盘都不读。
+- 能力声明：公司每条 hub-admin-status 带 `caps:['files']`；家里看到公司报过版本却没带 files 能力（旧版会静默丢掉指令）直接报「版本过旧，不支持读文件」，不白等。
+- 底线：只认当前配对代次；同一编号只处理一次；**按动作限频**（read 5 秒、list 10 秒、search 20 秒，各算各的），同时只跑一条；
+  参数家里先核、公司再核（`parseParams`）；每次写 `logs/company-files.log`，界面轻提示「对端读了这台电脑上的文件」（`notify(..., {quiet:true})`，不弹系统通知）；对端在看时公司接下来 10 分钟按 10 秒检查通道。
+  回报失败一律一句话（不给对端原始系统错误字样）；公司回报的正文压缩包不进本机历史。
+- 时延：= 公司下一次检查通道（活跃 10 秒；空闲默认 30 秒）+ 读盘（通常 < 1 秒）+ 家里检查（等回报时 5 秒 / 2.5 秒）。一条 read 默认窗口在四类真实文本下压缩后 1–12 KB，稳进一条消息。
+- 测试：`tests/unit-company-file-query.test.js`（内存通道两端 + 真实临时目录：越界闸门、后缀与二进制闸门、分段读与编码、列目录子树统计、按名 / 按内容找、脱敏、开关、按动作限频、代次与能力、MCP / 命令行参数、界面契约）。
+  未覆盖：真机端到端（要先把公司 Hub 升到带 files 的版本）；`tests/e2e-company-link-ui-cdp.js` 要 `HUB_UNLOCK_PHRASE`，本机没设，界面只做了源码级契约核对。
+
 ## 测试
 
 - 单测：`tests/unit-company-hub-admin.test.js`（控制器替身 + 内存通道两端；含宽限、中断—恢复、恢复失败、只恢复一次、看门狗、配对代次、取代旧指令）。

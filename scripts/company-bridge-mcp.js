@@ -71,6 +71,33 @@ const tools = [
     }),
   },
   {
+    name: 'company_files',
+    description: '读取公司电脑上的文本文件：秒级、不排队、不占公司 CodeAgent（公司 Hub 主进程直接读盘，gzip 压缩后经加密通道回报；不开会话、不问模型）。'
+      + '用户说「把公司电脑上的某个文件 / AirView 的输出文本拿到本地」「查一下公司那份文档里怎么写的」时用；拿回来的正文可以直接在本地读、写进 SuperRAN 的设计里，比走 ask_company（要排队、要等模型，中位数 5 分钟以上）快得多。'
+      + 'action：list（列目录，dir 给路径或相对路径，depth 0–4 递归，默认只列可读的文本文件并报整棵子树的文件数与总大小，用来估传输量）；'
+      + 'search（找文件：name 文件名、支持 * 和 ?，或 content 正文里的词，root 可限定在哪棵目录下，limit 默认 50）；'
+      + 'read（file 给文件路径，from 起始行、lines 最多 4000 行、chars 最多 60000 字，返回这段正文和总行数；没读完时结果里的 next 是下次的 from）。'
+      + '能读的目录是公司端设置好的仿真结果目录 + 代码位置 + 额外可读目录；只读、永不写；只读文本（txt/md/log/csv/json 和常见代码、配置），密钥类后缀和二进制直接拒绝；凭据（口令、令牌、私钥）自动隐去。'
+      + '调用后最多等约 45 秒拿到结果；公司检查通道的间隔是 10 秒，空闲时按公司设置（默认 30 秒），等不到会返回编号，稍后带 id 再调一次取结果（不要反复发同一条，公司按动作限频）。'
+      + '大文件不要一次读完：先 list 看有几个、多大，再按 from/lines 分段读，读完一段再要下一段。',
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    inputSchema: schema({
+      action: { type: 'string', enum: ['list', 'search', 'read'] },
+      dir: { type: 'string', description: 'list：目录路径（绝对路径，或在可读目录里的相对路径），默认第一个可读目录' },
+      depth: { type: 'integer', minimum: 0, maximum: 4, description: 'list / search：递归几层（list 默认 0 只看这一层，search 默认 4）' },
+      all: { type: 'boolean', description: 'list：true = 连不可读的文件也列出来（只给名字、大小和不可读的原因）' },
+      root: { type: 'string', description: 'search：限定在哪棵可读目录下找（不填 = 全部可读目录）' },
+      name: { type: 'string', description: 'search：文件名，支持 * 和 ?（如 *.txt、*result*）' },
+      content: { type: 'string', description: 'search：文件正文里的词（只搜 2 MB 以内的文件）' },
+      maxKB: { type: 'number', description: 'search：按内容搜索时单个文件的大小上限 KB（默认 2048）' },
+      file: { type: 'string', description: 'read：文件路径（绝对路径，或在可读目录里的相对路径）' },
+      from: { type: 'integer', minimum: 1, description: 'read：从第几行开始（1 起，默认 1）' },
+      lines: { type: 'integer', minimum: 1, maximum: 4000, description: 'read：读多少行（默认 600）' },
+      chars: { type: 'integer', minimum: 1000, maximum: 60000, description: 'read：这段最多多少字（默认 30000）' },
+      id: { type: 'string', description: '取之前那一次的结果（不发新的）' },
+    }, ['action']),
+  },
+  {
     name: 'company_act',
     description: '远程维护公司电脑上的 AI Hub：会改动公司电脑状态，仅在用户要求或诊断明确指向时使用，先用 company_diag 看清楚再 act。'
       + 'action：suspend-idle（让答完空着的通道会话休眠，人自己开的会话不动）；kill-orphans（结束最近一次 company_diag 列为「可结束」的残留进程，targets 填那次结果里的 pid 和 startedAt，5 分钟内有效，只按 PID 结束，Hub 进程树永远不动）；'
