@@ -377,7 +377,18 @@ async function pickModel({ manager, sid, kind, modelId, configDir, allowedModels
     }
     attempted = true;
     if (!existingMenu) {
-      const sent = await sendToPty(sid, '/model', kind, { codeagentModelPick: true });
+      let sent = await sendToPty(sid, '/model', kind, { codeagentModelPick: true });
+      // 回车只接受了补全、命令没执行（2026-10-20 发布闸门与本机 e2e 实录：输入行停在「❯ /model」，菜单没开）：
+      // 菜单确实没开、输入行就是「/model」时再按一次回车。菜单开着时不补（会选中高亮项）。
+      if (sent && sent.sendStatus === 'stuck') {
+        const lines = await screen.lines();
+        const promptLine = lines[lines.findLastIndex(line => /^[\s─]*[❯›>]\s*/.test(line))] || '';
+        if (modelDialogVisible(lines) || await waitFor(screen, modelDialogVisible, 1500).then(r => r.value)) sent = { ...sent, sendStatus: 'ok' };
+        else if (/^[\s─]*[❯›>]\s*\/model\s*$/.test(promptLine)) {
+          manager.writeToSession(sid, '\r');
+          if ((await waitFor(screen, modelDialogVisible, screenTimeoutMs)).value) sent = { ...sent, sendStatus: 'ok' };
+        }
+      }
       if (!sent || sent.ok === false || sent.notSent || sent.sendStatus && sent.sendStatus !== 'ok') {
         if (sent?.notSent) attempted = false;
         return fail((sent && sent.message) || 'CodeAgent 没有确认打开模型菜单');

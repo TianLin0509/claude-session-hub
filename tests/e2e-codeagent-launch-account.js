@@ -6,8 +6,8 @@
 //             [--env KEY=VAL]（给隔离 Hub 加一个环境变量，如 AI_HUB_DISABLE_GPU=1）[--electron-arg <开关>] [--dsf <缩放比例>]
 // 隔离 Hub = 当前工作区按公司目标导出（或 --entry 指定的导出目录），以源码方式启动；CodeAgent 用替身（真 Claude Code + Haiku）。
 // 公司的号：个人账号只有 GLM-5.2-WX-Auto，号池号 1 只有 DeepSeek。走真实 UI 点击：
-//   1. 启动中心选 CodeAgent → 用量账号「个人账号」→ 模型下拉只列 GLM、默认选中 GLM → 创建 → 点「后台」→ 终端可见、有输出；
-//   2. 启动中心选「号池 · 手动选择」→ 号 1 → 模型下拉只列 DS、默认选中 DS → 创建 → 点「后台」→ 终端可见、有输出；
+//   1. 启动中心选 CodeAgent → 用量账号「个人账号」→ 没有模型下拉、摘要写 GLM（2026-10-20 一号一模型）→ 创建 → 点「后台」→ 终端可见、有输出；
+//   2. 启动中心选「号池 · 手动选择」→ 号 1 → 没有模型下拉、摘要写 DS → 创建 → 点「后台」→ 终端可见、有输出；
 //   3. 两个会话来回切、各自再开后台（reopen），输出仍在、不重复；
 //   4. 启动中心的下拉（账号、号池账号、模型）：点开后页面内的选项列表在控件正下方（误差 ≤3 px），真实点击选项；
 //   5. 从规则、助理、论坛等整页切回会话再点「后台」，终端都能打开（整页面板切换不把终端层留在隐藏状态）。
@@ -171,14 +171,13 @@ async function main() {
     const g1 = JSON.parse(await c.eval(geometry('#new-session-codeagent-account')));
     result.accountSelectGeometry = g1;
     check(g1 && g1.inMenu && g1.hit && g1.labelAbove != null && g1.labelAbove >= 0 && g1.labelAbove <= 12, '「用量账号」下拉在启动中心里、可点、标签在正上方', g1);
+    // 2026-10-20 田哥：一个账号固定一个模型，CodeAgent 不再有「模型」下拉；摘要里写这个号的模型
     const personalModels = JSON.parse(await until(`(()=>{const s=JSON.parse(${modelState});return s.text.includes('默认')?JSON.stringify(s):''})()`, 'personal models', 20000));
     result.personalModels = personalModels;
-    check(personalModels.options.length === 1 && personalModels.value === '' && personalModels.text === 'GLM-5.2 Auto（默认）',
-      `个人账号：模型下拉只有「${personalModels.text}」一项（这个号的默认模型，选中、启动后不切换）`, personalModels);
-    const gm = JSON.parse(await c.eval(geometry('#new-session-model')));
-    result.modelSelectGeometry = gm;
-    check(gm && gm.inMenu && gm.hit, '「模型」下拉在启动中心里、可点', gm);
-    await choose('#new-session-model', '', '01b-model-popover-personal');
+    const modelHidden = `document.getElementById('new-session-model-field').hidden===true`;
+    check(await c.eval(modelHidden), 'CodeAgent 启动中心没有「模型」下拉（一个账号固定一个模型）');
+    const sum1 = await c.eval(`document.getElementById('new-session-summary').textContent`);
+    check(/GLM-5\.2 Auto/.test(sum1) && !/沿用 CodeAgent 当前模型/.test(sum1), `个人账号：摘要写这个号的模型（${sum1}）`, sum1);
     await shot('01-launcher-personal');
     const before = await c.eval('[...sessions.keys()].join(",")');
     await click('#new-session-submit');
@@ -203,7 +202,9 @@ async function main() {
     check(g2 && g2.inMenu && g2.hit, '「号池账号」下拉在启动中心里、可点', g2);
     const poolModels = JSON.parse(await until(`(()=>{const s=JSON.parse(${modelState});return s.text===${j(DS + '（默认）')}?JSON.stringify(s):''})()`, 'pool models', 20000));
     result.poolModels = poolModels;
-    check(poolModels.options.length === 1 && poolModels.value === '' && poolModels.text === DS + '（默认）', `号 1：模型下拉只有「${poolModels.text}」一项（号 1 的默认模型）`, poolModels);
+    check(await c.eval(modelHidden), '号 1：同样没有「模型」下拉');
+    const sum2 = await c.eval(`document.getElementById('new-session-summary').textContent`);
+    check(sum2.includes(require('../core/codeagent-models').modelLabel(DS)), `号 1：摘要写号 1 的模型（${sum2}）`, sum2);
     await shot('03-launcher-pool');
     // 键盘：Alt+↓ 打开列表，Esc 只关列表、不关启动中心
     const key = async (k, code, vk, modifiers = 0) => { for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk, modifiers }); await sleep(200); };
