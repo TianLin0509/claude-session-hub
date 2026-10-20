@@ -22,7 +22,11 @@ function mergeReply(group) {
   // Phase-less provider items (ACP, older Codex) before the result are
   // progress too; dropping them lost every note written between tool calls.
   const progress = group.filter(m => m.phase !== 'activity' && m.text && !body.includes(m));
-  const result = finals.at(-1) || group.findLast(m => m.phase !== 'activity') || first;
+  const latest = finals.at(-1) || group.findLast(m => m.phase !== 'activity') || first;
+  // A thinking note may stand in for the answer only while work runs. A turn
+  // that ended without a reply keeps its outcome notice and every note in 过程.
+  const endedSilent = latest.fromThinking && ['completed', 'failed', 'interrupted'].includes(latest.stopReason);
+  const result = endedSilent ? { ...latest, text: '', nativeOutcome: latest.stopReason } : latest;
   const activity = group.findLast(m => m.phase === 'activity');
   const owner = group.findLast(m => m.deliveryContext) || result;
   const tools = new Map();
