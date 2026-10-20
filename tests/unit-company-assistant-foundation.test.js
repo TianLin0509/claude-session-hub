@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const D = require('../core/company-assistant/data');
 const B = require('../core/company-assistant/brief');
-const { CompanyAssistant } = require('../core/company-assistant/service');
+const { CompanyAssistant, TOOLS_VERSION } = require('../core/company-assistant/service');
 const { resolveNames, applyNames } = require('../core/company-assistant/identity');
 const { runReadOnly } = require('../core/company-assistant/welink-ro');
 const { readJson, collectMeetings, meetingArgs } = require('../core/company-assistant/queries');
@@ -177,7 +177,7 @@ test('会议取数传齐全部参数，用毫秒时间窗并按 total 分页；�
 
 test('升级查询说明包含完整会议命令，保留现有助理会话且包装指向统一姓名缓存', async () => {
   const dataDir = temp(), svc = new CompanyAssistant({ dataDir, noTimer: true, noTools: true, now: () => now, getSession: id => ({ id }) });
-  svc.saveState({ sessionId: 'existing', toolsVersion: 1, primed: 'existing' });
+  svc.saveState({ sessionId: 'existing', toolsVersion: TOOLS_VERSION, primed: 'existing' });
   assert.equal(await svc.ensureSession(), 'existing');
   const doc = fs.readFileSync(path.join(svc.workspace, 'CLAUDE.md'), 'utf8');
   assert.ok(doc.includes(meetingArgs(now).join(' ')));
@@ -266,7 +266,7 @@ test('复用助理会话时跨日更新会议查询时间范围，同日不重�
   let at = now; const prompts = [];
   const svc = new CompanyAssistant({ dataDir: temp(), noTimer: true, noTools: true, now: () => at,
     getSession: id => ({ id, status: 'idle' }), sendPrompt: async (_id, prompt) => { prompts.push(prompt); return { ok: true }; } });
-  svc.saveState({ sessionId: 'existing', toolsVersion: 1 });
+  svc.saveState({ sessionId: 'existing', toolsVersion: TOOLS_VERSION });
   for (const next of [now, now + 1000, now + 86400000]) {
     at = next; svc.job = null; svc.queue.push({ type: 'probe', prompt: '今天的会' }); await svc.pump();
   }
