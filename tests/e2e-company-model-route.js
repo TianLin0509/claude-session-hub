@@ -87,7 +87,10 @@ async function main() {
         extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'home-hubhome'), CLAUDE_HUB_BRIDGE_ROLE: 'home', CLAUDE_HUB_BRIDGE_API_URL: apiUrl, CLAUDE_HUB_WIRELESS_TIMER: '0',
           AI_HUB_CODEAGENT_CONFIG_DIR: hcac } }),
       launchIsolatedHub({ dataDir: cdata, port: await freePort(), windowMode: 'background', label: 'mr-company', allowExternalState: true, entryPath: exportDir,
-        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'company-hubhome'), AI_HUB_CODEAGENT_CONFIG_DIR: personal, AI_HUB_UPDATE_STARTUP_DELAY_MS: '600000' } }),
+        // 2026-10-20：公司 CLI 交互模式不认 --model（替身 IGNORE_MODEL 复现），通道会话要像真人从启动中心新建那样在 /model 菜单里选中号的模型。
+        // 菜单里是 Claude 的模型名：GLM → Sonnet（开局是 Haiku，回答换成 Sonnet 才说明菜单选上了），DeepSeek → Haiku。
+        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'company-hubhome'), AI_HUB_CODEAGENT_CONFIG_DIR: personal, AI_HUB_UPDATE_STARTUP_DELAY_MS: '600000',
+          CODEAGENT_STANDIN_IGNORE_MODEL: '1', AI_HUB_CODEAGENT_PICKER_LABELS: j({ [GLM]: 'Sonnet', [DS]: 'Haiku' }) } }),
     ]);
     [hc, cc] = await Promise.all([connectFirstPage(home), connectFirstPage(company)]);
     for (const c of [hc, cc]) await c.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -152,8 +155,14 @@ async function main() {
     check(/^\d{4}-Q\d+-codeagent$/.test(metaDs.title), '特战会话名保持「MMDD-Qn-家里AI」：' + metaDs.title);
     const launchDs = await until('standin launch DS', async () => readLines(launchLog).find(x => x.hubSession === ctDs.sessionId), 60000, 1000);
     result.launchDs = launchDs;
-    check(path.resolve(launchDs.configDir).toLowerCase() === path.resolve(poolDir).toLowerCase() && launchDs.settingsModel === DS && !launchDs.args.includes('--model'),
-      'CodeAgent 启动时：配置目录是 DS 号的目录，settings.json 的模型是 deepseek-v4-0731，命令行没有 --model（不走菜单）');
+    check(path.resolve(launchDs.configDir).toLowerCase() === path.resolve(poolDir).toLowerCase() && launchDs.settingsModel === DS && launchDs.args.includes('--setting-sources'),
+      'CodeAgent 启动时：配置目录是 DS 号的目录，settings.json 的模型是 deepseek-v4-0731，只读账号自己的配置');
+    // 菜单选模型的记录（main/ipc/session-handlers.js runCodeAgentPick 写 event=pick）
+    const pickLine = sid => { try { return fs.readFileSync(path.join(cdata, 'logs', 'codeagent-model.log'), 'utf8').split('\n')
+      .find(l => / event=pick /.test(l) && l.includes(` session=${String(sid).slice(0, 8)} `) && / reason=launch /.test(l)) || ''; } catch { return ''; } };
+    const pickDs = await until('DS pick', async () => pickLine(ctDs.sessionId), 90000, 1000);
+    result.pickDs = pickDs;
+    check(/ ok=true/.test(pickDs) && pickDs.includes(` model=${DS}`), '通道会话开起来后在 /model 菜单里选中 DS 号自己的模型：' + pickDs.slice(25, 160));
     const replyDs = await until('home DS receipt', async () => { await hc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")'); const t = (await status(hc)).threads.find(x => x.id === askedDs.thread); return t?.rounds[0]?.reply ? t.rounds[0] : (t?.rounds[0]?.error && 'ERR ' + t.rounds[0].error); }, 8 * 60000, 4000);
     result.replyDs = { text: String(replyDs.reply).slice(0, 300), meta: replyDs.meta };
     check(new RegExp(tokenDs).test(replyDs.reply), '家里收到 DS 这一轮的回执');
@@ -174,6 +183,11 @@ async function main() {
       '指定 GLM：开在个人账号（配置目录是个人账号，settings.json 原样是分档名 GLM-5.2-WX）');
     const replyGlm = await until('home GLM receipt', async () => { await hc.eval('require("electron").ipcRenderer.invoke("bridge:check-now")'); const t = (await status(hc)).threads.find(x => x.id === askedGlm.thread); return t?.rounds[0]?.reply ? t.rounds[0] : (t?.rounds[0]?.error && 'ERR ' + t.rounds[0].error); }, 8 * 60000, 4000);
     check(new RegExp(tokenGlm).test(replyGlm.reply) && replyGlm.meta.requestedModel === GLM, '家里收到 GLM 这一轮的回执，元数据写明指定 GLM');
+    const pickGlm = pickLine(ctGlm.sessionId);
+    result.pickGlm = pickGlm; result.replyGlmMeta = replyGlm.meta;
+    check(/ ok=true/.test(pickGlm) && pickGlm.includes(` model=${GLM}`), '个人账号的通道会话在菜单里选中 GLM：' + pickGlm.slice(25, 160));
+    check(/sonnet/i.test(String(replyGlm.meta.actualModel || '')), `CLI 开局是 Haiku（不认 --model），回答实际用的是菜单选中的 ${replyGlm.meta.actualModel}（替身里 GLM = Sonnet）`);
+    check(JSON.parse(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8')).model === PERSONAL_TIER, '菜单选完，个人账号 settings.json 的模型仍是原值');
 
     // ---- 3b. 不指定模型：个人账号和号池的号交替接活（2026-10-18 田哥反馈 v2.1.11：以前只开号池的号） ----
     // 此刻两个号上各有一个会话（上面的 DS、GLM）；号池号上次分配更早 → 先给号池号；之后号池号会话多一个 → 轮到个人账号。

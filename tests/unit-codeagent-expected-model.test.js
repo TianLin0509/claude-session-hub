@@ -72,15 +72,20 @@ test('_createSession 的显示名：号池号用同步配置定下的模型，�
   manager.createSession('codeagent', { cwd, purpose: 'company-bridge', resumeCCSessionId: 'de2b2941-1234-4567-89ab-123456789abc' });
   assert.equal(pool.personalLastAssignedAt(dataDir), stamped, '恢复不算新分配');
   // 账号即模型（2026-10-19）：个人号上当初按 DS 派的通道会话，恢复时按个人账号此刻的默认模型照常起，
-  // 不报「通道不改个人账号的默认模型」，不驱动菜单，不改 settings.json；新开仍要求默认就是指定模型。
+  // 不报「通道不改个人账号的默认模型」，不改 settings.json；新开仍要求默认就是指定模型。
+  // 2026-10-20 起自动会话像真人在启动中心选好模型那样，开起来后在 /model 菜单里选中个人账号纠正后的默认模型（GLM），不选回 DS。
   const picks = [];
   manager.on('codeagent-model-pick', event => picks.push(event));
   const routeResumed = manager.createSession('codeagent', { cwd, purpose: 'company-bridge', codeagentRouteModel: DS, model: DS, codeagentModelPick: true,
     resumeCCSessionId: 'fe2b2941-1234-4567-89ab-123456789abc' });
   assert.ok(manager.getSession(routeResumed.id), '恢复照常起');
   assert.throws(() => manager.createSession('codeagent', { cwd, purpose: 'company-bridge', codeagentRouteModel: DS }), /个人账号/);
-  assert.deepEqual(picks, [], '自动会话不驱动 /model 菜单');
+  assert.deepEqual(picks.map(p => [p.sessionId, p.modelId, p.reason]), [[routeResumed.id, GLM, 'launch']], '自动会话在菜单里选个人账号自己的默认模型');
+  assert.equal(manager.getSession(routeResumed.id).currentModel.id, GLM);
   assert.match(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8'), /"GLM-5\.2-WX"/, '个人账号 settings.json 没被改写');
+  // 号池号的通道会话：选它同步配置定下的模型；号池号也不认调用方带来的模型名
+  const poolBridge = manager.createSession('codeagent', { cwd, purpose: 'company-assistant', codeagentAccount: 'pool', model: GLM, codeagentModelPick: true });
+  assert.deepEqual(picks.slice(1).map(p => [p.sessionId, p.modelId]), [[poolBridge.id, DS]], '号池号选 DS');
 
   // 什么都不知道时才写占位
   fs.rmSync(pool.personalModelsFile(dataDir));

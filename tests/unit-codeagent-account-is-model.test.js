@@ -2,7 +2,8 @@
 // 账号即模型（2026-10-19 田哥：「每个账号现在都只有一个模型……起一个会话，直接用默认的模型就可以了」「唯一需要的就是一开始选账号」）
 // 与个人账号默认模型被改回 DS 的排查（公司真机 14:17:24，~/.cac/settings.json 的 model 从 GLM-5.2-WX-Auto 变回 deepseek-v4-flash-0731）。
 // 覆盖：
-//   1. 通道、公司助理、论坛三类自动会话：启动和恢复都不带模型、不驱动 /model 菜单；
+//   1. 通道、公司助理、论坛三类自动会话：调用方带来的模型和选型标记不认；2026-10-20 起只按号定下的模型（_createSession 写 codeagentAccountModel）
+//      在启动和原地重拉时走 /model 菜单，像真人从启动中心新建那样（公司真机 Q-1020-14：只靠账号配置，个人号启动后仍被写回 DS）；
 //   2. 通道按模型派活只挑默认模型就是它的号，不切号的默认模型；遗留的 hub-route-model.json 空闲时按原值写回一次并删掉；
 //   3. 用户手动选模型照旧走菜单；
 //   4. 恢复会话绝不「选回」旧模型（存档里带 DS 的 currentModel / requestedModel / actualModel / 选型标记）；
@@ -59,6 +60,23 @@ test('1. 通道、公司助理、论坛：启动不带 --model、不驱动菜单
     assert.doesNotMatch(launch.cmd, /--model/, purpose);
     assert.equal(launch.model, null);
   }
+});
+
+test('1. 自动会话只按号定下的模型走菜单；菜单处理只在启动和原地重拉时放行，会话中途切换照旧拒绝', () => {
+  for (const purpose of AUTO) {
+    const opts = { purpose, model: GLM, codeagentModelPick: true, codeagentAccountModel: GLM };
+    assert.equal(shouldPickCodeAgentModel(opts), true, purpose);
+    assert.equal(shouldPickCodeAgentModel({ ...opts, codeagentAccountModel: DS }), false, `${purpose} 号定的不是这个模型`);
+    const launch = buildCodeAgentPtyLaunch(`auto-pick-${purpose}`, 'codeagent', opts, root, {}, config);
+    assert.match(launch.cmd, / --setting-sources user /, purpose);
+    assert.equal(launch.model, GLM);
+  }
+  const handlers = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'session-handlers.js'), 'utf8');
+  assert.match(handlers, /\['company-bridge', 'company-assistant', 'company-forum'\]\.includes\(session\.purpose\) && reason !== 'launch' && reason !== 'relaunch'/);
+  // 菜单没选上、输入框已恢复：自动会话照旧发活（不卡住这一轮），并且不把显示模型改成没选上的那个
+  const fallback = handlers.slice(handlers.indexOf("fallback: 'cli-default-model'") - 400, handlers.indexOf("fallback: 'cli-default-model'"));
+  assert.match(fallback, /!result\.ok && result\.inputReady && \['company-bridge', 'company-assistant', 'company-forum'\]\.includes\(session\.purpose\)/);
+  assert.ok(handlers.indexOf("fallback: 'cli-default-model'") < handlers.indexOf('codeagentUserModel: modelId'), '回退在记录「用户选中的模型」之前返回');
 });
 
 test('1/4. 自动会话恢复：不传模型、不选型，启动覆盖里带模型也不认', async () => {
