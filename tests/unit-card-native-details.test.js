@@ -101,11 +101,12 @@ test('message-specific actions retain existing functions without regenerate on p
  const user=r.renderTurnCard(cards.find(t=>t.role==='user'));
  for(const action of ['copy','multi-select','resend','edit-resend','prompt-inspect'])assert(user.includes('data-action="'+action+'"'));
 });
-test('image references render small lazy thumbnails, unsafe URLs never become image sources',()=>{
+test('image references render clickable paths without loading thumbnails, unsafe URLs stay disabled',()=>{
  const r=renderer(),html=r.renderTurnCard({id:'image',role:'user',text:'图片',attachments:[
   {path:'C:\\fixture\\图 A.png'}, {url:'https://example.test/image.png'}, {url:'javascript:alert(1)'}]});
- assert(html.includes('conversation-image-thumb'));assert(html.includes('loading="lazy"'));
- assert(html.includes('file:///C:/fixture/'));assert(html.includes('https://example.test/image.png'));
+ assert(html.includes('data-action="card-open-image"'));assert(!html.includes('loading="lazy"'));
+ assert(html.includes('C:\\fixture\\图 A.png'));assert(html.includes('https://example.test/image.png'));
+ assert(!html.includes('<img class="conversation-image"'));assert(html.includes(' disabled'));
  assert(!html.includes('src="javascript:'));assert(html.includes('图片暂不可用'));
 });
 test('delivery-only changes participate in render signature',()=>{
