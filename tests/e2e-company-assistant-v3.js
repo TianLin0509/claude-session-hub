@@ -9,7 +9,7 @@ const j = JSON.stringify, sleep = ms => new Promise(r => setTimeout(r, ms));
 const original = process.env.MSZ_SOURCE || 'D:\\AIWork\\20261013-秘书终结者v2';
 const python = path.join(original, '.venv', 'Scripts', 'python.exe');
 const out = path.resolve(__dirname, '..', 'output');
-const variant = process.env.HUB_V3_ENTRY ? '-export' : '';
+const variant = process.env.HUB_V3_EXE ? '-packaged' : process.env.HUB_V3_ENTRY ? '-export' : '';
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-v3-e2e-')), dataDir = path.join(root, 'data'), dir = path.join(dataDir, 'company-assistant'), room = path.join(root, 'mishu');
@@ -36,7 +36,11 @@ async function main() {
     mock = spawn(python, [path.join(__dirname, 'fixtures', 'company-room-mock.py'), room, original], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
     mock.stderr.on('data', b => errors.push(b.toString()));
     await until(() => fs.existsSync(path.join(room, 'mock-ready.json')), 'mock site ready');
-    hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'company-v3', ...(process.env.HUB_V3_ENTRY ? { entryPath: process.env.HUB_V3_ENTRY, cwd: process.env.HUB_V3_ENTRY } : {}), extraEnv: {
+    const entry = process.env.HUB_V3_ENTRY;
+    hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'company-v3',
+      ...(entry ? { entryPath: entry, cwd: process.env.HUB_V3_EXE ? path.dirname(process.env.HUB_V3_EXE) : entry } : {}),
+      ...(process.env.HUB_V3_EXE ? { executablePath: process.env.HUB_V3_EXE } : {}),
+      extraEnv: {
       CLAUDE_HUB_COMPANY_ASSISTANT: '1', CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'none'),
       CLAUDE_HUB_WELINK_CLI: path.join(__dirname, 'fixtures', 'welink-cli-standin.js'), WELINK_STANDIN_STATE: state, WELINK_STANDIN_LOG: log,
       QT_QPA_PLATFORM: 'offscreen', MSZ_HUB_TEST_INSTANCE: 'hub-v3-' + process.pid, MSZ_E2E_REPORT: path.join(room, 'runtime.json'),

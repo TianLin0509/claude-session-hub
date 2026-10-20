@@ -16,6 +16,7 @@ const j = JSON.stringify, sleep = ms => new Promise(r => setTimeout(r, ms));
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const CODEAGENT = path.join(__dirname, 'fixtures', 'codeagent-standin', 'codeagent.cmd');
 const WELINK = path.join(__dirname, 'fixtures', 'welink-cli-standin.js');
+const variant = process.env.HUB_V3_EXE ? '-packaged' : '';
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-company-phone-'));
@@ -33,7 +34,7 @@ async function main() {
   let hub, c;
   const until = async (expr, label, ms = 180000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await c.eval(expr).catch(() => false)) return; await sleep(400); } throw Error('timeout: ' + label); };
   const untilGroup = async (fn, label, ms = 300000) => { const end = Date.now() + ms; while (Date.now() < end) { const m = group().find(fn); if (m) return m; await sleep(500); } throw Error('timeout: ' + label); };
-  const shot = async name => { const s = await c.send('Page.captureScreenshot', { format: 'png' }); const f = path.join(out, `${stamp}-company-phone-${name}-claude2.png`); fs.writeFileSync(f, Buffer.from(s.data, 'base64')); result.shots.push(f); };
+  const shot = async name => { const s = await c.send('Page.captureScreenshot', { format: 'png' }); const f = path.join(out, `${stamp}-company-phone${variant}-${name}-claude2.png`); fs.writeFileSync(f, Buffer.from(s.data, 'base64')); result.shots.push(f); };
   try {
     fs.copyFileSync(claudeAuth, path.join(cac, '.credentials.json'));
     fs.writeFileSync(path.join(cac, '.claude.json'), j({ hasCompletedOnboarding: true, lastOnboardingVersion: '2.1.205', bypassPermissionsModeAccepted: true,
@@ -41,11 +42,17 @@ async function main() {
     fs.writeFileSync(path.join(cac, '.cac.json'), j({ hasCompletedOnboarding: true, projects: {} }));
     fs.writeFileSync(path.join(cac, 'settings.json'), j({ model: 'haiku', permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true }));
 
-    hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'company-phone', extraEnv: {
+    hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'company-phone',
+      ...(process.env.HUB_V3_EXE ? { executablePath: process.env.HUB_V3_EXE, entryPath: process.env.HUB_V3_ENTRY, cwd: path.dirname(process.env.HUB_V3_EXE) } : {}),
+      extraEnv: {
       AI_HUB_CODEAGENT_COMMAND: CODEAGENT, AI_HUB_CODEAGENT_CONFIG_DIR: cac, CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '',
       HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'none'),
       CLAUDE_HUB_COMPANY_ASSISTANT: '1', CLAUDE_HUB_WELINK_CLI: WELINK, WELINK_STANDIN_LOG: log, WELINK_STANDIN_STATE: state } });
     c = await connectFirstPage(hub);
+    if (process.env.HUB_V3_EXE) {
+      result.runtime = await c.eval('({ exe: process.execPath, resources: process.resourcesPath, renderer: __dirname })');
+      assert.match(result.runtime.renderer, /app\.asar[\\/]renderer$/i);
+    }
     await c.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await until('typeof sessions !== "undefined" && !!document.getElementById("btn-company-assistant")', 'rail button', 60000);
     // 一个要被助理管的普通会话（还没交代过任务）
@@ -107,9 +114,24 @@ async function main() {
     result.checks.push(`假 welink-cli 共 ${calls.length} 次调用：写命令只有 ${writes.length} 次往「助理 CodeAgent」群发消息，其余全是查询`);
     result.passed = true;
   } finally {
-    if (hub) { try { await gracefulQuit(hub); } catch (e) { result.teardownError = e.message; } }
-    try { fs.rmSync(path.join(cac, '.credentials.json'), { force: true }); } catch {}
-    fs.writeFileSync(path.join(out, `${stamp}-company-phone-e2e-claude2.json`), JSON.stringify(result, null, 2));
+    if (hub) {
+      try {
+        if (c && hub.isAlive()) {
+          await c.eval('window.close()');
+          for (let i = 0; i < 125 && hub.isAlive(); i++) await sleep(200);
+          assert.equal(hub.isAlive(), false, 'normal close must drain and exit');
+        }
+        result.teardown = await gracefulQuit(hub, { allowAlreadyExited: true });
+      } catch (e) { result.passed = false; result.teardownError = e.message; process.exitCode = 1; }
+      finally {
+        if (hub.isAlive()) { try { await gracefulQuit(hub); } catch (e) { result.cleanupError = e.message; } }
+        result.hubLogTail = hub.log().slice(-20);
+      }
+    }
+    c?.close();
+    try { fs.rmSync(path.join(cac, '.credentials.json'), { force: true }); }
+    catch (e) { result.passed = false; result.credentialCleanupError = e.message; process.exitCode = 1; }
+    fs.writeFileSync(path.join(out, `${stamp}-company-phone${variant}-e2e-claude2.json`), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));
   }
   if (!result.passed) process.exitCode = 1;
