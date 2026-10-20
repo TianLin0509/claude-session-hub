@@ -5,10 +5,14 @@
 // （菜单里只有 GLM-5.2-WX-Auto），号池里一个只有 DeepSeek 的号。替身回答里的实际模型是 claude-haiku…（不是 DS 一族，侧栏图标是 CodeAgent 默认图标）；
 // 「实际 DS → DeepSeek 图标」的映射由 unit-codeagent-expected-model（iconModelId）和 e2e-codeagent-model-identity-standin 覆盖。
 // 曾试过本机转发改写回答里的模型名：Anthropic 对经自定义 ANTHROPIC_BASE_URL 的订阅登录回 403，放弃。
-// 按真实操作路径核对：
-//   1. 新建个人账号会话、号池会话：第一轮回答前输入框下方就是具体模型（GLM-5.2 Auto / deepseek-v4-0731），不是「CodeAgent 当前模型」；
-//   2. 号池会话答完一轮后休眠，重启隔离 Hub：侧栏图标和标签仍是实际模型（不被清单第一项顶成 GLM）；
-//   3. 唤醒：恢复出来、新一轮回答前输入框下方仍是实际模型。
+// 2026-10-20 田哥拍板「一个号一个模型」：CodeAgent 输入框下方不再有模型 chip（要换在后台 CLI 里自己输 /model），
+// 会话栏标题前是号的工号首字母（悬停写代称），模型写在侧栏图标的悬停说明和会话行的无障碍标签里。按现界面核对：
+//   1. 新建个人账号会话、号池会话：第一轮回答前侧栏就写这个号的模型（GLM-5.2 Auto / deepseek-v4-0731），标题前是号的首字母（w / z）；
+//      输入框下方没有 CodeAgent 模型 chip；
+//   2. 号池会话答完一轮后，侧栏改写实际模型；休眠后重启隔离 Hub：侧栏图标和标签仍是实际模型（不被清单第一项顶成 GLM），首字母仍是 z；
+//   3. 唤醒：恢复出来、新一轮回答前侧栏仍是实际模型，输入框下方仍没有模型 chip。
+// 旧断言对照（2026-10-20 改写）：「输入框下方显示某模型」三处（第一轮前个人 / 号池、答完后、唤醒后）改成核对侧栏的模型说明，
+// 并加核对输入框下方没有 CodeAgent 模型 chip（功能已按田哥拍板去掉）；内部模型为空、号池号归属、重启后模型与图标几条原样保留。
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), http = require('node:http');
 const assert = require('node:assert/strict');
 const { launchIsolatedHub, gracefulQuit, _waitMs: sleep } = require('./helpers/hub-launcher');
@@ -58,8 +62,11 @@ async function main() {
     for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, ...p, button: 'left', clickCount: 1 });
     await sleep(300);
   };
-  const chipLabel = `([...document.querySelectorAll('.composer-model')].find(e=>!e.hidden&&e.offsetParent)?.querySelector('.composer-chip-label')?.textContent || '')`;
-  const row = sid => `(()=>{const e=document.querySelector('.session-item[data-session-id="${sid}"]');const k=e&&e.querySelector('.sl-kind');return e&&k?JSON.stringify({cls:k.className,title:k.title,aria:e.getAttribute('aria-label')||'',bg:getComputedStyle(k).backgroundImage}):''})()`;
+  // 输入框下方看得见的模型 chip（CodeAgent 会话应当没有）
+  const chipVisible = `[...document.querySelectorAll('.composer-model')].some(e=>!e.hidden&&e.offsetParent&&(e.querySelector('.composer-chip-label')?.textContent||'').trim())`;
+  const row = sid => `(()=>{const e=document.querySelector('.session-item[data-session-id="${sid}"]');const k=e&&e.querySelector('.sl-kind');const a=e&&e.querySelector('.sl-acct');return e&&k?JSON.stringify({cls:k.className,title:k.title,aria:e.getAttribute('aria-label')||'',bg:getComputedStyle(k).backgroundImage,acct:a?a.textContent:'',acctTitle:a?a.getAttribute('title')||'':''}):''})()`;
+  // 等侧栏这一行的模型说明写着 label、首字母写着 letter（账号表异步取，首字母可能晚一点出现）
+  const rowWith = (sid, label, letter, what) => until(`(()=>{const r=${row(sid)};if(!r)return '';const o=JSON.parse(r);return o.title.includes(${j(label)})&&o.aria.includes(${j(label)})&&o.acct===${j(letter)}?r:''})()`, what, 20000).then(JSON.parse);
   const launch = async label => {
     hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'background', label, extraEnv: {
       CLAUDE_HUB_HOME_DIR: path.join(root, 'hubhome'), DEEPSEEK_API_KEY: '', OPENAI_API_KEY: '', CODEX_API_KEY: '', ANTHROPIC_API_KEY: '', CLAUDE_HUB_AGENT_RUNTIME: 'pty',
@@ -77,15 +84,22 @@ async function main() {
     const mine = await c.eval(`ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd, effort: 'low', mcpProfile: 'none', title: '显示-个人账号' } })})`);
     await until(`!!document.querySelector('.session-item[data-session-id="${mine.id}"]')`, 'personal row', 20000);
     await c.eval(`selectSession(${j(mine.id)})`); await c.eval(`applyViewMode('card')`);
-    const mineLabel = await until(`${chipLabel}`, 'personal chip', 20000);
-    check(mineLabel === 'GLM-5.2 Auto' && (await c.eval(`sessions.get(${j(mine.id)}).currentModel.id`)) === '',
-      `个人账号新会话（settings.json 写分档名 GLM-5.2-WX）第一轮回答前输入框下方显示「${mineLabel}」，内部模型仍为空`);
+    const mineRow = await rowWith(mine.id, 'GLM-5.2 Auto', 'w', 'personal row model');
+    result.personalRow = mineRow;
+    check((await c.eval(`sessions.get(${j(mine.id)}).currentModel.id`)) === '' && mineRow.acctTitle === '个人账号',
+      `个人账号新会话（settings.json 写分档名 GLM-5.2-WX）第一轮回答前侧栏写「GLM-5.2 Auto」、标题前首字母 w（悬停「个人账号」），内部模型仍为空`);
+    await until(`document.querySelector('.floating-input-box') && !(${chipVisible}) ? 'ok' : ''`, 'personal composer', 20000);
+    check(true, '个人账号会话输入框下方没有 CodeAgent 模型 chip（一号一模型，要换在后台 CLI 输 /model）');
     const pooled = await c.eval(`ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd, effort: 'low', mcpProfile: 'none', title: '显示-号池', codeagentAccount: 'pool' } })})`);
     const sid = pooled.id, q = j(sid);
     await until(`!!document.querySelector('.session-item[data-session-id="${sid}"]')`, 'pool row', 20000);
     await c.eval(`selectSession(${q})`); await c.eval(`applyViewMode('card')`);
-    const poolLabel = await until(`${chipLabel}`, 'pool chip', 20000);
-    check(poolLabel === DS && (await c.eval(`sessions.get(${q}).codeagentPoolAccount`)) === POOL_ID, `号池会话第一轮回答前输入框下方显示「${poolLabel}」`);
+    const poolRow = await rowWith(sid, DS, 'z', 'pool row model');
+    result.poolRow = poolRow;
+    check((await c.eval(`sessions.get(${q}).codeagentPoolAccount`)) === POOL_ID && /^号池 · /.test(poolRow.acctTitle) && !/z00222222/.test(JSON.stringify(poolRow)),
+      `号池会话（自动挑号，号只有 ${DS}）第一轮回答前侧栏写「${DS}」、首字母 z（悬停「${poolRow.acctTitle}」，不露工号）`);
+    await until(`document.querySelector('.floating-input-box') && !(${chipVisible}) ? 'ok' : ''`, 'pool composer', 20000);
+    check(true, '号池会话输入框下方没有 CodeAgent 模型 chip');
     await shot('01-before-first-answer');
 
     // ---- 2. 答一轮 → 休眠 → 重启隔离 Hub ----
@@ -95,7 +109,8 @@ async function main() {
     const actual = await until(`(()=>{const s=sessions.get(${q});return s&&s.codeagentActualModel&&getSessionRuntimeTruth(s).state==='completed'?s.codeagentActualModel:''})()`, 'first answer', 300000);
     result.actualModel = actual;
     check(/^claude-/.test(actual), `第一轮回答的实际模型：${actual}`);
-    await until(`${chipLabel} === ${j(actual)}`, 'chip actual', 20000);
+    const answeredRow = await rowWith(sid, actual, 'z', 'row actual');
+    check(!answeredRow.title.includes(DS), `答完后侧栏改写实际模型「${actual}」，首字母仍是 z`);
     await shot('02-after-first-answer');
     const suspended = await c.eval(`ipcRenderer.invoke('suspend-session', ${q})`);
     check(suspended && suspended.ok, '号池会话手动休眠');
@@ -117,6 +132,8 @@ async function main() {
     const logo = 'codeagent'; // claude-haiku 认不出是哪家，沿用 CodeAgent 图标
     check(r.cls.includes(`logo-${logo}`) && r.bg.includes(`${logo}.svg`) && r.title.includes(actual) && r.aria.includes(actual),
       `侧栏图标 logo-${logo}、悬停与无障碍标签写 ${actual}`);
+    const rAcct = await rowWith(sid, actual, 'z', 'letter after restart');
+    check(/^号池 · /.test(rAcct.acctTitle), '重启后休眠会话标题前仍是号的首字母 z');
     const mineAfter = await c.eval(`sessions.get(${j(mine.id)})?.currentModel?.displayName || ''`);
     check(mineAfter === 'GLM-5.2 Auto', `没答过的个人账号会话重启后仍显示预计模型「${mineAfter}」`);
     await c.eval(`document.querySelector('.session-item[data-session-id="${sid}"]')?.scrollIntoView({block:'center'})`);
@@ -126,9 +143,11 @@ async function main() {
     await c.eval(`resumeDormantSession(${q})`);
     await until(`sessions.get(${q}) && sessions.get(${q}).status !== 'dormant' && !sessions.get(${q})._resumePending`, 'resumed', 60000);
     await c.eval(`selectSession(${q})`); await c.eval(`applyViewMode('card')`);
-    const wokeLabel = await until(`${chipLabel}`, 'woke chip', 20000);
-    check(wokeLabel === actual, `唤醒后（新一轮回答前）输入框下方仍是「${wokeLabel}」`);
-    const woke = JSON.parse(await until(row(sid), 'row after wake', 20000));
+    const wokeRow = await rowWith(sid, actual, 'z', 'row after wake');
+    check(true, `唤醒后（新一轮回答前）侧栏仍写「${actual}」、首字母 z`);
+    await until(`document.querySelector('.floating-input-box') && !(${chipVisible}) ? 'ok' : ''`, 'woke composer', 20000);
+    check(true, '唤醒后输入框下方仍没有 CodeAgent 模型 chip');
+    const woke = wokeRow;
     check(woke.cls.includes(`logo-${logo}`), `唤醒后侧栏图标仍是 logo-${logo}`);
     await shot('04-after-wake');
     result.passed = true;

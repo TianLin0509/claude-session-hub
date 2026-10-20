@@ -144,6 +144,10 @@ async function main() {
     try { intreePid = Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${Number(sess.pid)} AND Name='node.exe'" | Select-Object -First 1).ProcessId`], { encoding: 'utf8', windowsHide: true }).trim()) || null; } catch { intreePid = null; }
     log('会话里的 node PID：' + intreePid);
     check(d.hub.parallel && Number.isInteger(d.hub.parallel.cap) && typeof d.hub.parallel.limitedBy === 'string' && d.hub.queue && Array.isArray(d.hub.queue.threads), `并行与队列：上限 ${d.hub.parallel.cap}（受${d.hub.parallel.limitedBy}限制），队列快照在`);
+    // 2026-10-20：并行上限写出按多少 GB/会话估算、来源（这台公司 Hub 里没有在运行的 CodeAgent 会话 → 默认 3.8 GB；有就按实测均值）
+    check(d.hub.parallel.sessionGB > 0 && ['measured', 'default'].includes(d.hub.parallel.sessionMemSource) && /按每个会话约 [\d.]+ GB 估算（.*(实测|默认)/.test(d.hub.parallel.sessionMemNote || '')
+      && /内存按每个会话 [\d.]+ GB 估算（(实测 \d+ 个会话的平均|默认值)）/.test(view.summary || ''),
+      `并行上限的内存估算：${d.hub.parallel.sessionMemNote}；摘要里也写了`);
     check(d.pool.accounts.map(a => a.alias).join(',') === '个人,号 1' && d.pool.accounts.every(a => a.state === '可用'), '号池只用「个人 / 号 1」代称');
     // 二期段落：CodeAgent（这台电脑没装 CodeAgent 时如实写没读到）、仿真（进程 + 结果目录）、功能
     check(d.codeagent && (d.codeagent.version || d.codeagent.versionError) && d.codeagent.personal && d.codeagent.personal.ready === true && d.codeagent.quotaNote
@@ -158,6 +162,7 @@ async function main() {
     check(!/codeagent-diag-(intree|outside)-probe/.test(text), '回报里没有命令行原文');
     const cardText = await hc.eval('document.querySelector("dialog.cl-diag").innerText');
     check(/内存都去哪了/.test(cardText) && /通道并行与队列/.test(cardText) && /残留嫌疑/.test(cardText) && /别的 Hub（不算残留）/.test(cardText) && /号 1/.test(cardText) && !/abc123|张三/.test(cardText), '卡片用人话标签显示各段，号用代称');
+    check(cardText.includes(d.hub.parallel.sessionMemNote), `卡片「通道并行与队列」写出内存估算：${d.hub.parallel.sessionMemNote}`);
 
     // ---- 公司：审计日志；界面轻提示中性措辞 ----
     const audit = fs.readFileSync(path.join(cdata, 'logs', 'company-diag.log'), 'utf8');

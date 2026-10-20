@@ -43,9 +43,29 @@ test('回收计划：内存宽裕时只收超过保温时长的；发问方活�
   assert.match(plan[0].reason, /答完 50 分钟没人追问（保温 45 分钟）/);
 });
 
+const COLD8 = now => [
+  { sessionId: 'warm-asker', threadId: 'Q-1', idleSince: now - 30 * MIN, askerActive: true },
+  { sessionId: 'old', threadId: 'Q-2', idleSince: now - 40 * MIN, askerActive: false },
+  { sessionId: 'new', threadId: 'Q-3', idleSince: now - 5 * MIN, askerActive: false },
+  { sessionId: 'n4', threadId: 'Q-4', idleSince: now - 4 * MIN, askerActive: false },
+  { sessionId: 'n5', threadId: 'Q-5', idleSince: now - 3 * MIN, askerActive: false },
+  { sessionId: 'n6', threadId: 'Q-6', idleSince: now - 2 * MIN, askerActive: false },
+  { sessionId: 'n7', threadId: 'Q-7', idleSince: now - 1 * MIN, askerActive: false },
+  { sessionId: 'n8', threadId: 'Q-8', idleSince: now - 1 * MIN, askerActive: false },
+];
+
+test('回收计划：内存紧时按默认 3.8 GB/会话算腾出量，收得比旧 1.3 GB 少、但仍收到 30%', () => {
+  const now = 1_800_000_000_000, memory = { total: 32 * GB, free: 2.5 * GB, ratio: 2.5 / 32 };
+  assert.equal(care.SESSION_BYTES, 3.8 * GB, '没有实测样本时的默认值');
+  // 需要从 2.5 GB 升到 ≥9.6 GB（30%）：每个 3.8 GB → 收 2 个（2.5 + 7.6 = 10.1）
+  const plan = care.planRelease({ now, keepWarmMs: 45 * MIN, memory, candidates: COLD8(now) });
+  assert.deepEqual(plan.map(p => p.sessionId), ['old', 'new']);
+});
+
 test('回收计划：内存低于 20% 时先收最冷的（发问方不活跃、答完最久），收到 30% 为止', () => {
   const now = 1_800_000_000_000, memory = { total: 32 * GB, free: 2.5 * GB, ratio: 2.5 / 32 };
-  const plan = care.planRelease({ now, keepWarmMs: 45 * MIN, memory, candidates: [
+  // 这条核对收的顺序和停止条件：按旧口径每个 1.3 GB 显式传入（默认值改成 3.8 GB 后见上一条）
+  const plan = care.planRelease({ now, keepWarmMs: 45 * MIN, memory, sessionBytes: 1.3 * GB, candidates: [
     { sessionId: 'warm-asker', threadId: 'Q-1', idleSince: now - 30 * MIN, askerActive: true },
     { sessionId: 'old', threadId: 'Q-2', idleSince: now - 40 * MIN, askerActive: false },
     { sessionId: 'new', threadId: 'Q-3', idleSince: now - 5 * MIN, askerActive: false },
@@ -61,7 +81,7 @@ test('回收计划：内存低于 20% 时先收最冷的（发问方不活跃、
 });
 
 // ---------------------------------------------------------------- 通道：名额、核实、收放、补收
-function rig(t, { memory = { total: 32 * GB, free: 16 * GB, ratio: 0.5 } } = {}) {
+function rig(t, { memory = { total: 32 * GB, free: 16 * GB, ratio: 0.5 }, deps = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-session-care-'));
   const clock = { now: 1_800_000_000_000 };
   const s = { map: new Map(), busy: new Set(), finals: new Map(), sent: [], suspended: [], landed: new Map(), stored: new Map(), resumed: [] };
@@ -77,6 +97,7 @@ function rig(t, { memory = { total: 32 * GB, free: 16 * GB, ratio: 0.5 } } = {})
     transcriptHasRequest: (meta, r) => s.landed.has(`${meta?.id}#${r.round}`) ? s.landed.get(`${meta.id}#${r.round}`) : null,
     suspendSession: (id, opts) => { s.suspended.push({ id, opts }); s.stored.set(id, s.map.get(id)); s.map.delete(id); return { ok: true }; },
     sessionInputAt: id => s.inputAt?.get(id) || 0,
+    ...deps,
   });
   company.link.saveConfig({ state: 'paired', gen: 'g1', secret: require('../core/company-bridge/crypto').newSecret(), baseUrl: 'https://fixture.invalid/api' });
   company.link.flush = async () => {};
@@ -216,27 +237,36 @@ test('并行上限：工作日忙时用设定值；晚上、周末放宽；再�
   // 周五 10:00 忙时：设定 2、只有个人账号 → 2
   assert.equal(care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(16) }).cap, 2);
   // 周五 21:50 闲时、只有个人账号：每号闲时放到 6 个（2026-10-17 田哥：晚上同时开 6 个没问题）→ 闲时上限 6
-  const night = care.parallelCap({ date: at('2026-10-16T21:50:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(16) });
+  // （内存给足 30 GB：按默认 3.8 GB/会话能开 7 个，这里只看时段上限；16 GB 时按 3.8 GB 只够 3 个，见下面 mem16Night）
+  const night = care.parallelCap({ date: at('2026-10-16T21:50:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(30) });
+  const mem16Night = care.parallelCap({ date: at('2026-10-16T21:50:00+08:00'), peakCap: 2, idleCap: 6, lanes: 1, memory: mem(16) });
+  assert.equal(mem16Night.cap, 3); assert.equal(mem16Night.limitedBy, '内存余量');
   assert.equal(night.cap, 6); assert.equal(night.peak, false); assert.equal(night.limitedBy, '闲时上限');
   // 2026-10-17 新默认：工作日忙时 3 个、每号忙时 3 个 → 个人账号白天就能开 3 个
   assert.equal(care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), lanes: 1, memory: mem(16) }).cap, 3);
   // 每号忙时上限可调：设成 2 时，忙时设定 4 也只开 2
   const peakOne = care.parallelCap({ date: at('2026-10-16T10:00:00+08:00'), peakCap: 4, perAccountPeak: 2, lanes: 1, memory: mem(16) });
   assert.equal(peakOne.cap, 2); assert.match(peakOne.limitedBy, /可用账号数/);
-  // 周六白天：号池 2 个号 + 个人 = 3 条道 → 闲时上限 6
-  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, memory: mem(20) }).cap, 6);
+  // 周六白天：号池 2 个号 + 个人 = 3 条道 → 闲时上限 6（内存给足 30 GB；剩 20 GB 时按 3.8 GB/会话只够 4 个）
+  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, memory: mem(30) }).cap, 6);
+  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, memory: mem(20) }).cap, 4);
   // 内存保底默认 10%：32 GB 剩 4 GB，再开一个就低于 3.2 GB → 只能维持现有的 2 个
   const tight = care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), peakCap: 2, idleCap: 6, lanes: 3, working: 2, memory: mem(4) });
   assert.equal(tight.cap, 2); assert.equal(tight.limitedBy, '内存余量');
-  // 同样剩 7.5 GB：保底 10% 还能再开 3 个（共 5），保底调到 20% 就只能维持 2 个
-  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), idleCap: 6, lanes: 3, working: 2, memory: mem(7.5) }).cap, 5);
-  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), idleCap: 6, lanes: 3, working: 2, memory: mem(7.5), memFloor: 0.2 }).cap, 2);
+  // 同样剩 7.5 GB、按旧口径每个 1.3 GB：保底 10% 还能再开 3 个（共 5），保底调到 20% 就只能维持 2 个
+  const OLD = 1.3 * GB;
+  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), idleCap: 6, lanes: 3, working: 2, memory: mem(7.5), sessionBytes: OLD }).cap, 5);
+  assert.equal(care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), idleCap: 6, lanes: 3, working: 2, memory: mem(7.5), memFloor: 0.2, sessionBytes: OLD }).cap, 2);
+  // 默认 3.8 GB/会话（2026-10-20 实测工作中的会话 3.7–3.9 GB）：剩 7.5 GB 保底 3.2 GB → 只能再开 1 个（共 3），受内存限制
+  const real = care.parallelCap({ date: at('2026-10-17T10:00:00+08:00'), idleCap: 6, lanes: 3, working: 2, memory: mem(7.5) });
+  assert.equal(real.cap, 3); assert.equal(real.memCap, 3); assert.equal(real.limitedBy, '内存余量');
   // 午休 12:30 不算忙时
   assert.equal(care.isPeak(at('2026-10-16T12:30:00+08:00')), false);
 });
 
 test('通道：晚上排队的问题按放宽后的上限开工；新会话走号池，号池挑不出号时退回个人账号；排队的报回第几个、为什么等', async t => {
-  const x = rig(t);
+  // 内存给足（64 GB 剩 32 GB，按默认 3.8 GB/会话能开 7 个），让这条只看时段与账号上限
+  const x = rig(t, { memory: { total: 64 * GB, free: 32 * GB, ratio: 0.5 } });
   x.clock.now = new Date(2026, 9, 16, 21, 50).getTime();
   const created = [];
   let poolFails = false;
@@ -259,4 +289,137 @@ test('通道：晚上排队的问题按放宽后的上限开工；新会话走�
   x.company.setSettings({ maxParallelIdle: 8 });
   await x.company.advance();
   assert.ok(created.some(o => o.codeagentAccount === undefined), '退回个人账号');
+});
+
+// ---------------------------------------------------------------- 会话内存估计（2026-10-20 田哥：「5 个号了，理论上只剩下内存瓶颈」）
+// 每个会话按多少内存算：在运行的 CodeAgent 会话进程树工作集的均值；没有样本、测量失败用默认 3.8 GB；缓存 60 秒；并行上限和收会话共用。
+const MB = 1024 ** 2;
+const estimator = (measure, clock = { now: 1_800_000_000_000 }) => ({ clock, est: care.createSessionMemEstimator({ measure, now: () => clock.now }) });
+
+test('会话内存：样本取均值；不到 300 MB 的（刚起来的会话）不当样本；说明写实测与样本数', async () => {
+  const { est } = estimator(async () => [{ id: 'a', bytes: 3.6 * GB }, { id: 'b', bytes: 4.0 * GB }, { id: 'c', bytes: 120 * MB }]);
+  const first = est.current();
+  assert.equal(first.source, 'default', '第一次读取不等测量，先用默认值');
+  assert.equal(first.bytes, 3.8 * GB);
+  await est.refresh();
+  const m = est.current();
+  assert.equal(m.source, 'measured'); assert.equal(m.samples, 2);
+  assert.equal(m.bytes, Math.round(3.8 * GB));
+  assert.match(m.note, /按每个会话约 3\.8 GB 估算（实测 2 个在运行的 CodeAgent 会话的平均）/);
+  // 纯数字列表也认
+  const { est: e2 } = estimator(async () => [2 * GB, 3 * GB]);
+  await e2.refresh();
+  assert.equal(e2.current().bytes, 2.5 * GB);
+  assert.deepEqual(care.sessionMemView(e2.current()), { sessionGB: 2.5, sessionMemSource: 'measured', sessionMemSamples: 2, sessionMemNote: e2.current().note });
+});
+
+test('会话内存：没有样本（没有在运行的会话 / 没接测量）用默认 3.8 GB，并说明来源', async () => {
+  const { est } = estimator(async () => []);
+  await est.refresh();
+  const m = est.current();
+  assert.equal(m.source, 'default'); assert.equal(m.reason, 'no-samples'); assert.equal(m.bytes, 3.8 * GB);
+  assert.match(m.note, /约 3\.8 GB 估算（现在没有在运行的 CodeAgent 会话可测，用默认值）/);
+  // 有会话但都不到 300 MB（刚起来）：也用默认值，说明写清楚
+  const { est: young } = estimator(async () => [{ id: 'a', bytes: 150 * MB }, { id: 'b', bytes: 200 * MB }]);
+  await young.refresh();
+  assert.equal(young.current().source, 'default'); assert.equal(young.current().bytes, 3.8 * GB);
+  assert.match(young.current().note, /在运行的 2 个 CodeAgent 会话都还不到 300 MB、像是没加载完，不当样本，用默认值/);
+  const none = care.createSessionMemEstimator({});
+  assert.equal(none.current().bytes, 3.8 * GB); assert.equal(none.current().source, 'default');
+  assert.equal((await none.refresh()).source, 'default', '没接测量时 refresh 也只回默认值');
+});
+
+test('会话内存：测量失败（同步抛错、异步拒绝、回了乱数据）退回默认值，读取不抛错', async () => {
+  for (const measure of [() => { throw new Error('powershell 没返回'); }, async () => { throw new Error('进程枚举超时'); }]) {
+    const { est } = estimator(measure);
+    assert.doesNotThrow(() => est.current());
+    await est.refresh();
+    const m = est.current();
+    assert.equal(m.source, 'default'); assert.equal(m.reason, 'failed'); assert.equal(m.bytes, 3.8 * GB);
+    assert.match(m.note, /测量失败：(powershell 没返回|进程枚举超时)，用默认值/);
+  }
+  const { est: junk } = estimator(async () => ({ not: 'a list' }));
+  await junk.refresh();
+  assert.equal(junk.current().source, 'default');
+  // 先测到过、后来失败：也退回默认值（不沿用可能已过时的实测）
+  let fail = false;
+  const { est, clock } = estimator(async () => { if (fail) throw new Error('boom'); return [2 * GB]; });
+  await est.refresh(); assert.equal(est.current().bytes, 2 * GB);
+  fail = true; clock.now += care.SESSION_MEM_TTL_MS; await est.refresh();
+  assert.equal(est.current().bytes, 3.8 * GB); assert.equal(est.current().reason, 'failed');
+});
+
+test('会话内存：缓存 60 秒内不重测；过期后下一次读取在后台重测；同时只跑一次', async () => {
+  assert.ok(care.SESSION_MEM_TTL_MS >= 30000, '缓存不少于 30 秒');
+  let calls = 0, value = 3 * GB;
+  const { est, clock } = estimator(async () => { calls += 1; return [value]; });
+  est.current(); est.current(); // 第一次读取触发后台测量；测量中再读不重复发起
+  assert.equal(calls, 1);
+  await est.refresh(); // 等在途的那次（不另起）
+  assert.equal(calls, 1); assert.equal(est.current().bytes, 3 * GB);
+  clock.now += care.SESSION_MEM_TTL_MS - 1000; est.current(); assert.equal(calls, 1, '没过期不重测');
+  value = 4 * GB;
+  clock.now += 1000;
+  assert.equal(est.current().bytes, 3 * GB, '过期这次仍先返回上一次的结果，不等测量');
+  assert.equal(calls, 2);
+  await est.refresh();
+  assert.equal(est.current().bytes, 4 * GB);
+  assert.equal(calls, 2);
+});
+
+test('会话内存：进程快照 → 每个会话 PTY 进程树的工作集；同一进程只算一次；PID 已不在的会话跳过', () => {
+  const p = (pid, ppid, wsBytes, startedAt = 1000 + pid) => ({ pid, ppid, wsBytes, startedAt, name: 'x' });
+  const snap = { processes: [p(100, 1, 1 * GB), p(101, 100, 2 * GB), p(102, 101, 0.8 * GB), p(200, 1, 0.5 * GB), p(201, 200, 3 * GB), p(300, 1, 9 * GB)] };
+  const out = care.sessionTreeBytes(snap, [{ id: 's-1', pid: 100 }, { id: 's-2', pid: 200 }, { id: 's-gone', pid: 999 }]);
+  assert.deepEqual(out, [{ id: 's-1', bytes: 3.8 * GB, processes: 3 }, { id: 's-2', bytes: 3.5 * GB, processes: 2 }]);
+  // 哪些会话算样本：SessionManager.sessions 条目里在运行的 CodeAgent 会话（kind/status 在 info 上），休眠、关闭、别的 CLI、没有终端进程的不算
+  const entries = new Map([
+    ['ca', { info: { kind: 'codeagent', status: 'idle' }, pty: { pid: 100 } }],
+    ['ca-resume', { info: { kind: 'codeagent-resume', status: 'running' }, pty: { pid: 200 } }],
+    ['ca-dormant', { info: { kind: 'codeagent', status: 'dormant' }, pty: { pid: 300 } }],
+    ['ca-nopty', { info: { kind: 'codeagent', status: 'idle' }, pty: null }],
+    ['claude', { info: { kind: 'claude', status: 'idle' }, pty: { pid: 400 } }],
+  ]);
+  assert.deepEqual(care.codeagentSessionRoots(entries.entries()), [{ id: 'ca', pid: 100 }, { id: 'ca-resume', pid: 200 }]);
+  // 两个会话的根有父子关系时，子树不重复计入
+  const nested = care.sessionTreeBytes(snap, [{ id: 'outer', pid: 100 }, { id: 'inner', pid: 101 }]);
+  assert.equal(nested.find(x => x.id === 'inner').bytes, 0);
+});
+
+test('通道：并行上限（memCap）和收会话（planRelease）用同一个实测估计；设置页与直查能看到按多少 GB、来源', async t => {
+  let measured = 0;
+  // 实测：两个在运行的会话各 2 GB → 每个会话按 2 GB 算（默认是 3.8 GB）
+  const memory = { total: 32 * GB, free: 6 * GB, ratio: 6 / 32 };
+  const x = rig(t, { memory, deps: { measureSessionMem: async () => { measured += 1; return [{ id: 's-1', bytes: 2 * GB }, { id: 's-2', bytes: 2 * GB }]; } } });
+  const before = x.company.parallelLimitSafe();
+  assert.equal(before.sessionMemSource, 'default', '第一次还没测完：先按默认 3.8 GB');
+  assert.equal(before.memCap, 0, '剩 6 GB、保底 3.2 GB：按 3.8 GB 一个都不能再开');
+  await x.company.sessionMem.refresh();
+  const par = x.company.parallelLimitSafe();
+  assert.equal(par.sessionGB, 2); assert.equal(par.sessionMemSource, 'measured'); assert.equal(par.sessionMemSamples, 2);
+  assert.equal(par.memCap, 1, '按实测 2 GB：(6 - 3.2) / 2 → 还能开 1 个');
+  assert.match(par.sessionMemNote, /按每个会话约 2\.0 GB 估算（实测 2 个/);
+  // 收会话：剩 6 GB（19%）要收到 ≥ 9.6 GB，按 2 GB 一个要收 2 个（按 3.8 GB 只会收 1 个）
+  for (const id of ['a', 'b', 'c']) {
+    x.s.map.set('s-' + id, { id: 's-' + id, status: 'idle' });
+    x.add('Q-' + id, [{ round: 1, question: id, reply: 'ok', replyAt: x.clock.now - 5 * MIN }], { sessionId: 's-' + id });
+  }
+  x.company.careSessions();
+  assert.equal(x.s.suspended.length, 2, '按实测 2 GB 收 2 个');
+  assert.equal(x.company.careState.sessionGB, x.company.parallelState.sessionGB);
+  assert.equal(x.company.careState.sessionMemSource, 'measured');
+  assert.equal(measured, 1, '60 秒内只测一次');
+  // 状态页（设置里「同时处理」那一行）带上同一说明
+  const status = x.company.status();
+  assert.equal(status.parallel.sessionGB, 2); assert.equal(status.parallel.sessionMemSource, 'measured');
+  assert.match(status.parallel.sessionMemNote, /实测 2 个/);
+});
+
+test('通道：测量出错时并行上限照算（默认 3.8 GB），不抛错', async t => {
+  const x = rig(t, { deps: { measureSessionMem: async () => { throw new Error('进程枚举超时'); } } });
+  await x.company.sessionMem.refresh();
+  const par = x.company.parallelLimitSafe();
+  assert.ok(par, '并行上限照常算出来');
+  assert.equal(par.sessionGB, 3.8); assert.equal(par.sessionMemSource, 'default');
+  assert.match(par.sessionMemNote, /测量失败/);
 });
