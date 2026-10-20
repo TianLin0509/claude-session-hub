@@ -1660,6 +1660,8 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      // 软压缩：用户目录的提醒钩子看到它，才让 AI 在断点结束本轮留标记（main/soft-compact-controller.js 只管 PTY）。
+      if (require('./agent-runtime-mode').agentRuntimeMode() !== 'native') sessionEnv.CLAUDE_HUB_SOFT_COMPACT = '1';
       // Propagate data-dir override so the statusline script writes its cache
       // into the isolated test dir instead of the production ~/.claude-session-hub.
       if (process.env.CLAUDE_HUB_DATA_DIR) {
