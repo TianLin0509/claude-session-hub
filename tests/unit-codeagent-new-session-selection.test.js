@@ -41,7 +41,7 @@ function harness(config = {}) {
   const nodes = new Map([
     'new-session-menu', 'new-session-tuning', 'new-session-model',
     'new-session-effort', 'new-session-mcp', 'new-session-tuning-note',
-    'new-session-summary',
+    'new-session-summary', 'new-session-model-field',
   ].map(id => [id, element()]));
   const kindButtons = ['codeagent', 'powershell', 'claude'].map(kind => element({ kind }));
   const menu = nodes.get('new-session-menu');
@@ -94,7 +94,9 @@ test('default GUI creation explicitly keeps the native CodeAgent model', async (
   assert.equal(created.kind, 'codeagent');
   assert.equal(created.opts.codeagentModelPick, false);
   assert.equal(created.opts.effort, 'high');
-  assert.match(h.nodes.get('new-session-summary').innerHTML, /沿用 CodeAgent 当前模型/);
+  // 一个账号固定一个模型（2026-10-20 田哥）：不显示模型选项，摘要里也不写「沿用 CodeAgent 当前模型」
+  assert.equal(h.nodes.get('new-session-model-field').hidden, true);
+  assert.doesNotMatch(h.nodes.get('new-session-summary').innerHTML, /沿用 CodeAgent 当前模型/);
 });
 
 test('saved launch defaults do not count as a model choice in this dialog', async () => {
@@ -118,23 +120,23 @@ test('effort changes do not authorize a model picker; CodeAgent sends no MCP pro
   assert.equal(created.opts.codeagentModelPick, false);
 });
 
-test('an explicit model selection is sent to session creation', async () => {
-  const h = harness();
-  await h.open();
-  await h.change('new-session-model', 'MiniMax-M2.7');
-  const created = await h.submit();
-  assert.equal(created.opts.model, 'MiniMax-M2.7');
-  assert.equal(created.opts.codeagentModelPick, true);
-  assert.doesNotMatch(h.nodes.get('new-session-summary').innerHTML, /沿用 CodeAgent 当前模型/);
+// 2026-10-20 田哥：「1个账号就默认1个模型，用户要切换就自己手动切换」——模型选项藏起来了，就算选择框被改动也不请求切换。
+test('CodeAgent never asks for a model switch at launch, even if the hidden select changes', async () => {
+  for (const model of ['MiniMax-M2.7', 'GLM-5.2-WX-Auto']) {
+    const h = harness();
+    await h.open();
+    await h.change('new-session-model', model);
+    const created = await h.submit();
+    assert.equal(created.opts.codeagentModelPick, false, model);
+    assert.equal(h.nodes.get('new-session-model-field').hidden, true);
+  }
 });
 
-test('choosing the old default GLM is also an explicit model selection', async () => {
+test('other CLIs keep the model select', async () => {
   const h = harness();
   await h.open();
-  await h.change('new-session-model', 'GLM-5.2-WX-Auto');
-  const created = await h.submit();
-  assert.equal(created.opts.model, 'GLM-5.2-WX-Auto');
-  assert.equal(created.opts.codeagentModelPick, true);
+  await h.kind('claude');
+  assert.equal(h.nodes.get('new-session-model-field').hidden, false);
 });
 
 test('returning to the native-model option cancels an explicit picker request', async () => {
@@ -148,7 +150,7 @@ test('returning to the native-model option cancels an explicit picker request', 
   assert.equal((await h.submit()).opts.codeagentModelPick, false);
 });
 
-test('explicit CodeAgent model choice survives switching kinds and back', async () => {
+test('switching kinds and back still never asks CodeAgent for a model switch (2026-10-20)', async () => {
   const h = harness();
   await h.open();
   await h.change('new-session-model', 'MiniMax-M2.7');
@@ -156,8 +158,7 @@ test('explicit CodeAgent model choice survives switching kinds and back', async 
   assert.equal('codeagentModelPick' in h.controller.tuningOpts(), false);
   await h.kind('codeagent');
   const created = await h.submit();
-  assert.equal(created.opts.model, 'MiniMax-M2.7');
-  assert.equal(created.opts.codeagentModelPick, true);
+  assert.equal(created.opts.codeagentModelPick, false);
 });
 
 test('effort-only state remains implicit after switching kinds and back', async () => {

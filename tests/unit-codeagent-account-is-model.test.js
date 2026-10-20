@@ -310,7 +310,8 @@ test('2. 号池号默认模型和个人号一样严格（审核）：写了且�
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ idaasOAuth: { xAuthToken: 'x', accountId: 'acc' + id, expiresAt: Date.now() + 72 * 3600000 } }));
     writeSettings(dir, written ? { model: written } : {});
-    probe.writeProbed(path.join(dir, probe.MODELS_FILE), { models: [DS], defaultModel: DS });
+    // 清单只有一个模型时就是它（2026-10-20 例外，见下一条），这里用两个模型的清单测严格判定
+    probe.writeProbed(path.join(dir, probe.MODELS_FILE), { models: id === 'ok0001' ? [DS] : [DS, GLM], defaultModel: DS });
   }
   const accounts = route.routeAccounts({ dataDir: d, personalDir: '' });
   const by = id => accounts.find(a => a.key === id);
@@ -342,6 +343,51 @@ test('2. 号池号默认模型和个人号一样严格（审核）：写了且�
       { ...config, configDir: personalDir }), /默认模型是 未知，不是 deepseek/);
     assert.equal(settingsModel(pool.accountDir(d, 'miss01')), undefined, '也没替它写');
   } finally { process.env.CLAUDE_HUB_DATA_DIR = prev; }
+});
+
+test('2. 探测过的清单只有一个模型时就是它（2026-10-20 公司真机：CodeAgent 把默认模型写回 deepseek，只有 GLM 的个人号和新号被判成未知）', () => {
+  const d = path.join(root, 'single-data');
+  fs.mkdirSync(path.join(d, 'codeagent-pool'), { recursive: true });
+  const ids = ['ds0001', 'glm001', 'glm002'];
+  fs.writeFileSync(path.join(d, 'codeagent-pool', 'pool.json'), JSON.stringify({ schema: 1, accounts: ids.map(id => ({ id, note: '', createdAt: '', lastAssignedAt: 0 })) }));
+  const probe = require('../core/codeagent-model-probe');
+  for (const [id, written, models] of [['ds0001', DS, [DS]], ['glm001', 'deepseek-v4-flash-0731', [GLM]], ['glm002', undefined, [GLM]]]) {
+    const dir = pool.accountDir(d, id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ idaasOAuth: { xAuthToken: 'x', accountId: 'acc' + id, expiresAt: Date.now() + 72 * 3600000 } }));
+    writeSettings(dir, written ? { model: written } : {});
+    probe.writeProbed(path.join(dir, probe.MODELS_FILE), { models, defaultModel: '' });
+  }
+  // 个人号：写的是没权限的 deepseek、清单只有 GLM
+  const personalDir = tmp('personal-single');
+  fs.writeFileSync(path.join(personalDir, '.credentials.json'), JSON.stringify({ idaasOAuth: { xAuthToken: 'x', accountId: 'accpersonal', expiresAt: Date.now() + 72 * 3600000 } }));
+  writeSettings(personalDir, { model: 'deepseek-v4-flash-0731' });
+  probe.writeProbed(pool.personalModelsFile(d), { models: [GLM], defaultModel: '' });
+  const accounts = route.routeAccounts({ dataDir: d, personalDir });
+  const by = id => accounts.find(a => a.key === id);
+  assert.deepEqual(['personal', 'glm001', 'glm002'].map(k => [by(k).defaultModel, by(k).defaultNote]),
+    [[GLM, undefined], [GLM, undefined], [GLM, undefined]], '号的模型是清单里唯一的 GLM，不标未知');
+  assert.equal(pool.listAccounts(d).find(a => a.id === 'glm001').defaultNote, undefined, '号表直查同一口径');
+  // 按模型派活：三个 GLM 号都能接，DS 号照旧
+  assert.equal(route.listModels(accounts).length, 2);
+  assert.equal(route.pickRoute(accounts, DS).account.key, 'ds0001');
+  assert.ok(['glm001', 'glm002', 'personal'].includes(route.pickRoute(accounts, GLM).account.key));
+  // 按写的 deepseek 报过错的记录：不指定模型时照样避让（选不上菜单就会按它跑），直到写的值改对；
+  // 指定 GLM 时请求的就是 GLM（开起来在菜单里选中它），不受这条记录拦；没报过错的号不受影响
+  const rec = { kind: 'model-config', until: Date.now() + 3600000 };
+  const withAvoid = accounts.map(a => (a.key === 'personal' ? { ...a, modelAvoid: { 'deepseek-v4-flash-0731': rec } } : a));
+  assert.equal(route.pickAnyRoute(withAvoid, { only: 'personal' }).reason, 'avoid');
+  assert.equal(route.pickRoute(withAvoid, GLM, { only: 'personal' }).ok, true);
+  assert.equal(route.pickAnyRoute(withAvoid, { only: 'glm001' }).ok, true);
+  const fixed = withAvoid.map(a => (a.key === 'personal' ? { ...a, configModel: GLM } : a));
+  assert.equal(route.pickAnyRoute(fixed, { only: 'personal' }).ok, true, '写的值改对之后不再避让');
+  // 清单没探测过（不权威）或有多个模型：照旧严格，不猜
+  assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '' }, { single: true }), '');
+  assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '', authoritative: true }, { single: true }), GLM);
+  // 手动会话的预计模型显示（不传 single）照旧严格：手动会话不会自动在菜单里选它
+  assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '', authoritative: true }), '');
+  assert.equal(pool.strictDefaultModel('MiniMax-M2.7', [GLM, DS], { authoritative: true }).model, '');
+  assert.equal(pool.strictDefaultModel('deepseek-v4-flash-0731', [GLM]).model, '');
 });
 
 test('6. 看守改回失败不停在被改后的值（审核）：写失败下一拍重试；一直失败就 verified:false 报出', async t => {
