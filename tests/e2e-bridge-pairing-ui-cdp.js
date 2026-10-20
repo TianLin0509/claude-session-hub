@@ -185,6 +185,22 @@ const A2 = '📌 初值按宽带 CQI 估算，未调度的 TTI 按 0 衰减。\n
     assert.equal(co.title, `Q21 · 家「无线调度遗忘因子核对 #${CODE}」· DeepSeek`);
     check(`公司会话：会话名「${co.title}」；顶部写「家里 无线调度遗忘因子核对 #${CODE} · DeepSeek」和「${co.by}」，头部 ⇄ 后面同样写出`);
     await shot('04-公司会话-顶部');
+
+    // ⑤ 公司「AI特战队专用功能」任务记录：隔离实例是家里角色，入口没启用；按公司角色（已解锁、已配对）重新跑一遍 home-link.js 再打开
+    const dialogState = { ...coState, unlocked: true, link: { state: 'paired', pairedAt: T - 3 * 24 * 60 * MIN, outbox: 0 }, net: { lastOkAt: new Date(now - 5000).toISOString(), peerSeen: new Date(now - 20000).toISOString() },
+      settings: { enabled: true, pollSeconds: 30, codeRoots: ['D:/code/l2'], instructions: '你是公司 CodeAgent……', effort: 'low', usePool: true }, defaultInstructions: '', images: null, consults: [],
+      threads: coState.threads.map(t => ({ ...t, session: { open: true, busy: false } })) };
+    await q(`(() => { window.__bpState = ${j(dialogState)}; (0, eval)(require('fs').readFileSync(${j(path.join(__dirname, '..', 'renderer', 'home-link.js'))}, 'utf8')); })()`);
+    await until('company dialog entry', () => q(`typeof window.__homeLinkOpen === 'function'`), 15000);
+    await q(`window.__homeLinkOpen()`);
+    await until('company task list', () => q(`!!document.querySelector('#home-link-dialog .hl-item')`), 15000);
+    const listMeta = await q(`[...document.querySelectorAll('#home-link-dialog .hl-item .hl-muted')].map(e => e.innerText)`);
+    result.facts.companyList = listMeta;
+    assert.ok(listMeta.some(x => x.includes(`家里 无线调度遗忘因子核对 #${CODE} · DeepSeek`) && x.includes('本会话由 号 1 · GLM-5.2-WX-Auto 作答')), j(listMeta));
+    await q(`document.querySelector('#home-link-dialog .hl-item')?.scrollIntoView({ block: 'center' })`);
+    await wait(500);
+    check('公司「AI特战队专用功能」任务记录：每条写「家里 会话名 #短码 · 家里模型」和「本会话由 号 · 模型 作答」');
+    await shot('05-公司特战功能-任务记录');
     result.passed = true;
   } catch (error) {
     result.error = error.stack || error.message;

@@ -159,3 +159,11 @@ test('家里 ⇄ 标签：写出对接的公司号、模型和公司会话；多
   assert.equal(bt.sessionBadge('c1', companyRecs, T0 + 1000).peer, '家里 会话甲 #h1 · DeepSeek · 本会话由 号 1 · GLM-5.2 作答');
   assert.equal(bt.sessionBadge('c2', companyRecs, T0 + 1000).peer, undefined);
 });
+
+test('公司版侧栏「特战」筛选：新号牌、带「· 重做 N」的、旧名都算特战会话，普通会话不算', () => {
+  const { isTezhanSession } = require('../renderer/session-list-renderer');
+  for (const title of ['Q21 · 家「会话甲 #ab12」· Codex', 'Q21 · 家「会话甲 #ab12」· Codex · 重做 2', '1020-Q21-codex', '1020-Q21-codex · 重做 2', '特战 · 团队任务', 'AI特战队 · 旧名'])
+    assert.equal(isTezhanSession({ title }), true, title);
+  for (const title of ['Codex 1', '周报整理（续）', 'Q21 讨论']) assert.equal(isTezhanSession({ title }), false, title);
+  assert.equal(isTezhanSession({ title: 'x', purpose: 'company-bridge' }), true);
+});
