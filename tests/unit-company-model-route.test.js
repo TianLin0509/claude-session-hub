@@ -405,7 +405,9 @@ test('等切模型时：号上只剩答完保温的通道会话就先让它休�
   const suspended = [];
   Object.assign(r.company.deps, {
     listSessionIds: () => [...r.cs.map.keys()],
-    suspendSession: (id) => { suspended.push(id); const s = r.cs.map.get(id); if (s) s.status = 'dormant'; r.box.active.both = 0; return { ok: true }; },
+    // Match SessionManager: a suspended session no longer occupies the live map,
+    // so memory-pressure care cannot suspend this already released fixture twice.
+    suspendSession: (id) => { suspended.push(id); r.cs.map.delete(id); r.box.active.both = 0; return { ok: true }; },
   });
   await pair(r);
   // 号上一个人自己开的会话（不是通道的）：不休眠，只能等
