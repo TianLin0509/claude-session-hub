@@ -2393,6 +2393,7 @@ try {
 // 家里联动（2026-10-15）：家里 Hub 的 Agent 用「问公司」提问，公司 Hub 新开 CodeAgent 会话去办（查代码、查本机文件与环境，不改动公司电脑），经加密任务通道往返。
 // 自用版是家里一端，公司版是公司一端，其余发行版不启用（core/company-bridge/role.js）。
 let companyBridgeService = null;
+let companySessionMemInspector = null; // 公司通道量会话内存用的进程枚举器（懒建，measureSessionMem）
 // 一键更新控制器在后面创建（只有发行目标写了下载源才有）；公司一端经它响应家里的远程更新（core/company-bridge/hub-admin.js）。
 let appUpdateControllerRef = null;
 try {
@@ -2471,6 +2472,15 @@ try {
       suspendSession: (id, opts) => sessionManager.suspendSession(id, opts),
       // 最后一次往这个会话终端输入的时间（人打字或 Hub 发送）；只看输入，CLI 界面自己的重绘不算活动。
       sessionInputAt: id => Number(sessionManager.sessions?.get(id)?.lastInputAt) || 0,
+      // 每个在运行的 CodeAgent 会话占多少内存（PTY 进程树的工作集）：并行上限和收会话按它的均值估算（session-care.js createSessionMemEstimator，
+      // 结果缓存 60 秒；一次进程枚举约 0.8 秒）。没有在运行的 CodeAgent 会话时不枚举进程，直接回空（用默认值）。
+      measureSessionMem: async () => {
+        const care = require('./core/company-bridge/session-care');
+        const roots = care.codeagentSessionRoots(sessionManager.sessions?.entries?.() || []);
+        if (!roots.length) return [];
+        companySessionMemInspector = companySessionMemInspector || require('./core/process-inspector').createProcessInspector({ ttlMs: 20000, logger: { warn() {} } });
+        return care.sessionTreeBytes(await companySessionMemInspector.snapshot(), roots);
+      },
       // 号池里能挑的号有几个（登录有效、不和个人账号或别的号重复）：通道按它放宽并行，并把新会话分散到不同的号（core/codeagent-pool.js）。
       poolLanes: () => {
         const pool = require('./core/codeagent-pool');

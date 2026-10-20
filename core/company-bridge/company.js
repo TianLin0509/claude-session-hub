@@ -258,6 +258,8 @@ class CompanyBridge {
     this.images = new (require('./images').BridgeImages)(this);
     this.hubAdmin = new HubAdmin({ bridge: this, deps });
     this.quota = new QuotaWatch(this);
+    // 每个会话占多少内存：并行上限和收会话共用这一个估计（session-care.js createSessionMemEstimator；main 接了 measureSessionMem 才实测）。
+    this.sessionMem = care.createSessionMemEstimator({ measure: deps.measureSessionMem || null, now: () => this.now() });
     this.gatePass = new GatePasser({ open: url => deps.openHiddenGate(url), logDir: path.join(deps.dataDir, 'logs'), now: () => this.now(),
       notify: (title, text) => this.notify(title, text) });
     // 升级前就配对过的电脑（入口还没隐藏时用过）直接算已解锁，不让成员升级后找不到入口。
@@ -622,18 +624,24 @@ class CompanyBridge {
     const s = this.settings();
     let lanes = 1;
     if (s.usePool) { try { lanes += Math.max(0, Number(this.deps.poolLanes?.()) || 0); } catch { /* 号池读不到就只算个人账号 */ } }
-    const limit = care.parallelCap({ date: new Date(this.now()), busyHours: s.busyHours, peakCap: s.maxParallel, idleCap: s.maxParallelIdle,
+    const mem = this.sessionMemEstimate();
+    const limit = { ...care.parallelCap({ date: new Date(this.now()), busyHours: s.busyHours, peakCap: s.maxParallel, idleCap: s.maxParallelIdle,
       perAccountPeak: s.perAccountPeak, perAccountIdle: s.perAccountIdle, memFloor: s.memFloorPct / 100, lanes, working,
-      memory: this.deps.memory ? this.deps.memory() : care.memoryNow() });
+      memory: this.deps.memory ? this.deps.memory() : care.memoryNow(), sessionBytes: mem.bytes }), ...care.sessionMemView(mem) };
     this.parallelState = { ...limit, lanes, working, at: this.now() };
     return limit;
   }
-  // 设置页显示「现在最多同时几个、受什么限制」；算不出来时不挡状态页。
+  // 每个会话按多少内存算（实测均值或默认 3.8 GB）；估计器出任何问题都退回默认值，不挡派活。
+  sessionMemEstimate() {
+    try { const m = this.sessionMem.current(); if (Number.isFinite(m.bytes) && m.bytes > 0) return m; } catch { /* 退回默认值 */ }
+    return { bytes: care.SESSION_BYTES, source: 'default', samples: 0, reason: 'failed', note: care.sessionMemNote({ bytes: care.SESSION_BYTES, source: 'default', reason: 'failed' }) };
+  }
+  // 设置页显示「现在最多同时几个、受什么限制、每个会话按多少 GB 算」；算不出来时不挡状态页。
   parallelLimitSafe() {
     try {
       const working = this.openThreads().filter(x => x.state === 'running' && this.roundWorking(x)).length;
-      const { cap, peak, limitedBy, timeCap, laneCap, memCap } = this.parallelLimit(working);
-      return { cap, peak, limitedBy, timeCap, laneCap, memCap, working };
+      const { cap, peak, limitedBy, timeCap, laneCap, memCap, sessionGB, sessionMemSource, sessionMemSamples, sessionMemNote } = this.parallelLimit(working);
+      return { cap, peak, limitedBy, timeCap, laneCap, memCap, working, sessionGB, sessionMemSource, sessionMemSamples, sessionMemNote };
     } catch { return null; }
   }
   // 排队的问题告诉家里：排第几、为什么在等。只在内容变化时发。
@@ -1018,9 +1026,10 @@ class CompanyBridge {
     const candidates = [...bySession.values()].filter(c => c && this.deps.getSession(c.sessionId) && !this.sessionBusy(c.sessionId))
       .map(c => ({ ...c, idleSince: Math.max(c.idleSince, Number(this.deps.sessionInputAt?.(c.sessionId)) || 0) }));
     const memory = this.deps.memory ? this.deps.memory() : care.memoryNow();
+    const mem = this.sessionMemEstimate(); // 和并行上限同一个估计
     this.careState = { keepWarmMinutes: Math.round(keep.ms / 60000), samples: keep.samples, learned: keep.learned,
-      freePercent: Math.round(memory.ratio * 100), warm: candidates.length, at: this.now() };
-    for (const p of care.planRelease({ candidates, keepWarmMs: keep.ms, now: this.now(), memory })) {
+      freePercent: Math.round(memory.ratio * 100), warm: candidates.length, at: this.now(), ...care.sessionMemView(mem) };
+    for (const p of care.planRelease({ candidates, keepWarmMs: keep.ms, now: this.now(), memory, sessionBytes: mem.bytes })) {
       let result;
       try { result = this.deps.suspendSession(p.sessionId, { reason: 'company-bridge-idle', minIdleMs: 60000, excludePinned: true, excludeFocused: true, excludeMeeting: true }); }
       catch (error) { result = { ok: false, message: error.message }; }

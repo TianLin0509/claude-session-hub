@@ -234,6 +234,9 @@ test('端到端（内存通道）：家里发 diag → 公司直接采集、压�
   // hub：并行受内存限制、队列快照、会话列表（号用代称）
   assert.equal(d.hub.version, '2.1.11'); assert.equal(d.hub.pid, 100); assert.equal(d.hub.uptimeMin, 120);
   assert.equal(d.hub.parallel.cap, 1); assert.equal(d.hub.parallel.limitedBy, '内存余量');
+  // 2026-10-20：写出按多少 GB/会话估算、来源（这个夹具没接实测 → 默认 3.8 GB）
+  assert.equal(d.hub.parallel.sessionGB, 3.8); assert.equal(d.hub.parallel.sessionMemSource, 'default');
+  assert.match(d.hub.parallel.sessionMemNote, /按每个会话约 3\.8 GB 估算（.*用默认值）/);
   assert.equal(d.hub.queue.running, 1); assert.equal(d.hub.queue.queued, 1);
   const q = d.hub.queue.threads.find(x => x.phase === 'queued');
   assert.match(q.queueNote, /受内存余量限制/); assert.equal(q.sessionAlive, false);
@@ -264,6 +267,7 @@ test('端到端（内存通道）：家里发 diag → 公司直接采集、压�
   assert.equal(r.home.status().companyHub.pending.length, 0);
   assert.equal(r.home.status().companyDiag.latest.id, sent.id);
   assert.match(view.summary, /内存可用 13%.*CodeAgent 3 个.*残留嫌疑 2 个.*通道 1 个在跑、1 个排队（上限 1，受内存余量限制）/);
+  assert.match(view.summary, /内存按每个会话 3\.8 GB 估算（默认值）/);
   assert.ok(view.bytes > 0 && view.bytes < 60000);
 });
 

@@ -83,6 +83,8 @@
     const num = (key, list, unit) => `<select data-hl-f="${key}">${opt([...new Set([...list, Number(s[key])])].sort((a, b) => a - b).map(x => ({ id: String(x), label: x + unit })), String(s[key]))}</select>`;
     const p = data.parallel;
     const now = p ? `现在${p.peak ? '是工作日忙时' : '是闲时'}，最多同时 ${p.cap} 个（${p.working} 个在跑，受${p.limitedBy}限制）` : '';
+    // 每个会话按多少内存算：实测在运行的 CodeAgent 会话均值，没有样本时用默认值（core/company-bridge/session-care.js）
+    const memNote = p && p.sessionMemNote ? p.sessionMemNote : '按每个会话的实测占用估算（没有样本时按 3.8 GB）';
     return `<label>同时处理</label><div><div class="hl-row">
         工作日忙时 ${num('maxParallel', [1, 2, 3, 4, 5, 6, 8], ' 个')}
         · 其余时间 ${num('maxParallelIdle', [2, 3, 4, 6, 8, 10, 12], ' 个')}
@@ -90,7 +92,7 @@
         · 内存保底 ${num('memFloorPct', [5, 10, 15, 20, 25, 30], '%')}</div>
         <div class="hl-row">忙时时段 <input data-hl-f="busyHours" value="${esc(s.busyHours)}" style="width:220px" title="格式如 08:30-12:00,13:30-17:30；周末全天算闲时">
         · 新会话<select data-hl-f="usePool"><option value="1"${s.usePool ? ' selected' : ''}>优先用号池</option><option value="0"${s.usePool ? '' : ' selected'}>只用个人账号</option></select></div>
-        <div class="hl-muted">实际上限取三者最小：时段上限、可用账号数 × 每号上限、再开一个会话后可用内存不低于保底（每个 CodeAgent 会话约 1.3 GB）。${esc(now)}</div></div>`;
+        <div class="hl-muted">实际上限取三者最小：时段上限、可用账号数 × 每号上限、再开一个会话后可用内存不低于保底；内存${esc(memNote)}。${esc(now)}</div></div>`;
   }
   function settingsView() {
     const s = data.settings;

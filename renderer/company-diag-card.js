@@ -70,7 +70,7 @@ function createCompanyDiagCard({ document, ipcRenderer, showMessage }) {
       esc(STATE[s.state] || s.state) + (s.busy ? ' · 在忙' : ''), ago(s.lastActiveAt), esc(s.account || '—'), esc(s.pid ?? '—'), gb(s.memMB)]));
     const counts = Object.entries(h.sessions.byState || {}).map(([k, v]) => `${STATE[k] || k} ${v}`).join(' · ');
     return block('通道并行与队列', `<div class="wp-strip">${row('并行', par ? `现在最多同时 <b>${esc(par.cap)}</b> 个（受${esc(par.limitedBy)}限制）· 在跑 ${esc(par.working)} 个`
-      : '算不出来', par ? `时段上限 ${esc(par.timeCap)} · 账号上限 ${esc(par.laneCap)} · 内存上限 ${esc(par.memCap ?? '不限')}` : '')}
+      : '算不出来', par ? `时段上限 ${esc(par.timeCap)} · 账号上限 ${esc(par.laneCap)} · 内存上限 ${esc(par.memCap ?? '不限')}${par.sessionMemNote ? `（${esc(par.sessionMemNote)}）` : ''}` : '')}
       ${row('队列', `在跑 ${esc(h.queue.running)} 个 · 排队 ${esc(h.queue.queued)} 个${h.holdingDispatch ? ' · <span class="bad">等重启，暂停派发</span>' : ''}`)}
       ${row('公司 Hub', `v${esc(h.version || '?')} · 已运行 ${dur(h.uptimeSec ?? (h.uptimeMin || 0) * 60)} · PID ${esc(h.pid)}${h.care ? ` · 答完保温 ${esc(h.care.keepWarmMinutes)} 分钟` : ''}${h.adminJob && h.adminJob.phase ? ' · 远程指令 ' + esc(h.adminJob.phase) : ''}`)}
       ${h.processNote ? row('提示', esc(h.processNote)) : ''}</div>${queue || '<p class="wp-empty">通道里没有在跑或排队的问题。</p>'}${failedList ? '<h4>最近没答上的问题</h4>' + failedList : ''}${maintain}`)

@@ -131,7 +131,7 @@ const json = JSON.stringify;
     })()`);
     const now = Date.now();
     const fixture = { ok: true, role: 'company', settings: { enabled: true, codeRoots: ['D:\\code\\example'], effort: 'high', maxParallel: 3, maxParallelIdle: 6, perAccountPeak: 3, perAccountIdle: 6, memFloorPct: 10, busyHours: '08:30-12:00,13:30-17:30', usePool: true, pollSeconds: 45, instructions: '根据授权范围查询资料，完成后汇报结果。' },
-      parallel: { cap: 6, peak: false, limitedBy: '闲时上限', working: 1 },
+      parallel: { cap: 6, peak: false, limitedBy: '闲时上限', working: 1, sessionGB: 3.7, sessionMemSource: 'measured', sessionMemSamples: 3, sessionMemNote: '按每个会话约 3.7 GB 估算（实测 3 个在运行的 CodeAgent 会话的平均）' },
       defaultInstructions: '根据授权范围查询资料，完成后汇报结果。',
       link: { state: 'paired', pairedAt: now, outbox: 0 }, net: { lastOkAt: new Date(now).toISOString(), peerSeen: new Date(now).toISOString() },
       polling: { active: true, intervalSeconds: 10, activeUntil: now + 600000 }, now, nextPullAt: now + 10000,
@@ -167,6 +167,9 @@ const json = JSON.stringify;
     // 2026-10-17 田哥：工作日忙时 3 个、内存保底 10%，这些数字都可在设置里调。
     const parallelText = await c.eval('document.getElementById("home-link-dialog").innerText');
     assert.match(parallelText, /同时处理/); assert.match(parallelText, /现在是闲时，最多同时 6 个（1 个在跑，受闲时上限限制）/);
+    // 2026-10-20：内存那一项写出按多少 GB/会话估算、来源是实测还是默认（不再写死 1.3 GB）
+    assert.match(parallelText, /再开一个会话后可用内存不低于保底；内存按每个会话约 3\.7 GB 估算（实测 3 个在运行的 CodeAgent 会话的平均）/);
+    assert.doesNotMatch(parallelText, /1\.3 GB/);
     const saved0 = await c.eval('window.__companyUiFixture.saved[0]');
     assert.deepEqual([saved0.maxParallel, saved0.maxParallelIdle, saved0.perAccountPeak, saved0.perAccountIdle, saved0.memFloorPct, saved0.usePool], [3, 6, 3, 6, 10, true]);
     await c.eval(`(() => { const set = (k, v) => { const e = document.querySelector('[data-hl-f=' + k + ']'); e.value = v; e.dispatchEvent(new Event('change', { bubbles: true })); };
