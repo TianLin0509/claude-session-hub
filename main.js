@@ -543,6 +543,8 @@ sessionManager.on('codex-locate-request', ({ sessionId }) => {
 });
 // Token Plan 额度用完的改道控制器（main/token-plan-fallback-controller.js），会话操作就绪后才创建。
 let tokenPlanFallback = null;
+// 软压缩：AI 在断点留标记后，Hub 替用户发 /compact（main/soft-compact-controller.js）。
+let softCompact = null;
 sessionManager.on('codex-lifecycle', event => {
   // 千问把额度墙包成普通回答：先改成本轮失败，再交给群聊、通知与卡片。
   const ev = tokenPlanFallback ? tokenPlanFallback.filterLifecycle(event) : event;
@@ -2730,6 +2732,14 @@ try {
   // groupChatWatcher.sendToPty 发送前经它检查：套餐已用完就先把会话改道到 DeepSeek API。
   sessionManager.tokenPlanFallback = tokenPlanFallback;
 } catch (error) { console.error('[token-plan-fallback] unavailable:', error.message); }
+try {
+  softCompact = require('./main/soft-compact-controller').createSoftCompactController({
+    sessionManager,
+    isBusy: sessionId => sessionManager.isAgentTurnActive?.(sessionId) || promptOperations.isAssistantSubmissionPending(sessionId),
+    notify: (sessionId, message, level) => sendToRenderer('session-notice', { sessionId, message, level }),
+  });
+  softCompact.start();
+} catch (error) { console.error('[soft-compact] unavailable:', error.message); }
 registerClaudeQuotaIpc(ipcMain, claudeQuotaResume);
 require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain, {sessionManager});
 
@@ -3433,6 +3443,8 @@ const hookServer = http.createServer((req, res) => {
         if (!isSubagentContext && event === 'stop' && parsed.transcriptPath) {
           void transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath, { turnId: parsed.turnId || null });
           if (isCodeAgentKind(hookTargetSession.kind)) void observeCodeAgentModel(parsed.sessionId, {}, parsed.transcriptPath, 'stop-hook');
+          if (softCompact) void softCompact.onStop(parsed.sessionId, { transcriptPath: parsed.transcriptPath, lastAssistantMessage: parsed.lastAssistantMessage })
+            .catch(error => console.warn('[soft-compact] stop failed:', error && error.message));
         }
         if (!isSubagentContext && event === 'stop-failure') {
           transcriptTap.notifyClaudeError(parsed.sessionId, {
