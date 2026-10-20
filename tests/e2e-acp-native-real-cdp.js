@@ -114,7 +114,7 @@ async function main(){
         if(kind==='qwen') {
           await until('sessions.get('+sid+').nativeRuntime.turnId!=='+JSON.stringify(before)+' && sessions.get('+sid+').nativeRuntime.state==="completed"','actual image response');
           await until('[...document.querySelectorAll(".turn-card.assistant .turn-body")].filter(e=>e.innerText.trim()).at(-1)?.innerText.includes("红") && [...document.querySelectorAll(".turn-card.assistant .turn-body")].filter(e=>e.innerText.trim()).at(-1)?.innerText.includes("蓝")','image contents recognized');
-          await until('document.querySelectorAll(".conversation-image-list img").length>=2','two image attachments in history');
+          await until('document.querySelectorAll(".conversation-image-list .conversation-image-thumb").length>=2','two image attachment links in history');
           result.checks.push('qwen: two real images delivered and recognized, image cards retained');
         }else {
           await until('document.body.innerText.includes("当前模型或 Harness 不支持图片")','image preflight explanation');

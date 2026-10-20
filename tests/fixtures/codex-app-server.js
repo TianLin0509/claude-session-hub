@@ -306,6 +306,9 @@ rl.on('line',line=>{
           emit({id:'mcp-'+turn.id,type:'mcpToolCall',server:'fixture',tool:'check',status:'completed',result:{content:[{type:'text',text:'结构化结果保留'}]}});
           finish(thread,turn,'completed','卡片细节已验证。\n\n- 修改文件：`src/card-example.js`\n- 成功命令 26 条，失败命令 1 条；失败没有被隐藏。\n- 交付：[验收说明](./card-delivery.html)');
         },500);
+      } else if(mode==='fixture:card-images') {
+        answer(msg.id,{turn});
+        setTimeout(()=>finish(thread,turn,'completed','图片结果：\n\n![结果图](./示例图片.png)\n\n[普通 PNG 路径](./示例图片.png)\n\n![缺失图](./missing.png)'),250);
       } else if(mode==='fixture:collapsed-markdown') {
         answer(msg.id,{turn});
         setTimeout(()=>finish(thread,turn,'completed',require('./collapsed-markdown')),250);

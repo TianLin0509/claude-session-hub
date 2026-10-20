@@ -60,7 +60,7 @@ async function main() {
     await until(`sessions.get(${sid})?.nativeRuntime?.state==='idle'`, 'native ready');
     await until(`document.querySelector('.session-item[data-session-id="${session.id}"]')`, 'sidebar');
     await click(`.session-item[data-session-id="${session.id}"]`);
-    await click('[data-view="card"]');
+    await until('document.querySelector("#msg-overlay")', 'default card view');
     const prompt = 'fixture:card-details\n---\n1. 保留同一条多行输入\n- 检查卡片与交付';
     // Use the real shared IPC for explicit attachments; this does not exercise image paste capture.
     const sent = await cdp.eval(`ipcRenderer.invoke('session:send-prompt',${json({ sessionId: session.id, text: prompt, clientSubmissionId: 'card-details-first', attachments: [{ type: 'localImage', path: picture }, { type: 'localImage', path: missing }] })})`);
@@ -122,16 +122,19 @@ async function main() {
     evidence.checks.push('full 60k+ source copies and downloads exactly; DOM bounded at 50k; pagination reaches tail; pending copy failure survives real rerender; negative exit and failed file remain explicit');
     const thumb = scope + '.conversation-image-thumb[data-image-index="0"]';
     await cdp.eval(`document.querySelector(${json(thumb)}).scrollIntoView({block:'center'})`);
-    await until(`document.querySelector('${thumb} img')?.naturalWidth>0`, 'thumbnail loaded');
-    await until(`document.querySelector('${scope}.conversation-image-thumb[data-image-index="1"] .conversation-image-error')?.hidden===false`, 'missing thumbnail error');
-    evidence.thumbnail = await cdp.eval(`(()=>{const r=document.querySelector(${json(thumb)}).getBoundingClientRect();return {width:r.width,height:r.height}})()`);
-    assert(evidence.thumbnail.width <= 114 && evidence.thumbnail.height <= 110);
-    await snap('04-small-thumbnails');
+    assert.equal(await cdp.eval(`document.querySelectorAll('${scope}.conversation-image-list img').length`), 0);
+    assert.equal(await cdp.eval(`document.querySelector('${thumb} .conversation-image-name').textContent`), picture);
+    evidence.imageLink = await cdp.eval(`(()=>{const r=document.querySelector(${json(thumb)}).getBoundingClientRect();return {width:r.width,height:r.height}})()`);
+    assert(evidence.imageLink.height <= 40);
+    await snap('04-image-paths');
     await click(thumb);
     await until('document.querySelector(".preview-image")?.naturalWidth>0', 'existing image preview');
     await snap('05-existing-image-preview');
     await click('#preview-close');
-    evidence.checks.push('image IPC reference -> small thumbnail -> existing image preview; missing file retains named error; no image-paste or attachment-replay claim');
+    await click(scope + '.conversation-image-thumb[data-image-index="1"]');
+    await until('document.querySelector("#preview-body")?.textContent.includes("图片加载失败")', 'missing image click error');
+    await click('#preview-close');
+    evidence.checks.push('image IPC reference -> compact path -> existing image preview; missing file reports error on click; no image-paste or attachment-replay claim');
     assert.equal(await cdp.eval(`document.querySelectorAll('${scope}.turn-card[data-phase="commentary"] [data-action="regen"],${scope}.turn-card[data-phase="activity"] [data-action="regen"]').length`), 0);
     assert.equal(await cdp.eval(`document.querySelector('${final} .card-actions-menu').open`), false);
     await click(final + ' .card-actions-more');
