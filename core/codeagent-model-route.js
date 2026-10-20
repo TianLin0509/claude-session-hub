@@ -59,8 +59,8 @@ function personalAccount({ dataDir, personalDir, activeSessions = 0, now = Date.
   const creds = pool.readCredentials(personalDir, fsModule);
   if (pool.accountState(creds, now) !== 'ready') return null;
   const { models, defaultModel, written, configMismatch } = personalModels({ dataDir, personalDir, fsModule, single: true });
-  // 自动会话开起来后在菜单里选中 defaultModel（2.1.20 起），请求的就是它；定不下时才按 settings.json 写的值请求。
-  return { key: 'personal', pool: false, models, defaultModel, configModel: defaultModel || written, activeSessions: Number(activeSessions) || 0,
+  // configModel 仍取写的值（2026-10-20）：自动会话在菜单里选不上时按它跑；真按它报过错的模型配置避让照样生效，直到写的值改对。
+  return { key: 'personal', pool: false, models, defaultModel, configModel: written || defaultModel, activeSessions: Number(activeSessions) || 0,
     lastAssignedAt: dataDir ? pool.personalLastAssignedAt(dataDir, fsModule) : 0, ...(configMismatch ? { configMismatch } : {}) };
 }
 
@@ -77,8 +77,7 @@ function routeAccounts({ dataDir, personalDir = '', activeCounts = {}, personalA
       if (!routeSwitchEnabled()) {
         const written = pool.readSettingsModel(a.dir, fsModule);
         const strict = pool.strictDefaultModel(written, a.models || [], { authoritative: !!a.modelsAuthoritative });
-        // 请求的模型：定下了就是它（自动会话在菜单里选中它），定不下才是号目录里写的值。
-        out.push({ key: a.id, pool: true, models: a.models || [], defaultModel: strict.model, configModel: strict.model || written,
+        out.push({ key: a.id, pool: true, models: a.models || [], defaultModel: strict.model, configModel: written || strict.model,
           activeSessions: a.activeSessions || 0, lastAssignedAt: a.lastAssignedAt || 0, routeSwitched: !!a.routeSwitched,
           ...(strict.note ? { defaultNote: pool.describeDefaultNote(strict.note, written) } : {}) });
         continue;

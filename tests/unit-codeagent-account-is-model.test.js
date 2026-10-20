@@ -365,16 +365,22 @@ test('2. 探测过的清单只有一个模型时就是它（2026-10-20 公司真
   probe.writeProbed(pool.personalModelsFile(d), { models: [GLM], defaultModel: '' });
   const accounts = route.routeAccounts({ dataDir: d, personalDir });
   const by = id => accounts.find(a => a.key === id);
-  assert.deepEqual(['personal', 'glm001', 'glm002'].map(k => [by(k).defaultModel, by(k).configModel, by(k).defaultNote]),
-    [[GLM, GLM, undefined], [GLM, GLM, undefined], [GLM, GLM, undefined]], '默认和请求的模型都是清单里唯一的 GLM，不标未知');
+  assert.deepEqual(['personal', 'glm001', 'glm002'].map(k => [by(k).defaultModel, by(k).defaultNote]),
+    [[GLM, undefined], [GLM, undefined], [GLM, undefined]], '号的模型是清单里唯一的 GLM，不标未知');
   assert.equal(pool.listAccounts(d).find(a => a.id === 'glm001').defaultNote, undefined, '号表直查同一口径');
   // 按模型派活：三个 GLM 号都能接，DS 号照旧
   assert.equal(route.listModels(accounts).length, 2);
   assert.equal(route.pickRoute(accounts, DS).account.key, 'ds0001');
   assert.ok(['glm001', 'glm002', 'personal'].includes(route.pickRoute(accounts, GLM).account.key));
-  // 以前对 deepseek 记下的模型配置避让不再拦住它：请求的已经是 GLM
-  const withAvoid = accounts.map(a => (a.key === 'personal' ? { ...a, modelAvoid: { 'deepseek-v4-flash-0731': { kind: 'model-config', until: Date.now() + 3600000 } } } : a));
+  // 按写的 deepseek 报过错的记录：不指定模型时照样避让（选不上菜单就会按它跑），直到写的值改对；
+  // 指定 GLM 时请求的就是 GLM（开起来在菜单里选中它），不受这条记录拦；没报过错的号不受影响
+  const rec = { kind: 'model-config', until: Date.now() + 3600000 };
+  const withAvoid = accounts.map(a => (a.key === 'personal' ? { ...a, modelAvoid: { 'deepseek-v4-flash-0731': rec } } : a));
+  assert.equal(route.pickAnyRoute(withAvoid, { only: 'personal' }).reason, 'avoid');
   assert.equal(route.pickRoute(withAvoid, GLM, { only: 'personal' }).ok, true);
+  assert.equal(route.pickAnyRoute(withAvoid, { only: 'glm001' }).ok, true);
+  const fixed = withAvoid.map(a => (a.key === 'personal' ? { ...a, configModel: GLM } : a));
+  assert.equal(route.pickAnyRoute(fixed, { only: 'personal' }).ok, true, '写的值改对之后不再避让');
   // 清单没探测过（不权威）或有多个模型：照旧严格，不猜
   assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '' }, { single: true }), '');
   assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '', authoritative: true }, { single: true }), GLM);
