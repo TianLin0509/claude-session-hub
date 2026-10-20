@@ -16,7 +16,8 @@ const file = path.join(dir, native + '.jsonl');
 const answer = '完整说明：账号、额度和后台流程。\n\n' +
   '这段说明是已经交付的正式答复，后续后台任务继续执行也应该保留在消息正文。工具调用与思考可以放在过程里，正式说明不应该随着新进展变成过程。\n\n'.repeat(18) + '说明结尾：原始回复完整保留。';
 const later = '后续结论：后台检查已经通过。';
-const explanation = '关键说明：这是工具执行前给用户的正文，不应该收进过程。';
+const explanation = '关键说明：这是工具执行前写的进展，像 Codex 一样进过程时间线。';
+const note = '思考摘要：先核对配置，再改识别逻辑。';
 function row(type, id, text, second, extra = {}) {
   return { type, uuid: id, sessionId: native, timestamp: new Date(now - 60000 + second * 1000).toISOString(),
     message: { role: type, content: type === 'assistant' ? [{ type: 'text', text }] : text,
@@ -24,7 +25,7 @@ function row(type, id, text, second, extra = {}) {
 }
 const first = [row('user', 'question', '请解释账号、额度和后台流程', 0),
   row('assistant', 'explanation', explanation, 0.5, { message: { role: 'assistant', id: 'explanation',
-    stop_reason: 'tool_use', content: [{ type: 'text', text: explanation }] } }),
+    stop_reason: 'tool_use', content: [{ type: 'thinking', thinking: note }, { type: 'text', text: explanation }] } }),
   row('assistant', 'initial-answer', answer, 1)];
 fs.writeFileSync(file, first.map(JSON.stringify).join('\n') + '\n');
 fs.writeFileSync(path.join(data, 'state.json'), JSON.stringify({ version: 1, cleanShutdown: true, meetings: [],
@@ -73,9 +74,11 @@ fs.mkdirSync(out, { recursive: true });
       process:card.querySelector('.chat-process')?.textContent||'',
       processOpen:card.querySelector('.chat-process')?.open||false};})()`);
     const initial = await snapshot(); assert.equal(initial.count, 1); assert(initial.text.includes('说明结尾：'));
-    assert(initial.text.includes(explanation)); assert(!initial.process.includes(explanation));
+    assert(!initial.text.includes(explanation)); assert(initial.process.includes(explanation)); assert(initial.process.includes(note));
+    assert.equal(await client.eval(`document.querySelectorAll('#msg-overlay>.turn-card.assistant .chat-process .conversation-progress-row').length`), 2);
+    assert.equal(await client.eval(`document.querySelectorAll('#msg-overlay>.turn-card.assistant .turn-thinking').length`), 0);
     assert.equal(await client.eval(`document.querySelectorAll('[data-conversation-filter]').length`), 0);
-    evidence.checks.push('foreground explanation preceding a tool stays in the main message; redundant header filter is removed');
+    evidence.checks.push('notes before a tool and thinking summaries are timed progress rows in the process timeline, not the answer; no duplicate thinking drawer');
     fs.appendFileSync(file, [row('user', 'notification', '<task-notification>finished</task-notification>', 2,
       { origin: { kind: 'task-notification' } }), row('assistant', 'progress', '继续检查工具回执。', 3,
       { message: { role: 'assistant', id: 'progress', stop_reason: 'tool_use', content: [
@@ -96,21 +99,28 @@ fs.mkdirSync(out, { recursive: true });
     const done = await snapshot(); assert.equal(done.id, initial.id); assert(done.sameNode); assert.equal(done.count, 1);
     assert(done.text.includes('完整说明：')); assert(!done.process.includes('后续结论：')); assert(!done.process.includes('完整说明：'));
     evidence.checks.push('a later completed reply appends without demoting either delivered answer into process');
+    // Long messages render open by default; a real click toggles the fold.
+    const longOpen = `document.querySelector('#msg-overlay>.turn-card.assistant .chat-message-bubble .conversation-long-message').open`;
+    const wasOpen = await client.eval(longOpen);
     await click('#msg-overlay>.turn-card.assistant .chat-message-bubble .conversation-long-message>summary');
-    assert(await client.eval(`document.querySelector('#msg-overlay>.turn-card.assistant .chat-message-bubble .conversation-long-message').open`));
+    assert.equal(await client.eval(longOpen), !wasOpen);
     assert(await client.eval(`document.querySelector('#msg-overlay>.turn-card.assistant .chat-message-bubble .conversation-full-text').textContent.includes('说明结尾：')`));
     evidence.checks.push('real pointer expands the long main message independently of the process drawer');
     await click('#msg-overlay>.turn-card.assistant .chat-process>summary');
     assert(await client.eval(`document.querySelector('#msg-overlay>.turn-card.assistant .chat-process').open`));
     await click('#msg-overlay>.turn-card.assistant .chat-process>summary');
+    await client.eval('window.__beforeReload=true');
     await client.send('Page.reload', { ignoreCache: true });
-    await until(`!!window.__hubE2E`, 'reload bridge');
+    await until(`!window.__beforeReload && !!window.__hubE2E`, 'reload bridge');
     await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(sid)})`);
     await until(`document.querySelector('#msg-overlay>.turn-card.assistant .chat-message-bubble')?.textContent.includes(${JSON.stringify(later)})`, 'cold history');
     const cold = await snapshot(); assert.equal(cold.id, initial.id); assert.equal(cold.count, 1);
     assert(cold.text.includes('完整说明：')); assert(!cold.process.includes('完整说明：'));
-    assert(cold.text.includes(explanation)); assert(!cold.process.includes(explanation));
+    assert(!cold.text.includes(explanation)); assert(cold.process.includes(explanation)); assert(cold.process.includes(note));
     evidence.checks.push('cold reload reprojects the disk history with both answers and no duplicate cards');
+    await click('#msg-overlay>.turn-card.assistant .chat-process>summary');
+    await client.eval(`document.querySelector('#msg-overlay>.turn-card.assistant .chat-process').scrollIntoView({block:'start'})`);
+    await sleep(300);
     const shot = await client.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, 'visible-replies.png'), Buffer.from(shot.data, 'base64'));
     evidence.ok = true; evidence.version = require('../package.json').version;

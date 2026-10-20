@@ -18,8 +18,42 @@ test('later work keeps every delivered native reply visible in the same compact 
   assert.deepEqual(turns[1].displayMessages.map(m => m.phase),
     ['commentary', 'final_answer', 'commentary', 'final_answer']);
   assert.equal(displayed.length, 2, 'one user message and one AI message');
-  assert.equal(displayed[1].text, 'Inspecting\n\nInitial answer\n\nContinuing work\n\nAdditional answer');
-  assert.deepEqual(displayed[1].chatProcessMessages, []);
+  assert.equal(displayed[1].text, 'Initial answer\n\nAdditional answer');
+  assert.deepEqual(displayed[1].chatProcessMessages.map(m => m.text), ['Inspecting', 'Continuing work']);
+});
+
+test('Claude thinking summaries become timed progress rows in order, without a duplicate thinking blob', () => {
+  const record = { userMessageId: 'u', text: 'go', status: 'completed', createdAt: 1, completedAt: 9, finalText: 'Done' };
+  const frame = (uuid, id, at, content, reason = 'tool_use') => capture(record, { type: 'assistant', uuid,
+    timestamp: new Date(at).toISOString(), message: { id, stop_reason: reason, content } });
+  frame('a0', 'm1', 1000, [{ type: 'thinking', thinking: '' }]);
+  frame('a1', 'm1', 2000, [{ type: 'thinking', thinking: '先核对配置，再改识别逻辑。' }]);
+  frame('a2', 'm1', 2000, [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }]);
+  frame('a3', 'm2', 3000, [{ type: 'text', text: '单测在跑。' }, { type: 'tool_use', id: 't2', name: 'Bash', input: {} }]);
+  frame('a4', 'm3', 4000, [{ type: 'thinking', thinking: '44 个单测全部通过。' }]);
+  frame('a5', 'm3', 5000, [{ type: 'text', text: 'Done' }], 'end_turn');
+  const shown = displayChatTurns(cards([record]))[1];
+  assert.equal(shown.text, 'Done');
+  assert.deepEqual(shown.chatProcessMessages.map(m => [m.text, m.ts]),
+    [['先核对配置，再改识别逻辑。', 2000], ['单测在跑。', 3000], ['44 个单测全部通过。', 4000]]);
+  assert.equal(shown.thinking, null, 'the closed thinking drawer would repeat the rows');
+  assert.equal(require('../core/claude-native-transcript').claudeDisplayMessages(record)
+    .some(m => m.text?.includes('先核对配置')), false, 'group-chat replies stay free of thinking');
+  const split = require('../core/conversation-display').displayTurns(cards([record]));
+  assert.equal(split.filter(m => m.thinking).length, 0, 'split view does not repeat the rows as a thinking drawer');
+});
+
+test('a turn interrupted after thinking keeps its outcome notice; the note stays in 过程, never the answer', () => {
+  const record = { userMessageId: 'u', text: 'go', status: 'accepted', createdAt: 1 };
+  capture(record, { type: 'assistant', uuid: 'a1', timestamp: new Date(2000).toISOString(),
+    message: { id: 'm1', stop_reason: 'tool_use', content: [{ type: 'thinking', thinking: '先看日志。' }] } });
+  const running = displayChatTurns(cards([record]))[1];
+  assert.equal(running.text, '先看日志。', 'while running the latest note stands in the body, like Codex');
+  record.status = 'interrupted'; record.finalText = ''; record.completedAt = 3000;
+  const stopped = displayChatTurns(cards([record]))[1];
+  assert.equal(stopped.text, '');
+  assert.equal(stopped.nativeOutcome, 'interrupted');
+  assert.deepEqual(stopped.chatProcessMessages.map(m => m.text), ['先看日志。']);
 });
 
 test('stream and final message replace the same card without duplicate text', () => {
