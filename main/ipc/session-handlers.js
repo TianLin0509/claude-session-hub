@@ -784,6 +784,8 @@ function registerSessionIpc(ipcMain, deps) {
     try {
       result = await codeagentPicker.pickModel({ manager: sessionManager, sid: sessionId, kind: session.kind, modelId,
         configDir, allowedModels: permitted.authoritative ? permitted.models : null,
+        // 启动和原地重拉：等 CLI 画出普通输入框再敲 /model（太早敲回车会丢，见 pickModel 的 readyFirstMs）
+        readyFirstMs: reason === 'launch' || reason === 'relaunch' ? 45000 : 0,
         onDefaultChange: change => guard.recordChange(dataDir, { account, session: String(sessionId).slice(0, 8), before: change.restoredTo || '', after: change.written || '',
           source: `codeagent-menu-enter:${reason}`, extra: { file: change.file, restoredTo: change.restoredTo || '(空)', restoreOk: change.ok, ...(change.error ? { restoreError: change.error } : {}) } }, { persist: false }),
         sendToPty: require('../../core/group-chat-watcher').sendToPty });
