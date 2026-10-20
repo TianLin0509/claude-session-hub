@@ -29,6 +29,11 @@ function fixture(t) {
   w('out/gbk.txt', Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x0a, 0xb5, 0xda, 0xb6, 0xfe, 0xd0, 0xd0])); // 「中文」+ 换行 + 「第二行」
   w('out/longline.txt', 'x'.repeat(1200) + '\n尾巴\n');
   w('out/lines.txt', Array.from({ length: 30 }, (_, i) => `L${i + 1}`).join('\n') + '\n');
+  // 白名单放开前读不了的这几类（2026-10-20）：工程配置后缀 + 无后缀文件
+  w('cfg/DL_LF_DBF64T.runcfg', '# run config\ncarrier = 3\nband = n41\n');
+  w('cfg/GDlCoMMSerialScheduler.cmp', 'cmp build flags\n-DUSE_MU\n');
+  w('cfg/GNbMac.pro', 'SOURCES += GNbMac.cc\n');
+  w('README', 'AirView 工程说明\n构建：见 msvc/\n');
   fs.writeFileSync(path.join(outside, 'z.txt'), '不在可读目录里的文件\n');
   // 超大可读树（只测统计的上限，不真占 8MB）：用稀疏文件
   const huge = path.join(root, 'out', 'huge.txt');
@@ -55,16 +60,48 @@ test('能读的目录闸门：相对路径落在第一个含它的根里，绝�
   await assert.rejects(F.run({ roots: [], action: 'read', params: { file: abs } }), /还没设置可读的目录/);
 });
 
-test('后缀与二进制闸门：第一期只读文本；密钥类后缀与二进制直接拒绝；目录要用 list', async t => {
+test('后缀与二进制闸门：文本一律可读（不挑后缀）；凭据、密钥类后缀与二进制直接拒绝；目录要用 list', async t => {
   const { root } = fixture(t);
   await assert.rejects(read(root, 'out/secret.key'), /密钥|不给读/);
   assert.equal(F.readableName('id_rsa').ok, false);
   assert.equal(F.readableName('.npmrc').ok, false);
   assert.equal(F.readableName('a.txt').ok, true);
-  assert.equal(F.readableName('a.xyz').ok, false);
+  assert.equal(F.readableName('a.xyz').ok, true, '不认识的扩展名也放行——白名单挡掉的正是工程配置原文');
+  // 2026-10-20 田哥：不要后缀白名单。以前被挡的这几类都要能读
+  for (const n of ['GDlCoMMScheduler.cmp', 'DL_LF.sce.para', 'DL_LF.runcfg', 'GNbMac.pro', 'GNb.dev', 'AirView.vcxproj', 'README', 'AUTHORS', 'a.sce.stat', 'x.lpcfg']) {
+    assert.equal(F.readableName(n).ok, true, n + ' 应当可读');
+  }
+  // 二进制 / 打包产物按后缀先挡：通道只传文本，这类给了也解不出来
+  for (const n of ['w.pth', 'm.pyc', 't.xlsx', 'p.pdf', 'i.png', 'a.zip', 'l.dll']) {
+    const r = F.readableName(n);
+    assert.equal(r.ok, false, n + ' 应当拒绝');
+    assert.match(r.why, /二进制|打包产物|密钥/);
+  }
   await assert.rejects(read(root, 'out/binary.dat'), /二进制|不给读|只读文本/);
   await assert.rejects(read(root, 'out'), /这是一个目录/);
   await assert.rejects(read(root, 'out/huge.txt'), /超过单次读取上限/, '9 MB 的文件不整份读进内存');
+});
+
+test('白名单放开后真能读：工程配置后缀（.runcfg/.cmp/.pro）与无后缀 README 走完整读路径与内容搜索', async t => {
+  const { root } = fixture(t);
+  const a = await read(root, 'cfg/DL_LF_DBF64T.runcfg');
+  assert.equal(a.totalLines, 3);
+  assert.deepEqual(a.lines, ['# run config', 'carrier = 3', 'band = n41']);
+  const b = await read(root, 'cfg/GDlCoMMSerialScheduler.cmp');
+  assert.deepEqual(b.lines, ['cmp build flags', '-DUSE_MU']);
+  const c = await read(root, 'README');
+  assert.deepEqual(c.lines, ['AirView 工程说明', '构建：见 msvc/']);
+  const d = await read(root, 'cfg/GNbMac.pro');
+  assert.match(d.lines[0], /SOURCES/);
+  // 内容搜索以前会静默跳过这些后缀（「搜不到」的另一个来源），现在也要能搜到
+  const s = await F.run({ roots: [root], action: 'search', params: { root: 'cfg', content: 'carrier' } });
+  assert.deepEqual(s.matches.map(x => x.rel), ['cfg/DL_LF_DBF64T.runcfg']);
+  const s2 = await F.run({ roots: [root], action: 'search', params: { root: '.', name: '*.runcfg' } });
+  assert.deepEqual(s2.matches.map(x => x.rel), ['cfg/DL_LF_DBF64T.runcfg']);
+  // 列目录默认就能看到它们（不用再加 all:true 才发现）
+  const l = await F.run({ roots: [root], action: 'list', params: { dir: 'cfg' } });
+  assert.deepEqual(l.entries.filter(x => x.type === 'file').map(x => x.name).sort(),
+    ['DL_LF_DBF64T.runcfg', 'GDlCoMMSerialScheduler.cmp', 'GNbMac.pro']);
 });
 
 test('分段读：从任意行开始，返回这段和总行数，没读完时 next 是下一段起点', async t => {
@@ -96,11 +133,11 @@ test('编码：UTF-8 正常读；中文 Windows 上的 GBK 文本回退解码；
   assert.deepEqual(b.lines, ['带 BOM 的第一行', '第二行'], 'BOM 去掉、CRLF 归一');
 });
 
-test('列目录：默认只列可读的文本文件，all:true 连不可读的一起列出并写明原因；报整棵子树的量与后缀分布', async t => {
+test('列目录：默认列非黑名单的文件（.dat 这类凭后缀判不出来的也列，读的时候按 NUL 挡住），all:true 连不可读的一起列出并写明原因；报整棵子树的量与后缀分布', async t => {
   const { root } = fixture(t);
   const l = await F.run({ roots: [root], action: 'list', params: { dir: 'out' } });
   const names = l.entries.filter(x => x.type === 'file').map(x => x.name);
-  assert.deepEqual(names.sort(), ['a.txt', 'big.csv', 'creds.txt', 'gbk.txt', 'huge.txt', 'lines.txt', 'longline.txt', 'note.md']);
+  assert.deepEqual(names.sort(), ['a.txt', 'big.csv', 'binary.dat', 'creds.txt', 'gbk.txt', 'huge.txt', 'lines.txt', 'longline.txt', 'note.md']);
   assert.ok(!names.includes('secret.key') && !names.includes('photo.png'), '默认不列不可读的');
   assert.equal(l.entries.find(x => x.name === 'huge.txt').big, true, '超过单次读取上限的文本标出来，家里知道要分段读');
   assert.match(l.note || F.summarize(l), /超过 8 MB/, '摘要里点出大文件');

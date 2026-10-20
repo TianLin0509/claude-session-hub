@@ -110,7 +110,7 @@
 - 三个动作（`core/company-bridge/file-query.js`）：list（列目录，默认只列可读文本、报整棵子树的文件数与各后缀字节数，用来估传输量）、search（按名字或内容找，名字支持 `*` / `?`，内容只搜 2 MB 以内的文本）、read（按行分段读，默认 600 行 / 30000 字，返回总行数与下一段的 `from`）。
 - 能读的范围（`fileRoots`）：公司设置里的「仿真结果目录」（`resultDirs`）+「代码位置」（`codeRoots`）+「额外可读目录」（`readRoots`，界面新增，最多 10 个），去重后最多 20 个。
   一律用 `realpath` 后的真实路径判断是否落在某个根里面（挡 `../` 与符号链接绕出）；UNC 路径跳过 realpath 但照旧按路径包含判断。
-- 只读文本：后缀白名单（txt / md / log / csv / json 与常见代码、配置）；密钥类后缀（.key/.pem/.pfx/.p12/.jks…）与打包产物、二进制（前 8 KB 有 0 字节）直接拒绝；文件名黑名单（.netrc/.npmrc/id_rsa/credentials.json…）。
+- 只读、文本一律可读：**不再按后缀白名单放行**（2026-10-20 田哥：AirView 的 .runcfg/.cmp/.pro/.dev/.para/.vcxproj 与无后缀的 README 都被白名单挡在外面，挡掉的正是最需要的配置原文）；只拒绝三类——文件名黑名单（.netrc/.npmrc/id_rsa/credentials.json…）、密钥类后缀（.key/.pem/.pfx/.p12/.jks…）、二进制与打包产物后缀（.pth/.pyc/.dll/.zip/.png/.xlsx…），另有 NUL 字节兜底（前 8 KB 有 0 字节）。
   单次读取上限 8 MB（更大的先按范围分小）；列目录 6 秒 / 3 万条封顶、最多列 200 项（可调到 500），整棵子树统计 4 秒 / 3 万条，找文件 4 秒（按名字 6 秒），每次 readdir / stat 3 秒超时。
   编码：先按 UTF-8，出现替换字符再试 GBK / GB18030 / Big5（中文 Windows 上的 txt 常见），去掉 BOM、CRLF 归一。
 - 脱敏：只脱凭据——私钥 / 证书整块、`password:`/`token=`/`authorization` 这类键值（值前面带 Bearer / Basic 的连前缀词一起）、`sk-`/`ghp_`/`AKIA` 样式、JSON 里的凭据字段、URL 里的账号密码，再按公司账号实值整篇替换。

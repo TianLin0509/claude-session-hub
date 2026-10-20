@@ -22,7 +22,7 @@
 //   node company-ask.js --files list [--dir <路径>] [--depth 0-4] [--all] [--limit 200]
 //                       | --files search (--name "*.txt" | --content 关键词) [--root <目录>] [--limit 50] [--maxkb 2048]
 //                       | --files read --file <路径> [--from 1] [--lines 600] [--chars 30000]   [--id HA-xxxx 取之前那次的结果]
-//     （读公司电脑上的文本文件：秒级、不排队、不占公司 CodeAgent；只读、永不写；拿回来的正文直接给家里用）
+//     （读公司电脑上的文本文件：秒级、不排队、不占公司 CodeAgent；只读、永不写；文本一律可读、不挑后缀；拿回来的正文直接给家里用）
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
