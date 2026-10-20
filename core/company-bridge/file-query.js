@@ -48,7 +48,7 @@ const BINARY_EXT = new Set(['.exe', '.dll', '.so', '.dylib', '.o', '.obj', '.a',
 const DENY_EXT = new Set([...DENY_SECRET_EXT, ...BINARY_EXT]);
 // 一律不给读的文件名（各家 CLI 的凭据）
 const DENY_NAME = new Set(['.netrc', '_netrc', '.npmrc', '.pypirc', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'credentials', 'credentials.json',
-  '.git-credentials', 'auth.json', '.htpasswd', 'shadow', '.env.local', '.env.production']);
+  '.git-credentials', 'auth.json', '.htpasswd', 'shadow', '.env', '.env.local', '.env.production', '.env.development', '.credentials.json']);
 
 const round1 = n => Math.round(Number(n) * 10) / 10;
 const mb = b => Math.round((Number(b) || 0) / 1048576);

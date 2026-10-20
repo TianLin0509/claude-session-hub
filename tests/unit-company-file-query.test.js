@@ -65,6 +65,8 @@ test('后缀与二进制闸门：文本一律可读（不挑后缀）；凭据�
   await assert.rejects(read(root, 'out/secret.key'), /密钥|不给读/);
   assert.equal(F.readableName('id_rsa').ok, false);
   assert.equal(F.readableName('.npmrc').ok, false);
+  // 白名单拆掉后无后缀文件默认放行，.env 这类口令文件要按名字单独挡住
+  for (const n of ['.env', '.ENV', '.env.development', '.credentials.json']) assert.equal(F.readableName(n).ok, false, n + ' 应当拒绝');
   assert.equal(F.readableName('a.txt').ok, true);
   assert.equal(F.readableName('a.xyz').ok, true, '不认识的扩展名也放行——白名单挡掉的正是工程配置原文');
   // 2026-10-20 田哥：不要后缀白名单。以前被挡的这几类都要能读
