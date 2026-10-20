@@ -1,6 +1,8 @@
 'use strict';
 // 无线页里的「公司联动」（2026-10-15，家里一端）：配对、公司是否在线、家里的 Agent 向公司提过的问题和回执。
 // 问答本身由 Agent 通过「问公司」工具或 company-ask 命令发起，这里只看进度、管配对和挂载范围。
+// 配对号牌（2026-10-20）：每条线程下面写「→ 公司 号 1 · GLM-5 · 会话 <公司会话名>」，来自会话带上短码。
+const pairing = require('../core/company-bridge/pairing-plate');
 function createCompanyLinkSection({ document, ipcRenderer, openSession, showMessage }) {
   let root = null, data = null, images = null;
   // 特战队（2026-10-18）：组长视图的成员列表（打开本页时拉一次）和刚新建的邀请码（只显示这一次）。
@@ -68,7 +70,8 @@ function createCompanyLinkSection({ document, ipcRenderer, openSession, showMess
       const rounds = t.rounds.map(r => `<div class="cl-round"><b>第 ${r.round} 轮</b> <span class="wp-meta">问于 ${clock(r.sentAt)}${r.replyAt ? ' · 回执 ' + clock(r.replyAt) : ''}${r.meta?.model ? ' · ' + esc(r.meta.model) : ''}${r.meta?.elapsedSec ? ' · 用时 ' + Math.round(r.meta.elapsedSec / 60) + ' 分钟' : ''}${r.deliveryError ? ' · <span class="bad">' + esc(r.deliveryError) + '</span>' : ''}${r.deliveryNote ? ' · ' + esc(r.deliveryNote) : ''}</span>
         <pre>${esc(r.question)}</pre>${r.reply ? `<pre class="ans">${esc(r.reply)}</pre>` : ''}${r.error ? `<p class="wp-note warn">${esc(r.error)}</p>` : ''}</div>`).join('');
       return `<article class="wp-item"><div class="wp-item-head"><span class="wp-pill ${tone}">${label}</span><strong>${esc(t.id)} · ${esc(t.title)}</strong>${undelivered ? '<span class="wp-tag">等会话停下再送</span>' : ''}</div>
-        <div class="wp-meta">来自会话「${esc(t.session?.title || t.sessionTitle || t.sessionId)}」 · ${t.rounds.length} 轮 · 发起 ${clock(t.createdAt)}${t.model ? ' · 指定模型 ' + esc(t.model) : ''}</div>
+        <div class="wp-meta">来自会话「${esc(pairing.homeLabel({ title: t.session?.title || t.sessionTitle || t.sessionId, code: t.session?.code || t.code }))}」 · ${t.rounds.length} 轮 · 发起 ${clock(t.createdAt)}${t.model ? ' · 指定模型 ' + esc(t.model) : ''}${t.transferredFrom?.length ? ' · 从「' + esc(t.transferredFrom[t.transferredFrom.length - 1].label) + '」转来' : ''}</div>
+        ${pairing.companyPairText(t) ? `<div class="wp-meta cl-pair">${esc(pairing.companyPairText(t))}</div>` : ''}
         <details class="cl-details"><summary>看问答</summary>${rounds}</details>
         <div class="wp-actions"><button type="button" class="wp-link" data-cl="open:${esc(t.sessionId)}">${t.session?.open ? '打开提问的会话' : '找回提问的会话'}</button></div></article>`;
     }).join('');

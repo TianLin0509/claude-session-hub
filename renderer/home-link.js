@@ -6,6 +6,8 @@
 // 解锁时没有输入框、没有提示，菜单里只是多了这一项。
 (() => {
   const { ipcRenderer } = require('electron');
+  // 配对号牌（2026-10-20）：任务列表写「家里 <会话名 #短码> · <家里模型>」和「本会话由 <号> · <模型> 作答」。
+  const pairing = require('../core/company-bridge/pairing-plate');
   let dialog = null, data = null, editing = false, pool = null, poolTimer = null, imagePanel = null;
   let tab = (() => { try { return localStorage.getItem('hub.homeLink.tab') === 'pool' ? 'pool' : 'link'; } catch { return 'link'; } })();
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -133,7 +135,7 @@
       const rounds = t.rounds.map(r => `<div><b>第 ${r.round} 轮</b>${r.error ? ` <span class="hl-pill bad">${esc(r.error)}</span>` : ''}<pre>${esc(r.question)}</pre>${r.reply ? `<div class="hl-muted">回执（${clock(r.replyAt)}）</div><pre>${esc(r.reply)}</pre>` : ''}</div>`).join('');
       return `<div class="hl-item"><div class="hl-row"><span class="hl-pill ${tone}">${label}</span><b>${esc(t.id)}</b><span>${esc(t.title)}</span>
         <span style="flex:1"></span>${t.sessionId ? `<button class="hl-link" data-hl="open:${esc(t.sessionId)}">${t.session?.open ? '打开会话' : '找回会话'}</button>` : ''}${t.state === 'failed' ? `<button class="hl-link" data-hl="retry:${esc(t.id)}">重试</button>` : ''}</div>
-        <div class="hl-muted">收到 ${clock(t.createdAt)} · ${t.rounds.length} 轮${t.model ? ' · 指定模型 ' + esc(t.model) : ''}${t.from?.title ? ' · 来自会话「' + esc(t.from.title) + '」' : ''}</div>
+        <div class="hl-muted">收到 ${clock(t.createdAt)} · ${t.rounds.length} 轮${t.model ? ' · 指定模型 ' + esc(t.model) : ''}${pairing.homePairText(t.from) ? ' · ' + esc(pairing.homePairText(t.from)) : t.from?.title ? ' · 来自会话「' + esc(t.from.title) + '」' : ''}${pairing.answeredByText(t) ? ' · ' + esc(pairing.answeredByText(t)) : ''}</div>
         <details><summary class="hl-muted">看问答</summary>${rounds}</details></div>`;
     }).join('');
   }

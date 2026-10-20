@@ -789,7 +789,17 @@ const autoTitleManager = createAutoTitleManager({
   sessionManager,
   workspaceService,
 });
-const { maybeAutoTitleMeetingFromPrompt, maybeAutoTitleSessionFromPrompt } = autoTitleManager;
+const { maybeAutoTitleMeetingFromPrompt } = autoTitleManager;
+// 交接跟人走（2026-10-20，main/reference-handoff.js）：带【引用会话】的消息发出时，把被引用的旧会话（已关闭的）名下的公司联动编号转过来。
+// 和自动起标题挂在同一处：三条上报路径（原生记录、Claude hook、Codex hook）都经过这里。
+const referenceHandoff = require('./main/reference-handoff.js').createReferenceHandoff({
+  getTranscriptDir: () => require('./core/data-dir').getHubTranscriptDir(),
+  getBridge: () => companyBridgeService,
+});
+function maybeAutoTitleSessionFromPrompt(ev) {
+  try { referenceHandoff.onPrompt(ev); } catch (error) { console.warn('[reference-handoff]', error && error.message); }
+  return autoTitleManager.maybeAutoTitleSessionFromPrompt(ev);
+}
 // Codex /goal auto-continuations can begin without a user_message event. Keep
 // this lifecycle signal separate from prompt-submitted so it cannot trigger
 // auto-title or notification prompt bookkeeping with synthetic text.
@@ -2881,6 +2891,7 @@ registerSessionReferenceIpc(ipcMain, {
   searchService: sessionSearchService,
   getSearchSnapshot: buildSessionSearchSnapshot,
   getMeeting: meetingId => meetingManager.getMeeting(meetingId),
+  onResolved: (filePath, sessionId) => referenceHandoff.noteResolved(filePath, sessionId),
 });
 // Let the renderer and hook server finish their latency-sensitive boot path
 // before the worker starts walking transcript directories. Querying search

@@ -19,6 +19,7 @@ const { MODEL_ID, sanitizeModelTable, describeModels } = require('./model-table-
 const guard = require('./delivery-guard');
 const Q = require('../codeagent-quota');
 const { parseInvite, TeamAdmin } = require('./team-link');
+const plate = require('./pairing-plate');
 const { installTeamSkills } = require('./team-skills');
 
 const ACTIVE_POLL_MS = 10000;
@@ -57,11 +58,19 @@ function accountNote(t, r) {
   else if (asked && meta.accountAlias && meta.accountAlias !== asked) parts.push(`指定的是${asked}`);
   return parts.length ? '；' + parts.join('；') : '';
 }
+// 回执首行（2026-10-20 起带题目）：【公司回执 Q-1020-21 · 第 1 轮 · 题：<标题前 16 字>】；没答上的是「· 没答上 · 题：…」。
+// 解析一律按编号 + 轮次认（core/bridge-message-kind.js、delivery-guard.js），新旧两种首行都认。
+const TOPIC_CHARS = 16;
+const topicOf = t => Array.from(String(t.title || '').replace(/[【】\r\n]+/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, TOPIC_CHARS).join('').trim();
+function receiptHead(t, r, failed = !!r.error) {
+  const topic = topicOf(t);
+  return `【公司回执 ${t.id} · 第 ${r.round} 轮${failed ? ' · 没答上' : ''}${topic ? ' · 题：' + topic : ''}】`;
+}
 function replyMessage(t, r) {
   if (r.error) {
-    return [`【公司回执 ${t.id} · 第 ${r.round} 轮 · 没答上】`, '', r.error, '', '——', '公司那边这一轮没有给出回答。可以用 followup_company 换个问法重问，或先按现有证据继续，并在汇报里写明待公司核实的点。'].join('\n');
+    return [receiptHead(t, r, true), '', r.error, '', '——', '公司那边这一轮没有给出回答。可以用 followup_company 换个问法重问，或先按现有证据继续，并在汇报里写明待公司核实的点。'].join('\n');
   }
-  return [`【公司回执 ${t.id} · 第 ${r.round} 轮】`, '', r.reply, '', '——',
+  return [receiptHead(t, r, false), '', r.reply, '', '——',
     `以上是公司 CodeAgent 的回执（不含源码${modelNote(t, r)}${accountNote(t, r)}）。请核对：可信就据此继续；把握程度低、没读到关键部分或与家里证据矛盾时，用 followup_company 追问（同一个公司会话，它记得上一轮读过的内容），次数不限。`].join('\n');
 }
 // 线程状态由各轮推导：最后一轮决定结果。
@@ -86,6 +95,36 @@ function ensureOpenColumn(db, needsWork) {
   }
 }
 
+// 公司回传的配对信息只留几个短字段（对端来的数据，限长、去控制字符）。
+function cleanPairing(p) {
+  if (!p || typeof p !== 'object') return null;
+  const str = (v, n) => typeof v === 'string' ? Array.from(v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()).slice(0, n).join('') : '';
+  const out = { sessionTitle: str(p.sessionTitle, 80), accountAlias: str(p.accountAlias, 24), model: str(p.model, 60) };
+  for (const k of Object.keys(out)) if (!out[k]) delete out[k];
+  return Object.keys(out).length ? out : null;
+}
+// 哪些会话发通行证（2026-10-20 补漏）：实际跑 Claude Code 或 Codex CLI 的都发——Claude、跑在 Claude Code 上的 DeepSeek
+// （deepseek-claude、旧的 deepseek-legacy）、CodeAgent，以及 Codex CLI 上的 Codex / DeepSeek。以前只认 claude 和 Codex CLI，
+// DeepSeek 会话拿不到通行证，有 Agent 就去数据库里读本机密钥自己算。Gemini、Kimi、千问、智谱等别家命令行不挂。
+function passKind(kind) {
+  const kinds = require('../ai-kinds');
+  const k = String(kind || '');
+  return kinds.isClaudeFamily(k) || kinds.isCodexCliKind(k);
+}
+// 隔离测试实例（CLAUDE_HUB_E2E=1 且指定了数据目录）可以由测试指定密钥，好在测试进程里算出同一个通行证；正式运行不认。
+function bridgeTestMaster(env = process.env) {
+  const v = String(env.CLAUDE_HUB_E2E_BRIDGE_MASTER || '');
+  return env.CLAUDE_HUB_E2E === '1' && env.CLAUDE_HUB_DATA_DIR && /^[0-9a-f]{32,}$/i.test(v) ? v : null;
+}
+function dropLegacyMaster(store) {
+  try {
+    if (!store.db.prepare("SELECT 1 FROM meta WHERE key='localMaster'").get()) return;
+    store.db.exec('PRAGMA secure_delete=ON'); // 删掉的那页清零，不在库文件里留残迹
+    store.db.prepare("DELETE FROM meta WHERE key='localMaster'").run();
+    try { store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
+  } catch (error) { console.warn('[company-bridge] 删除旧的本机密钥失败', error.message); }
+}
+
 class HomeBridge {
   constructor(deps) {
     this.deps = deps;
@@ -95,9 +134,11 @@ class HomeBridge {
     ensureOpenColumn(this.store.db, needsWork);
     this.link = new BridgeLink({ side: 'home', store: this.store, fetchImpl: deps.fetchImpl, now: () => this.now() });
     this.endpointFile = path.join(this.dir, 'mcp-endpoint.json');
-    let master = this.store.get('localMaster');
-    if (!master) { master = randomBytes(32).toString('hex'); this.store.set('localMaster', master); }
-    this.master = master;
+    // 本机密钥（会话通行证 = HMAC(密钥, 会话编号)）：2026-10-20 起只放在主进程内存里，每次 Hub 启动重新生成，不再落盘。
+    // 以前明文存在 assistant.sqlite，会话里的 Agent 能读出来自己算通行证、冒充别的会话；Hub 退出前会关掉所有会话进程，
+    // 重启后会话恢复时重新注入新的通行证，所以不需要跨重启保留。老版本留下的旧值启动时删掉。
+    this.master = deps.master || bridgeTestMaster() || randomBytes(32).toString('hex');
+    dropLegacyMaster(this.store);
     this.busy = null; this.deliverBusy = null; this.consultBusy = null; this.timer = null; this.nextPullAt = 0; this.server = null;
     this.consult = new HomeConsult({ bridge: this, deps });
     this.images = new (require('./images').BridgeImages)(this);
@@ -149,8 +190,7 @@ class HomeBridge {
   // ---- 挂到会话上：配对后所有 Codex / Claude 会话都拿到通行证（命令行可用）；SuperRAN 相关会话另外挂 MCP ----
   sessionPlan({ kind, opts = {}, id }) {
     if (!this.link.paired() || !id) return null;
-    const k = String(kind || '').replace(/-resume$/, '');
-    if (!(k === 'claude' || require('../ai-kinds').isCodexCliKind(k))) return null;
+    if (!passKind(kind)) return null;
     if (['hub-assistant', 'hub-photo-assistant'].includes(opts.purpose)) return null;
     const env = { HUB_BRIDGE_SESSION_ID: id, HUB_BRIDGE_SESSION_PASS: this.passFor(id), HUB_BRIDGE_ENDPOINT_FILE: this.endpointFile,
       HUB_BRIDGE_CLI: this.deps.cliScript || path.resolve(__dirname, '../../scripts/company-ask.js') };
@@ -163,8 +203,7 @@ class HomeBridge {
   }
   wantsMcp({ kind, opts = {} }) {
     if (!this.link.paired()) return false;
-    const k = String(kind || '').replace(/-resume$/, '');
-    if (!(k === 'claude' || require('../ai-kinds').isCodexCliKind(k))) return false;
+    if (!passKind(kind)) return false;
     if (['hub-assistant', 'hub-photo-assistant'].includes(opts.purpose)) return false;
     if (this.settings().attach === 'all') return true;
     if (opts.purpose === 'wireless-proposal' || opts.purpose === CONSULT_PURPOSE) return true; // 替公司拿主意的会话要能回公司查证据
@@ -291,10 +330,15 @@ class HomeBridge {
     model = this.resolveModel(model);
     account = this.resolveAccount(account);
     const id = this.nextThreadId(), m = this.meta(sessionId), gen = this.link.gen();
-    const t = { id, sessionId, sessionTitle: m.title || null, title: short(title || question, 40), gen, createdAt: this.now(),
+    // 配对号牌（2026-10-20）：家里会话的短码和实际模型显示名随提问发给公司，公司据此给会话起名「Q21 · 家「会话名 #短码」· 模型」。
+    const code = plate.shortCode(sessionId), homeModel = plate.modelLabel(m.kind, m.currentModel?.id || m.model);
+    // plate：按公司同一规则推算的公司会话名，公司回传真名（新版公司）之前、或老公司不回传时用它。
+    const from = { title: m.title || null, kind: m.kind || null, code, model: homeModel || null };
+    const t = { id, sessionId, sessionTitle: m.title || null, code, homeModel, plate: plate.companySessionTitle({ id, title, from }), title: short(title || question, 40), gen, createdAt: this.now(),
       ...(model ? { model } : {}), rounds: [{ round: 1, question, sentAt: this.now(), status: 'sent', ...(account ? { account } : {}) }] };
     // 老版本的公司 Hub 不认 model / account：忽略它们，照旧用默认模型、自己挑号（回执里会写实际用的模型和号）。
-    await this.link.send('ask', { thread: id, gen, round: 1, title: t.title, question, from: { title: m.title || null, kind: m.kind || null }, ...(model ? { model } : {}), ...(account ? { account } : {}) });
+    // from 里新加的 code / model 老公司照原样存下（company.js 存整个 from），只是不用来起名。
+    await this.link.send('ask', { thread: id, gen, round: 1, title: t.title, question, from, ...(model ? { model } : {}), ...(account ? { account } : {}) });
     this.saveThread(t);
     this.nextPullAt = Math.min(this.nextPullAt, this.now() + ACTIVE_POLL_MS);
     this.changed();
@@ -304,8 +348,8 @@ class HomeBridge {
       next: '等待回执时每 10 秒检查一次，处理时长取决于公司 Agent 的任务。回执到了会作为一条新消息自动发到本会话，现在请结束本轮（或先做不依赖回执的工作），不要循环等待。' };
   }
   async followup(sessionId, { thread, question, account }) {
-    const t = this.thread(String(thread || ''));
-    if (!t || t.sessionId !== sessionId) throw new Error(t ? '这个编号属于另一个会话，不能在这里追问' : '找不到编号 ' + thread);
+    const t = this.claimByHandoff(this.thread(String(thread || '')), sessionId);
+    if (!t || t.sessionId !== sessionId) throw new Error(t ? `${this.ownerText(t)}，不能在这里追问${this.handoffHint(t, sessionId)}` : '找不到编号 ' + thread);
     if (t.state === 'cancelled' || t.gen !== this.link.gen()) throw new Error('这个编号属于上一次配对，已作废；请用 ask_company 重新提问');
     question = String(question || '').trim();
     if (question.length < 4) throw new Error('追问内容太短');
@@ -324,8 +368,8 @@ class HomeBridge {
   // 补收（2026-10-16）：上一轮报「没答上」或迟迟没有回执，但公司会话里其实写了回答——请公司直接把它取回，不重答。
   // 今天 Q-1016-02 第 4 轮就是答完了却没送回，只能人去公司电脑上抄。
   async recollect(sessionId, { thread }) {
-    const t = this.thread(String(thread || ''));
-    if (!t || t.sessionId !== sessionId) throw new Error(t ? '这个编号属于另一个会话' : '找不到编号 ' + thread);
+    const t = this.claimByHandoff(this.thread(String(thread || '')), sessionId);
+    if (!t || t.sessionId !== sessionId) throw new Error(t ? this.ownerText(t) + this.handoffHint(t, sessionId) : '找不到编号 ' + thread);
     if (t.state === 'cancelled' || t.gen !== this.link.gen()) throw new Error('这个编号属于上一次配对，已作废');
     const r = t.rounds[t.rounds.length - 1];
     if (!r) throw new Error('这个编号还没有任何一轮');
@@ -585,16 +629,89 @@ class HomeBridge {
   }
   view(sessionId, { thread }) {
     let list;
+    this.claimLinked(sessionId);
     if (thread) {
       const t = this.thread(String(thread));
-      if (!t || t.sessionId !== sessionId) throw new Error('找不到本会话的编号 ' + thread);
+      if (!t || t.sessionId !== sessionId) throw new Error(t ? `找不到本会话的编号 ${thread}：${this.ownerText(t)}${this.handoffHint(t, sessionId)}` : '找不到本会话的编号 ' + thread);
       list = [t];
     } else list = this.store.db.prepare('SELECT payload FROM bridge_threads WHERE session=? ORDER BY updated DESC LIMIT 10').all(sessionId).map(r => JSON.parse(r.payload));
     return { ...this.peer(), companyModels: this.modelsBrief(), threads: list.map(t => ({ thread: t.id, title: t.title, state: STATE_LABEL[t.state] || t.state, model: t.model || '公司默认',
+      ...(t.company?.sessionTitle ? { companySession: t.company.sessionTitle } : {}), ...(t.transferredFrom ? { transferredFrom: t.transferredFrom.map(x => x.label) } : {}),
       rounds: t.rounds.map(r => ({ round: r.round, question: r.question, status: STATE_LABEL[r.status] || r.status,
         ...(r.note && !r.reply && !r.error ? { note: r.note } : {}), ...(r.meta?.actualModel || r.meta?.model ? { usedModel: r.meta.actualModel || r.meta.model } : {}),
         ...(r.meta?.accountAlias ? { usedAccount: r.meta.accountAlias } : {}), ...(r.account ? { account: r.account } : {}), ...(r.meta?.rehomedFrom ? { rehomedFrom: r.meta.rehomedFrom } : {}),
         reply: r.reply || null, error: r.error || null })) })) };
+  }
+  // ---- 交接跟人走（2026-10-20）：用【引用会话】把旧会话的背景带进新会话时，旧会话已经关了，就把它名下还能追问的编号转给新会话；
+  // 之后的回执、追问、补收都归新会话。旧会话还开着就不转（两边都可能还在用），只记下这层关系：
+  // 旧会话关掉后，在新会话里追问 / 补收 / 查看这个编号时再转。每次转交写进 handoff.log 和线程记录（transferredFrom），可追溯。
+  handoff(toSessionId, fromSessionId, { why = '引用会话' } = {}) {
+    if (!toSessionId || !fromSessionId || toSessionId === fromSessionId) return { moved: [] };
+    const links = this.store.get('handoffLinks') || {};
+    links[toSessionId] = { from: fromSessionId, at: this.now(), why };
+    const keys = Object.keys(links);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete links[k];
+    this.store.set('handoffLinks', links);
+    if (this.deps.getSession?.(fromSessionId)) {
+      const n = this.transferable(fromSessionId).length;
+      if (n) this.handoffLog({ event: 'pending', from: fromSessionId, to: toSessionId, why, threads: this.transferable(fromSessionId).map(t => t.id) });
+      return { moved: [], pending: n };
+    }
+    return { moved: this.transferThreads(fromSessionId, toSessionId, why) };
+  }
+  // 还能转的编号：本次配对内、没作废的（在途的和已回执可追问的都算）。
+  transferable(sessionId) {
+    const gen = this.link.gen();
+    return this.store.db.prepare('SELECT payload FROM bridge_threads WHERE session=?').all(sessionId).map(r => JSON.parse(r.payload))
+      .filter(t => t.state !== 'cancelled' && t.gen === gen);
+  }
+  transferThreads(fromSessionId, toSessionId, why) {
+    const list = this.transferable(fromSessionId);
+    if (!list.length) return [];
+    let from = null, to = null;
+    try { from = this.meta(fromSessionId); } catch {}
+    try { to = this.meta(toSessionId); } catch {}
+    const fromLabel = plate.homeLabel({ title: from?.title || list[0].sessionTitle, code: plate.shortCode(fromSessionId) });
+    const moved = [];
+    for (const t of list) {
+      const rec = { sessionId: fromSessionId, label: fromLabel, at: this.now(), why };
+      this.saveThread({ ...t, sessionId: toSessionId, sessionTitle: to?.title || t.sessionTitle, code: plate.shortCode(toSessionId),
+        transferredFrom: [...(t.transferredFrom || []), rec].slice(-5) });
+      moved.push(t.id);
+    }
+    this.handoffLog({ event: 'moved', from: fromSessionId, to: toSessionId, why, threads: moved });
+    this.notify('编号转到新会话', `${moved.join('、')}：旧会话「${fromLabel}」已关闭，之后的回执和追问归新会话`, toSessionId);
+    this.changed();
+    return moved;
+  }
+  // 追问 / 补收 / 查看时：这个编号的主人已关闭、而本会话是用【引用会话】从它接手的，就在这时转过来。
+  claimByHandoff(t, sessionId) {
+    if (!t || !sessionId || t.sessionId === sessionId) return t;
+    const link = (this.store.get('handoffLinks') || {})[sessionId];
+    if (!link || link.from !== t.sessionId) return t;
+    return this.claimLinked(sessionId).length ? this.thread(t.id) : t;
+  }
+  claimLinked(sessionId) {
+    const link = sessionId && (this.store.get('handoffLinks') || {})[sessionId];
+    if (!link || this.deps.getSession?.(link.from) || !this.transferable(link.from).length) return [];
+    return this.transferThreads(link.from, sessionId, link.why || '引用会话');
+  }
+  handoffLog(entry) {
+    const line = JSON.stringify({ at: new Date(this.now()).toISOString(), ...entry });
+    try { fs.mkdirSync(this.dir, { recursive: true }); fs.appendFileSync(path.join(this.dir, 'handoff.log'), line + '\n', 'utf8'); }
+    catch (error) { console.warn('[company-bridge] 交接日志写不进去', error.message); }
+  }
+  // 编号归属说明（2026-10-20）：「这个编号属于「会话名 #短码」」，会话名取那个会话现在的标题（改过名的用新名）。
+  ownerText(t) {
+    let title = t.sessionTitle;
+    try { const m = this.meta(t.sessionId); if (m && m.title) title = m.title; } catch {}
+    return `这个编号属于另一个会话「${plate.homeLabel({ title, code: t.code || plate.shortCode(t.sessionId) })}」`;
+  }
+  handoffHint(t, sessionId) {
+    if (!this.deps.getSession?.(t.sessionId)) return '';
+    const linked = (this.store.get('handoffLinks') || {})[sessionId]?.from === t.sessionId;
+    return linked ? '（那个会话还开着，编号先留在那边；关掉它之后在这里再试一次，编号会自动转过来）'
+      : '（那个会话还开着；要在这里接着问，先关掉它，再在这里用【引用会话】引用它，编号会转过来）';
   }
   peer() {
     const st = this.link.status();
@@ -728,6 +845,9 @@ class HomeBridge {
     if (!t || t.state === 'cancelled' || (message.gen && t.gen && message.gen !== t.gen)) return;
     const round = Number(message.round) || 0;
     let changed = false;
+    // 公司回传的配对信息（2026-10-20，新版公司随 status / reply 带上）：公司会话名、作答的号（代称）和模型。老公司不带，就用 ask 时推算的。
+    const pairing = (message.type === 'status' || message.type === 'reply') ? cleanPairing(message.pairing) : null;
+    const company = pairing && JSON.stringify(pairing) !== JSON.stringify(t.company || null) ? pairing : null;
     const rounds = t.rounds.map(r => {
       if (r.round !== round) return r;
       if (message.type === 'status') {
@@ -748,8 +868,9 @@ class HomeBridge {
       }
       return r;
     });
-    if (!changed) return;
-    this.saveThread({ ...t, rounds });
+    if (!changed && !company) return;
+    this.saveThread({ ...t, rounds, ...(company ? { company } : {}) });
+    if (!changed) { this.changed(); return; }
     if (message.type === 'reply') this.notify('回执到了', `${t.id} 第 ${round} 轮：${short(message.text, 60)}`, t.sessionId);
   }
 
@@ -807,7 +928,8 @@ class HomeBridge {
       link: { state: c.state || 'none', pairedAt: c.pairedAt || null, pairingCode: c.state === 'pending' ? this.store.get('pairingCode') : null, outbox: this.link.pendingOutbox() },
       net: { lastOkAt: st.lastOkAt || null, lastError: st.lastError || null, gate: st.gate || null, peerSeen: st.peerSeen || null }, peer: this.peer(),
       now: this.now(), nextPullAt: this.nextPullAt, polling: this.polling(),
-      threads: this.threads(60).map(t => ({ ...t, session: { open: !!this.deps.getSession(t.sessionId), title: this.meta(t.sessionId).title || t.sessionTitle || null } })),
+      threads: this.threads(60).map(t => ({ ...t, companyPlate: t.company?.sessionTitle || t.plate || null,
+        session: { open: !!this.deps.getSession(t.sessionId), title: this.meta(t.sessionId).title || t.sessionTitle || null, code: t.code || plate.shortCode(t.sessionId) } })),
       consults: this.consult.view(),
       images: this.images.status(),
       companyHub: this.companyHub(),

@@ -134,7 +134,7 @@ test('【阻断】同一轮先投过「没答上」，之后补收 / 重试出�
   const calls = sendWith(r, 'home', [{ ok: true }]);
   r.clock.now += 1000; await r.home.deliver();
   assert.equal(calls.length, 1, '真回答投进去了，没被旧的「没答上」挡住');
-  assert.match(calls[0].text, /^【公司回执 Q-1018-07 · 第 1 轮】\n\n真正的回答/);
+  assert.match(calls[0].text, /^【公司回执 Q-1018-07 · 第 1 轮(?: · 题：[^】]*)?】\n\n真正的回答/);
   assert.equal(r.home.thread(th.id).rounds[0].delivered, true);
   // 原生记录里有了真回执之后，再核对就认得出
   fs.appendFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: calls[0].text } }) + '\n');

@@ -161,9 +161,10 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   assert.deepEqual(created.opts.addDirs, ['D:/code/common']);
   assert.equal(created.opts.model, undefined, '模型用 CodeAgent 默认，不传给会话（否则会走 /model 菜单）');
   assert.equal(created.opts.purpose, 'company-bridge');
-  // 会话名一眼对上家里那一个（2026-10-18）：Q-MMDD-01 由家里 Codex 发问 → MMDD-Q1-codex
-  const [, mmdd] = asked.thread.match(/^Q-(\d{4})-01$/);
-  assert.equal(created.opts.title, `${mmdd}-Q1-codex`);
+  // 会话名一眼对上家里那一个（2026-10-18；2026-10-20 起是配对号牌）：Q-MMDD-01 由家里 Codex 会话「SuperRAN PF 调度」（编号 home-s1）发问
+  // → 「Q1 · 家「会话名前 10 字 #短码」· Codex」（老版本家里不带短码时仍是 MMDD-Q1-codex，见 unit-bridge-pairing-home.test.js）
+  assert.match(asked.thread, /^Q-(\d{4})-01$/);
+  assert.equal(created.opts.title, 'Q1 · 家「SuperRAN P #home」· Codex');
   const companySession = created.opts.id;
   assert.match(r.cs.sent[0].text, /保持公司电脑原样/);
   assert.match(r.cs.sent[0].text, /不回传源码/);
@@ -193,7 +194,7 @@ test('完整往返：提问 → 公司新开 CodeAgent 会话 → 回执送回�
   await r.home.checkNow();
   assert.equal(r.hs.sent.length, 1);
   assert.equal(r.hs.sent[0].id, 'home-s1');
-  assert.match(r.hs.sent[0].text, new RegExp(`【公司回执 ${asked.thread} · 第 1 轮】`));
+  assert.match(r.hs.sent[0].text, new RegExp(`【公司回执 ${asked.thread} · 第 1 轮 · 题：[^】]+】`), '回执首行带编号、轮次和题目（2026-10-20）');
   assert.match(r.hs.sent[0].text, /followup_company/);
   await r.home.checkNow();
   assert.equal(r.hs.sent.length, 1, '同一份回执只送一次');
@@ -892,7 +893,7 @@ test('补收：一轮报没答上后，家里请公司取回最新回答，作�
   assert.equal(res.status, '已请公司补收');
   await r.company.checkNow();
   await r.home.checkNow();
-  assert.match(r.hs.sent.at(-1).text, new RegExp(`【公司回执 ${asked.thread} · 第 1 轮】`));
+  assert.match(r.hs.sent.at(-1).text, new RegExp(`【公司回执 ${asked.thread} · 第 1 轮 · 题：[^】]+】`));
   assert.match(r.hs.sent.at(-1).text, /补收/);
   assert.match(r.hs.sent.at(-1).text, /站间距 500 m/);
   await assert.rejects(r.home.invoke({ name: 'recollect_company', callerSessionId: 'home-s1', arguments: { thread: asked.thread } }), /正常回执/);
