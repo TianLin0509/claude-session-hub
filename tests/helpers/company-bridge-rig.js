@@ -71,6 +71,8 @@ function rig(t, { homeDeps = {}, companyDeps = {} } = {}) {
   home = new HomeBridge({ dataDir: path.join(root, 'home'), noTimer: true, fetchImpl: relay.fetch, now: () => clock.now, relayBaseUrl: () => BASE.replace(/\/api$/, ''),
     onNotify: n => notices.push(n), getDefaults: kind => ({ model: kind + '-default', effort: 'high' }), ...hs.deps, ...homeDeps });
   company = new CompanyBridge({ dataDir: path.join(root, 'company'), noTimer: true, fetchImpl: relay.fetch, now: () => clock.now, fallbackCwd: root,
+    // 内存默认钉成宽裕：不钉就读本机真实空闲内存，全量单测时一旦低于 20%，收会话会插手各用例（如等切模型时同一会话被休眠两次）。要测内存的用例自己传 memory。
+    memory: () => ({ total: 64 * 1024 ** 3, free: 32 * 1024 ** 3, ratio: 0.5 }),
     isDirectory: () => true, onNotify: n => notices.push(n), nodeExecutable: process.execPath, ...cs.deps, ...companyDeps });
   return { root, relay, clock, hs, cs, home, company, notices };
 }
