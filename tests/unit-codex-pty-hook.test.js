@@ -79,3 +79,21 @@ test('only PTY Codex sessions take this path', () => {
   assert.equal(isPtyCodexSession({ kind: 'deepseek-resume', agentRuntime: 'pty' }), true);
   assert.equal(isPtyCodexSession({ kind: 'deepseek', transcriptKind: 'deepseek-legacy', agentRuntime: 'pty' }), false);
 });
+
+test('the extended spelling of the bound rollout never re-binds the session or rebuilds the cards', async () => {
+  const plain = ['C:', 's', 'rollout-T1.jsonl'].join('\\'), extended = '\\\\?\\' + plain;
+  const h = harness({ boundSid: 'T1' });
+  h.session.transcriptPath = plain;
+  for (const event of ['prompt', 'tool-start', 'tool-complete', 'tool-start'])
+    await h.handle(h.session, event, { claudeSessionId: 'T1', transcriptPath: extended });
+  assert.equal(h.session.transcriptPath, plain);
+  assert.deepEqual(h.calls.filter(c => c[0] === 'meta'), []);
+  assert.deepEqual(h.sent.filter(([channel]) => channel === 'session-meta-updated'), []);
+  // A session saved with the extended form settles on the plain one exactly once.
+  const legacy = harness({ boundSid: 'T1' });
+  legacy.session.transcriptPath = extended;
+  for (let i = 0; i < 3; i++)
+    await legacy.handle(legacy.session, 'tool-start', { claudeSessionId: 'T1', transcriptPath: extended });
+  assert.equal(legacy.session.transcriptPath, plain);
+  assert.equal(legacy.sent.filter(([channel]) => channel === 'session-meta-updated').length, 1);
+});
