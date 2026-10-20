@@ -79,7 +79,7 @@ test('all supported AI runtimes and resume aliases use existing original artwork
   }
 });
 
-test('Claude foreground explanations stay in one visible reply before and after tools finish', () => {
+test('Claude notes between tools read like Codex progress: visible while running, timed rows once answered', () => {
   const at = '2026-10-05T10:00:00Z';
   const records = [
     { type: 'user', uuid: 'u', timestamp: at, message: { content: '请解释这个问题' } },
@@ -97,8 +97,9 @@ test('Claude foreground explanations stay in one visible reply before and after 
     { type: 'text', text: '已经修复，工具检查通过。' }] } });
   const done = project(records)[1];
   assert.equal(done.id, running.id);
-  assert.equal(done.text, running.text + '\n\n已经修复，工具检查通过。');
-  assert.deepEqual(done.chatProcessMessages, []);
+  assert.equal(done.text, '已经修复，工具检查通过。');
+  assert.deepEqual(done.chatProcessMessages.map(m => m.text), ['关键原因：新会话没有历史文件，不能当作恢复失败。']);
+  assert.ok(done.chatProcessMessages[0].ts, 'each progress row carries its own clock');
   assert.equal(done.toolCalls[0].status, 'completed');
   records.push({ type: 'user', uuid: 'notify', timestamp: at, origin: { kind: 'task-notification' },
     message: { content: '<task-notification>background</task-notification>' } },
@@ -106,5 +107,52 @@ test('Claude foreground explanations stay in one visible reply before and after 
     { type: 'text', text: '自动后台回顾进度。' }] } });
   const background = project(records)[1];
   assert.equal(background.text, done.text);
-  assert.deepEqual(background.chatProcessMessages.map(m => m.text), ['自动后台回顾进度。']);
+  assert.deepEqual(background.chatProcessMessages.map(m => m.text), ['关键原因：新会话没有历史文件，不能当作恢复失败。', '自动后台回顾进度。']);
+});
+
+test('phase-less provider items (ACP) keep earlier notes as progress rows; the last item is the answer', () => {
+  const project = messages => displayChatTurns(freeze([{ id: 'acp', role: 'assistant', kind: 'kimi',
+    text: messages.map(m => m.text).join('\n\n'), nativeOutcome: 'completed', displayMessages: messages }]))[0];
+  const done = project([{ id: 'a', phase: 'message', text: '先读配置。', ts: 1 },
+    { id: 'b', phase: 'message', text: '配置没问题，接着跑测试。', ts: 2 }, { id: 'c', phase: 'message', text: '全部通过。', ts: 3 }]);
+  assert.equal(done.text, '全部通过。');
+  assert.deepEqual(done.chatProcessMessages.map(m => [m.text, m.phase]),
+    [['先读配置。', 'commentary'], ['配置没问题，接着跑测试。', 'commentary']]);
+});
+
+test('Gemini steps after one prompt read as one reply: tool hand-offs are progress, the last step is the answer', () => {
+  const os = require('node:os');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-steps-'));
+  try {
+    const file = path.join(root, 'session.jsonl');
+    const tool = { id: 't', name: 'read_file', args: {}, status: 'success' };
+    fs.writeFileSync(file, [{ sessionId: 's' },
+      { id: 'u', type: 'user', timestamp: '2026-10-20T01:00:00Z', content: [{ text: '查一下' }] },
+      { id: 'g1', type: 'gemini', timestamp: '2026-10-20T01:00:05Z', content: '先读配置。', tokens: { total: 5 }, toolCalls: [tool] },
+      { id: 'g2', type: 'gemini', timestamp: '2026-10-20T01:00:09Z', content: '配置正常，答案如下。', tokens: { total: 5 } },
+    ].map(JSON.stringify).join('\n') + '\n');
+    const shown = displayChatTurns(require('../core/gemini-transcript-parser').parseGeminiTranscriptToTurns(file));
+    assert.equal(shown.length, 2, 'one user message and one AI reply');
+    assert.equal(shown[1].text, '配置正常，答案如下。');
+    assert.deepEqual(shown[1].chatProcessMessages.map(m => m.text), ['先读配置。']);
+    assert.equal(shown[1].toolCalls.length, 1);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Kimi text before a tool call stays as a timed progress row instead of being overwritten by the answer', () => {
+  const { parseKimiWireRecords } = require('../core/kimi-transcript-parser');
+  const ev = (event, time) => ({ type: 'context.append_loop_event', event: { turnId: '1', ...event }, time });
+  const turns = parseKimiWireRecords([
+    { type: 'turn.prompt', input: [{ type: 'text', text: '查一下' }], origin: { kind: 'user' }, time: 1000 },
+    ev({ type: 'step.begin', uuid: 's1' }, 1001),
+    ev({ type: 'content.part', stepUuid: 's1', part: { type: 'text', text: '先读配置。' } }, 1002),
+    ev({ type: 'tool.call', stepUuid: 's1', toolCallId: 'c', name: 'read' }, 1003),
+    ev({ type: 'step.end', uuid: 's1', finishReason: 'tool_calls' }, 1004),
+    ev({ type: 'step.begin', uuid: 's2' }, 1005),
+    ev({ type: 'content.part', stepUuid: 's2', part: { type: 'text', text: '配置正常。' } }, 1006),
+    ev({ type: 'step.end', uuid: 's2', finishReason: 'stop' }, 1007),
+  ]);
+  const shown = displayChatTurns(turns)[1];
+  assert.equal(shown.text, '配置正常。');
+  assert.deepEqual(shown.chatProcessMessages.map(m => [m.text, m.ts]), [['先读配置。', 1004000]]);
 });
