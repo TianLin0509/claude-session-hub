@@ -228,7 +228,7 @@ test('MCP：列出 7 个工具；带对会话编号能调通，编号不对被�
     } finally { child.kill(); }
   };
   const ok = await rpc(me);
-  assert.deepEqual(ok.tools, ['list_sessions', 'read_session', 'send_session', 'create_session', 'watch_session', 'press_keys', 'stop_session']);
+  assert.deepEqual(ok.tools, ['room_booking', 'ppt_library', 'list_sessions', 'read_session', 'send_session', 'create_session', 'watch_session', 'press_keys', 'stop_session']);
   assert.equal(ok.listed.isError, false);
   assert.deepEqual(JSON.parse(ok.listed.content[0].text).sessions.map(s => s.title), ['信道仿真']);
   const bad = await rpc('not-the-assistant');

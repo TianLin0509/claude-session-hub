@@ -32,10 +32,15 @@ test('快速查找：npm 全局目录改到别处（.npmrc 的 prefix）也能�
 
 test('全盘找：在给定目录里按文件名找到 welink-cli.exe', async () => {
   const root = tmp(), exe = plant(path.join(root, 'tools', 'node', 'global'));
-  const r = await W.findCliDeep({ env: { ...process.env, USERPROFILE: root }, roots: [[root, 8]], timeoutMs: 60000 });
+  // Registry/npm belong to the test fixture; only the bounded directory walk is real.
+  const execFileImpl = (file, args, opts, callback) => {
+    if (file === 'reg.exe' || file === 'cmd.exe') { callback(null, ''); return; }
+    return require('node:child_process').execFile(file, args, opts, callback);
+  };
+  const r = await W.findCliDeep({ env: { ...process.env, USERPROFILE: root }, execFileImpl, roots: [[root, 8]], timeoutMs: 60000 });
   assert.equal(r.path, exe);
   // 没有的目录：返回空（这台测试机本身没装 welink-cli，系统路径和 npm 那两步也找不到）
-  assert.equal((await W.findCliDeep({ env: { ...process.env, USERPROFILE: tmp() }, roots: [[tmp(), 8]], timeoutMs: 30000 })).path, null);
+  assert.equal((await W.findCliDeep({ env: { ...process.env, USERPROFILE: tmp() }, execFileImpl, roots: [[tmp(), 8]], timeoutMs: 30000 })).path, null);
 });
 
 test('服务：取数时没找到 welink-cli 就在后台全盘找，找到记进设置并马上取数；没找到 6 小时内不重复自动找；手动选 .cmd 换成真 exe', async () => {

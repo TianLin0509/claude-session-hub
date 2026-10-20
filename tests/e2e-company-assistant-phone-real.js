@@ -54,25 +54,21 @@ async function main() {
 
     // ① 设置「手机」页：选群、检查成员、开启并保存
     await c.eval(`document.getElementById('btn-company-assistant').click()`);
-    await until(`/WeLink 已登录/.test(document.querySelector('.ca-status')?.innerText || '')`, 'logged in', 60000);
+    await until(`/自动维护登录|自动续期/.test(document.querySelector('.ca-status')?.innerText || '')`, 'logged in', 60000);
     await c.eval(`document.querySelector('[data-ca="settings"]').click()`);
     await until(`!!document.querySelector('[data-ca="settings-tab:phone"]')`, 'phone tab button', 10000);
     await c.eval(`document.querySelector('[data-ca="settings-tab:phone"]').click()`);
     await until(`!!document.querySelector('[data-f="phone-group"]')`, 'phone tab body', 15000);
-    if (!(await c.eval(`[...document.querySelector('[data-f="phone-group"]').options].some(o => o.value === 'g-phone')`))) {
-      await c.eval(`document.querySelector('[data-x="phone-refresh"]').click()`);
-      await until(`[...(document.querySelector('[data-f="phone-group"]')?.options || [])].some(o => o.value === 'g-phone')`, 'group listed', 30000);
-    }
     await c.eval(`(() => { const s = document.querySelector('[data-f="phone-group"]'); s.value = 'g-phone'; s.dispatchEvent(new Event('change')); })()`);
     await c.eval(`document.querySelector('[data-x="phone-check"]').click()`);
     await until(`/成员没问题/.test(document.querySelector('[data-slot="phone-check"]')?.innerText || '')`, 'group check', 20000);
     await shot('01-phone-tab');
-    result.checks.push('设置「手机」页：群列表里有「助理 CodeAgent」；检查群成员显示只有本人和小微助手');
-    await c.eval(`document.querySelector('[data-f="phone-enabled"]').checked = true; document.querySelector('[data-x="phone-save"]').click()`);
+    result.checks.push('设置「手机」页：直接填群 ID；查看群成员显示只有本人和小微助手');
+    await c.eval(`document.querySelector('[data-x="phone-connect"]').click()`);
     const welcome = await untilGroup(m => m.content.startsWith('【助理】手机对话已接通'), 'welcome in group', 30000);
     await until(`/已接通/.test(document.querySelector('[data-slot="phone-live"]')?.innerText || '')`, 'phone live connected', 30000);
     await shot('02-phone-connected');
-    result.checks.push('开启并保存：群里收到「已接通」，设置页状态变成「已接通」');
+    result.checks.push('点击接通：群里收到「已接通」，设置页状态变成「已接通」');
 
     // ② 手机问：有哪些会话
     await c.eval(`document.querySelector('[data-ca="close-panel"]').click()`);
@@ -96,7 +92,7 @@ async function main() {
     result.checks.push(`手机派活：助理交给「信道仿真」，它答完 ${result.timings.dispatchDoneSec} 秒内推到群里（含「3%」）`);
 
     // ④ 助理页对话里标着「手机」
-    await until(`document.querySelectorAll('.ca-msg.user .ca-chip').length >= 2 && /手机/.test(document.querySelector('.ca-msg.user .ca-chip').textContent)`, 'phone chips in chat', 30000);
+    await until(`document.querySelectorAll('.ca-message-row.user .ca-chip').length >= 2 && /手机/.test(document.querySelector('.ca-message-row.user .ca-chip').textContent)`, 'phone chips in chat', 30000);
     await c.eval(`(() => { const s = document.querySelector('.ca-scroll'); s.scrollTop = s.scrollHeight; })()`);
     await sleep(500);
     await shot('03-chat-with-phone');
