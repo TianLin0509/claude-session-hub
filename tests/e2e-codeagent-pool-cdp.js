@@ -188,10 +188,12 @@ async function main() {
     assert.ok(!personal.created.codeagentPoolAccount);
     result.checks.push('personal account sessions keep the personal config dir');
 
-    // 卡片上的「池」标记
-    const poolTags = await waitFor('pool tags on cards', () => client.eval(`document.querySelectorAll('#session-list .sl-pool').length`));
-    assert.equal(poolTags, 2);
-    result.checks.push('pool sessions carry the pool tag on their cards');
+    // 会话栏的账号字母（2026-10-20 起不再用「池」）：号池 w00123 夹具的两个号与个人号 y00000002 各显示工号首字母
+    const letters = await waitFor('account letters on rows', () => client.eval(`(() => { const l = [...document.querySelectorAll('#session-list .sl-acct')].map(e => e.textContent); return l.length === 3 ? l.sort() : null; })()`));
+    assert.equal(await client.eval(`document.querySelectorAll('#session-list .sl-pool').length`), 0);
+    assert.deepEqual(letters.filter(x => x !== 'y').length, 2, JSON.stringify(letters));
+    assert.ok(letters.includes('y'), 'personal account letter');
+    result.checks.push('CodeAgent rows show the account initial (personal and pool alike), no pool tag');
 
     // 休眠后点卡片唤醒：回到同一个号的目录（会话记录在那里）。先等号池目录里的 hook 把原生会话 id 报给 Hub。
     await waitFor('pool hook bound native id', async () => (await sessions(client)).find(s => s.id === first.created.id)?.ccSessionId === first.launch.sessionId, 30000);

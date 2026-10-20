@@ -671,6 +671,14 @@ function registerSessionIpc(ipcMain, deps) {
     try { const status = codeagentPoolStatus(); autoProbeMissing(status); return { ...status, probing: [...codeagentProbing] }; }
     catch (error) { return { ok: false, error: error.message }; }
   });
+  // 会话栏的账号字母与代称（core/codeagent-account-badge.js）：只读凭证元数据，不触发获取模型权限。
+  ipcMain.handle('codeagent-pool:badges', () => {
+    try {
+      const { getHubDataDir } = require('../../core/data-dir');
+      const personalDir = require('../../core/codeagent-config').resolveCodeAgentConfig(process.env).configDir;
+      return { ok: true, ...require('../../core/codeagent-account-badge').accountBadges({ dataDir: getHubDataDir(), personalDir }) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
   ipcMain.handle('codeagent-pool:add', (_event, payload) => {
     try {
       const { getHubDataDir } = require('../../core/data-dir');

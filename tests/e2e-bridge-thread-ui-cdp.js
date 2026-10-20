@@ -238,12 +238,14 @@ const Q2 = '请再核对 10 处：OLLA 的叠加位置、步长、BLER 目标、
       for (const [id, title] of [['home-s1','SuperRAN · AirView OLLA 核对'],['st-running','SuperRAN · HARQ 对齐'],['st-queued','公司 CodeAgent 摸底'],['st-failed','SuperRAN · 功控复核']]) sessions.set(id, { ...base, id, title });
       renderSessionList();
     })()`);
-    await until('sidebar badges', () => q(`document.querySelectorAll('#session-list .bt-badge').length >= 4`));
-    const badges = await q(`[...document.querySelectorAll('#session-list .session-item')].filter(e => e.querySelector('.bt-badge')).map(e => e.querySelector('.sl-title').innerText + ' || ' + e.querySelector('.bt-badge').title)`);
+    // 2026-10-20 田哥：回合状态不进会话栏（会话栏去杂），挪到会话头部；标签内容本身不变（tests/e2e-sidebar-clean-cdp.js 测头部）。
+    await until('sidebar rows', () => q(`['home-s1','st-running','st-queued','st-failed'].every(id => document.querySelector('#session-list .session-item[data-session-id="' + id + '"]'))`));
+    assert.equal(await q(`document.querySelectorAll('#session-list .bt-badge').length`), 0, '会话栏不再有「⇄」回合状态标签');
+    const badges = await q(`['home-s1','st-running','st-queued'].map(id => { const b = window._bridgeThreads.badge(id); return b.chip + ' || ' + b.sub; })`);
     assert.ok(badges.some(b => /⇄ 2 轮/.test(b) && /Q-1016-05 · 第 2 轮已回执 · 12 分/.test(b)), badges.join('\n'));
     assert.ok(badges.some(b => /⇄ 处理中 · \d+ 分/.test(b)), badges.join('\n'));
     assert.ok(badges.some(b => /⇄ 排队中/.test(b) && /排队第 1 个/.test(b)), badges.join('\n'));
-    check('会话列表：每行标题前「⇄」标签（轮数或当前状态与耗时），悬停看编号、当前那一步与全程');
+    check('会话列表：不再显示「⇄」回合状态；同一份标签（轮数或当前状态与耗时、悬停的编号与全程）留给会话头部');
     const image = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: 520, height: 520, scale: 1 } });
     const file = path.join(out, '20261016-通道串-05-会话列表-claude1.png');
     fs.writeFileSync(file, Buffer.from(image.data, 'base64')); result.screenshots.push(file);
