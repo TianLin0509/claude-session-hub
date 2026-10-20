@@ -82,3 +82,10 @@ test('replacing or clearing a known transcript, provider or backend still invali
     assert.equal(h.el.children.length,0);
   }
 });
+test('the extended and plain spellings of one transcript keep the same cards',()=>{
+  const path=['C:','s','rollout-T.jsonl'].join('\\');
+  const h=harness(),plain={id:'a',codexSid:'T',transcriptPath:path};
+  h.views.activate(plain);const node=h.fill(plain);
+  assert.equal(h.views.activate({...plain,transcriptPath:'\\\\?\\'+path}).hydrated,true);assert.equal(h.el.children[0],node);
+  assert.equal(h.views.activate({...plain,transcriptPath:path.replace('T.jsonl','OTHER.jsonl')}).hydrated,false);
+});
