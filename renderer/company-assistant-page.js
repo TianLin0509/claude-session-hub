@@ -103,9 +103,9 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     const online = d.login?.ok && auth.state !== 'needs-scan';
     const mailErrors = (d.errors || []).some(e => /邮件|日程/.test(e.label || ''));
     const mailText = !online ? '等待 WeLink 登录' : !d.refreshedAt ? '等待首次查询' : d.calendarNeedsSetup ? '暂未接入' : mailErrors ? '部分查询失败' : '已接入';
-    const loginText = !d.cliFound ? '未找到 welink-cli' : renewing ? '正在自动续期' : online ? (auth.lastRenewAt ? '自动续期 · 上次 ' + clock(auth.lastRenewAt) : '在线 · 自动维护登录') : auth.state === 'needs-scan' ? '需要扫码' : auth.error || '正在检查登录';
+    const loginText = !d.cliFound ? '未找到 welink-cli' : renewing ? '正在自动续期' : online ? (auth.lastRenewAt ? '自动续期 · 上次 ' + clock(auth.lastRenewAt) : '在线 · 自动维护登录') : auth.state === 'needs-scan' ? '自动续期没成功，点这里扫码登录' : auth.error || '正在检查登录';
     const row = (icon, title, detail, color, action, extra = '') => `<div class="ca-connection" title="${esc(title + ' · ' + detail)}"><button type="button" class="ca-connection-main" data-ca="${action}"><span class="ca-side-icon">${icon}<i class="ca-dot ${color}"></i></span><span class="ca-side-copy"><b>${title}</b><small>${esc(detail)}</small></span></button>${extra}</div>`;
-    return row('W', 'WeLink', loginText, renewing ? 'run' : online ? 'ok' : 'warn', 'settings-tab:welink',
+    return row('W', 'WeLink', loginText, renewing ? 'run' : online ? 'ok' : 'warn', d.cliFound && auth.state === 'needs-scan' ? 'login' : 'settings-tab:welink',
       !d.cliFound ? '<button class="ca-link ca-side-copy" data-ca="find-cli">查找</button>' : !online && !renewing ? '<button class="ca-link ca-side-copy" data-ca="login">扫码登录</button>' : '')
       + row('✉', '邮件与日历', mailText, mailText === '已接入' ? 'ok' : '', 'settings-tab:welink')
       + row('▣', '手机群', !p.groupId ? '填入群 ID 即可接通' : phone.lastError ? phone.lastError : !p.enabled ? '已暂停' : (p.groupName || '群 ' + p.groupId.slice(-6)), p.enabled && p.groupId && !phone.lastError ? 'ok' : '', 'settings-tab:phone')
@@ -249,7 +249,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     setHtml('notices', noticesStrip());
     setHtml('rooms', (data.rooms?.events || []).slice(0, 10).map(e => {
       const r = e.record;
-      return assistantMessage(`<article class="ca-msg"><div class="ca-card-head"><b>会议室 · ${esc(r['状态'])}</b><span class="ca-time">${when(e.at)}</span></div><p>${esc(r['日期'])} ${esc(r['时间'])} · ${esc(r['会议室'] || '未选定')}</p>${r['备注'] ? `<p class="ca-note">${esc(r['备注'])}</p>` : ''}</article>`);
+      return assistantMessage(`<article class="ca-msg"><div class="ca-card-head"><b>会议室 · ${esc(r['状态'])}</b><span class="ca-time">${when(e.at)}</span></div><p>${esc(e.slot || `${r['日期'] || ''} ${r['时间'] || ''} · ${r['会议室'] || '未选定'}`)}</p>${r['备注'] ? `<p class="ca-note">${esc(r['备注'])}</p>` : ''}</article>`);
     }).join(''));
     const scroll = page.querySelector('.ca-scroll');
     const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;

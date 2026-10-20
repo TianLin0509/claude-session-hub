@@ -2,7 +2,8 @@
 const W = require('./welink');
 const CHECK_MS = 5 * 60000, RETRY_MS = 10 * 60000, SCAN_LIMIT = 2;
 const authFailure = text => /(?:token|session)\s*(?:is\s*)?(?:expired|invalid)|unauthenticated|not\s+logged\s*in|未登录|登录(?:已)?(?:过期|失效)|no\s+token/i.test(String(text || ''));
-const needsScan = text => /data:image\/|请.{0,12}扫码|二维码|scan\s+(?:the\s+)?qr|qr\s*code/i.test(String(text || ''));
+// Same recognition as the manual login panel (data URI, image path, URL), plus the prompt wording.
+const needsScan = text => !!W.qrFromLoginOutput(text) || /请.{0,12}扫码|二维码|scan\s+(?:the\s+)?qr|qr\s*code/i.test(String(text || ''));
 
 class AuthKeeper {
   constructor(a) {
@@ -23,7 +24,7 @@ class AuthKeeper {
     if (this.closed || this.current.state !== 'needs-scan' || this.current.notified) return;
     const id = this.current.noticeId || 'welink-login-' + this.a.now();
     this.set({ noticeId: id });
-    if (this.a.publish({ id, kind: 'welink-login', title: 'WeLink 需要扫码', text: '自动续期需要你确认一次；打开助理左栏的「扫码登录」即可继续。', at: this.a.now() })) this.set({ notified: true });
+    if (this.a.publish({ id, kind: 'welink-login', title: 'WeLink 自动续期没成功', text: '自动续期连续两次没完成；点助理左栏的 WeLink 一行扫码登录即可继续。', at: this.a.now() })) this.set({ notified: true });
   }
   close() { this.closed = true; this.controller?.abort(); }
   check({ force = false, known = null, refresh = true } = {}) {
@@ -42,6 +43,8 @@ class AuthKeeper {
       const text = result.stdout + '\n' + result.stderr;
       login = { ...W.loginState(text), checkedAt: now };
       if (result.code !== 0 && login.ok) login = { ok: false, reason: 'error', checkedAt: now, error: '登录状态查询失败' };
+      // A still-valid token renewed early must never turn into a scan request.
+      const early = !!login.ok;
       if (login.ok) {
         this.online(login);
         const remaining = /expires in\s+(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/i.exec(text);
@@ -55,7 +58,7 @@ class AuthKeeper {
       if (this.current.scanAttempts >= SCAN_LIMIT || (this.current.lastAttemptAt && now - this.current.lastAttemptAt < RETRY_MS)) { this.notifyScan(); return this.status(); }
       this.set({ state: 'renewing', lastAttemptAt: now, error: '' });
       this.controller = new AbortController();
-      let scan = false;
+      let scan = false, timedOut = false;
       let resultLogin;
       try {
         resultLogin = await this.a.rawWelink(['auth', 'login'], { allowSetup: true, timeoutMs: 90000, signal: this.controller.signal, onData: text => {
@@ -64,12 +67,16 @@ class AuthKeeper {
         scan = scan || needsScan(resultLogin.stdout + resultLogin.stderr);
       } catch (error) {
         if (this.closed) return this.status();
-        if (!scan) {
-          this.set({ state: 'unknown', error: '自动续期没能完成：' + error.message });
+        timedOut = !scan && error.code === 'WELINK_TIMEOUT';
+        if (!scan && !timedOut) {
+          this.set({ state: early ? 'online' : 'unknown', error: early ? '' : '自动续期没能完成：' + error.message });
           return this.status();
         }
       } finally { this.controller = null; }
       if (this.closed) return this.status();
+      // Early renewal that asked for a QR code or timed out: the login process is already ended;
+      // keep the valid login and let the normal flow handle it once the token has really expired.
+      if (early && (scan || timedOut)) { this.set({ state: 'online', error: '' }); return this.status(); }
       if (!scan && resultLogin?.code === 0) {
         const after = await this.a.rawWelink(['auth', 'status']);
         if (this.closed) return this.status();
@@ -81,11 +88,17 @@ class AuthKeeper {
           return this.status();
         }
       }
-      if (!scan) {
-        this.set({ state: 'unknown', error: '自动续期未成功，十分钟后再试；也可手动登录' });
+      if (!scan && !timedOut) {
+        this.set({ state: early ? 'online' : 'unknown', error: early ? '' : '自动续期未成功，十分钟后再试；也可手动登录' });
         return this.status();
       }
-      this.set({ state: 'needs-scan', scanAttempts: this.current.scanAttempts + 1, error: '' });
+      // A QR request or a timeout both count; two in a row stop auto login and ask for a scan.
+      const attempts = this.current.scanAttempts + 1;
+      if (attempts < SCAN_LIMIT) {
+        this.set({ state: 'unknown', scanAttempts: attempts, error: '自动续期没成功，十分钟后再试；也可点「扫码登录」' });
+        return this.status();
+      }
+      this.set({ state: 'needs-scan', scanAttempts: attempts, error: '' });
       this.notifyScan();
     } catch (error) {
       if (!this.closed) this.set({ state: 'unknown', lastCheckAt: now, error: error.message, login: { ok: false, reason: error.code === 'WELINK_MISSING' ? 'missing' : 'error', checkedAt: now } });

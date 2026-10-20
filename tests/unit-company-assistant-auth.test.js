@@ -40,8 +40,11 @@ test('网络错误不当成扫码；两次扫码后停止登录但额度恢复�
   network = false; r.allow(true); r.advance(); await r.k.check();
   assert.equal(r.k.status().state, 'needs-scan'); assert.equal(r.notices.length, 1); assert.ok(r.notices[0].id);
   assert.equal(r.calls.filter(x => x === 'auth login').length, 2);
+  // After a manual login the count starts over: one QR is not yet a scan request, the second in a row is.
   r.k.manualSucceeded({ ok: true }); r.advance(); await r.k.check();
-  assert.equal(r.notices.length, 2); assert.notEqual(r.notices[0].id, r.notices[1].id);
+  assert.equal(r.k.status().state, 'unknown'); assert.equal(r.notices.length, 1);
+  r.advance(); await r.k.check();
+  assert.equal(r.k.status().state, 'needs-scan'); assert.equal(r.notices.length, 2); assert.notEqual(r.notices[0].id, r.notices[1].id);
 });
 test('关闭过程中返回的状态不再触发登录；超时不冒充出现二维码', async () => {
   let resolve;
@@ -84,4 +87,57 @@ test('发送进程成功但业务返回失败时，不能把群显示为接通',
   t.after(() => a.close());
   const r = await a.setPhone({ groupId: '1234567890123', enabled: true });
   assert.equal(r.ok, false); assert.equal(a.settings().phone.enabled, false); assert.match(r.error, /group denied/);
+});
+test('自动续期与手动扫码用同一套二维码识别：图片路径、网址也算出现二维码', () => {
+  const { needsScan } = require('../core/company-assistant/auth-keeper');
+  for (const text of ['二维码已保存到 C:\\Users\\me\\AppData\\Local\\Temp\\welink-login.png', 'Open https://login.example.com/qr?id=1 to sign in', 'data:image/png;base64,AAAA', '请使用手机扫码'])
+    assert.equal(needsScan(text), !!W.qrFromLoginOutput(text) || /扫码/.test(text), text);
+  assert.equal(needsScan('C:\\Users\\me\\login.png'), true);
+  assert.equal(needsScan('https://login.example.com/qr'), true);
+  assert.equal(needsScan('Credentials cached.'), false);
+});
+test('出图片路径时不用等满超时；连续两次（二维码或超时）才转扫码并通知，第三次不再自动登录', async () => {
+  let n = 0;
+  const r = rig(async (args, opts) => {
+    if (args[1] === 'status') return result('User Token: EXPIRED');
+    n++;
+    if (n === 1) { opts.onData('QR saved: C:\\Temp\\welink-qr.png'); assert.equal(opts.signal.aborted, true); throw Object.assign(new Error('aborted'), { code: 'WELINK_ABORTED' }); }
+    throw Object.assign(new Error('welink-cli 超过 90 秒没返回'), { code: 'WELINK_TIMEOUT' });
+  });
+  await r.k.check();
+  assert.equal(r.k.status().state, 'unknown'); assert.equal(r.k.status().scanAttempts, 1); assert.equal(r.notices.length, 0);
+  r.advance(); await r.k.check();
+  assert.equal(r.k.status().state, 'needs-scan'); assert.equal(r.k.status().scanAttempts, 2); assert.equal(r.notices.length, 1);
+  assert.doesNotMatch(r.notices[0].title, /需要扫码/);
+  r.advance(); await r.k.check();
+  assert.equal(r.calls.filter(x => x === 'auth login').length, 2);
+  const timeouts = rig(async args => { if (args[1] === 'status') return result('User Token: EXPIRED'); throw Object.assign(new Error('timeout'), { code: 'WELINK_TIMEOUT' }); });
+  await timeouts.k.check(); timeouts.advance(); await timeouts.k.check();
+  assert.equal(timeouts.k.status().state, 'needs-scan'); assert.equal(timeouts.notices.length, 1);
+});
+test('令牌仍有效时提前续期出二维码或超时：结束登录、不转扫码、不发通知、不计数', async () => {
+  for (const mode of ['qr', 'timeout']) {
+    const r = rig(async (args, opts) => {
+      if (args[1] === 'status') return result('User Token: valid (expires in 3m10s)\nUID: test');
+      if (mode === 'qr') { opts.onData('请扫码登录'); assert.equal(opts.signal.aborted, true); throw Object.assign(new Error('aborted'), { code: 'WELINK_ABORTED' }); }
+      throw Object.assign(new Error('timeout'), { code: 'WELINK_TIMEOUT' });
+    });
+    await r.k.check();
+    assert.equal(r.k.status().state, 'online', mode); assert.equal(r.k.status().scanAttempts, 0, mode); assert.equal(r.notices.length, 0, mode);
+    assert.equal(r.calls.filter(x => x === 'auth login').length, 1, mode);
+    await r.k.check({ force: true });
+    assert.equal(r.calls.filter(x => x === 'auth login').length, 1, mode + ': no retry within ten minutes');
+  }
+});
+test('手动扫码登录接上停止信号：Hub 退出时结束这棵进程', async t => {
+  let signal;
+  const a = new CompanyAssistant({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'hub-login-stop-')), noTimer: true, noTools: true,
+    welinkRun: (args, opts) => { if (args[1] === 'login') { signal = opts.signal; return new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'WELINK_ABORTED' })))); } return Promise.resolve(result('User Token: EXPIRED')); } });
+  t.after(() => a.close());
+  const flow = a.login();
+  await new Promise(r => setTimeout(r, 50));
+  assert.ok(signal, 'auth login got a signal'); assert.equal(signal.aborted, false);
+  a.close();
+  assert.equal(signal.aborted, true);
+  await flow;
 });

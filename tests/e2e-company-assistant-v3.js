@@ -93,7 +93,12 @@ async function main() {
     const group = path.join(root, 'welink-phone-group.jsonl');
     await until(() => fs.existsSync(group) && /会议室成功/.test(fs.readFileSync(group, 'utf8')), 'room phone push');
     result.bookingReceipt = booked[0]; result.runtime = runtime; result.checks.push('signed old exe + new code; GUI rules -> daemon -> mock 14:00 booking -> history -> card -> phone');
-    await click('[data-ca="close-panel"]'); await shot('05-result');
+    await click('[data-ca="close-panel"]');
+    await ui('/\\d{2}-\\d{2}（周[一二三四五六日]）14:00–16:00 · /.test(document.querySelector("[data-slot=rooms]")?.innerText || "")', 'room card shows date, weekday and 14:00–16:00');
+    assert.equal(await c.eval('getComputedStyle(document.querySelector(".ca-status .ca-dot")).width'), '10px');
+    assert.deepEqual(fs.readdirSync(dir).filter(f => f.startsWith('mishu-probe-')), []);
+    result.checks.push('room card slot text; 10px status dot; probe temp dir removed');
+    await shot('05-result');
     await c.send('Emulation.setDeviceMetricsOverride', { width: 1000, height: 850, deviceScaleFactor: 1, mobile: false });
     assert.equal(await c.eval('document.querySelector(".ca-sidebar").getBoundingClientRect().width'), 56);
     assert.equal(await c.eval('document.querySelector(".ca-main").scrollWidth > document.querySelector(".ca-main").clientWidth'), false);

@@ -30,8 +30,8 @@ function registerCompanyAssistantIpc(ipcMain, service) {
     'ppt-query': request => service.ppt.execute(request?.op || 'status', request || {}),
     'ppt-open': request => service.ppt.open(String(request?.id || '')),
     'room-status': async () => { await service.rooms.tick(); return { ok: true, rooms: service.rooms.status() }; },
-    'room-command': request => service.rooms.command(request?.op, request?.rules || {}),
-    'room-connect': async () => ({ ok: true, rooms: await service.rooms.ensure() }),
+    'room-command': request => service.rooms.command(request?.op, request?.rules || {}, { user: true }),
+    'room-connect': async () => ({ ok: true, rooms: await service.rooms.ensure({ user: true }) }),
     'room-discover': async () => ({ ok: true, rooms: await service.rooms.discover() }),
     'room-install': async () => ({ ok: true, rooms: await service.rooms.install() }),
     'room-pick': async () => {

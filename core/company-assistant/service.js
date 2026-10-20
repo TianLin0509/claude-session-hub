@@ -211,7 +211,7 @@ class CompanyAssistant {
     this.timers.push(setInterval(() => { void this.collectJob().catch(e => console.warn('[company-assistant] collect', e.message)); }, 4000));
     const first = setTimeout(() => { void this.tick().catch(() => {}); }, 15000); this.timers.push(first);
   }
-  close() { for (const t of this.timers) { clearInterval(t); clearTimeout(t); } this.timers = []; this.auth.close(); this.phone.close(); this.rooms.close(); this.tools?.close(); }
+  close() { for (const t of this.timers) { clearInterval(t); clearTimeout(t); } this.timers = []; this.loginStop?.abort(); this.auth.close(); this.phone.close(); this.rooms.close(); this.tools?.close(); }
   // 给助理会话挂会话工具（main.js 注册的 extraMcpProvider 调用）：只挂给 purpose=company-assistant 的会话。
   sessionPlan({ opts = {}, id } = {}) {
     if (opts.purpose !== PURPOSE || !this.tools?.bridge.url) return null;
@@ -663,12 +663,15 @@ class CompanyAssistant {
     }
     this.loginFlow = { state: 'waiting', startedAt: this.now(), qr: null, text: '' };
     this.changed();
-    const done = this.welink(['auth', 'login'], { allowSetup: true, timeoutMs: 5 * 60000, onData: text => {
+    // Hub exit aborts this signal; welink.run then ends the login process tree by PID.
+    const stop = this.loginStop = new AbortController();
+    const done = this.welink(['auth', 'login'], { allowSetup: true, timeoutMs: 5 * 60000, signal: stop.signal, onData: text => {
       this.loginFlow = { ...this.loginFlow, text: text.slice(-4000), qr: welink.qrFromLoginOutput(text) || this.loginFlow.qr };
       this.changed();
     } }).then(r => {
       this.loginFlow = { ...this.loginFlow, state: 'finished', code: r.code, text: (r.stdout + r.stderr).slice(-4000), qr: this.loginFlow.qr || welink.qrFromLoginOutput(r.stdout + r.stderr) };
     }).catch(error => { this.loginFlow = { ...this.loginFlow, state: 'failed', error: error.message }; })
+      .finally(() => { if (this.loginStop === stop) this.loginStop = null; })
       .then(() => this.refresh({ force: true }).catch(() => {}))
       .then(snap => { if (snap?.login?.ok) { this.auth.manualSucceeded(snap.login); this.loginFlow = { ...this.loginFlow, state: 'ok' }; const day = D.dayKey(this.now()); if (!this.brief(day) || this.brief(day).by === 'none') void this.generateBrief().catch(() => {}); } this.changed(); });
     // 二维码一般几秒内出来；先等一会儿再回，界面随后靠状态刷新。
