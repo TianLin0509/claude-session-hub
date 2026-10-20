@@ -195,7 +195,7 @@ test('家里指定 DS → 公司在 DS 号开会话（号池、按模型）；�
   assert.equal(created(r)[0].codeagentRouteModel, DS);
   assert.equal(created(r)[0].codeagentAccount, 'pool');
   assert.equal(created(r)[0].codeagentPoolPick, 'ds01');
-  assert.match(created(r)[0].title, /^\d{4}-Q\d+-claude$/, '会话名保持 MMDD-Qn-家里AI');
+  assert.match(created(r)[0].title, /^Q\d+ · 家「[^」]*」· Claude$/, '会话名是配对号牌 Qn · 家「会话名 #短码」· 家里模型（2026-10-20）');
   assert.equal(r.company.thread(res.thread).model, DS);
   const sid = created(r)[0].id;
   Object.assign(r.cs.map.get(sid), { currentModel: { id: DS }, codeagentActualModel: DS });

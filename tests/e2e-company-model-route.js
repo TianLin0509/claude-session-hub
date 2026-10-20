@@ -14,6 +14,7 @@ const { spawn, execFileSync, spawnSync } = require('node:child_process');
 const { createHmac, randomBytes } = require('node:crypto');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
+const BRIDGE_TEST_MASTER = require('node:crypto').randomBytes(32).toString('hex'); // 家里隔离实例的本机密钥（只在测试里指定）
 
 const PY = process.env.HUB_E2E_PYTHON || 'C:\\Users\\lintian\\AppData\\Local\\Programs\\Python\\Python312\\python.exe';
 const RELAY = process.env.HUB_E2E_RELAY || 'C:\\Users\\lintian\\company-drop\\server\\relay_server.py';
@@ -84,7 +85,7 @@ async function main() {
       CODEAGENT_STANDIN_MODEL: 'haiku', CODEAGENT_STANDIN_MAP_SETTINGS_MODEL: '1', CODEAGENT_STANDIN_LAUNCH_LOG: launchLog };
     [home, company] = await Promise.all([
       launchIsolatedHub({ dataDir: hdata, port: await freePort(), windowMode: 'background', label: 'mr-home', allowExternalState: true,
-        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'home-hubhome'), CLAUDE_HUB_BRIDGE_ROLE: 'home', CLAUDE_HUB_BRIDGE_API_URL: apiUrl, CLAUDE_HUB_WIRELESS_TIMER: '0',
+        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'home-hubhome'), CLAUDE_HUB_BRIDGE_ROLE: 'home', CLAUDE_HUB_E2E_BRIDGE_MASTER: BRIDGE_TEST_MASTER, CLAUDE_HUB_BRIDGE_API_URL: apiUrl, CLAUDE_HUB_WIRELESS_TIMER: '0',
           AI_HUB_CODEAGENT_CONFIG_DIR: hcac } }),
       launchIsolatedHub({ dataDir: cdata, port: await freePort(), windowMode: 'background', label: 'mr-company', allowExternalState: true, entryPath: exportDir,
         // 2026-10-20：公司 CLI 交互模式不认 --model（替身 IGNORE_MODEL 复现），通道会话要像真人从启动中心新建那样在 /model 菜单里选中号的模型。
@@ -132,8 +133,10 @@ async function main() {
     const asker = await hc.eval(`require("electron").ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd: homeWork, title: '家里 · 提问方' } })})`);
     const hsid = asker.id;
     assert.ok(hsid, 'home asker session: ' + j(asker));
-    const master = (() => { const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(path.join(hdata, 'company-bridge', 'assistant.sqlite'), { readOnly: true });
-      try { return JSON.parse(db.prepare("SELECT value FROM meta WHERE key='localMaster'").get().value); } finally { db.close(); } })();
+    // 2026-10-20 起家里的本机密钥只在 Hub 内存里、不再落盘：测试经 CLAUDE_HUB_E2E_BRIDGE_MASTER 让隔离实例用同一把，并核对库里没有明文旧值。
+    const master = BRIDGE_TEST_MASTER;
+    { const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(path.join(hdata, 'company-bridge', 'assistant.sqlite'), { readOnly: true });
+      try { require('node:assert/strict').equal(db.prepare("SELECT value FROM meta WHERE key='localMaster'").get(), undefined, '本机密钥不该明文存在 assistant.sqlite'); } finally { db.close(); } }
     const cliEnv = { ...process.env, HUB_BRIDGE_SESSION_ID: hsid, HUB_BRIDGE_SESSION_PASS: createHmac('sha256', master).update('session:' + hsid).digest('hex'), HUB_BRIDGE_ENDPOINT_FILE: endpointFile };
     const cli = args => { const r = spawnSync(process.execPath, [path.join(repo, 'scripts', 'company-ask.js'), ...args], { env: cliEnv, encoding: 'utf8', windowsHide: true, timeout: 90000 }); return JSON.parse(r.stdout); };
     const models = cli(['models']);
@@ -152,7 +155,7 @@ async function main() {
     const metaDs = await until('company DS meta', async () => (await sessions(cc)).find(x => x.id === ctDs.sessionId), 60000, 1000);
     result.dsSession = { pool: metaDs.codeagentPoolAccount, route: metaDs.codeagentRouteModel, title: metaDs.title, model: metaDs.currentModel };
     check(metaDs.codeagentPoolAccount === POOL_ID && metaDs.codeagentRouteModel === DS, '公司在有 DeepSeek 权限的号（号池里同事的号）开会话');
-    check(/^\d{4}-Q\d+-codeagent$/.test(metaDs.title), '特战会话名保持「MMDD-Qn-家里AI」：' + metaDs.title);
+    check(/^Q\d+ · 家「[^」]*#[a-z0-9]{1,4}」· \S+/.test(metaDs.title), '特战会话名是配对号牌「Qn · 家「会话名 #短码」· 家里模型」：' + metaDs.title);
     const launchDs = await until('standin launch DS', async () => readLines(launchLog).find(x => x.hubSession === ctDs.sessionId), 60000, 1000);
     result.launchDs = launchDs;
     check(path.resolve(launchDs.configDir).toLowerCase() === path.resolve(poolDir).toLowerCase() && launchDs.settingsModel === DS && launchDs.args.includes('--setting-sources'),

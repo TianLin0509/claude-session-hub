@@ -19,6 +19,7 @@ const { connectFirstPage } = require('./helpers/cdp-client');
 const { renderRows } = require('../core/hub-phone/session-chat');
 const { detectChoiceMenu } = require('../core/choice-menu-screen');
 const rules = require('../core/auto-dispatch-rules');
+const BRIDGE_TEST_MASTER = require('node:crypto').randomBytes(32).toString('hex'); // 家里隔离实例的本机密钥（只在测试里指定）
 
 const PY = process.env.HUB_E2E_PYTHON || 'C:\\Users\\lintian\\AppData\\Local\\Programs\\Python\\Python312\\python.exe';
 const RELAY = process.env.HUB_E2E_RELAY || 'C:\\Users\\lintian\\company-drop\\server\\relay_server.py';
@@ -197,7 +198,7 @@ async function partB(ctx) {
       HUB_SESSION_SEARCH_CODEX_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'empty'), AI_HUB_CODEAGENT_COMMAND: STANDIN, CODEAGENT_STANDIN_MODEL: 'haiku' };
     [home, company] = await Promise.all([
       launchIsolatedHub({ dataDir: hdata, port: await freePort(), windowMode: 'background', label: 'nochoice-home', allowExternalState: true,
-        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'b-home-hubhome'), CLAUDE_HUB_BRIDGE_ROLE: 'home', CLAUDE_HUB_BRIDGE_API_URL: apiUrl, CLAUDE_HUB_WIRELESS_TIMER: '0', AI_HUB_CODEAGENT_CONFIG_DIR: hcac } }),
+        extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'b-home-hubhome'), CLAUDE_HUB_BRIDGE_ROLE: 'home', CLAUDE_HUB_E2E_BRIDGE_MASTER: BRIDGE_TEST_MASTER, CLAUDE_HUB_BRIDGE_API_URL: apiUrl, CLAUDE_HUB_WIRELESS_TIMER: '0', AI_HUB_CODEAGENT_CONFIG_DIR: hcac } }),
       // 两层都没生效：强制层关掉、替身丢掉系统提示
       launchIsolatedHub({ dataDir: cdata, port: await freePort(), windowMode: 'background', label: 'nochoice-company', allowExternalState: true, entryPath: exportDir,
         extraEnv: { ...common, CLAUDE_HUB_HOME_DIR: path.join(root, 'b-company-hubhome'), AI_HUB_CODEAGENT_CONFIG_DIR: cac, AI_HUB_UPDATE_STARTUP_DELAY_MS: '600000',
@@ -217,8 +218,10 @@ async function partB(ctx) {
     const asker = await hc.eval(`require("electron").ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd: homeWork, title: '家里 · 提问方' } })})`);
     const hsid = asker.id;
     const endpointFile = path.join(hdata, 'company-bridge', 'mcp-endpoint.json');
-    const master = (() => { const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(path.join(hdata, 'company-bridge', 'assistant.sqlite'), { readOnly: true });
-      try { return JSON.parse(db.prepare("SELECT value FROM meta WHERE key='localMaster'").get().value); } finally { db.close(); } })();
+    // 2026-10-20 起家里的本机密钥只在 Hub 内存里、不再落盘：测试经 CLAUDE_HUB_E2E_BRIDGE_MASTER 让隔离实例用同一把，并核对库里没有明文旧值。
+    const master = BRIDGE_TEST_MASTER;
+    { const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(path.join(hdata, 'company-bridge', 'assistant.sqlite'), { readOnly: true });
+      try { require('node:assert/strict').equal(db.prepare("SELECT value FROM meta WHERE key='localMaster'").get(), undefined, '本机密钥不该明文存在 assistant.sqlite'); } finally { db.close(); } }
     const cliEnv = { ...process.env, HUB_BRIDGE_SESSION_ID: hsid, HUB_BRIDGE_SESSION_PASS: createHmac('sha256', master).update('session:' + hsid).digest('hex'), HUB_BRIDGE_ENDPOINT_FILE: endpointFile };
     const cli = args => { const r = spawnSync(process.execPath, [path.join(repo, 'scripts', 'company-ask.js'), ...args], { env: cliEnv, encoding: 'utf8', windowsHide: true, timeout: 90000 }); return JSON.parse(r.stdout); };
     const qFile = path.join(root, 'b-q1.md');

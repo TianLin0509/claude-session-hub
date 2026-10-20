@@ -100,6 +100,7 @@
     "tests/e2e-tezhan-team-ui.js",
     "renderer/company-link-home.js",
     "tests/unit-company-bridge.test.js",
+    "tests/unit-bridge-pairing-home.test.js",
     "tests/unit-ask-home.test.js",
     "tests/unit-company-bridge-images.test.js",
     "tests/e2e-bridge-images.js",
