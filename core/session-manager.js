@@ -479,12 +479,13 @@ function codeAgentRouteModel(opts) {
 }
 // CodeAgent 会话第一轮回答前的「预计模型」（只作显示名）：恢复的会话 → 上一轮回答里的实际模型；
 // 号池号 → 这次同步配置定下的模型；个人账号 → 纠正后的默认模型（core/codeagent-model-route.js personalModels）。
-function codeAgentExpectedModel(opts, { pool = null, configDir = '' } = {}) {
+// single：自动会话选型用，探测过的清单只有一个模型时就是它（见 codeagent-pool.js strictDefaultModel 的例外）。
+function codeAgentExpectedModel(opts, { pool = null, configDir = '', single = false } = {}) {
   const models = require('./codeagent-models');
   const actual = opts && typeof opts.codeagentActualModel === 'string' ? opts.codeagentActualModel.trim() : '';
   if (actual && models.isSafeModelId(actual)) return actual;
   if (pool) return pool.model || '';
-  try { return require('./codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir: configDir }).defaultModel || ''; }
+  try { return require('./codeagent-model-route').personalModels({ dataDir: getHubDataDir(), personalDir: configDir, single }).defaultModel || ''; }
   catch { return ''; }
 }
 function shouldPickCodeAgentModel(opts) {
@@ -1493,7 +1494,7 @@ class SessionManager extends EventEmitter {
     const routeSwitch = require('./codeagent-model-route').routeSwitchEnabled();
     if (routeModel && !routeSwitch && !opts.codeagentPoolAccount) {
       // 和号表同一口径：号自己写了、且在清单里的才算默认模型（pool.strictDefaultModel），不按清单猜。
-      const current = pool.strictDefaultModel(pool.readSettingsModel(account.dir), account.models).model;
+      const current = pool.strictDefaultModel(pool.readSettingsModel(account.dir), account.models, { authoritative: !!account.modelsAuthoritative }).model;
       if (current.toLowerCase() !== routeModel.toLowerCase()) throw new Error(`${who(account)} 的默认模型是 ${current || '未知'}，不是 ${routeModel}；不改号的默认模型，未启动会话`);
     } else if (routeModel && routeSwitch) {
       if (!account.models.some(m => m.toLowerCase() === routeModel.toLowerCase())) throw new Error(`${who(account)} 没有 ${routeModel} 的权限，未启动会话`);
@@ -1644,8 +1645,11 @@ class SessionManager extends EventEmitter {
     // 公司真机 Q-1020-14：只带 --setting-sources user 时，个人号启动 12 秒后仍把默认模型写成 deepseek 并报「模型不存在」；交互模式下只有菜单选择确定管用。
     if (isCodeAgent && codeAgentReadOnly(opts)) {
       // 个人账号一律选它纠正后的默认模型：新开时它就是指定模型（上面已核对），恢复时按此刻的默认照常起，不选回当初的模型。
-      const target = codeagentPool ? codeAgentRouteModel(opts) || codeagentPool.model || ''
-        : codeAgentExpectedModel({}, { configDir: codeagentConfig.configDir });
+      // 号的权限清单探测过且只有一个模型时就选它，不管 settings.json 写的什么（2026-10-20 公司真机：CodeAgent 启动时把默认模型写回 deepseek）。
+      const pool = require('./codeagent-pool');
+      const target = codeagentPool ? codeAgentRouteModel(opts) || codeagentPool.model
+          || pool.strictDefaultModel(pool.readSettingsModel(codeagentPool.account.dir), codeagentPool.account.models, { authoritative: !!codeagentPool.account.modelsAuthoritative }).model || ''
+        : codeAgentExpectedModel({}, { configDir: codeagentConfig.configDir, single: true });
       opts = { ...opts, model: target || undefined, codeagentModelPick: !!target, codeagentAccountModel: target || undefined };
     }
 
