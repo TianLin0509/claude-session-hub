@@ -4,7 +4,9 @@
 //   2. 启动中心选 CodeAgent → 「用量账号」出现 → 选号池建会话：假 CodeAgent 记下的配置目录是号池账号的目录，
 //      第二个号池会话挑的是没有会话的那个号；选个人账号时仍是个人目录；
 //   3. 号池账号目录部署了 Hub 的 hook、同步了个人账号的规则，模型保留号自己的；
-//   4. 卡片上有「池」标记；1440 宽度截图。
+//   4. 会话栏标题前是号的工号首字母（2026-10-20 起不再有「池」标记）；1440 宽度截图；
+//   5. 一号一模型（2026-10-20 田哥拍板）：启动中心没有 CodeAgent 模型下拉，手动选号时号的选项和配置摘要写它唯一的模型；
+//      侧栏模型说明写各会话所在号的模型。
 // 不调用模型、不碰真实 CodeAgent、不碰生产 Hub。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -213,20 +215,81 @@ async function main() {
     assert.equal(afterWake.codeagentPoolAccount, first.created.codeagentPoolAccount);
     result.checks.push('dormant pool session wakes in the same pool account dir');
 
-    // 号池 · 手动选择：点名 DeepSeek 那个号，模型菜单只剩它的模型
+    // 号池 · 手动选择：点名 DeepSeek 那个号。2026-10-20 田哥拍板「一个号一个模型」后启动中心没有 CodeAgent 模型下拉了
+    // （旧断言「模型菜单只剩它的模型」改写为下面三条）：模型下拉藏起来；选号的选项写着这个号唯一的模型；
+    // 配置摘要写这个号的模型，说明写「一个账号固定用它自己的模型」。
     await click(client, '#btn-new');
     await click(client, '.new-session-option[data-kind="codeagent"]');
     await choose(client, '#new-session-codeagent-account', 'pool-manual');
     await waitFor('manual picker shown', () => client.eval(`!document.getElementById('new-session-codeagent-pool-field').hidden`));
     await choose(client, '#new-session-codeagent-pool', deepseekAccount.id);
-    const manualModels = await waitFor('manual account models', () => client.eval(`(() => { const o = [...document.querySelectorAll('#new-session-model option')].map(x => x.value).filter(Boolean); return o.length === 1 && o[0] === 'deepseek-v4-flash-0731' ? o : null; })()`));
-    assert.deepEqual(manualModels, ['deepseek-v4-flash-0731']);
+    const DS_LABEL = require('../core/codeagent-models').modelLabel('deepseek-v4-flash-0731');
+    const manualView = await waitFor('manual account model in launch center', () => client.eval(`(() => {
+      const field = document.getElementById('new-session-model-field');
+      const pick = document.querySelector('#new-session-codeagent-pool');
+      const opt = pick && [...pick.options].find(o => o.value === pick.value);
+      const summary = document.getElementById('new-session-summary')?.textContent || '';
+      const note = document.getElementById('new-session-tuning-note')?.textContent || '';
+      return field && opt && summary.includes(${JSON.stringify(DS_LABEL)}) ? { modelFieldHidden: !!field.hidden, option: opt.textContent, summary, note } : null;
+    })()`));
+    result.manualLaunchCenter = manualView;
+    assert.equal(manualView.modelFieldHidden, true, 'CodeAgent 不再显示模型下拉');
+    assert.ok(manualView.option.includes('deepseek-v4-flash-0731') && !manualView.option.includes('GLM'), manualView.option);
+    assert.ok(!manualView.summary.includes('GLM'), manualView.summary);
+    assert.match(manualView.note, /一个账号固定用它自己的模型/);
     await shot(client, '02b-launch-center-manual-1440.png'); result.screenshots.push('02b-launch-center-manual-1440.png');
     await click(client, '#new-session-close');
     const manual = await createCodeAgent(client, 'pool-manual', deepseekAccount.id);
     assert.equal(manual.created.codeagentPoolAccount, deepseekAccount.id);
     assert.equal(path.resolve(manual.launch.configDir), path.resolve(path.join(DATA_DIR, 'codeagent-pool', 'accounts', deepseekAccount.id)));
-    result.checks.push('manual pool pick launches on the chosen account and shows only its models');
+    result.checks.push('manual pool pick (no model dropdown) launches on the chosen account; its only model is shown in the picker and summary');
+
+    // 侧栏（一号一模型）：每个会话标题前是所在号的首字母，模型说明写这个号唯一的模型——
+    // 自动挑号的两个号池会话和个人会话都是 GLM 号（首字母 w / y），手动点名的是 DeepSeek 号（首字母 z）。
+    let sidebarLast = null;
+    const sidebar = await waitFor('sidebar letters and models', async () => {
+      sidebarLast = await client.eval(`(() => {
+        const ids = ${JSON.stringify([first.created.id, second.created.id, personal.created.id, manual.created.id])};
+        return ids.map(id => { const e = document.querySelector('#session-list .session-item[data-session-id="' + id + '"]'); const k = e && e.querySelector('.sl-kind'); const a = e && e.querySelector('.sl-acct');
+          return e ? { id, acct: a ? a.textContent : '', acctTitle: a ? a.getAttribute('title') || '' : '', model: k ? k.getAttribute('title') || '' : '', aria: e.getAttribute('aria-label') || '' } : null; });
+      })()`);
+      result.sidebarLast = sidebarLast;
+      return sidebarLast.every(r => r && r.acct) && /GLM/.test(sidebarLast[2].model) && /deepseek/i.test(sidebarLast[3].model) ? sidebarLast : null;
+    }, 30000).catch(error => { throw new Error(`${error.message}; last=${JSON.stringify(sidebarLast)}`); });
+    result.sidebarRows = sidebar;
+    const [rFirst, rSecond, rPersonal, rManual] = sidebar;
+    // 号池里登录夹具加的两个号（w 开头）：权限清单只有 GLM-5.2-WX-Auto，但 settings.json 没写模型。启动中心开的是手动会话，
+    // 预计模型照旧严格（commit c1e29def：清单唯一模型只用于自动会话），侧栏写「CodeAgent 当前模型」，不猜成某个模型。
+    for (const r of [rFirst, rSecond]) { assert.equal(r.acct, 'w', JSON.stringify(r)); assert.match(r.acctTitle, /^号池 · 号 \d（同事[甲乙]）$/); assert.doesNotMatch(r.model, /deepseek/i); }
+    assert.equal(rPersonal.acct, 'y'); assert.equal(rPersonal.acctTitle, '个人账号'); assert.match(rPersonal.model, /GLM-5\.2 Auto/);
+    assert.equal(rManual.acct, 'z'); assert.match(rManual.acctTitle, /^号池 · .*\.cac-deepseek/); assert.ok(rManual.model.includes(DS_LABEL), rManual.model);
+    assert.ok(!JSON.stringify(sidebar).includes('z00000003') && !JSON.stringify(sidebar).includes('y00000002'), 'sidebar never shows full account ids');
+    result.checks.push('sidebar rows: account initial per session (w/w/y/z, alias on hover, no full id); personal and DeepSeek rows show the account\'s model');
+
+    // 自动会话（AI特战队通道这类 purpose，不经启动中心）开在号池号上：号的权限清单只有一个模型时，开起来后 Hub 在 /model 菜单里选中它，
+    // 侧栏随之写这个号唯一的模型（2026-10-20 c1e29def / 一号一模型）。
+    const launchesBeforeAuto = fakeLaunches().length;
+    const auto = await client.eval(`require('electron').ipcRenderer.invoke('create-session', ${JSON.stringify({ kind: 'codeagent', opts: { cwd: first.launch.cwd, purpose: 'company-bridge', codeagentAccount: 'pool', title: '1020-Q1-auto', effort: 'low' } })})`);
+    assert.ok(auto && auto.id, `auto session: ${JSON.stringify(auto)}`);
+    await waitFor('auto session launched', () => fakeLaunches().slice(launchesBeforeAuto).find(l => l.hubSession === auto.id), 30000);
+    const poolNow = await client.eval(`require('electron').ipcRenderer.invoke('codeagent-pool:list')`);
+    const autoInfo = await waitFor('auto session picked its account model', async () => {
+      const s = (await sessions(client)).find(x => x.id === auto.id);
+      return s && s.codeagentPoolAccount && s.currentModel && s.currentModel.id ? s : null;
+    }, 90000);
+    const autoAccount = poolNow.accounts.find(a => a.id === autoInfo.codeagentPoolAccount);
+    assert.ok(autoAccount && autoAccount.models.length === 1, JSON.stringify(autoAccount && autoAccount.models));
+    assert.equal(autoInfo.currentModel.id, autoAccount.models[0], 'auto session runs on its account\'s only model');
+    const autoLabel = require('../core/codeagent-models').modelLabel(autoAccount.models[0]);
+    const autoRow = await waitFor('auto session sidebar row', () => client.eval(`(() => { const e = document.querySelector('#session-list .session-item[data-session-id="${auto.id}"]'); const k = e && e.querySelector('.sl-kind'); const a = e && e.querySelector('.sl-acct');
+      return e && k && a && (k.getAttribute('title') || '').includes(${JSON.stringify(autoLabel)}) ? { acct: a.textContent, acctTitle: a.getAttribute('title') || '', model: k.getAttribute('title') || '' } : null; })()`), 30000);
+    assert.equal(autoRow.acct, /^z/.test(autoAccount.accountLabel || '') || autoAccount.models[0].startsWith('deepseek') ? 'z' : 'w');
+    result.autoSession = { account: autoAccount.note, model: autoInfo.currentModel.id, row: autoRow };
+    result.checks.push(`automatic session on a pool account picks that account's only model (${autoInfo.currentModel.id}) and the sidebar shows it with the account initial`);
+    // 关掉这个自动会话，后面「每个号的进行中会话数」仍按原来的 4 个核对
+    const removed = await client.eval(`require('electron').ipcRenderer.invoke('delete-session', ${JSON.stringify(auto.id)})`);
+    assert.equal(removed && removed.ok, true, `remove auto session: ${JSON.stringify(removed)}`);
+    await waitFor('auto session closed', async () => !(await sessions(client)).some(s => s.id === auto.id), 30000);
 
     // 刷新会话数：表里每个号的进行中会话和主进程一致
     await click(client, '#btn-options');
