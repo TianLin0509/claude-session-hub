@@ -45,7 +45,9 @@ test('分页只消除同一原始记录的重复，循环会议同编号不同�
   const got = await collectMeetings(async () => ({ data: { data: pages[calls++] } }), NOW, { size: 2 });
   assert.equal(calls, 3);
   assert.equal(got.meetings.length, 3);
-  assert.equal(got.coverage.status, 'complete');
+  // 同一发生时间的 a/c 组织者不同：记录均保留，但版本冲突不能声称完整确定。
+  assert.equal(got.coverage.status, 'partial');
+  assert.equal(got.coverage.reason, 'version-conflict');
   assert.equal(new Set(got.meetings.map(m => m.sourceId)).size, 3);
   const snap = { ...snapshot([], []), meetings: got.meetings }, result = await query(snap), index = D.sourceIndex(snap);
   assert.equal(result.items.length, 3);
@@ -145,4 +147,51 @@ test('旧快照没有实例编号时，会前提醒继续使用原出处编号',
   assert.equal(prep.length, 1);
   assert.equal(prep[0].id, 'prep:meeting:legacy:2026-10-21');
   assert.equal(prep[0].detail.source, 'meeting:legacy');
+});
+
+test('分页重叠和同实例版本更新不能提前满足总数，继续取得第三页并提示版本待核对', async () => {
+  const oldA = event('A', { meetingUsers: [{ id: 'alice' }] });
+  const newA = event('A', { meetingUsers: [{ id: 'alice' }, { id: 'bob' }] });
+  const b = event('B'), c = event('C'), pages = [[oldA, b], [newA, b], [c]];
+  let calls = 0;
+  const got = await collectMeetings(async () => ({ data: { data: pages[calls++], total: 3 } }), NOW, { size: 2 });
+  assert.equal(calls, 3);
+  assert.equal(got.meetings.length, 4, 'A 两个版本与 B/C 均保留');
+  assert.deepEqual(got.meetings.map(m => m.id).sort(), ['A', 'A', 'B', 'C']);
+  assert.equal(got.coverage.instances, 3);
+  assert.equal(got.coverage.versionConflicts, 1);
+  assert.equal(got.coverage.total, 3);
+  assert.equal(got.coverage.status, 'partial');
+  assert.equal(got.coverage.reason, 'version-conflict');
+  assert.match(got.coverage.reasonLabel, /不同记录版本.*待核对/);
+});
+
+test('总数已到但末页满页时仍读取空页确认边界，正常实例数一致才标完整', async () => {
+  const pages = [[event('A'), event('B')], []];
+  let calls = 0;
+  const got = await collectMeetings(async () => ({ data: { data: pages[calls++], total: 2 } }), NOW, { size: 2 });
+  assert.equal(calls, 2);
+  assert.equal(got.meetings.length, 2);
+  assert.equal(got.coverage.instances, 2);
+  assert.equal(got.coverage.versionConflicts, 0);
+  assert.equal(got.coverage.status, 'complete');
+  assert.equal(got.coverage.reason, 'exhausted');
+});
+
+test('分页重叠继续取得后续实例，完全相同记录只保留一次', async () => {
+  const a = event('A'), b = event('B'), c = event('C'), pages = [[a, b], [b, c], []];
+  let calls = 0;
+  const got = await collectMeetings(async () => ({ data: { data: pages[calls++], total: 3 } }), NOW, { size: 2 });
+  assert.equal(calls, 3);
+  assert.deepEqual(got.meetings.map(m => m.id).sort(), ['A', 'B', 'C']);
+  assert.equal(got.coverage.status, 'complete');
+  assert.equal(got.coverage.instances, 3);
+});
+
+test('分页上限不变，满页即使已达到接口总数也不伪称确认边界', async () => {
+  let calls = 0;
+  const got = await collectMeetings(async () => { calls += 1; return { data: { data: [event('A'), event('B')], total: 2 } }; }, NOW, { size: 2, maxPages: 1 });
+  assert.equal(calls, 1);
+  assert.equal(got.coverage.status, 'partial');
+  assert.equal(got.coverage.reason, 'page-limit');
 });

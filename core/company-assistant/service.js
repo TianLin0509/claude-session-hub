@@ -401,11 +401,30 @@ class CompanyAssistant {
       snap.calendarNeedsSetup = errors.some(e => e.calendar);
     }
     this.assertCollectionIdentity(snap);
+    this.retainReferencedEvents(snap);
     this.write(`raw-${day}.json`, snap);
     // 给助理会话读的同一份数据（只留在本机）。
     try { fs.mkdirSync(path.join(this.workspace, 'data'), { recursive: true }); fs.writeFileSync(path.join(this.workspace, 'data', 'today.json'), JSON.stringify(this.agentSnapshot(snap), null, 1), 'utf8'); } catch { /* 下次再写 */ }
     this.pruneFiles();
     return snap;
+  }
+  retainReferencedEvents(snap) {
+    const owner = snap.login?.uid;
+    if (!owner) return;
+    const day = snap.day, previous = this.snapshot(day), file = `source-history-${day}.json`, saved = this.read(file, null);
+    const refs = new Set([
+      ...(this.brief(day)?.sections || []).flatMap(s => (s.items || []).map(i => i.source)),
+      ...this.state().notices.map(n => n.detail?.source), ...(this.bus.latest?.(50) || []).map(n => n.detail?.source),
+    ].filter(Boolean));
+    const candidates = new Map(saved?.owner === owner ? Object.entries(saved.records || {}) : []);
+    if (previous?.login?.uid === owner) {
+      for (const [source, entry] of D.sourceIndex(previous)) if (entry.kind === 'meeting' || entry.kind === 'calendar')
+        candidates.set(source, { ...entry, capturedAt: previous.at });
+    }
+    const current = new Set([...(snap.meetings || []), ...(snap.calendar || [])].map(row => row.sourceId));
+    const records = Object.fromEntries([...candidates].filter(([source]) => refs.has(source) && !current.has(source)));
+    // 只保存仍被简报或通知引用的版本；与原始快照同保留14天，不注入模型上下文。
+    if (Object.keys(records).length || saved) this.write(file, { owner, day, records });
   }
   // 消息：最近会话里每个会话在回看时间内的全部消息，按会话列表原顺序（最近的在前）。
   // 已缓存的会话只补拉比缓存里最新那条更新的消息；第一次取时从最新一页往回翻，翻到早于回看时间为止。
@@ -527,7 +546,7 @@ class CompanyAssistant {
   pruneFiles() {
     try {
       const keep = D.dayKey(this.now() - 14 * 86400000);
-      for (const f of fs.readdirSync(this.dir)) { const m = f.match(/^(?:raw|brief)-(\d{4}-\d\d-\d\d)\.json$/); if (m && m[1] < keep) fs.unlinkSync(this.file(f)); }
+      for (const f of fs.readdirSync(this.dir)) { const m = f.match(/^(?:raw|brief|source-history)-(\d{4}-\d\d-\d\d)\.json$/); if (m && m[1] < keep) fs.unlinkSync(this.file(f)); }
       // 简报用的消息原文只留 3 天（量大）。
       const recent = D.dayKey(this.now() - 3 * 86400000), data = path.join(this.workspace, 'data');
       for (const f of fs.existsSync(data) ? fs.readdirSync(data) : []) { const m = f.match(/^brief-input-(\d{4}-\d\d-\d\d)\.md$/); if (m && m[1] < recent) fs.unlinkSync(path.join(data, f)); }
@@ -600,12 +619,17 @@ class CompanyAssistant {
     if (!login?.ok || !login.uid) throw new Error('请先刷新数据确认当前账号，再查看本机原文。');
     const days = this.snapshotDays();
     if (days.includes(day)) { days.splice(days.indexOf(day), 1); days.unshift(day); }
-    let snap, entry;
+    let snap, entry, historical = false;
     for (const candidateDay of days) {
       const candidate = this.snapshot(candidateDay);
-      if (candidate?.login?.uid !== login.uid) continue;
-      const found = D.sourceIndex(candidate).get(source);
+      const found = candidate?.login?.uid === login.uid ? D.sourceIndex(candidate).get(source) : null;
       if (found) { snap = candidate; entry = found; day = candidateDay; break; }
+      const history = this.read(`source-history-${candidateDay}.json`, null);
+      const saved = history?.owner === login.uid && Object.hasOwn(history.records || {}, source) ? history.records[source] : null;
+      if (saved) {
+        snap = { at: saved.capturedAt }; entry = { kind: saved.kind, label: saved.label + '（当时记录）', item: saved.item };
+        day = candidateDay; historical = true; break;
+      }
     }
     if (!entry) throw new Error('本机资料中没有这条原文。可刷新数据后重试；较早的承诺可能已超出消息保留范围。');
     let context = [], coverage = null;
@@ -615,7 +639,7 @@ class CompanyAssistant {
       coverage = snap.scope?.conversations?.find(c => c.id === entry.item.conv) || null;
     }
     const capturedAt = entry.kind === 'message' && snap.scope?.stale ? snap.scope.capturedAt : snap.at;
-    return { ok: true, day, entry, context, coverage, capturedAt };
+    return { ok: true, day, entry, context, coverage, capturedAt, ...(historical ? { historical: true } : {}) };
   }
 
   // ---- 提醒 ----
