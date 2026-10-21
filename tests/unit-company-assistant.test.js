@@ -33,19 +33,24 @@ test('白名单：只放行查询命令；发消息、回邮件、建会议、�
   assert.throws(() => W.checkArgs(['im', 'query-history-message', 'a\nb']), e => e.code === 'WELINK_BAD_ARG');
 });
 
-test('只读包装 welink-ro.js：查询命令照常输出，写命令在调用 welink-cli 之前就被拒绝', () => {
+test('只读包装：普通查询可用，会议列表引导统一 MCP，写命令在调用 CLI 前拒绝', () => {
   const dir = tmp(), log = path.join(dir, 'calls.log');
-  const env = { ...process.env, CLAUDE_HUB_WELINK_CLI: STANDIN, WELINK_STANDIN_LOG: log };
+  const env = { ...process.env, CLAUDE_HUB_WELINK_CLI: STANDIN, WELINK_STANDIN_LOG: log, WELINK_STANDIN_PAD: '0' };
   const script = path.join(__dirname, '..', 'core', 'company-assistant', 'welink-ro.js');
-  const query = ['meeting', 'query-list', '--page', '1', '--size', '100', '--meeting-start-time', '1792339200000', '--meeting-end-time', '1792425599999', '--type', '1', '--meeting-sort', 'asc'];
+  const query = ['im', 'query-recent-conversation', '--count', '50'];
   const ok = spawnSync(process.execPath, [script, ...query], { env, encoding: 'utf8' });
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(W.parseJson(ok.stdout).data.data.length, 4);
+  assert.equal(W.parseJson(ok.stdout).conversation_info.length, 5);
+  for (const args of [['meeting', 'query-list', '--type', '1'], ['calendar', 'list', '--start', '2026-10-21', '--end', '2026-10-22']]) {
+    const redirected = spawnSync(process.execPath, [script, ...args], { env, encoding: 'utf8' });
+    assert.equal(redirected.status, 2);
+    assert.match(redirected.stderr, /welink_meetings/);
+  }
   const bad = spawnSync(process.execPath, [script, 'im', 'send-message', '--user-account', 'x', '--content', 'hi'], { env, encoding: 'utf8' });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /拒绝执行：im send-message/);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(calls, [query], '写命令不应到达 welink-cli');
+  assert.deepEqual(calls, [query], '会议列表和写命令均不应绕过 MCP 到达 CLI');
 });
 
 test('回执解析：带提示文字的 JSON、登录状态、日历未初始化、二维码三种形式', () => {
