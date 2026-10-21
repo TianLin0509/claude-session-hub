@@ -2952,7 +2952,17 @@ class SessionManager extends EventEmitter {
 
   _terminatePty(session) {
     const pty = session.pty;
-    if (!pty || session.confirmedExit || this._ptyTerminationRequests.has(pty)) return false;
+    if (!pty || session.confirmedExit) return false;
+    // API-backed drivers own their asynchronous close/retry state. In
+    // particular, Codex can report a failed close after kill() has returned.
+    // CLI providers share the ACP routing label but contain a real PTY.
+    const backend = session.info?.runtimeBackend;
+    if (['codex-app-server', 'claude-stream-json'].includes(backend)
+        || (backend === 'acp' && !pty.isCliProvider)) {
+      pty.kill();
+      return true;
+    }
+    if (this._ptyTerminationRequests.has(pty)) return false;
     // node-pty's Windows kill is not idempotent while native onExit is pending:
     // a second request can close the same pseudoconsole handle twice. Track the
     // PTY object (not a reusable session id), before calling into native code.

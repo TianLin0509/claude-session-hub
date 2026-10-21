@@ -143,6 +143,45 @@ test('a failed native close remains visible and allows a later shutdown request 
   assert.deepStrictEqual(result.killErrors, []);
 });
 
+test('API-backed drivers can retry an asynchronous close failure during shutdown', async () => {
+  for (const backend of ['codex-app-server', 'claude-stream-json', 'acp']) {
+    const manager = new SessionManager();
+    const { pty } = attachFakePty(manager, backend);
+    manager.sessions.get(backend).info.runtimeBackend = backend;
+    pty.kill = function () {
+      if (this.closed) return;
+      this.closed = true;
+      this.killCalls += 1;
+      if (this.killCalls === 1) {
+        // Codex native reports this failure after kill() returned; the
+        // manager's synchronous catch cannot observe it or clear a marker.
+        Promise.resolve().then(() => { this.closed = false; });
+      }
+    };
+    manager.closeSession(backend);
+    await Promise.resolve();
+    assert.equal(pty.closed, false);
+    const drain = manager.disposeGracefully({ warnAfterMs: 0 });
+    const killCallsBeforeExit = pty.killCalls;
+    pty.emitExit();
+    assert.equal((await drain).safeToQuit, true);
+    assert.equal(killCallsBeforeExit, 2, backend + ': the driver must be allowed to retry its failed async close');
+  }
+});
+
+test('PTY-backed CLI providers remain protected even when routed through the ACP backend', async () => {
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'provider');
+  manager.sessions.get('provider').info.runtimeBackend = 'acp';
+  pty.isCliProvider = true;
+  manager.closeSession('provider');
+  const drain = manager.disposeGracefully({ warnAfterMs: 0 });
+  const killCallsBeforeExit = pty.killCalls;
+  pty.emitExit();
+  assert.equal((await drain).safeToQuit, true);
+  assert.equal(killCallsBeforeExit, 1);
+});
+
 test('graceful shutdown is idempotent and waits for every live PTY', async () => {
   const manager = new SessionManager();
   const first = attachFakePty(manager, 'pty-1');
