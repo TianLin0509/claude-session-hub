@@ -60,6 +60,12 @@ async function main() {
     await c.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 950, deviceScaleFactor: 1, mobile: false });
     await wait(`typeof sessions!=='undefined' && sessions.has(${j(peerId)})`);
     await click('[data-session-days="pinned"]');
+    await click(`[data-session-id="${targetId}"] .sl-title`, 'right');
+    await click('#context-menu [data-action="reference"]');
+    const single = await wait("require('electron').clipboard.readText().includes('【引用会话】') && require('electron').clipboard.readText()");
+    const singlePath = single.split('聊天记录：')[1].split('\n')[0].trim();
+    assert.ok(fs.readFileSync(singlePath, 'utf8').includes('目标会话的回答'));
+    evidence.checks.push('普通单聊引用保持可用');
     const before = await c.eval(`({active:activeSessionId,status:[sessions.get(${j(memberId)}).status,sessions.get(${j(peerId)}).status]})`);
     const copied = [];
     for (const [id, isGroup, included, excluded] of [[groupId, true, 'GEMINI_ONLY', 'GROUP_PROGRESS_MARKER'],
