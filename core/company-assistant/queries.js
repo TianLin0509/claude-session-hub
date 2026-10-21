@@ -2,6 +2,17 @@
 const W = require('./welink');
 const D = require('./data');
 
+function readableError(value, depth = 0) {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object' || depth >= 3) return '';
+  // 不把整份错误响应写入界面（可能附带账号/请求上下文），只取明确的错误说明。
+  for (const key of ['message', 'msg', 'error_msg', 'description', 'reason', 'detail']) {
+    const text = readableError(value[key], depth + 1);
+    if (text) return text;
+  }
+  return '';
+}
+
 // 命令执行成功、业务成功、JSON 可读是三个条件。联系人成功码为 0，会议为 200。
 async function readJson(run, args) {
   let result = await run(args);
@@ -16,8 +27,13 @@ async function readJson(run, args) {
   if (!data || typeof data !== 'object') throw new Error(String(result.stderr || result.stdout || '查询没有返回 JSON').trim());
   const command = args.slice(0, 2).join(' ');
   const code = data.code ?? data.resultCode ?? data.error?.error_code;
-  const allowed = command === 'contact detail' ? ['0'] : command === 'meeting query-list' ? ['200'] : ['0', '200'];
-  if (code !== undefined && !allowed.includes(String(code))) throw new Error(String(data.message || data.resultContext || data.error?.error_msg || `查询业务码 ${code}`));
+  // Q-1021-08：会话目录成功码是 IM.0000；仅对该命令接受，不能放开所有 IM 错误。
+  const allowed = command === 'contact detail' ? ['0'] : command === 'meeting query-list' ? ['200']
+    : command === 'im query-recent-conversation' ? ['0', '200', 'IM.0000'] : ['0', '200'];
+  if (code !== undefined && !allowed.includes(String(code))) {
+    const detail = [data.message, data.resultContext, data.error?.error_msg].map(x => readableError(x)).find(Boolean);
+    throw new Error(`${command} 查询业务码 ${code}${detail ? '：' + detail : ''}`);
+  }
   return data;
 }
 

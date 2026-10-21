@@ -31,7 +31,7 @@ else if (group === 'meeting' && sub === 'query-list') {
     { cross_instance: false, group_id: '0', group_name: '', group_type: 'NORMAL_GROUP', native_name: '同事甲', recent_conversation_type: 'CHAT_TYPE_P2P_MSG', staff_name: 'colleague_a 00000000', target_account: 'colleague_a' },
     { cross_instance: false, group_id: 'g-reliability', group_name: '可靠性项目群', group_type: 'NORMAL_GROUP', native_name: '', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' },
   ];
-  out({ conversation_info: all.slice(0, Math.min(50, Number(arg('--count') || 10))), error: { error_code: 0, error_msg: '' } });
+  out({ conversation_info: all.slice(0, Math.min(50, Number(arg('--count') || 10))), error: { error_code: 'IM.0000', error_msg: 'success' } });
 } else if (group === 'im' && sub === 'query-history-message') {
   const conv = arg('--user-account') || arg('--group-id');
   const privateRows = Array.from({ length: 250 }, (_, i) => ({
@@ -49,7 +49,7 @@ else if (group === 'meeting' && sub === 'query-list') {
   const list = forward ? found.slice(0, count) : found.slice(-count);
   // Keep the verified integer wire format, including the inclusive cursor overlap.
   const body = list.map(m => JSON.stringify({ ...m, contentType: 'TEXT_MSG', groupId: arg('--group-id') || 0, groupType: 0, receiver: 'user001' }).replace(/"msgId":"(\d+)"/, '"msgId":$1'));
-  out(`{"chatInfo":[${body.join(',')}],"maxMsgId":${list.at(-1)?.msgId || 0},"minMsgId":${list[0]?.msgId || 0},"msgTotalCount":${list.length},"resultCode":"0","resultContext":"Operate Success"}`);
+  out(`{"respData":{"chatInfo":[${body.join(',')}],"maxMsgId":${list.at(-1)?.msgId || 0},"minMsgId":${list[0]?.msgId || 0},"msgTotalCount":${list.length}},"resultCode":"0","resultContext":"Operate Success"}`);
 } else {
   process.stderr.write('Unsupported isolated fixture command: ' + args.slice(0, 2).join(' ') + '\n'); process.exitCode = 2;
 }
