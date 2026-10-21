@@ -218,7 +218,7 @@ test('子进程输出按 UTF-8 拼字：█ 的 3 个字节被拆在两块里也
   child.emit('close', 0);
   const r = await pending;
   assert.equal(r.stdout, '|█▀▄ |\n');
-  assert.ok(seen.every(t => !t.includes('�')));
+  assert.ok(seen.every(t => !t.includes('\uFFFD')));
 });
 
 test('自动续期与手动扫码共用识别：真机字符画、固定提示行都算要扫码，框没画完也能停下', async () => {

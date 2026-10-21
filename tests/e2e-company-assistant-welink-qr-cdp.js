@@ -84,7 +84,7 @@ function decode(png) {
     const diags = fs.existsSync(diagDir) ? fs.readdirSync(diagDir) : [];
     assert.equal(diags.length, 1, '存了一份诊断');
     const diagText = fs.readFileSync(path.join(diagDir, diags[0]), 'utf8');
-    assert.ok(diagText.includes('�') && !/[█▀▄]/.test(diagText) && diagText.includes(FIX.url), '诊断文件就是这段乱码输出');
+    assert.ok(diagText.includes('\uFFFD') && !/[█▀▄]/.test(diagText) && diagText.includes(FIX.url), '诊断文件就是这段乱码输出');
     await shot('02-garbled');
     result.checks.push(`编码不对：面板提示「二维码显示失败，请用下方链接」、不放图片、保留链接；诊断文件 ${path.join(diagDir, diags[0])}`);
     await until(`!!document.querySelector('.ca-login [data-ca="login"]')`, '乱码轮结束', 30000);

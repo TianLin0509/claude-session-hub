@@ -301,7 +301,7 @@ function qrSvgDataUri(matrix, { cell = 7, margin = 4 } = {}) {
 function loginOutputGarbled(text) {
   const s = String(text || '');
   if (/[█▀▄]/.test(s)) return false;
-  return s.includes('�') || !!lastQrBox(s)?.rows.some(r => /\S/.test(r));
+  return s.includes('\uFFFD') || !!lastQrBox(s)?.rows.some(r => /\S/.test(r));
 }
 // 「If QR code is not displayed correctly, open this URL to scan:」后面那个登录网页（只认 https），作兜底链接，不当图片。
 function loginUrlFromOutput(text) {
