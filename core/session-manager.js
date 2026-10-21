@@ -1358,6 +1358,7 @@ class SessionManager extends EventEmitter {
   _shutdownDrainPromise = null;
   _shutdownExitWaiters = new Map();
   _shutdownDrainedSessions = new Map();
+  _ptyTerminationRequests = new WeakSet();
 
   // Injected by main: the chosen hook HTTP port + per-launch auth token.
   hookPort = null;
@@ -2949,6 +2950,22 @@ class SessionManager extends EventEmitter {
     return true;
   }
 
+  _terminatePty(session) {
+    const pty = session.pty;
+    if (!pty || session.confirmedExit || this._ptyTerminationRequests.has(pty)) return false;
+    // node-pty's Windows kill is not idempotent while native onExit is pending:
+    // a second request can close the same pseudoconsole handle twice. Track the
+    // PTY object (not a reusable session id), before calling into native code.
+    this._ptyTerminationRequests.add(pty);
+    try {
+      pty.kill();
+      return true;
+    } catch (error) {
+      this._ptyTerminationRequests.delete(pty);
+      throw error;
+    }
+  }
+
   closeSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -2967,7 +2984,7 @@ class SessionManager extends EventEmitter {
       return;
     }
     if (session.confirmedExit) return this._handlePtyExit(sessionId, session.pty, session.confirmedExit);
-    session.pty.kill();
+    this._terminatePty(session);
     // Do NOT delete from this.sessions here — the onExit handler does it.
     // The guard in onExit (entry.pty !== ptyProcess) requires the entry to
     // still be present so it can confirm the dying pty owns the entry.
@@ -3190,7 +3207,7 @@ class SessionManager extends EventEmitter {
         this.sessions.delete(sessionId);
         this.onSessionSuspended(sessionId, session.info.meetingId || null, dormantInfo, { noPty: true });
       } else {
-        session.pty.kill();
+        this._terminatePty(session);
       }
       return { ok: true, sessionId, lastActivityAt, reason: session.suspendReason };
     } catch (error) {
@@ -3988,7 +4005,7 @@ class SessionManager extends EventEmitter {
       s.outputDelivery?.close();
       if (s.terminalSnapshot) s.terminalSnapshot.dispose();
       if (s.pty) {
-        s.pty.kill();
+        this._terminatePty(s);
       }
     }
     this.sessions.clear();
@@ -4050,7 +4067,7 @@ class SessionManager extends EventEmitter {
         if (!session.pty) continue;
         try {
           if (session.confirmedExit) await this._handlePtyExit(sessionId, session.pty, session.confirmedExit);
-          else session.pty.kill();
+          else this._terminatePty(session);
         } catch (error) {
           // Do not pretend this PTY is drained. Its already-registered onExit
           // waiter remains authoritative and prevents unsafe teardown.

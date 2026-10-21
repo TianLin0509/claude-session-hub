@@ -86,6 +86,63 @@ test('graceful shutdown keeps Node alive until the PTY onExit path completes', a
   assert.equal(logicalCloseEvents, 0, 'app shutdown must preserve persisted session and meeting membership');
 });
 
+test('recoverable close followed immediately by shutdown closes the native PTY only once', async () => {
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'assistant');
+  Object.assign(manager.sessions.get('assistant').info, { kind: 'claude', ccSessionId: 'native-assistant' });
+  assert.equal(manager.closeSessionRecoverably('assistant').action, 'suspended');
+  assert.equal(pty.killCalls, 1);
+  // Native onExit is asynchronous: the session still exists while its handle
+  // is closing. Re-entering native kill in this interval can corrupt the heap.
+  let resolved = false;
+  const drain = manager.disposeGracefully({ warnAfterMs: 0 });
+  drain.then(() => { resolved = true; });
+  await Promise.resolve();
+  const prematureCompletion = resolved;
+  const killCallsBeforeExit = pty.killCalls;
+  pty.emitExit();
+  assert.equal((await drain).safeToQuit, true);
+  assert.equal(prematureCompletion, false, 'an existing close request still needs its native exit callback');
+  assert.equal(killCallsBeforeExit, 1, 'shutdown must join the in-flight close instead of closing its handle again');
+});
+
+test('explicit close can supersede suspension without issuing another native close', async () => {
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'assistant');
+  Object.assign(manager.sessions.get('assistant').info, { kind: 'claude', ccSessionId: 'native-assistant' });
+  assert.equal(manager.closeSessionRecoverably('assistant').ok, true);
+  manager.closeSession('assistant');
+  manager.closeSession('assistant');
+  assert.ok(manager.sessions.get('assistant').closeRequestedAt);
+  assert.equal(manager.sessions.get('assistant').suspendRequestedAt, 0);
+  const drain = manager.disposeGracefully({ warnAfterMs: 0 });
+  const killCallsBeforeExit = pty.killCalls;
+  pty.emitExit();
+  assert.equal((await drain).safeToQuit, true);
+  assert.equal(killCallsBeforeExit, 1);
+});
+
+test('a failed native close remains visible and allows a later shutdown request to retry', async () => {
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'assistant');
+  Object.assign(manager.sessions.get('assistant').info, { kind: 'claude', ccSessionId: 'native-assistant' });
+  pty.kill = function () {
+    this.killCalls += 1;
+    if (this.killCalls === 1) throw new Error('native close failed');
+  };
+  const close = manager.closeSessionRecoverably('assistant');
+  assert.equal(close.ok, false);
+  assert.equal(close.error, 'kill-failed');
+  assert.match(close.message, /native close failed/);
+  const drain = manager.disposeGracefully({ warnAfterMs: 0 });
+  const killCallsBeforeExit = pty.killCalls;
+  pty.emitExit();
+  const result = await drain;
+  assert.equal(result.safeToQuit, true);
+  assert.equal(killCallsBeforeExit, 2, 'a thrown close must not be remembered as a successful termination request');
+  assert.deepStrictEqual(result.killErrors, []);
+});
+
 test('graceful shutdown is idempotent and waits for every live PTY', async () => {
   const manager = new SessionManager();
   const first = attachFakePty(manager, 'pty-1');
