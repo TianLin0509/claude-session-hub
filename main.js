@@ -2398,6 +2398,8 @@ let companyBridgeService = null;
 let companySessionMemInspector = null; // 公司通道量会话内存用的进程枚举器（懒建，measureSessionMem）
 // 一键更新控制器在后面创建（只有发行目标写了下载源才有）；公司一端经它响应家里的远程更新（core/company-bridge/hub-admin.js）。
 let appUpdateControllerRef = null;
+// 公司一端的远程更新 / 重启管理（只有公司角色有）：一键更新弹窗的「立即重启」也经它先等通道问题答完（2026-10-21）。
+function companyHubAdmin() { return companyBridgeService && companyBridgeService.hubAdmin ? companyBridgeService.hubAdmin : null; }
 try {
   const bridgeRole = require('./core/company-bridge/role').bridgeRole();
   const bridgeDeps = {
@@ -2471,7 +2473,25 @@ try {
       // 剪贴板图片在 sendToPty 往 CodeAgent 粘贴前统一清掉（core/company-bridge/clipboard-guard.js）。
       sendPrompt: (sessionId, text, clientSubmissionId) => bridgeDeps.sendPrompt(sessionId, text, clientSubmissionId),
       // 答完的通道会话按追问规律和内存余量休眠（core/company-bridge/session-care.js）；底线由 suspendSession 的排除项保证。
-      suspendSession: (id, opts) => sessionManager.suspendSession(id, opts),
+      // CodeAgent 会话休眠时补杀进程树残余（core/session-tree-sweep.js）：node-pty 只结束挂在伪终端上的进程，带独立 conhost 的 MCP 插件会变孤儿。
+      // 休眠前从最近一次进程快照（量会话内存时留下的）取整棵树，根结束 8 秒后重新枚举，PID + 启动时间对得上的按 PID 结束。
+      suspendSession: (id, opts) => {
+        const entry = sessionManager.sessions?.get?.(id);
+        const isCodeAgent = /^codeagent(?:-resume)?$/.test(String(entry?.info?.kind || ''));
+        const rootPid = isCodeAgent ? Number(entry?.pty?.pid) || 0 : 0;
+        let sweeper = null, before = [];
+        if (rootPid && companySessionMemInspector) {
+          try {
+            sweeper = require('./core/session-tree-sweep').createTreeSweeper({ inspector: companySessionMemInspector,
+              protect: () => [process.pid, ...(sessionManager.listLivePtyPids?.() || []).filter(pid => pid !== rootPid)],
+              log: line => { try { companyBridgeService?.careLog?.(line); } catch { /* 日志写不了不影响休眠 */ } } });
+            before = sweeper.capture(rootPid);
+          } catch { sweeper = null; }
+        }
+        const result = sessionManager.suspendSession(id, opts);
+        if (result?.ok && sweeper && before.length) sweeper.schedule(before, `session=${String(id).slice(0, 8)}`);
+        return result;
+      },
       // 最后一次往这个会话终端输入的时间（人打字或 Hub 发送）；只看输入，CLI 界面自己的重绘不算活动。
       sessionInputAt: id => Number(sessionManager.sessions?.get(id)?.lastInputAt) || 0,
       // 每个在运行的 CodeAgent 会话占多少内存（PTY 进程树的工作集）：并行上限和收会话按它的均值估算（session-care.js createSessionMemEstimator，
@@ -3915,8 +3935,10 @@ require('./main/ipc/appearance-handlers').registerAppearanceIpc(ipcMain, { dataD
     try {
       const { createAppUpdateController, registerAppUpdateIpc } = require('./main/app-update-controller');
       const appUpdate = createAppUpdateController({ app, config: distribution.updateConfig, dataDir: getHubDataDir(),
-        currentVersion: distribution.editionVersion || app.getVersion(), sendToRenderer, prepareLaunch: prepareHubLaunchClean });
-      registerAppUpdateIpc(ipcMain, appUpdate);
+        currentVersion: distribution.editionVersion || app.getVersion(), sendToRenderer, prepareLaunch: prepareHubLaunchClean,
+        // 公司版：通道有在途问题时「等答完再重启」的状态与入口（core/company-bridge/hub-admin.js，2026-10-21）
+        restartWait: () => companyHubAdmin()?.restartWaitView?.() || null });
+      registerAppUpdateIpc(ipcMain, appUpdate, { gate: { apply: opts => { const admin = companyHubAdmin(); return admin && typeof admin.localApply === 'function' ? admin.localApply(opts) : null; } } });
       appUpdateControllerRef = appUpdate;
       app.whenReady().then(() => appUpdate.startBackgroundChecks());
       app.on('will-quit', () => appUpdate.dispose());

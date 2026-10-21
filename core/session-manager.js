@@ -510,7 +510,20 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config, auth = null) 
   if (EFFORTS.includes(opts.effort)) args.push('--effort', opts.effort);
   args.push('--permission-mode', CLAUDE_PERMISSION_MODES.has(opts.permissionMode) ? opts.permissionMode : 'bypassPermissions');
   if (opts.appendSystemPromptFile) args.push('--append-system-prompt-file', String(opts.appendSystemPromptFile));
-  if (mcp.configPaths && mcp.configPaths.length) args.push('--mcp-config', ...mcp.configPaths);
+  // 通道会话带上成员自己注册的 MCP（2026-10-21 田哥拍板，至少 read-KIA；core/codeagent-member-mcp.js）：号的配置目录、个人账号、
+  // ~/.cac.json、工作目录 .mcp.json、local 作用域里登记的，只读收集后写一份到 Hub 数据目录交给 --mcp-config，不改成员的配置文件。
+  // 用户目录取会话环境（真实启动时由 process.env 来）；环境里没有用户目录（单测夹具）就不扫。
+  let memberMcp = null;
+  if (opts.purpose === 'company-bridge') {
+    try {
+      const homeDir = env.USERPROFILE || env.HOME || '';
+      // 个人账号配置目录按 Hub 自己的环境算（会话环境里的配置目录变量已换成这个号的）
+      const personalDir = homeDir ? require('./codeagent-config').resolveCodeAgentConfig(process.env).configDir : '';
+      memberMcp = require('./codeagent-member-mcp').writeMemberMcpConfig({ hubDataDir, cwd, accountDir: config.configDir, personalDir, homeDir });
+    } catch (error) { memberMcp = { file: null, names: [], error: error.message }; }
+  }
+  const mcpPaths = [...(mcp.configPaths || []), ...(memberMcp && memberMcp.file ? [memberMcp.file] : [])];
+  if (mcpPaths.length) args.push('--mcp-config', ...mcpPaths);
   if (mcp.profile !== 'full') args.push('--strict-mcp-config');
   for (const dir of claudeNativeAddDirs(opts.addDirs)) args.push('--add-dir', dir);
   const { findNativeClaudeHistory } = require('./claude-native-history');
@@ -544,10 +557,41 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config, auth = null) 
     ...(opts.purpose ? { purpose: opts.purpose } : {}),
     requested: inheritModel ? '(inherit)' : opts.model || '(default)', model: requestedModel || '(inherit)', resume: identity.length ? identity[0] : '',
     ...(bridge ? { settingSources: 'user' } : {}),
+    ...(memberMcp ? { memberMcp: memberMcp.names.join(',') || '(none)', ...(memberMcp.error ? { memberMcpError: memberMcp.error } : {}),
+    ...(memberMcp.skipped && memberMcp.skipped.length ? { nativeMcpSkipped: memberMcp.skipped.join(',') } : {}) } : {}),
     ...(auth ? { auth: auth.source, inheritedAuthIgnored: auth.ignoredForNewSessions } : {}),
     ...(codeAgentRouteModel(opts) ? { route: codeAgentRouteModel(opts) } : {}),
   });
-  return { cmd, sessionId, model: requestedModel };
+  // 学习去重要用（core/codeagent-member-mcp.js learnNativeMcp）：这次写进去的、按记录跳过的
+  const memberMcpLearn = memberMcp && !memberMcp.error && (memberMcp.file || (memberMcp.skipped && memberMcp.skipped.length))
+    ? { accountDir: config.configDir, command: config.command, written: memberMcp.file ? memberMcp.servers || {} : {}, skipped: memberMcp.skippedServers || {} } : null;
+  return { cmd, sessionId, model: requestedModel, ...(memberMcpLearn ? { memberMcpLearn } : {}) };
+}
+
+// 通道会话启动约 75 秒后看一眼它的进程树，学「本机 CodeAgent 会自己加载哪些插件」（2026-10-21 v3.0.2 回归：每个插件起 2 份）。
+// 只记录、写一行日志，不结束任何进程；这一会话里已经起的重复由膨胀回收兜底。失败只影响学习，不影响会话。
+const NATIVE_MCP_LEARN_DELAY_MS = 75_000;
+let nativeMcpInspector = null;
+function scheduleNativeMcpLearn(manager, id, rootPid, learn, delayMs = NATIVE_MCP_LEARN_DELAY_MS) {
+  if (!learn || !(rootPid > 0)) return null;
+  const timer = setTimeout(async () => {
+    const hubDataDir = getHubDataDir();
+    const log = fields => { try { require('./codeagent-models').appendModelLog(hubDataDir, { event: 'native-mcp', session: String(id).slice(0, 8), ...fields }); } catch { /* 只影响日志 */ } };
+    try {
+      const s = manager.sessions && manager.sessions.get(id);
+      if (!s || !s.pty || Number(s.pty.pid) !== Number(rootPid) || (s.info && /^(dormant|closed)$/.test(String(s.info.status || '')))) return;
+      nativeMcpInspector = nativeMcpInspector || require('./process-inspector').createProcessInspector({ ttlMs: 20_000, logger: { warn() {} } });
+      const snapshot = await nativeMcpInspector.snapshot({ force: true });
+      const mod = require('./codeagent-member-mcp');
+      let version = '';
+      try { version = await require('./company-bridge/diag').defaultSys().codeagentVersion(learn.command); }
+      catch { version = mod.readNativeStore(hubDataDir).lastVersion || ''; } // 版本读不出来按上一次的算
+      const r = mod.learnNativeMcp({ hubDataDir, accountDir: learn.accountDir, version, written: learn.written, skipped: learn.skipped, snapshot, rootPid });
+      log({ version: version || '(unknown)', learned: r.learned.join(','), dropped: r.dropped.join(','), note: r.note });
+    } catch (error) { log({ error: error && error.message, note: '学习插件是否重复没做成，不影响会话' }); }
+  }, delayMs);
+  if (timer.unref) timer.unref();
+  return timer;
 }
 
 function applyClaudeSessionEnv(sessionEnv, cv) {
@@ -1655,7 +1699,22 @@ class SessionManager extends EventEmitter {
       const target = codeagentPool ? codeAgentRouteModel(opts) || codeagentPool.model
           || pool.strictDefaultModel(pool.readSettingsModel(codeagentPool.account.dir), codeagentPool.account.models, { authoritative: !!codeagentPool.account.modelsAuthoritative }).model || ''
         : codeAgentExpectedModel({}, { configDir: codeagentConfig.configDir, single: true });
-      opts = { ...opts, model: target || undefined, codeagentModelPick: !!target, codeagentAccountModel: target || undefined };
+      // 不需要或暂时不该开菜单时直接发问题（2026-10-21 同事公司 Hub：自动选模型 13 次全失败、每次都耽误发问题）：
+      // 号池号默认就是目标且家里没指定、恢复的会话上一轮就是目标模型作答、这个号连续 3 次没选成（4 小时熔断）。见 core/codeagent-auto-pick.js。
+      let skip = null;
+      try {
+        skip = require('./codeagent-auto-pick').skipReason({ dataDir: getHubDataDir(), account: codeagentPool ? codeagentPool.account.id : 'personal',
+          isPool: !!codeagentPool, target, routeModel: codeAgentRouteModel(opts), freshLaunch, actualModel: opts.codeagentActualModel || '',
+          writtenModel: codeagentPool ? pool.readSettingsModel(codeagentPool.account.dir) : '' });
+      } catch (error) { console.warn('[codeagent] 自动选模型的跳过判断出错，照常选：' + error.message); }
+      if (skip) {
+        try { require('./codeagent-models').appendModelLog(getHubDataDir(), { event: 'pick-skipped', session: String(id).slice(0, 8),
+          // 日志会随诊断发回家里：号用代称（号1、号2……），不写号主信息
+          account: require('./codeagent-default-model-guard').accountOf({ codeagentPoolAccount: codeagentPool ? codeagentPool.account.id : undefined }, getHubDataDir()).alias.replace(/\s+/g, ''), purpose: opts.purpose, model: target, reason: skip.reason, note: skip.note }); } catch { /* 只是日志 */ }
+        console.log(`[codeagent] ${String(id).slice(0, 8)} 不开模型菜单（${skip.reason}）：${skip.note}`);
+      }
+      opts = skip ? { ...opts, model: undefined, codeagentModelPick: false, codeagentAccountModel: undefined }
+        : { ...opts, model: target || undefined, codeagentModelPick: !!target, codeagentAccountModel: target || undefined };
     }
 
     if (isClaude) {
@@ -2130,6 +2189,9 @@ class SessionManager extends EventEmitter {
       conptyInheritCursor: (isCodexRuntime || isKimi || isCodeAgent) ? false : !opts.noInheritCursor,
     });
     } catch (error) { codexEditorInput?.dispose(); antigravityForkCleanup?.(); throw error; }
+    if (codeagentLaunch && codeagentLaunch.memberMcpLearn) {
+      try { scheduleNativeMcpLearn(this, id, Number(ptyProcess && ptyProcess.pid), codeagentLaunch.memberMcpLearn); } catch { /* 只影响学习 */ }
+    }
 
     let currentModel = null;
     if (isClaude) {
@@ -4194,6 +4256,7 @@ module.exports = {
     claudePermissionModeArg,
     buildClaudePtyLaunch,
     buildCodeAgentPtyLaunch,
+    scheduleNativeMcpLearn,
     shouldPickCodeAgentModel,
     codeAgentRouteModel,
     applyClaudeSessionEnv,

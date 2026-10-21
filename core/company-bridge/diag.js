@@ -406,7 +406,7 @@ function avoidView(e) {
     ...(e.kind === 'model-config' ? { model: e.model || '', have: Array.isArray(e.have) ? e.have : [], probes: Number(e.probes) || 0 } : {}) };
 }
 function creditView(c) { return c && Number.isFinite(Number(c.remaining)) ? { remaining: Number(c.remaining), pct: Number(c.pct), bucket: c.bucket || '', at: c.at || null } : null; }
-function pool(raw, { avoid = {}, credit = {}, aliases: given = null, ...extra } = {}) {
+function pool(raw, { avoid = {}, credit = {}, aliases: given = null, pickBreaker = {}, ...extra } = {}) {
   if (!raw) throw new Error('这台 Hub 读不到号池');
   const aliases = given || poolAliases(raw);
   const pick = (a, alias, key) => ({ alias, state: POOL_STATE[a.state] || String(a.state || '未知'), ready: a.state === 'ready',
@@ -422,6 +422,9 @@ function pool(raw, { avoid = {}, credit = {}, aliases: given = null, ...extra } 
     ...(a.state === 'unreadable' && a.credentialsNote ? { credentialsNote: String(a.credentialsNote).slice(0, 120) } : {}),
     ...(key === 'personal' && a.lastBackup ? { lastBackup: { model: a.lastBackup.model == null ? null : String(a.lastBackup.model), at: String(a.lastBackup.name || '').replace(/^settings\.json\.hub-backup-/, '') } } : {}),
     ...(a.routeSwitched ? { routeSwitched: true } : {}), avoid: avoidView(avoid[key]), credit: creditView(credit[key]),
+    // 自动选模型连续失败的计数与熔断（core/codeagent-auto-pick.js，2026-10-21）：熔断中这个号的自动会话不开模型菜单、直接发问题
+    ...(pickBreaker[key] ? { autoPick: pickBreaker[key].open ? { breaker: true, failures: pickBreaker[key].failures, until: pickBreaker[key].until, note: '连续自动选模型没成功，熔断中：不开模型菜单、直接发问题', lastError: pickBreaker[key].lastError }
+      : { breaker: false, failures: pickBreaker[key].failures, lastError: pickBreaker[key].lastError } } : {}),
     // 号池号默认模型未知 / 写的不在清单里（账号即模型，2026-10-19 审核）：这样的号不参与按模型派活
     ...(key !== 'personal' && a.defaultNote ? { defaultNote: String(a.defaultNote) } : {}),
     // 默认模型和权限不符（个人账号，2026-10-19）：settings.json 里写的值和权限清单，号表据此提示、可远程修正（set-personal-model）
@@ -503,7 +506,8 @@ function hub(bridge, deps, sys, ctx) {
     version: bridge.hubAdmin?.current?.() || deps.currentVersion || null, pid: ctx.hubPid, startedAt: ctx.hubStartedAt || null,
     uptimeMin: ctx.hubStartedAt ? Math.round((now - ctx.hubStartedAt) / 60000) : null, uptimeSec: ctx.hubStartedAt ? Math.round((now - ctx.hubStartedAt) / 1000) : null,
     parallel: bridge.parallelLimitSafe(),
-    care: bridge.careState ? { keepWarmMinutes: bridge.careState.keepWarmMinutes, freePercent: bridge.careState.freePercent, warm: bridge.careState.warm, at: bridge.careState.at } : null,
+    care: bridge.careState ? { keepWarmMinutes: bridge.careState.keepWarmMinutes, freePercent: bridge.careState.freePercent, warm: bridge.careState.warm, at: bridge.careState.at,
+      bloatGB: bridge.careState.bloatGB ?? null, sessions: bridge.careState.sessions || [], bloatSuspended: bridge.careState.bloatSuspended || [] } : null,
     holdingDispatch: (() => { try { return !!bridge.hubAdmin.holdingDispatch(); } catch { return null; } })(),
     adminJob: job ? { id: job.id, op: job.op, phase: job.phase, note: short(job.note, 120) } : null,
     queue: { running: queue.filter(q => q.phase === 'running').length, queued: queue.filter(q => q.phase === 'queued').length, threads: queue },
@@ -550,6 +554,21 @@ async function codeagent(bridge, deps, sys, ctx, poolRaw, poolError) {
       // 旁证（只给是否）：Hub 自己的环境里有 Hub 会话标记 / CodeAgent 启动器标记，说明这个 Hub 是从某个会话的进程树里启动的
       // （之后的远程重启、更新都会把同一份环境带下去）
       startedInside: { hubSession: !!env.CLAUDE_HUB_SESSION_ID, codeagent: !!env.CODEAGENT3_LAUNCHER_PID || Object.keys(env).some(k => /^CODEAGENT_HUB_/.test(k)) } };
+  }
+  // 通道会话自学习去重（core/codeagent-member-mcp.js，2026-10-21）：这台 CodeAgent 会自己加载、通道配置里不再重复写的插件，按号给代称、不回路径。
+  if (deps.dataDir) {
+    try {
+      const norm = d => String(d || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+      let personalDir = '';
+      try { personalDir = norm(require('../codeagent-config').resolveCodeAgentConfig(process.env).configDir); } catch { /* 没有个人目录 */ }
+      const label = dir => {
+        if (personalDir && dir === personalDir) return '个人';
+        try { const m = require('../codeagent-pool').poolDirMatch(deps.dataDir, dir); if (m && m.id) return ctx.aliases?.get(m.id) || '号池里的一个号'; } catch { /* 认不出 */ }
+        return '某个号';
+      };
+      const native = require('../codeagent-member-mcp').describeNativeMcp(deps.dataDir, label);
+      if (native.version || native.accounts.length) out.nativeMcp = { version: native.version, accounts: native.accounts.map(a => ({ account: a.account, names: a.names, learnedAt: a.learnedAt, text: a.text })) };
+    } catch (error) { out.nativeMcpError = errText(error); }
   }
   const accounts = poolRaw?.accounts || [];
   out.pool = { total: accounts.length, ready: accounts.filter(a => a.state === 'ready').length, needLogin: accounts.filter(a => a.state !== 'ready').length };
@@ -754,7 +773,9 @@ async function collect({ bridge, deps = bridge.deps, sections, lines = DEFAULT_L
     // 个人账号实际作答过的模型（set-personal-model 的另一条权限依据）
     let raw = poolRaw;
     if (raw && raw.personal && bridge.personalAnsweredModels) { try { raw = { ...raw, personal: { ...raw.personal, answeredModels: bridge.personalAnsweredModels() } }; } catch { /* 读不到就不带 */ } }
-    return pool(raw, { usePool: !!bridge.settings().usePool, models: bridge.modelTableSafe?.() || null, avoid, credit, aliases: ctx.aliases });
+    let pickBreaker = {};
+    try { pickBreaker = require('../codeagent-auto-pick').snapshot(deps.dataDir); } catch { /* 读不到不挡号池段 */ }
+    return pool(raw, { usePool: !!bridge.settings().usePool, models: bridge.modelTableSafe?.() || null, avoid, credit, aliases: ctx.aliases, pickBreaker });
   });
   if (sections.includes('errors')) await run('errors', () => errorsSection(bridge, ctx.aliases, errorsLimit));
   if (sections.includes('logs')) await run('logs', () => logs(sys, path.join(deps.dataDir, 'logs'), lines));
@@ -786,7 +807,7 @@ function summarize(d) {
     parts.push(`通道 ${h.queue.running} 个在跑、${h.queue.queued} 个排队${par ? `（上限 ${par.cap}，受${par.limitedBy}限制）${par.sessionGB ? `，内存按每个会话 ${par.sessionGB} GB 估算（${par.sessionMemSource === 'measured' ? `实测 ${par.sessionMemSamples} 个会话的平均` : '默认值'}）` : ''}` : ''}`);
   }
   const c = d.codeagent;
-  if (c && !c.error) parts.push(`CodeAgent ${c.version ? 'v' + c.version : '版本没读到'}${(c.quota || []).length ? ' · 额度 ' + c.quota.map(q => `${q.account} ${q.pct}%`).join('、') : ''}`);
+  if (c && !c.error) parts.push(`CodeAgent ${c.version ? 'v' + c.version : '版本没读到'}${(c.quota || []).length ? ' · 额度 ' + c.quota.map(q => `${q.account} ${q.pct}%`).join('、') : ''}${(c.nativeMcp?.accounts || []).length ? ' · ' + c.nativeMcp.accounts.map(a => `${a.account}${a.text}`).join('；') : ''}`);
   if (c && c.personal && c.personal.inPool) parts.push(`个人配置目录和${c.personal.inPoolAlias || '号池'}的目录重叠`);
   if (c?.personal?.inheritedAuthToken?.present) parts.push('Hub 继承了认证令牌；新会话优先使用完整且可登录的账号凭证');
   if (c && c.personal && c.personal.inheritedConfigDir) parts.push(c.personal.inheritedConfigDir.note + (c.personal.inheritedConfigDir.inPool ? `（它指向${c.personal.inheritedConfigDir.inPoolAlias || '号池'}的目录）` : ''));
