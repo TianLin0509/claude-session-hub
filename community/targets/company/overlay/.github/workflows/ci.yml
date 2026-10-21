@@ -1,0 +1,93 @@
+name: Verify and build Windows preview
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test-release-installer.ps1
+      - run: node scripts/audit-public.js
+      - run: node scripts/doctor.js
+      - name: Install official native Codex without login
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-provider.ps1 -Provider codex
+      - run: node tests/smoke-official-codex.js
+      - run: node tests/e2e-community-cdp.js
+      - name: Fetch pinned meeting-room runtime for the company installer
+        shell: pwsh
+        run: |
+          $baseline = Get-Content core/company-assistant/room-component/baseline.json -Raw -Encoding utf8 | ConvertFrom-Json
+          $exe = $baseline.exe
+          $dir = Join-Path $env:RUNNER_TEMP 'room-runtime'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dest = Join-Path $dir $exe.file
+          $url = "https://github.com/TianLin0509/mishu-terminator/releases/download/v$($baseline.version)/$($exe.file)"
+          curl.exe -fsSL --retry 3 -o $dest $url
+          if ($LASTEXITCODE -ne 0) { throw "download failed: $url" }
+          $hash = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLowerInvariant()
+          $size = (Get-Item $dest).Length
+          if ($hash -ne $exe.sha256 -or $size -ne [int64]$exe.size) { throw "runtime mismatch: $size bytes, sha256 $hash" }
+          Write-Host "meeting-room runtime verified: $size bytes, sha256 $hash"
+          "AI_HUB_ROOM_RUNTIME_SOURCE=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Package independent CI checkout
+        run: npm run dist
+      - name: Smoke test packaged application and terminal
+        run: node tests/e2e-community-cdp.js --packaged
+      - name: Install and exercise the actual portable ZIP
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test-portable-package.ps1
+      - run: node scripts/prepare-release.js
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIHubCommunity-Windows
+          path: |
+            dist/AIHubCommunity-Setup-*.exe
+            dist/AIHubCommunity-*-win-x64.zip
+            dist/AIHubCommunity-source-*.zip
+            dist/install-release.ps1
+            dist/release-manifest.json
+            dist/SHA256SUMS.txt
+            dist/*-update.gz
+            dist/latest.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GUI-validation
+          path: |
+            artifacts/community-gui
+            artifacts/community-packaged-gui
+            artifacts/official-codex
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AIHubCommunity-Windows
+          path: release
+      - name: Create checksums and publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release
+          sha256sum --check SHA256SUMS.txt
+          gh release create "$RELEASE_TAG" --prerelease --title "AI Hub Community $RELEASE_TAG" --notes "Windows x64. Portable install needs no Node, Git or Python. Download install-release.ps1 and run it in PowerShell; it installs $RELEASE_TAG by default (same as -Version $RELEASE_TAG). Read docs/AGENT-QUICKSTART.md for agent installation and docs/CUSTOMIZE.md to build a company Hub. Use your own AI account; model access requires official login." *.exe *.zip install-release.ps1 release-manifest.json SHA256SUMS.txt $(ls *-update.gz latest.json 2>/dev/null)

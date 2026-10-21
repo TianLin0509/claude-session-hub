@@ -40,6 +40,8 @@ if (group === '__test' && sub === 'say') {
 } else if (group === 'meeting' && sub === 'query-list' && ['--page', '--size', '--meeting-start-time', '--meeting-end-time', '--type', '--meeting-sort'].some(k => !arg(k))) {
   process.stderr.write(['--page', '--size', '--meeting-start-time', '--meeting-end-time', '--type', '--meeting-sort'].find(k => !arg(k)) + ' is required\n');
   process.exitCode = 106;
+} else if (group === 'meeting' && sub === 'query-list' && (!Number.isInteger(Number(arg('--size'))) || Number(arg('--size')) < 1 || Number(arg('--size')) > 30)) {
+  out({ code: '400', message: { message: 'BAD_REQUEST', details: 'synthetic: meeting size must be between 1 and 30' } });
 } else if (group === 'meeting' && sub === 'query-list') {
   // 「马上要开的会」定在第一次查询后 12 分钟，之后每次查询返回同一时间（Hub 取数和助理会话自己查，时间要一致）。
   const anchorFile = stateFile ? require('node:path').join(require('node:path').dirname(stateFile), 'welink-anchor') : null;
@@ -60,7 +62,17 @@ if (group === '__test' && sub === 'say') {
     : { code: '47111', message: 'Query users info does not exist or has been deleted.', users: [] });
 } else if (group === 'calendar' && sub === 'list') {
   if (!exchangeReady()) needExchange();
-  else out({ items: [{ id: 'cal-1', subject: '晨会（日历占位）', start: { dateTime: new Date(today(6, 0)).toISOString() }, end: { dateTime: new Date(today(6, 30)).toISOString() }, location: '线上' }] });
+  else {
+    const max = Number(arg('--max') ?? 20);
+    if (!Number.isInteger(max) || max < 0 || max > 500) { process.stderr.write('calendar max must be between 0 and 500'); process.exitCode = 1; }
+    else {
+      const begin = arg('--start') ? Date.parse(arg('--start') + 'T00:00:00+08:00') : -Infinity;
+      const end = arg('--end') ? Date.parse(arg('--end') + 'T00:00:00+08:00') : Infinity;
+      const rows = [{ id: 'cal-1', subject: '晨会（日历占位）', start: new Date(today(6, 0)).toISOString(), end: new Date(today(6, 30)).toISOString(), location: '线上', isAllDay: false, isCancelled: false }]
+        .filter(e => Date.parse(e.start) < end && Date.parse(e.end) > begin).slice(0, max);
+      out(rows.length ? rows : 'No events found.\n');
+    }
+  }
 } else if (group === 'onebox' && sub === 'user-info') {
   out({ accountId: 1, name: '用户甲', loginName: 'user001', email: process.env.WELINK_STANDIN_NO_EMAIL === '1' ? '' : 'user001@example.com', status: 'normal' });
 } else if (group === 'im' && sub === 'query-recent-conversation' && stateFile && fs.existsSync(stateFile) && fs.readFileSync(stateFile, 'utf8').trim() === 'conversations-failed') {
@@ -73,8 +85,9 @@ if (group === '__test' && sub === 'say') {
   const all = [p2p('colleague_a', '同事甲'), grp('g-100', '项目群A'), grp('g-phone', '助理 CodeAgent'),
     // 垫着的空旧单聊个数：WELINK_STANDIN_PAD，默认 12；单测设 0 省时间
     ...Array.from({ length: Number(process.env.WELINK_STANDIN_PAD ?? 12) }, (_, i) => p2p('old_' + i, '老同事' + i)), grp('g-200', '部门大群'), p2p('colleague_d', '同事丁')];
-  const count = Math.min(50, Math.max(1, Number(arg('--count') || 10)));
-  out({ app_service_id: 'x', conversation_info: all.slice(0, count), error: { error_code: 0, error_msg: '' } });
+  const count = Math.min(100, Math.max(1, Number(arg('--count') || 10)));
+  // Q-1021-08：最近会话的明确成功码，不能用泛化的 0 代替真机契约。
+  out({ app_service_id: 'x', conversation_info: all.slice(0, count), error: { error_code: 'IM.0000', error_msg: 'success' } });
 } else if (group === 'im' && sub === 'query-history-message' && arg('--group-id') === 'g-phone') {
   // 手机对话的专用群：消息存在 WELINK_STANDIN_STATE 同目录的 welink-phone-group.jsonl（测试往里写「手机发的」消息）。
   // 和真机一样：msgId 是超过 JS 安全整数的长整数；--query-direction 1 取比 --message-id 更新的（help 写反了）。
@@ -83,7 +96,7 @@ if (group === '__test' && sub === 'say') {
   let list = from ? all.filter(m => dir === '1' ? BigInt(m.msgId) > BigInt(from) : BigInt(m.msgId) < BigInt(from)) : all.slice(-count);
   list = dir === '1' ? list.slice(0, count) : list.slice(-count);
   const body = list.map(m => `{"at":"","atAccountList":[],"content":${JSON.stringify(m.content)},"contentType":"TEXT_MSG","groupId":"g-phone","groupType":0,"msgId":${m.msgId},"receiver":"g-phone","sender":${JSON.stringify(m.sender)},"serverSendTime":${m.serverSendTime}}`);
-  out(`{"chatInfo":[${body.join(',')}],"msgTotalCount":${list.length},"resultCode":"0","resultContext":"Operate Success"}`);
+  out(`{"respData":{"chatInfo":[${body.join(',')}],"msgTotalCount":${list.length}},"resultCode":"0","resultContext":"Operate Success"}`);
 } else if (group === 'im' && sub === 'send-to-group') {
   if (arg('--group-id') !== 'g-phone') { process.stderr.write('group not found\n'); process.exitCode = 1; }
   else { addPhoneMessage('user001', arg('--text') || ''); out('{"code":0,"message":"success"}'); }
@@ -114,7 +127,7 @@ if (group === '__test' && sub === 'say') {
   list = dir === '1' ? list.slice(0, count) : list.slice(-count);
   const body = list.map(m => `{"at":${m.at},"atAccountList":${JSON.stringify(m.atAccountList)},"content":${JSON.stringify(m.content)},"contentType":"TEXT_MSG","groupId":${arg('--group-id') && /^\d+$/.test(arg('--group-id')) ? arg('--group-id') : 0},"groupType":0,"msgId":${m.msgId},"receiver":"","sender":${JSON.stringify(m.sender)},"serverSendTime":${m.serverSendTime}}`);
   const ids = list.map(m => m.msgId);
-  out(`{"chatInfo":[${body.join(',')}],"maxMsgId":${ids.at(-1) || 0},"minMsgId":${ids[0] || 0},"msgTotalCount":${list.length},"resultCode":"0","resultContext":"Operate Success"}`);
+  out(`{"respData":{"chatInfo":[${body.join(',')}],"maxMsgId":${ids.at(-1) || 0},"minMsgId":${ids[0] || 0},"msgTotalCount":${list.length}},"resultCode":"0","resultContext":"Operate Success"}`);
 } else if (group === 'mail' && sub === 'list' && exchangeFile && !exchangeReady()) {
   needExchange();
 } else if (group === 'mail' && sub === 'list') {

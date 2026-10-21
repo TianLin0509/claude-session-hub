@@ -33,19 +33,24 @@ test('白名单：只放行查询命令；发消息、回邮件、建会议、�
   assert.throws(() => W.checkArgs(['im', 'query-history-message', 'a\nb']), e => e.code === 'WELINK_BAD_ARG');
 });
 
-test('只读包装 welink-ro.js：查询命令照常输出，写命令在调用 welink-cli 之前就被拒绝', () => {
+test('只读包装：普通查询可用，会议列表引导统一 MCP，写命令在调用 CLI 前拒绝', () => {
   const dir = tmp(), log = path.join(dir, 'calls.log');
-  const env = { ...process.env, CLAUDE_HUB_WELINK_CLI: STANDIN, WELINK_STANDIN_LOG: log };
+  const env = { ...process.env, CLAUDE_HUB_WELINK_CLI: STANDIN, WELINK_STANDIN_LOG: log, WELINK_STANDIN_PAD: '0' };
   const script = path.join(__dirname, '..', 'core', 'company-assistant', 'welink-ro.js');
-  const query = ['meeting', 'query-list', '--page', '1', '--size', '100', '--meeting-start-time', '1792339200000', '--meeting-end-time', '1792425599999', '--type', '1', '--meeting-sort', 'asc'];
+  const query = ['im', 'query-recent-conversation', '--count', '50'];
   const ok = spawnSync(process.execPath, [script, ...query], { env, encoding: 'utf8' });
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(W.parseJson(ok.stdout).data.data.length, 4);
+  assert.equal(W.parseJson(ok.stdout).conversation_info.length, 5);
+  for (const args of [['meeting', 'query-list', '--type', '1'], ['calendar', 'list', '--start', '2026-10-21', '--end', '2026-10-22']]) {
+    const redirected = spawnSync(process.execPath, [script, ...args], { env, encoding: 'utf8' });
+    assert.equal(redirected.status, 2);
+    assert.match(redirected.stderr, /welink_meetings/);
+  }
   const bad = spawnSync(process.execPath, [script, 'im', 'send-message', '--user-account', 'x', '--content', 'hi'], { env, encoding: 'utf8' });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /拒绝执行：im send-message/);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(calls, [query], '写命令不应到达 welink-cli');
+  assert.deepEqual(calls, [query], '会议列表和写命令均不应绕过 MCP 到达 CLI');
 });
 
 test('回执解析：带提示文字的 JSON、登录状态、日历未初始化、二维码三种形式', () => {
@@ -83,7 +88,7 @@ function snapshotAt() {
   return { at: NOW, login: { ok: true, uid: 'me' }, meetings, calendar: [], conversations, messages, mails };
 }
 
-test('数据整理：会议只取今天、单聊最后一句不是我说的算「等你回复」', () => {
+test('数据整理：会议只取今天、私聊最后一句不是我说的算「等你回复」', () => {
   const snap = snapshotAt();
   assert.deepEqual(D.todaysMeetings(snap, '2026-10-14').map(m => m.id), ['m1', 'm2', 'm3', 'm4']);
   const wait = D.awaiting(snap, {});
@@ -99,7 +104,7 @@ test('简报：清单版五栏、空栏不显示；AI 版出处不在原始数�
   assert.deepEqual(list.sections.map(s => s.key), ['meetings', 'awaiting', 'groups', 'mail']);
   assert.equal(list.by, 'list');
   const reply = '```json\n' + JSON.stringify({
-    meetings: [{ text: '10:10 方案评审，先看材料', source: 'meeting:m1' }, { text: '编出来的会', source: 'meeting:nope' }],
+    meetings: [{ text: '10:10 方案评审，先看材料', source: snap.meetings[0].sourceId }, { text: '编出来的会', source: 'meeting:nope' }],
     awaiting: [{ text: '同事甲等你看材料', source: 'msg:a:p2' }],
     commitments: [{ text: '周五前发报告', source: 'msg:a:p1', due: '2026-10-16', guess: true }],
     groups: [{ text: '没出处', source: '' }],
@@ -108,15 +113,16 @@ test('简报：清单版五栏、空栏不显示；AI 版出处不在原始数�
   const ai = B.parseAgentBrief(reply, snap, { day: '2026-10-14', now: NOW });
   assert.equal(ai.by, 'ai');
   assert.equal(ai.dropped, 2);
-  assert.equal(ai.total, 4);
+  assert.equal(ai.total, 7, 'AI漏掉的会议必须从原始数据补回');
+  assert.equal(ai.sections.find(s => s.key === 'meetings').items.length, 4);
   assert.deepEqual(ai.sections.find(s => s.key === 'commitments').items[0].due, '2026-10-16');
   assert.equal(ai.sections.find(s => s.key === 'commitments').items[0].guess, true);
   assert.equal(B.parseAgentBrief('我没法整理', snap, { day: '2026-10-14' }), null);
   const done = B.parseAgentBrief(reply, snap, { day: '2026-10-14', done: new Set(['msg:a:p2']) });
   assert.equal(done.sections.some(s => s.key === 'awaiting'), false);
-  const many = { meetings: Array.from({ length: 14 }, () => ({ text: '会', source: 'meeting:m1' })), mail: Array.from({ length: 3 }, () => ({ text: '信', source: 'mail:x1' })) };
+  const many = { meetings: Array.from({ length: 14 }, () => ({ text: '会', source: snap.meetings[0].sourceId })), mail: Array.from({ length: 3 }, () => ({ text: '信', source: 'mail:x1' })) };
   const capped = B.parseAgentBrief(JSON.stringify(many), snap, { day: '2026-10-14' });
-  assert.equal(capped.total, 2, '同一出处同一栏只留一条');
+  assert.equal(capped.total, 6, '同一出处同一栏只留一条，并保留全部会议和待回事项');
   const crowded = { ...snap, meetings: D.meetings({ meetings: Array.from({ length: 12 }, (_, i) => ({ meetingId: 'c' + i, subject: '会' + i, meetingStartTime: at(8, i * 30), meetingEndTime: at(9, i * 30) })) }) };
   const full = B.fallbackBrief(crowded, { day: '2026-10-14', now: NOW });
   assert.ok(full.total > 10);
@@ -124,7 +130,7 @@ test('简报：清单版五栏、空栏不显示；AI 版出处不在原始数�
   const commits = B.mergeCommitments([], ai, '2026-10-14');
   assert.equal(commits.length, 1);
   assert.equal(B.mergeCommitments(commits, null, '2026-10-20').length, 0, '过期两天以上的承诺清掉');
-  assert.match(B.briefPrompt(snap, { day: '2026-10-14', now: NOW }), /\[meeting:m1\][\s\S]*\[msg:a:p2\][\s\S]*\[mail:x1\]/);
+  assert.match(B.briefPrompt(snap, { day: '2026-10-14', now: NOW }), /\[meeting:m1:r[a-f0-9]{32}\][\s\S]*\[msg:a:p2\][\s\S]*\[mail:x1\]/);
 });
 
 test('提醒：会前准备、会议太满、等你回复、关注词、答应的事、下班小结各自按条件触发；周末不发', () => {
@@ -132,18 +138,19 @@ test('提醒：会前准备、会议太满、等你回复、关注词、答应�
   const settings = { waitHours: 4, prepMinutes: 15, keywords: ['转测'], keywordSince: at(9), briefTime: '08:20', summaryTime: '18:00' };
   const commitments = [{ source: 'msg:a:p1', text: '周五前发报告', due: '2026-10-15' }, { source: 's2', text: '今天交材料', due: '2026-10-14' }];
   const kinds = R.dueNotices({ snapshot: snap, settings, now: NOW, commitments }).map(n => n.id);
-  assert.ok(kinds.includes('prep:meeting:m1:2026-10-14'));
+  const prepId = `prep:${snap.meetings[0].occurrenceId}:2026-10-14`;
+  assert.ok(kinds.includes(prepId));
   assert.ok(kinds.includes('overbooked:2026-10-14'));
   assert.ok(kinds.includes('await:a:p2'));
   assert.ok(kinds.includes('kw:g1:g1'));
   assert.ok(kinds.includes('commit:s2:2026-10-14:day'));
   assert.ok(!kinds.includes('commit:msg:a:p1:2026-10-15:eve'), '前一天的提醒要到 17:00 后');
   assert.ok(!kinds.some(k => k.startsWith('summary:')));
-  assert.equal(kinds[0], 'prep:meeting:m1:2026-10-14', '会前准备排最前');
+  assert.equal(kinds[0], prepId, '会前准备排最前');
   const evening = R.dueNotices({ snapshot: snap, settings, now: at(18, 5), commitments }).map(n => n.id);
   assert.ok(evening.includes('summary:2026-10-14'));
   assert.ok(evening.includes('commit:msg:a:p1:2026-10-15:eve'));
-  assert.ok(!evening.includes('prep:meeting:m1:2026-10-14'));
+  assert.ok(!evening.includes(prepId));
   assert.deepEqual(R.dueNotices({ snapshot: snap, settings, now: new Date(2026, 9, 17, 10).getTime(), commitments }), [], '周六不发');
   assert.equal(R.dueNotices({ snapshot: snap, settings: { ...settings, keywordSince: at(9, 40) }, now: NOW }).some(n => n.kind === 'keyword'), false, '关注词只看新消息');
   const busy = R.overbooked(D.todaysMeetings(snap, '2026-10-14'));
@@ -241,9 +248,10 @@ test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核�
   const sid = svc.state().sessionId;
   assert.equal(f.sessions.get(sid).purpose, 'company-assistant');
   assert.equal(f.sessions.get(sid).cwd, svc.workspace);
-  assert.match(f.sent[0].text, /只读[\s\S]*welink-ro\.cmd[\s\S]*\[meeting:m-soon\]/);
+  assert.match(f.sent[0].text, /只读[\s\S]*welink-ro\.cmd[\s\S]*\[meeting:m-soon:r[a-f0-9]{32}\]/);
+  const soonSource = snap.meetings.find(m => m.id === 'm-soon').sourceId;
   // 助理答完：一条真出处、一条编造的
-  f.finals.get(sid).push({ id: 'r1', text: '```json\n{"meetings":[{"text":"10 分钟后方案评审","source":"meeting:m-soon"}],"awaiting":[{"text":"假的","source":"msg:zzz:1"}],"commitments":[],"groups":[],"mail":[]}\n```' });
+  f.finals.get(sid).push({ id: 'r1', text: '```json\n' + JSON.stringify({ meetings: [{ text: '10 分钟后方案评审', source: soonSource }], awaiting: [{ text: '假的', source: 'msg:zzz:1' }], commitments: [], groups: [], mail: [] }) + '\n```' });
   await svc.collectJob();
   const brief = svc.brief();
   assert.equal(brief.by, 'ai');
@@ -265,8 +273,8 @@ test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核�
   assert.ok(got.length <= 3);
   assert.ok(kinds.some(k => k.startsWith('prep:meeting:m-soon')), '10 分钟后的会出准备卡');
   // 处理了：从简报里拿掉
-  svc.markDone('meeting:m-soon');
-  assert.equal(svc.brief().sections.some(x => x.items.some(i => i.source === 'meeting:m-soon')), false);
+  svc.markDone(soonSource);
+  assert.equal(svc.brief().sections.some(x => x.items.some(i => i.source === soonSource)), false);
   // 只调用了查询命令
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   for (const c of calls) W.checkArgs(c, { allowSetup: c[0] === 'mail' && c[1] === 'autodiscover' });
@@ -285,15 +293,16 @@ test('午夜前生成今天简报：次日即将开始的会保留在快照中�
   svc.start();
   svc.setSettings({ workdays: [0, 1, 2, 3, 4, 5, 6] });
   const first = await svc.generateBrief();
-  const soon = svc.snapshot().meetings.find(m => m.sourceId === 'meeting:m-soon');
+  const soon = svc.snapshot().meetings.find(m => m.id === 'm-soon');
+  const todaySource = svc.snapshot().meetings.find(m => m.id === 'm-a').sourceId;
   assert.equal(soon.start, at(24, 7), '23:55 后 12 分钟属于次日 00:07');
   const items = first.sections.find(section => section.key === 'meetings').items;
-  assert.ok(items.some(item => item.source === 'meeting:m-a'));
-  assert.ok(!items.some(item => item.source === 'meeting:m-soon'));
+  assert.ok(items.some(item => item.source === todaySource));
+  assert.ok(!items.some(item => item.source === soon.sourceId));
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(f.sent.length, 1);
-  assert.match(f.sent[0].text, /\[meeting:m-a\]/);
-  assert.doesNotMatch(f.sent[0].text, /\[meeting:m-soon\]/);
+  assert.match(f.sent[0].text, /\[meeting:m-a:r[a-f0-9]{32}\]/);
+  assert.doesNotMatch(f.sent[0].text, /\[meeting:m-soon:r[a-f0-9]{32}\]/);
 });
 
 test('服务：WeLink 登录过期时简报提示扫码；扫码登录拿到二维码，登录后状态变为已登录', async () => {

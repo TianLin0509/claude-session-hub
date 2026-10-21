@@ -137,7 +137,7 @@ test('老缓存重新取全文；正文为空的附件及原始内容都保留',
   const result = await service.conversationHistory(conv, old, now - 3600000, 'me', '', async (_label, a) => { args.push(a); return { chatInfo: [msg(1, long), { ...msg(2, ''), content: { fileName: 'demo.pdf', fileId: 'demo' }, contentType: 'FILE_MSG' }] }; });
   assert.ok(!args[0].includes('--message-id')); assert.equal(result.messages[0].text, long);
   assert.equal(result.messages[1].content.fileName, 'demo.pdf'); assert.match(result.messages[1].preview, /FILE_MSG/);
-  assert.equal(result.cache.version, 2); assert.equal(result.coverage.incompleteText, 0);
+  assert.equal(result.cache.version, 3); assert.equal(result.coverage.incompleteText, 0);
 });
 
 test('出处查看给出完整原文和前后各两条，不泄入其他会话；过期/无效出处有明确说明', () => {
@@ -175,12 +175,13 @@ test('会议取数传齐全部参数，用毫秒时间窗并按 total 分页；�
   assert.equal(failed.coverage.status, 'failed');
 });
 
-test('升级查询说明包含完整会议命令，保留现有助理会话且包装指向统一姓名缓存', async () => {
+test('升级查询说明改用统一会议MCP，保留现有助理会话且包装指向统一姓名缓存', async () => {
   const dataDir = temp(), svc = new CompanyAssistant({ dataDir, noTimer: true, noTools: true, now: () => now, getSession: id => ({ id }) });
   svc.saveState({ sessionId: 'existing', toolsVersion: TOOLS_VERSION, primed: 'existing' });
   assert.equal(await svc.ensureSession(), 'existing');
   const doc = fs.readFileSync(path.join(svc.workspace, 'CLAUDE.md'), 'utf8');
-  assert.ok(doc.includes(meetingArgs(now).join(' ')));
+  assert.ok(doc.includes('welink_meetings') && doc.includes(D.dayKey(now)));
+  assert.ok(!doc.includes(meetingArgs(now).join(' ')), '模型不再自行换算epoch并拼会议命令');
   assert.ok(!doc.includes('meeting query-list --type 1；'));
   assert.ok(fs.readFileSync(path.join(svc.workspace, 'welink-ro.cmd'), 'utf8').includes('CLAUDE_HUB_ASSISTANT_DIR=' + svc.dir));
 });
@@ -270,7 +271,7 @@ test('复用助理会话时跨日更新会议查询时间范围，同日不重�
   for (const next of [now, now + 1000, now + 86400000]) {
     at = next; svc.job = null; svc.queue.push({ type: 'probe', prompt: '今天的会' }); await svc.pump();
   }
-  assert.ok(prompts[0].includes(meetingArgs(now).join(' ')));
+  assert.ok(prompts[0].includes('welink_meetings') && prompts[0].includes(D.dayKey(now)));
   assert.equal(prompts[1], '今天的会');
-  assert.ok(prompts[2].includes(meetingArgs(now + 86400000).join(' ')));
+  assert.ok(prompts[2].includes('welink_meetings') && prompts[2].includes(D.dayKey(now + 86400000)));
 });

@@ -128,6 +128,19 @@ test('WORKTREE export marks an untracked-only change as dirty', t => {
   assert.equal(exportCommunity({ ref: 'WORKTREE', out, root: repo.root }).upstreamDirty, true);
 });
 
+test('company runtime pattern preserves existing unpack entries and packaging hook survives source export', t => {
+  const repo = syntheticRepo(t), out = path.join(repo.root, 'company-out');
+  repo.write('package.json', JSON.stringify({ name: 'x', version: '9.9.9', build: { files: ['core/**/*'], asarUnpack: ['existing.ico'] } }));
+  repo.write('community/targets/company/target.json', JSON.stringify({ repo: 'example/company', version: '3.0.0',
+    buildAsarUnpackAppend: ['core/company-assistant/room-component/runtime/**'],
+    build: { beforePack: 'core/company-assistant/room-component/build-runtime.js' } }));
+  const report = exportCommunity({ ref: 'WORKTREE', out, root: repo.root, target: 'company' });
+  assert.equal(report.ok, true);
+  const pkg = JSON.parse(fs.readFileSync(path.join(out, 'package.json')));
+  assert.deepEqual(pkg.build.asarUnpack, ['existing.ico', 'core/company-assistant/room-component/runtime/**']);
+  assert.equal(pkg.build.beforePack, 'core/company-assistant/room-component/build-runtime.js');
+});
+
 test('the current tree exports to a clean, loadable community edition', { timeout: 240000 }, () => {
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-community-export-')), 'tree');
   try {

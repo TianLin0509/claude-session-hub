@@ -208,7 +208,7 @@ test('助理会话挂工具：只给 purpose=company-assistant；旧版本的助
   r.svc.close();
 });
 
-test('MCP：列出 7 个工具；带对会话编号能调通，编号不对被拒', async () => {
+test('MCP：保留会话工具并暴露取数/记忆/PPT工具；身份不对被拒', async () => {
   const r = rig();
   r.svc.start();
   await r.svc.toolsReady;
@@ -228,7 +228,7 @@ test('MCP：列出 7 个工具；带对会话编号能调通，编号不对被�
     } finally { child.kill(); }
   };
   const ok = await rpc(me);
-  assert.deepEqual(ok.tools, ['room_booking', 'ppt_library', 'list_sessions', 'read_session', 'send_session', 'create_session', 'watch_session', 'press_keys', 'stop_session']);
+  assert.deepEqual(ok.tools, ['welink_inbox', 'welink_message', 'welink_meetings', 'assistant_memory', 'ppt_find', 'ppt_read', 'room_booking', 'ppt_library', 'list_sessions', 'read_session', 'send_session', 'create_session', 'watch_session', 'press_keys', 'stop_session']);
   assert.equal(ok.listed.isError, false);
   assert.deepEqual(JSON.parse(ok.listed.content[0].text).sessions.map(s => s.title), ['信道仿真']);
   const bad = await rpc('not-the-assistant');

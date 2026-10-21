@@ -51,7 +51,6 @@ test('组件已回退或累计三次启动失败时，不会清零恢复计数',
   }
 });
 const { EventEmitter } = require('node:events');
-const { HubTools } = require('../core/company-assistant/hub-tools');
 const { slotText } = require('../core/company-assistant/rooms');
 function fakeChild({ exitWith, write } = {}) {
   return (exe, args, opts) => {
@@ -73,52 +72,81 @@ test('版本探测：超时 120 秒，超时只按 PID 结束自己起的那棵�
   assert.equal(info.exe_version, '2.1.0');
   assert.deepEqual(fs.readdirSync(a.dir).filter(f => f.startsWith('mishu-probe-')), []);
 });
-test('没接通过（无已保存程序）时，助理/手机工具不找、不登记、不拉起秘书，只提示去设置里接通', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-room-gate-'));
-  const a = new CompanyAssistant({ dataDir: root, noTimer: true, roomSpawn: () => { throw Error('must not spawn'); } });
-  t.after(() => a.close());
-  const original = component.discover; let looked = 0;
-  component.discover = async () => { looked++; return ''; };
-  t.after(() => { component.discover = original; });
-  for (const op of ['start', 'configure', 'login']) {
-    const r = await a.rooms.command(op, op === 'configure' ? { 主题: 'x' } : {});
-    assert.equal(r.ok, false); assert.equal(r.needsConnect, true); assert.equal(r.error, '请先在助理设置 → 抢会议室里接通');
-  }
-  a.saveState({ sessionId: 'assistant-1' });
-  const viaTool = await new HubTools(a, {}).invoke({ name: 'room_booking', arguments: { op: 'start' }, callerSessionId: 'assistant-1' });
-  assert.equal(viaTool.needsConnect, true);
-  assert.equal(looked, 0); assert.equal(a.settings().rooms?.exePath || '', '');
-  await assert.rejects(a.rooms.ensure(), /请先在助理设置/);
-  assert.equal(looked, 0);
+test('缺少随包运行时就报安装包错误，不回退寻找或启动用户安装的秘书', async t => {
+  const { a, root } = rig(t), bundle = path.join(root, 'bundle');
+  fs.mkdirSync(bundle);
+  fs.copyFileSync(path.resolve(__dirname, '../core/company-assistant/room-component/baseline.json'), path.join(bundle, 'baseline.json'));
+  a.rooms.deps.roomBundle = bundle;
+  const external = path.join(root, 'external.exe'); fs.writeFileSync(external, 'do not run');
+  a.setSettings({ rooms: { exePath: external } });
+  a.rooms.deps.roomSpawn = () => { throw Error('must not spawn'); };
+  await assert.rejects(a.rooms.ensure(), /安装包缺少会议室组件/);
+  assert.equal(a.settings().rooms.exePath, external);
+  assert.equal(a.rooms.status().available, false);
 });
-test('打开页签只显示找到的程序不保存；版本探测只在点「接通」时做，之后后台启动沿用结果', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-room-probe-')), home = path.join(root, 'mishu');
-  fs.mkdirSync(home); const exe = path.join(home, 'MishuTerminator-2.1.1.exe'); fs.writeFileSync(exe, 'fixture');
-  const shell = component.manifest(path.resolve(__dirname, '../core/company-assistant/room-component/control.json')).shell;
-  let probes = 0;
-  const spawnFn = (file, args, opts) => { probes++; return fakeChild({ exitWith: 0, write: { exe_shell: shell, exe_version: '2.1.1' } })(file, args, opts); };
-  const a = new CompanyAssistant({ dataDir: root, noTimer: true, noTools: true, roomProbe: { spawnFn }, roomSpawn: () => { const c = new EventEmitter(); c.unref = () => {}; return c; } });
-  t.after(() => a.close());
-  const original = component.discover;
-  component.discover = async () => exe;
-  t.after(() => { component.discover = original; });
-  const seen = await a.rooms.discover();
-  assert.equal(seen.available, true); assert.equal(seen.exePath, exe); assert.equal(a.settings().rooms?.exePath || '', '');
-  // Found but not connected by the user: the tool still refuses.
-  assert.equal((await a.rooms.command('start')).needsConnect, true);
-  const live = () => { fs.mkdirSync(path.join(home, 'hub-control'), { recursive: true }); fs.writeFileSync(path.join(home, 'hub-control', 'status.json'), JSON.stringify({ protocol: 1, at: a.now(), running: false })); };
-  const connecting = a.rooms.ensure({ user: true }); setTimeout(live, 50);
-  await connecting;
-  assert.equal(probes, 1); assert.equal(a.settings().rooms.exePath, exe); assert.equal(a.state().roomProbe.exe_version, '2.1.1');
-  fs.rmSync(path.join(home, 'hub-control'), { recursive: true, force: true });
-  const background = a.rooms.ensure(); setTimeout(live, 50);
-  await background;
-  assert.equal(probes, 1, 'background start reuses the recorded probe');
-  // The exe changed on disk: a background start asks the user instead of probing on its own.
-  fs.rmSync(path.join(home, 'hub-control'), { recursive: true, force: true });
-  fs.writeFileSync(exe, 'fixture-updated');
-  await assert.rejects(a.rooms.ensure(), /请先在助理设置/);
-  assert.equal(probes, 1);
+function embeddedRig(t, processes = []) {
+  const { a, root } = rig(t), exe = path.join(root, 'embedded.exe');
+  fs.writeFileSync(exe, 'fixture');
+  const originalPrepare = component.prepareRuntime, originalStage = component.stage;
+  component.prepareRuntime = () => ({ exe, baseline: {} });
+  component.stage = async () => ({ ready: true });
+  t.after(() => { component.prepareRuntime = originalPrepare; component.stage = originalStage; });
+  a.rooms.deps.roomProcesses = async () => processes;
+  let spawned = 0;
+  a.rooms.deps.roomSpawn = (file, args, opts) => {
+    spawned++; assert.equal(file, exe); assert.deepEqual(args, ['--hub-control']);
+    assert.equal(opts.env.MSZ_NO_TRAY, '1'); assert.equal(opts.env.MSZ_HOME, root);
+    const child = new EventEmitter(); child.pid = 4242; child.unref = () => {};
+    fs.mkdirSync(path.join(root, 'hub-control'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'hub-control', 'status.json'), JSON.stringify({ protocol: 1, at: a.now(), running: false }));
+    return child;
+  };
+  return { a, root, exe, spawned: () => spawned };
+}
+test('全新用户直接准备内嵌组件且保持未预约，不需要程序路径或独立版本探测', async t => {
+  const { a, root, exe, spawned } = embeddedRig(t);
+  const ready = await a.rooms.ensure();
+  assert.equal(ready.connected, true); assert.equal(ready.embedded, true);
+  assert.equal(ready.running, false); assert.equal(a.settings().rooms.enabled, false);
+  assert.equal(a.settings().rooms.exePath, exe); assert.equal(spawned(), 1);
+  const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json')));
+  assert.equal(config['系统']['自动检查更新'], false);
+  assert.equal(config['系统']['开机自动启动守护'], false);
+  assert.equal(config['高级']['无界面'], true);
+  assert.equal(config['会后动作']['小鲁班ID'], '');
+  assert.equal(fs.existsSync(path.join(root, 'booking_history.json')), false);
+  await a.rooms.ensure(); assert.equal(spawned(), 1);
+});
+test('外部秘书存活时不启动第二份，不写旧配置，也不把其心跳误作内嵌已接通', async t => {
+  const { a, root, spawned } = embeddedRig(t, [{ ProcessId: 11, ExecutablePath: path.join(os.tmpdir(), 'external-secretary.exe') }]);
+  const before = '{"主题":"保留旧任务","系统":{"自动检查更新":true}}';
+  fs.writeFileSync(path.join(root, 'config.json'), before);
+  fs.mkdirSync(path.join(root, 'hub-control'));
+  fs.writeFileSync(path.join(root, 'hub-control', 'status.json'), JSON.stringify({ protocol: 1, at: a.now(), running: true }));
+  await assert.rejects(a.rooms.ensure(), /未启动第二份抢订/);
+  assert.equal(spawned(), 0); assert.equal(a.rooms.status().connected, false);
+  assert.equal(fs.readFileSync(path.join(root, 'config.json'), 'utf8'), before);
+});
+test('保留旧规则、历史、网页登录资料，仅关闭组件独立自更新/自启并启用后台浏览器', t => {
+  const { root } = rig(t);
+  const config = { 主题: '保留', 优先会议室: ['R1'], 高级: { 浏览器: 'Edge' }, 会后动作: { 模式: '提醒' }, future: 8 };
+  fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
+  fs.writeFileSync(path.join(root, 'booking_history.json'), 'original history');
+  fs.mkdirSync(path.join(root, 'browser_profile')); fs.writeFileSync(path.join(root, 'browser_profile', 'Cookies'), 'login bytes');
+  component.initializeHome(root);
+  const after = JSON.parse(fs.readFileSync(path.join(root, 'config.json')));
+  assert.equal(after.主题, config.主题); assert.deepEqual(after.优先会议室, config.优先会议室);
+  assert.equal(after.future, 8); assert.equal(after.高级.浏览器, 'Edge'); assert.deepEqual(after.会后动作, config.会后动作);
+  assert.equal(fs.readFileSync(path.join(root, 'booking_history.json'), 'utf8'), 'original history');
+  assert.equal(fs.readFileSync(path.join(root, 'browser_profile', 'Cookies'), 'utf8'), 'login bytes');
+});
+test('公司打包前置校验在运行时缺失或哈希错误时硬失败', t => {
+  const { root } = rig(t), { stageRuntime } = require('../core/company-assistant/room-component/build-runtime');
+  const dir = path.join(root, 'core/company-assistant/room-component'); fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(path.resolve(__dirname, '../core/company-assistant/room-component/baseline.json'), path.join(dir, 'baseline.json'));
+  assert.throws(() => stageRuntime({ appDir: root, source: '' }), /安装包必须自带/);
+  const wrong = path.join(root, 'wrong.exe'); fs.writeFileSync(wrong, 'wrong');
+  assert.throws(() => stageRuntime({ appDir: root, source: wrong }), /签名清单不符/);
 });
 test('会议室结果卡片按开始时间与时长显示「10-27（周二）14:00–16:00 · 会议室」，字段不全原样显示', t => {
   assert.equal(slotText({ 日期: '2026-10-27', 时间: '14:00 起 2h0m', 会议室: '练秋湖F12-3-13R' }), '10-27（周二）14:00–16:00 · 练秋湖F12-3-13R');

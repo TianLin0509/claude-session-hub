@@ -44,11 +44,11 @@ test('会话列表：单聊 group_id 是 "0" 也认成单聊，名字取对方�
   assert.deepEqual(list.map(c => [c.id, c.group, c.name]), [['t60000000', false, '同事甲'], ['123', true, '项目群']]);
 });
 
-test('默认取全部：会话列表带 --count 50；所有单聊和群都取，大群往回翻页取完回看时间内的消息，超出 36 小时的不要；手机专用群不进简报', async () => {
+test('默认查询100个最近会话：私聊和群逐个翻页，超出36小时的不要；手机专用群不进简报', async () => {
   const r = rig({ pad: 8 }); // 垫 8 个空的旧单聊，部门大群和同事丁排到第 12、13 名：不带 --count 就漏掉
   r.svc.setSettings({ phone: { groupId: 'g-phone', enabled: false } });
   const snap = await r.svc.refresh({ force: true });
-  assert.ok(r.calls().some(a => a[1] === 'query-recent-conversation' && a.join(' ').includes('--count 50')), '不带 --count 只给 10 个');
+  assert.ok(r.calls().some(a => a[1] === 'query-recent-conversation' && a.join(' ').includes('--count 100')), 'Q07实测可列100个，默认10个不足以覆盖');
   assert.equal(snap.conversations.length, 13);
   assert.deepEqual(Object.keys(snap.messages).sort(), ['colleague_a', 'colleague_d', 'g-100', 'g-200'], '列表第 10 名以后的会话也取到了；专用群除外');
   assert.equal(snap.messages['g-200'].length, 140, '150 条里最早 10 条在 40 小时前，不要');
@@ -76,7 +76,7 @@ test('设置：限个数按会话列表顺序取最近的；回看时间调长�
   let snap = await r.svc.refresh({ force: true });
   assert.deepEqual(Object.keys(snap.messages), ['colleague_a', 'g-100'], '只取最近 2 个');
   assert.equal(snap.scope.limited, true);
-  assert.equal(r.svc.setSettings({ maxConversations: 500 }).maxConversations, 50, '超过 welink-cli 能列的 50 个按 50 算');
+  assert.equal(r.svc.setSettings({ maxConversations: 500 }).maxConversations, 100, '数量设置不超过当前验证的100个范围');
   r.svc.setSettings({ maxConversations: 0, lookbackHours: 24 });
   snap = await r.svc.refresh({ force: true });
   const short = snap.messages['g-200'].length;
@@ -94,7 +94,7 @@ test('简报：「群里和你相关」自动挑 @ 我的群；提问里先列�
   const list = B.fallbackBrief(snap, { day, now: Date.now(), settings: s });
   const groups = list.sections.find(x => x.key === 'groups');
   assert.equal(groups.title, '群里和你相关');
-  assert.match(groups.items[0].text, /^部门大群：36 小时内 140 条，@你 1 次/);
+  assert.ok(groups.items.some(x => /^部门大群：36 小时内 140 条，@你 1 次/.test(x.text)), '群摘要保留，同时逐条保留@所有人');
   assert.ok(list.sections.find(x => x.key === 'awaiting').items.some(i => /周报模板/.test(i.text)), '群里 @ 我、我没回：算等你回复');
   const prompt = B.briefPrompt(snap, { day, now: Date.now(), settings: s });
   assert.match(prompt, /@我/);
@@ -106,7 +106,8 @@ test('简报：「群里和你相关」自动挑 @ 我的群；提问里先列�
   const picked = B.inlineMessages(big, { now: Date.now(), settings: { ...s, day } });
   assert.ok(picked.omitted > 0 && picked.lines.join('\n').length <= B.INLINE_CHARS + 400);
   assert.ok(picked.lines.some(l => l.includes('周报模板')));
-  assert.match(B.briefPrompt(big, { day, now: Date.now(), settings: s }), new RegExp(`另有 ${picked.omitted} 条群消息没有列出.*data/brief-input-${day}\\.md`));
+  const bigPrompt = B.briefPrompt(big, { day, now: Date.now(), settings: s });
+  assert.ok(bigPrompt.includes(String(picked.omitted)) && bigPrompt.includes(`data/brief-input-${day}.md`), '省略计数与全文入口均保留，明确私聊也可能超出预算');
   const file = B.briefInputFile(big, { day, now: Date.now(), settings: s });
   assert.equal((file.match(/^\[msg:/gm) || []).length, picked.total, '文件里是全部消息');
   await r.svc.generateBrief({ force: true });
