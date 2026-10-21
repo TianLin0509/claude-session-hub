@@ -70,10 +70,11 @@ function mountWritingComposer({ host, h, ipcRenderer, value = '', placeholder, l
 // 成员卡与「新建 AI 群聊」同一套：样式用 meeting-create-modal.css 的 .mcm-*，模型、思考强度、速度
 // 都按 WorkspaceController.resolveSessionTuning 算（2026-10-13 田哥：写作 Tab 的成员区和默认配置参考群聊，保持一致）。
 // 新建入口里 DeepSeek 一律跑 Claude Code（deepseek-claude，默认 V4.1 Flash）；旧 Codex / 原生 Harness 接入
-// 只留给历史会话恢复，本机存过的旧 DeepSeek 成员在这里换过来。Antigravity 还没接写作入口，不提供。
+// 只留给历史会话恢复，本机存过的旧 DeepSeek 成员在这里换过来。
+// 2026-10-22 田哥要求：写作成员与建群弹窗用同一份清单，群里能加的 AI 写作台都能加（包括 Antigravity）。
 const deepseekProfile = require('../core/deepseek-claude-profile');
 const LEGACY_DEEPSEEK_KINDS = new Set(['deepseek', 'deepseek-acp']);
-const WRITING_MEMBER_KINDS = GROUP_MEMBER_KINDS.filter(kind => !['gemini', 'deepseek-acp', 'chatgpt'].includes(kind));
+const WRITING_MEMBER_KINDS = GROUP_MEMBER_KINDS.filter(kind => !LEGACY_DEEPSEEK_KINDS.has(kind));
 const MEMBER_FIELDS = ['model', 'effort', 'codexSpeedTier', 'fastMode', 'deepseekRoute'];
 
 function normalizeWritingMember(member = {}) {
@@ -181,4 +182,4 @@ function mountWritingMembers({ host, h, members: input, onChange, disabled = fal
   if (JSON.stringify(members) !== JSON.stringify(input)) save();
   return { redraw: () => { if (host.isConnected) draw(); } };
 }
-module.exports = { mountWritingComposer, mountWritingMembers, normalizeWritingMember, writingMemberSlots };
+module.exports = { mountWritingComposer, mountWritingMembers, normalizeWritingMember, writingMemberSlots, WRITING_MEMBER_KINDS };

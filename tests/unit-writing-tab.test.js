@@ -239,6 +239,41 @@ test('成员参数：写作群成员标 purpose=writing；不带编程上下文�
   assert.ok(!('appendSystemPromptFile' in c) && !('systemPromptFile' in c), '不给文章目录就不接文风包');
 });
 
+test('Antigravity 写作成员：换成空的用户目录，不带个人规则与技能；登录走 keyring 不受影响', () => {
+  const dataDir = tmp('hub-data');
+  const saved = process.env.CLAUDE_HUB_DATA_DIR;
+  process.env.CLAUDE_HUB_DATA_DIR = dataDir;
+  try {
+    const g = withWritingMemberOpts('gemini', { model: 'gemini-3.1-pro-high', extraEnv: { KEEP: '1' } });
+    assert.strictEqual(g.purpose, 'writing');
+    assert.strictEqual(g.mcpProfile, 'none');
+    assert.strictEqual(g.extraEnv.KEEP, '1', '群里已有环境变量不丢');
+    assert.strictEqual(g.extraEnv.USERPROFILE, g.extraEnv.HOME, 'agy 按 USERPROFILE 找全局指令，HOME 一并指过去');
+    assert.ok(path.resolve(g.extraEnv.USERPROFILE).startsWith(path.resolve(dataDir)), '用户目录落在 Hub 的写作专用目录');
+    assert.ok(fs.existsSync(path.join(g.extraEnv.USERPROFILE, '.gemini', 'antigravity-cli')), 'agy 能在这里装 hook、写会话记录');
+    assert.ok(!fs.existsSync(path.join(g.extraEnv.USERPROFILE, '.gemini', 'GEMINI.md')), '不带田哥的个人协作约定');
+    assert.ok(!fs.existsSync(path.join(g.extraEnv.USERPROFILE, '.gemini', 'skills')), '不带全局技能');
+    assert.ok(!('systemPromptFile' in g) && !('codexInstructionFile' in g), 'agy 不认这两类参数：写作须知走文章目录的 AGENTS.md');
+    assert.strictEqual(withWritingMemberOpts('gemini-resume', {}).extraEnv.USERPROFILE, g.extraEnv.USERPROFILE, '唤醒走的也是同一个目录');
+    // 写作须知照旧写进文章目录：agy 按工作目录加载 AGENTS.md
+    const voiceDir = tmp('agy-voice');
+    fs.writeFileSync(path.join(voiceDir, 'SKILL.md'), '# 文风\n\n一句话画像：写给人看。\n');
+    const savedEnv = { ...process.env };
+    Object.assign(process.env, { CLAUDE_HUB_WRITING_ROOT: tmp('agy-writing-root'), CLAUDE_HUB_VOICE_DIR: voiceDir, CLAUDE_HUB_WRITING_SKILLS_DIR: tmp('agy-skills') });
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-writing-agy-article-'));
+      withWritingMemberOpts('gemini', {}, { dir });
+      assert.ok(fs.existsSync(path.join(dir, 'AGENTS.md')), '文章目录仍有写作须知（agy 按工作目录加载）');
+    } finally {
+      for (const k of ['CLAUDE_HUB_WRITING_ROOT', 'CLAUDE_HUB_VOICE_DIR', 'CLAUDE_HUB_WRITING_SKILLS_DIR']) {
+        if (savedEnv[k] == null) delete process.env[k]; else process.env[k] = savedEnv[k];
+      }
+    }
+  } finally {
+    if (saved == null) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = saved;
+  }
+});
+
 test('写作须知：启动写作成员时写成文章目录的 AGENTS.md，作为 Claude 与 Codex 唯一的基础指令', () => {
   const p = fixturePaths();
   fs.writeFileSync(p.draftGuide, '# 起草\n\n从读者的处境起笔。\n');
