@@ -165,11 +165,16 @@ test('增量更新：替换脚本拿到的是干净环境（真跑一遍，新�
   const payload = path.join(root, 'u.gz'); packPayload(res, payload);
   const dump = path.join(root, 'dump.js'), out = path.join(root, 'child-env.json');
   fs.writeFileSync(dump, `require('fs').writeFileSync(process.argv[2], JSON.stringify({ cwd: process.cwd(), env: process.env }));`);
+  // 被拉起的替身用 Electron 本体（ELECTRON_RUN_AS_NODE 跑 dump.js）：真 Hub 是图形界面程序，不建控制台。
+  // 用 node.exe 当替身时，它是控制台程序，替换脚本这条脱离父进程的链上要新建控制台；2026-10-21 本机实测 10 次里 8 次卡在建控制台（线程等 LpcReply、没有 conhost），
+  // 换成 Electron 6/6 正常。没装 Electron 时退回 node.exe。
+  const electronExe = path.join(__dirname, '..', 'node_modules', 'electron', 'dist', 'electron.exe');
+  const standIn = fs.existsSync(electronExe) ? electronExe : process.execPath;
   const staged = stageIncremental({ dataDir: path.join(root, 'data'), payloadFile: payload, resourcesDir: installed, version: '1.0.1', from: '1.0.0',
-    exe: process.execPath, args: [dump, out], pid: 0, relaunch: true });
+    exe: standIn, args: [dump, out], pid: 0, relaunch: true });
   const launch = L.prepareHubLaunch({ env: { ...process.env, CODEAGENT_HUB_X: '1', CLAUDE_HUB_SESSION_ID: 's', CODEAGENT3_CONFIG_DIR: 'C:\\pool\\acc1' },
     decide: () => decision('in-pool'), currentCwd: () => __dirname });
-  launchHelper(staged.paths, { env: launch.env });
+  launchHelper(staged.paths, { env: standIn === process.execPath ? launch.env : { ...launch.env, ELECTRON_RUN_AS_NODE: '1' } });
   for (let i = 0; i < 300 && !fs.existsSync(out); i++) await new Promise(r => setTimeout(r, 200));
   await new Promise(r => setTimeout(r, 300));
   const got = JSON.parse(fs.readFileSync(out, 'utf8'));

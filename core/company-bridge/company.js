@@ -1023,16 +1023,34 @@ class CompanyBridge {
       if (!prev || idleSince > prev.idleSince) bySession.set(t.sessionId, { sessionId: t.sessionId, threadId: t.id, idleSince, askerActive: askerFresh.has(t.id) });
     }
     // 有人在这个会话的终端里直接打过字（田哥自己接着用），从那时算起：看实际活动，不只看回执时间。
-    const candidates = [...bySession.values()].filter(c => c && this.deps.getSession(c.sessionId) && !this.sessionBusy(c.sessionId))
-      .map(c => ({ ...c, idleSince: Math.max(c.idleSince, Number(this.deps.sessionInputAt?.(c.sessionId)) || 0) }));
-    const memory = this.deps.memory ? this.deps.memory() : care.memoryNow();
     const mem = this.sessionMemEstimate(); // 和并行上限同一个估计
+    // 每个候选带上自己进程树的实测字节数（最近一次测量，测不到就不带）：膨胀规则和「收一个腾出多少」按它算。
+    // 只认答完之后测的：休眠前测到的旧值不能套在恢复后的新进程上（恢复后只有一批插件）。
+    const measured = mem.byId && typeof mem.byId === 'object' ? mem.byId : {};
+    const measuredAt = Number(mem.at) || 0;
+    const candidates = [...bySession.values()].filter(c => c && this.deps.getSession(c.sessionId) && !this.sessionBusy(c.sessionId))
+      .map(c => {
+        const bytes = Number(measured[c.sessionId]);
+        const idleSince = Math.max(c.idleSince, Number(this.deps.sessionInputAt?.(c.sessionId)) || 0);
+        return { ...c, idleSince, ...(Number.isFinite(bytes) && bytes > 0 && measuredAt >= idleSince ? { bytes } : {}) };
+      });
+    const memory = this.deps.memory ? this.deps.memory() : care.memoryNow();
+    const plan = care.planRelease({ candidates, keepWarmMs: keep.ms, now: this.now(), memory, sessionBytes: mem.bytes });
+    const planned = new Map(plan.map(p => [p.sessionId, p.rule]));
+    const gb = b => Math.round(b / (1024 ** 3) * 10) / 10;
     this.careState = { keepWarmMinutes: Math.round(keep.ms / 60000), samples: keep.samples, learned: keep.learned,
-      freePercent: Math.round(memory.ratio * 100), warm: candidates.length, at: this.now(), ...care.sessionMemView(mem) };
-    for (const p of care.planRelease({ candidates, keepWarmMs: keep.ms, now: this.now(), memory, sessionBytes: mem.bytes })) {
+      freePercent: Math.round(memory.ratio * 100), warm: candidates.length, at: this.now(), ...care.sessionMemView(mem),
+      bloatGB: gb(care.BLOAT_BYTES), bloatIdleMinutes: Math.round(care.BLOAT_MIN_IDLE_MS / 60000),
+      // --diag hub 里看每个保温会话：实测多少 GB、空闲几分钟、这一轮按哪条规则收（没收为 null）
+      sessions: candidates.map(c => ({ threadId: c.threadId, session: String(c.sessionId).slice(0, 8), gb: Number.isFinite(c.bytes) ? gb(c.bytes) : null,
+        idleMinutes: Math.round((this.now() - c.idleSince) / 60000), release: planned.get(c.sessionId) || null })),
+      bloatSuspended: (this.careState?.bloatSuspended || []).slice(-9) };
+    for (const p of plan) {
       let result;
-      try { result = this.deps.suspendSession(p.sessionId, { reason: 'company-bridge-idle', minIdleMs: 60000, excludePinned: true, excludeFocused: true, excludeMeeting: true }); }
+      const reason = p.rule === 'bloat' ? 'company-bridge-bloat' : 'company-bridge-idle';
+      try { result = this.deps.suspendSession(p.sessionId, { reason, minIdleMs: 60000, excludePinned: true, excludeFocused: true, excludeMeeting: true }); }
       catch (error) { result = { ok: false, message: error.message }; }
+      if (p.rule === 'bloat') this.careState.bloatSuspended.push({ threadId: p.threadId, session: String(p.sessionId).slice(0, 8), gb: gb(p.bytes), ok: !!result?.ok, at: this.now() });
       this.careLog(`${result?.ok ? 'suspend' : 'skip'} ${p.threadId} session=${String(p.sessionId).slice(0, 8)} ${p.reason}${result?.ok ? '' : '；跳过：' + (result?.message || result?.error || '未知')}`);
     }
     this.suspendRehomed(all, bySession);
