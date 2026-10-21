@@ -207,20 +207,31 @@ test('给模型的会议快照不暴露原始时间戳，但内部快照不改�
   assert.equal(output.meetings[0].start, undefined); assert.equal(output.meetings[0].timeEvidence, undefined);
   assert.match(output.meetings[0].startDisplay, /10:00/); assert.equal(snap.meetings[0].start, NOW);
 });
-test('真实取数器：历史已知第60个群仍补查；250条私聊翻3页；二次只增量且不虚报目录完整', async t => {
+test('真实取数器：历史群不漏；250条私聊及多页增量完整，整页末尾继续探空且不虚报目录完整', async t => {
   const base = rig(t), svc = new CompanyAssistant({ dataDir: base.dir, noTimer: true, noTools: true, now: () => NOW });
   t.after(() => svc.close());
   const catalog = Array.from({ length: 80 }, (_, i) => ({ id: i === 0 ? 'p0' : `g${i}`, name: `会话${i}`, group: i !== 0, seenAt: NOW - 3600000 }));
   svc.write('conversation-catalog.json', { identity: 'owner-a', conversations: catalog });
   let history = 0;
-  const rows = Array.from({ length: 250 }, (_, i) => ({ msgId: String(99000000000000000n + BigInt(i)), sender: 'colleague', content: `全文${i}`, serverSendTime: NOW - 250000 + i * 100, contentType: 'TEXT_MSG' }));
+  const historyPages = [];
+  const messageAt = i => ({ msgId: String(99000000000000000n + BigInt(i)), sender: 'colleague', content: `全文${i}`, serverSendTime: NOW - 250000 + i * 100, contentType: 'TEXT_MSG' });
+  const rows = Array.from({ length: 250 }, (_, i) => messageAt(i));
   svc.welink = async args => {
     const json = data => ({ code: 0, stdout: JSON.stringify(data), stderr: '' });
     if (args[0] === 'auth') return { code: 0, stdout: 'UID: owner-a\nToken: VALID', stderr: '' };
     if (args[1] === 'query-recent-conversation') return json({ conversation_info: catalog.slice(0, 50).map(c => c.group ? { group_id: c.id, group_name: c.name, recent_conversation_type: 'CHAT_TYPE_GROUP_MSG' } : { target_account: c.id, native_name: c.name, group_id: '0', recent_conversation_type: 'CHAT_TYPE_P2P_MSG' }) });
     if (args[1] === 'query-history-message') {
       const target = args[3], at = name => args.includes(name) ? args[args.indexOf(name) + 1] : null, cursor = at('--message-id');
-      if (target === 'p0') { history += 1; return json({ chatInfo: rows.filter(x => !cursor || (at('--query-direction') === '1' ? BigInt(x.msgId) > BigInt(cursor) : BigInt(x.msgId) < BigInt(cursor))).slice(-100) }); }
+      if (target === 'p0') {
+        history += 1;
+        const newer = at('--query-direction') === '1', count = Number(at('--query-count'));
+        const available = rows.filter(x => !cursor || (newer ? BigInt(x.msgId) > BigInt(cursor) : BigInt(x.msgId) < BigInt(cursor)));
+        // Q-1021-08 第7轮：向新应取紧接游标的邻近页；一直取最新页会跳过中间记录。
+        // 公司证据是每页1条的局部样本；这里以合成消息扩展验证100条页和多页缓存合并。
+        const page = newer ? available.slice(0, count) : available.slice(-count);
+        historyPages.push({ cursor, direction: at('--query-direction'), count: page.length });
+        return json({ resultCode: '0', respData: { chatInfo: page, msgTotalCount: page.length } });
+      }
       if (target === 'g60') return json({ chatInfo: cursor ? [] : [{ msgId: '99000000010000000', sender: 'colleague', content: '请核实此事', serverSendTime: NOW - 1000, atself: true }] });
       return json({ chatInfo: [] });
     }
@@ -231,6 +242,26 @@ test('真实取数器：历史已知第60个群仍补查；250条私聊翻3页�
   assert.equal(first.total, 251); assert.match(first.text, /可能不全/); assert.match(first.text, /80 个会话/); assert.equal(history, 3);
   const stored = svc.query.load(first.queryId); assert.ok(stored.items.some(x => x.conv === 'g60' && x.atMe));
   const second = await svc.query.inbox({}); assert.equal(second.total, 251); assert.equal(history, 4, '第二次从缓存最新游标增量补拉一页');
+
+  rows.push(...Array.from({ length: 250 }, (_, i) => messageAt(250 + i)));
+  const third = await svc.query.inbox({});
+  assert.equal(third.total, 501, '保留250条旧私聊，并取全新增250条与历史群提及');
+  assert.equal(history, 7, '250条更新应连续翻3页，而不是只拿最新100条');
+  assert.deepEqual(historyPages.slice(4).map(x => [x.direction, x.count]), [['1', 100], ['1', 100], ['1', 50]]);
+  const added = svc.query.load(third.queryId);
+  assert.deepEqual(added.items.filter(x => x.conv === 'p0').map(x => x.key), rows.map(x => x.msgId), '中间各页的消息ID逐条齐全，大整数不合并或舍入');
+  assert.equal(new Set(added.items.map(x => x.sourceId)).size, 501, '跨刷新不产生重复出处');
+  assert.match(third.text, /可能不全/, '已知会话取全也不能把最近会话目录说成完整');
+
+  rows.push(...Array.from({ length: 200 }, (_, i) => messageAt(500 + i)));
+  const fourth = await svc.query.inbox({});
+  assert.equal(fourth.total, 701);
+  assert.equal(history, 10, '恰好两整页的新消息之后再查空页，才结束这次增量');
+  assert.deepEqual(historyPages.slice(7).map(x => [x.direction, x.count]), [['1', 100], ['1', 100], ['1', 0]]);
+  const complete = svc.query.load(fourth.queryId);
+  assert.deepEqual(complete.items.filter(x => x.conv === 'p0').map(x => x.key), rows.map(x => x.msgId));
+  assert.equal(new Set(complete.items.map(x => x.sourceId)).size, 701);
+  assert.equal(svc.query.load(first.queryId).items.length, 251, '早先的查询快照保持不变');
 });
 
 test('最近会话请求100个：首次使用没有历史目录也能发现第60个群提及', async t => {
