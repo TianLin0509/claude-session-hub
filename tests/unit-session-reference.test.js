@@ -167,6 +167,7 @@ async function main() {
       { seq: 1, role: 'user', origin: 'user', content: '比较两种调度算法', createdAt: 1 },
       { seq: 2, role: 'assistant', sid: 'm1', speaker: 'Codex 1', content: '进度：在读代码', status: 'progress_update', createdAt: 2 },
       { seq: 3, role: 'assistant', sid: 'm1', speaker: 'Codex 1', content: 'PF 更公平，RR 更简单。', createdAt: 3 },
+      { seq: 4, role: 'assistant', sid: 'm2', speaker: 'Gemini', content: '另一位成员的回答', createdAt: 4 },
     ]);
     writeState('g-empty', [{ seq: 1, role: 'user', origin: 'hub', dispatch: {}, content: '派工卡片', createdAt: 1 }]);
     const legacyMd = path.join(groupTmp, 'legacy.md');
@@ -181,7 +182,10 @@ async function main() {
         },
       },
       getSearchSnapshot: () => ({
-        sessions: [{ hubId: 'a', kind: 'codex', title: 'A', lastMessageTime: 10 }],
+        sessions: [{ hubId: 'a', kind: 'codex', title: 'A', lastMessageTime: 10 },
+          { hubId: 'm1', kind: 'codex', title: 'Codex · 投委会', meetingId: 'g1' },
+          { hubId: 'm2', kind: 'gemini', title: 'Gemini · 投委会', meetingId: 'g1' },
+          { hubId: 'm3', kind: 'claude', title: 'Claude · 投委会', meetingId: 'g1' }],
         meetings: [{ id: 'g1', title: '投委会', subSessions: ['a'], lastMessageTime: 20 }, { id: 'g-here', title: '本群' }],
       }),
       getMeeting: id => (id === 'g1' ? { title: '投委会' } : null),
@@ -191,7 +195,7 @@ async function main() {
       logger: quietLogger,
     });
     const groupList = await groupIpc.handlers.get('session-reference:list')(null, { excludeMeetingId: 'g-here' });
-    assert.deepStrictEqual(groupList.map(r => r.id), ['meeting:g1', 'a']);
+    assert.deepStrictEqual(groupList.map(r => r.id), ['meeting:g1', 'a', 'm1', 'm2', 'm3']);
     const groupResolve = groupIpc.handlers.get('session-reference:resolve');
 
     // 有群聊状态：现场生成到 transcripts 目录（Claude 已对该目录 --add-dir），内容是正式发言
@@ -203,6 +207,18 @@ async function main() {
     assert.ok(md.includes('比较两种调度算法') && md.includes('PF 更公平，RR 更简单。'));
     assert.ok(!md.includes('进度：在读代码'), 'progress updates are not part of the record');
     assert.deepStrictEqual(lookups, [], 'group state is authoritative; search index is not consulted');
+
+    for (const [id, answer, excluded] of [['m1', 'PF 更公平', '另一位成员的回答'], ['m2', '另一位成员的回答', 'PF 更公平']]) {
+      const member = await groupResolve(null, { sessionId: id });
+      assert.equal(member.ok, true);
+      assert.notEqual(member.path, resolved.path, 'member export must not overwrite whole group');
+      const memberMd = fs.readFileSync(member.path, 'utf8');
+      assert.ok(memberMd.includes('比较两种调度算法') && memberMd.includes(answer));
+      assert.ok(!memberMd.includes(excluded) && !memberMd.includes('进度：在读代码'));
+      assert.ok(memberMd.includes(`- Hub 会话：${id}`));
+    }
+    assert.equal((await groupResolve(null, { sessionId: 'm3' })).error, 'transcript-missing');
+    assert.deepEqual(lookups, [], 'member reference does not need search index or native CLI');
 
     // 状态更新后再次引用：拿到的是新内容
     writeState('g1', [
