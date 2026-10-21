@@ -1655,7 +1655,22 @@ class SessionManager extends EventEmitter {
       const target = codeagentPool ? codeAgentRouteModel(opts) || codeagentPool.model
           || pool.strictDefaultModel(pool.readSettingsModel(codeagentPool.account.dir), codeagentPool.account.models, { authoritative: !!codeagentPool.account.modelsAuthoritative }).model || ''
         : codeAgentExpectedModel({}, { configDir: codeagentConfig.configDir, single: true });
-      opts = { ...opts, model: target || undefined, codeagentModelPick: !!target, codeagentAccountModel: target || undefined };
+      // 不需要或暂时不该开菜单时直接发问题（2026-10-21 同事公司 Hub：自动选模型 13 次全失败、每次都耽误发问题）：
+      // 号池号默认就是目标且家里没指定、恢复的会话上一轮就是目标模型作答、这个号连续 3 次没选成（4 小时熔断）。见 core/codeagent-auto-pick.js。
+      let skip = null;
+      try {
+        skip = require('./codeagent-auto-pick').skipReason({ dataDir: getHubDataDir(), account: codeagentPool ? codeagentPool.account.id : 'personal',
+          isPool: !!codeagentPool, target, routeModel: codeAgentRouteModel(opts), freshLaunch, actualModel: opts.codeagentActualModel || '',
+          writtenModel: codeagentPool ? pool.readSettingsModel(codeagentPool.account.dir) : '' });
+      } catch (error) { console.warn('[codeagent] 自动选模型的跳过判断出错，照常选：' + error.message); }
+      if (skip) {
+        try { require('./codeagent-models').appendModelLog(getHubDataDir(), { event: 'pick-skipped', session: String(id).slice(0, 8),
+          // 日志会随诊断发回家里：号用代称（号1、号2……），不写号主信息
+          account: require('./codeagent-default-model-guard').accountOf({ codeagentPoolAccount: codeagentPool ? codeagentPool.account.id : undefined }, getHubDataDir()).alias.replace(/\s+/g, ''), purpose: opts.purpose, model: target, reason: skip.reason, note: skip.note }); } catch { /* 只是日志 */ }
+        console.log(`[codeagent] ${String(id).slice(0, 8)} 不开模型菜单（${skip.reason}）：${skip.note}`);
+      }
+      opts = skip ? { ...opts, model: undefined, codeagentModelPick: false, codeagentAccountModel: undefined }
+        : { ...opts, model: target || undefined, codeagentModelPick: !!target, codeagentAccountModel: target || undefined };
     }
 
     if (isClaude) {
