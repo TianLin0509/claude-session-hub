@@ -15,12 +15,21 @@ else if (group === 'meeting' && sub === 'query-list') {
   const required = ['--page', '--size', '--meeting-start-time', '--meeting-end-time', '--type', '--meeting-sort'];
   if (required.some(k => !arg(k))) { process.stderr.write('required meeting query parameter missing'); process.exitCode = 106; }
   else {
-    const page = Number(arg('--page')), size = Number(arg('--size'));
-    if (!Number.isInteger(size) || size < 1 || size > 30) out({ code: '400', message: { message: 'BAD_REQUEST', details: 'synthetic: meeting size must be between 1 and 30' } });
+    const page = Number(arg('--page')), size = Number(arg('--size')), type = arg('--type');
+    const start = Number(arg('--meeting-start-time')), end = Number(arg('--meeting-end-time'));
+    if (!Number.isInteger(page) || page < 1 || !Number.isInteger(size) || size < 1 || size > 30
+      || !Number.isFinite(start) || !Number.isFinite(end) || end < start || !['1', '2'].includes(type)) {
+      out({ code: '400', message: { message: 'BAD_REQUEST', details: 'synthetic: valid range/page, size 1..30 and type 1/2 are required' } });
+    }
     else {
-      const all = [{ meetingId: 'utc-review', subject: '跨区评审', location: '会议室甲', meetingStartTime: seed.day + 'T09:00:00Z', meetingEndTime: seed.day + 'T10:00:00Z', meetingUsers: [] }];
-      const selected = all.filter(m => Date.parse(m.meetingStartTime) >= Number(arg('--meeting-start-time')) && Date.parse(m.meetingStartTime) <= Number(arg('--meeting-end-time')));
-      out({ code: 200, data: { data: selected.slice((page - 1) * size, page * size), page, size, total: selected.length } });
+      const byType = {
+        '1': [{ meetingId: 'utc-review', subject: '跨区评审', location: '会议室甲', meetingStartTime: seed.day + 'T09:00:00Z', meetingEndTime: seed.day + 'T10:00:00Z', meetingUsers: [] }],
+        '2': [{ meetingId: 'ended-morning', subject: '上午复盘（已结束）', location: '会议室乙', meetingStartTime: seed.day + 'T09:00:00+08:00', meetingEndTime: seed.day + 'T10:00:00+08:00', meetingUsers: [] }],
+      };
+      const selected = byType[type].filter(m => Date.parse(m.meetingStartTime) >= start && Date.parse(m.meetingStartTime) <= end);
+      const rows = selected.slice((page - 1) * size, page * size);
+      // Q09: an empty result omits data.data and reports total=0; pages with rows keep the full count.
+      out({ code: 200, data: { ...(rows.length ? { data: rows } : {}), page, size, total: rows.length ? selected.length : 0 }, description: 'success', timestamp: Date.now() });
     }
   }
 } else if (group === 'calendar' && sub === 'list') {

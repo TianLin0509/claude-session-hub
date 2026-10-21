@@ -83,6 +83,75 @@ test('会议逐条保留来源，范围明确为待参加，跨源总数按记�
   assert.match(result.text, /2 条记录：WeLink 1 条、Exchange 1 条/);
   assert.doesNotMatch(result.text, /该类型能覆盖哪些会议仍待核实/);
 });
+test('真实会议MCP取数链同时查询待参加和已结束，逐条来源准确；已结束失败时公开缺口', async t => {
+  const base = rig(t), svc = new CompanyAssistant({ dataDir: base.dir, noTimer: true, noTools: true, now: () => NOW });
+  t.after(() => svc.close());
+  let failEnded = false;
+  const types = [];
+  svc.welink = async args => {
+    const json = body => ({ code: 0, stdout: JSON.stringify(body), stderr: '' });
+    if (args[0] === 'auth') return { code: 0, stdout: 'UID: owner-a\nToken: VALID', stderr: '' };
+    if (args[0] === 'calendar') return json([]);
+    if (args[0] === 'meeting') {
+      const type = args[args.indexOf('--type') + 1]; types.push(type);
+      if (type === '2' && failEnded) return { code: 1, stdout: '', stderr: '合成已结束查询故障' };
+      const ended = type === '2';
+      return json({ code: 200, data: { total: 1, data: [{ meetingId: ended ? 'past' : 'future', subject: ended ? '上午复盘' : '下午评审',
+        meetingStartTime: `2026-10-21T${ended ? '08' : '17'}:00:00+08:00`, meetingEndTime: `2026-10-21T${ended ? '09' : '18'}:00:00+08:00` }] } });
+    }
+    throw new Error('未预期命令：' + args.slice(0, 2).join(' '));
+  };
+  const result = await svc.query.meetings({ date: '今天' });
+  assert.deepEqual(types, ['1', '2']);
+  assert.equal(result.total, 2);
+  assert.match(result.text, /当前只查询待参加及已结束会议（类型 1、2）/);
+  assert.match(result.text.split('\n').find(x => x.includes(' · 上午复盘 · ')), /08:00.*09:00.*WeLink 已结束会议/);
+  assert.match(result.text.split('\n').find(x => x.includes(' · 下午评审 · ')), /17:00.*18:00.*WeLink 待参加会议/);
+  assert.equal(svc.query.load(result.queryId).coverage.meeting.byType['2'].status, 'complete');
+  failEnded = true;
+  const partial = await svc.query.meetings({ date: '今天' });
+  assert.equal(partial.total, 1);
+  assert.match(partial.text, /WeLink 会议：未取全/);
+  assert.match(partial.text, /已结束：会议查询失败/);
+  assert.match(partial.text, /合成已结束查询故障/);
+  assert.equal(svc.query.load(partial.queryId).coverage.meeting.byType['2'].status, 'failed');
+});
+test('两类会议都返回未知结构时，日常简报仍收到具体取数失败原因', async t => {
+  const base = rig(t), svc = new CompanyAssistant({ dataDir: base.dir, noTimer: true, noTools: true, now: () => NOW });
+  t.after(() => svc.close());
+  svc.setSettings({ email: 'fixture@example.com' });
+  svc.welink = async args => {
+    const json = body => ({ code: 0, stdout: JSON.stringify(body), stderr: '' });
+    if (args[0] === 'auth') return { code: 0, stdout: 'UID: owner-a\nToken: VALID', stderr: '' };
+    if (args[0] === 'meeting') return json({ code: 200, data: { total: 0, unknown: [] } });
+    if (args[0] === 'calendar') return json([]);
+    if (args[0] === 'mail') return json({ mails: [] });
+    if (args[1] === 'query-recent-conversation') return json({ error: { error_code: 'IM.0000' }, conversation_info: [] });
+    throw new Error('未预期命令：' + args.slice(0, 2).join(' '));
+  };
+  const snap = await svc.collect();
+  assert.equal(snap.meetingCoverage.status, 'failed');
+  assert.equal(snap.meetingCoverage.byType['1'].reason, 'invalid-shape');
+  assert.equal(snap.meetingCoverage.byType['2'].reason, 'invalid-shape');
+  const reason = snap.errors.find(x => x.label === '会议')?.text;
+  assert.match(reason || '', /待参加：会议返回结构.*已结束：会议返回结构/);
+  const prompt = require('../core/company-assistant/brief').briefPrompt(snap, { day: D.dayKey(NOW), now: NOW });
+  assert.match(prompt, /查询有 1 项失败或不完整/);
+  assert.ok(prompt.includes(reason));
+});
+test('同日复用已收到v6说明的助理会话时，下一问收到待参加及已结束的新说明', async t => {
+  const base = rig(t), sent = [];
+  const svc = new CompanyAssistant({ dataDir: base.dir, noTimer: true, noTools: true, now: () => NOW,
+    sendPrompt: async (id, prompt) => { sent.push({ id, prompt }); return { ok: true }; } });
+  t.after(() => svc.close());
+  svc.ensureSession = async () => 'existing'; svc.sessionBusy = () => false; svc.lastFinal = () => null;
+  svc.saveState({ sessionId: 'existing', primed: 'existing', instructionsVersion: 6, instructionsDay: D.dayKey(NOW) });
+  svc.queue.push({ id: 'upgrade-query', type: 'brief', prompt: '今天有哪些会议' });
+  await svc.pump();
+  assert.equal(sent.length, 1); assert.equal(sent[0].id, 'existing');
+  assert.match(sent[0].prompt, /当前 WeLink 分别查询待参加及已结束会议/);
+  assert.ok(svc.state().instructionsVersion > 6);
+});
 test('日程按下一天作为结束边界；错误结构与更多页不会被算作空成功', async () => {
   const range = queryRange({ period: 'today' }, NOW); let call;
   const good = await collectCalendar(async (label, args) => { call = args; return { events: [] }; }, range);

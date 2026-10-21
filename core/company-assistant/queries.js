@@ -42,18 +42,27 @@ async function readJson(run, args) {
   return data;
 }
 
-function meetingArgs(now, page = 1, size = MEETING_PAGE_MAX, range = null) {
+function meetingType(value) {
+  const type = String(value);
+  if (!['1', '2'].includes(type)) throw new Error('会议查询类型只能为待参加（1）或已结束（2）');
+  return type;
+}
+const meetingTypeLabel = type => type === '2' ? '已结束' : '待参加';
+
+function meetingArgs(now, page = 1, size = MEETING_PAGE_MAX, range = null, type = '1') {
+  type = meetingType(type);
   const begin = range?.start ?? Date.parse(D.dayKey(now) + 'T00:00:00+08:00');
   const end = (range?.end ?? begin + 86400000) - 1;
-  return ['meeting', 'query-list', '--page', String(page), '--size', String(meetingPageSize(size)), '--meeting-start-time', String(begin), '--meeting-end-time', String(end), '--type', '1', '--meeting-sort', 'asc'];
+  return ['meeting', 'query-list', '--page', String(page), '--size', String(meetingPageSize(size)), '--meeting-start-time', String(begin), '--meeting-end-time', String(end), '--type', type, '--meeting-sort', 'asc'];
 }
 
-async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages = 30, range = null } = {}) {
+async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages = 30, range = null, type = '1' } = {}) {
+  type = meetingType(type);
   size = meetingPageSize(size); // 参数与短页判断必须使用同一个实际页大小。
   const found = new Map(), instances = new Map();
-  const coverage = { status: 'partial', reason: 'page-limit', pages: 0, total: null, invalid: 0, instances: 0, versionConflicts: 0, scope: '指定日期范围内待参加的 WeLink 会议（type=1）', queryType: '1' };
+  const coverage = { status: 'partial', reason: 'page-limit', pages: 0, total: null, invalid: 0, instances: 0, versionConflicts: 0, scope: `指定日期范围内${meetingTypeLabel(type)}的 WeLink 会议（type=${type}）`, queryType: type, queryTypes: [type] };
   for (let page = 1; page <= maxPages; page += 1) {
-    const raw = await runJson('会议', meetingArgs(now, page, size, range));
+    const raw = await runJson(`${meetingTypeLabel(type)}会议`, meetingArgs(now, page, size, range, type));
     coverage.pages += 1;
     if (!raw) { coverage.reason = 'query-failed'; coverage.status = found.size ? 'partial' : 'failed'; break; }
     // Q-1021-09：成功空页省略列表字段；只接受与本次请求匹配的已核实包络。
@@ -65,7 +74,7 @@ async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages
     const previous = found.size;
     // 完全相同记录的分页重叠可消除；同编号的不同实例/记录版本全部保留。
     for (const row of rows) {
-      found.set(row.sourceId, row);
+      found.set(row.sourceId, { ...row, queryTypes: [type] });
       const id = row.occurrenceId || row.sourceId, versions = instances.get(id) || new Set();
       const previousVersions = versions.size;
       versions.add(row.sourceId); instances.set(id, versions);
@@ -93,6 +102,37 @@ async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages
     'version-conflict': `${coverage.versionConflicts} 个会议实例存在不同记录版本，待核对`, 'repeated-page': '会议接口重复返回已取得的记录', exhausted: '会议查询完成' }[coverage.reason];
   if (coverage.versionConflicts && coverage.reason !== 'version-conflict') coverage.reasonLabel += `；${coverage.versionConflicts} 个会议实例存在不同记录版本，待核对`;
   return { meetings: [...found.values()].sort((a, b) => a.start - b.start), coverage };
+}
+
+async function collectMeetingAgenda(runJson, now, options = {}) {
+  // Q-1021-09：type1 不包含已结束会议；分别查两类，不能把 type4 推断为仅本人。
+  const queryTypes = ['1', '2'], found = new Map(), instances = new Map(), byType = {};
+  for (const type of queryTypes) {
+    const result = await collectMeetings(runJson, now, { ...options, type });
+    byType[type] = result.coverage;
+    for (const row of result.meetings) {
+      const prior = found.get(row.sourceId);
+      found.set(row.sourceId, { ...row, queryTypes: [...new Set([...(prior?.queryTypes || []), type])] });
+      const id = row.occurrenceId || row.sourceId, versions = instances.get(id) || new Set();
+      versions.add(row.sourceId); instances.set(id, versions);
+    }
+  }
+  const meetings = [...found.values()].sort((a, b) => a.start - b.start);
+  const parts = Object.values(byType), versionConflicts = [...instances.values()].filter(x => x.size > 1).length;
+  const complete = parts.every(x => x.status === 'complete') && !versionConflicts;
+  const failed = parts.every(x => x.status === 'failed');
+  const queryFailed = parts.every(x => x.reason === 'query-failed');
+  const status = complete ? 'complete' : failed ? 'failed' : 'partial';
+  return { meetings, coverage: {
+    status, reason: versionConflicts ? 'version-conflict' : complete ? 'exhausted' : queryFailed ? 'query-failed' : failed ? 'category-failed' : 'category-incomplete',
+    reasonLabel: queryTypes.map(type => `${meetingTypeLabel(type)}：${byType[type].reasonLabel}`).join('；')
+      + (versionConflicts ? `；${versionConflicts} 个会议实例存在不同记录版本，待核对` : ''),
+    pages: parts.reduce((sum, x) => sum + x.pages, 0),
+    // 状态切换时两类可能重叠；总数不能简单相加，各类接口总数留在 byType 中。
+    total: complete ? instances.size : null, instances: instances.size,
+    invalid: parts.reduce((sum, x) => sum + x.invalid, 0), timeUnknown: meetings.filter(D.eventTimeUnknown).length, versionConflicts,
+    scope: '指定日期范围内待参加及已结束的 WeLink 会议（type=1,2）', queryType: queryTypes.join(','), queryTypes, byType,
+  } };
 }
 
 async function collectCalendar(runJson, range) {
@@ -138,4 +178,4 @@ function mailResult(raw) {
     reason: limited ? 'preview-limit' : 'exhausted', reasonLabel: limited ? `已取 ${records.length} 封；当前为未读预览，不能视为全部未读` : `取到 ${records.length} 封未读邮件` } };
 }
 
-module.exports = { readJson, meetingArgs, collectMeetings, collectCalendar, mailResult };
+module.exports = { readJson, meetingArgs, collectMeetings, collectMeetingAgenda, collectCalendar, mailResult };

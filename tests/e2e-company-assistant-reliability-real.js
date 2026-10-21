@@ -53,6 +53,7 @@ async function main() {
   async function start() {
     hub = await launchIsolatedHub({ dataDir, port: await freePort(), windowMode: 'hidden', label: 'company-reliability', extraEnv: {
       AI_HUB_CODEAGENT_COMMAND: CODEAGENT, AI_HUB_CODEAGENT_CONFIG_DIR: cac, CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '',
+      AI_HUB_CODEAGENT_PICKER_LABELS: j({ 'GLM-5.2-WX-Auto': 'Haiku' }),
       HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'none'), CLAUDE_HUB_COMPANY_ASSISTANT: '1', CLAUDE_HUB_WELINK_CLI: WELINK,
       WELINK_RELIABILITY_SEED: seedFile, WELINK_RELIABILITY_LOG: log, CODEAGENT_STANDIN_NO_CHROME: '1',
       CODEAGENT_STANDIN_LAUNCH_LOG: path.join(root, 'claude-launches.jsonl'),
@@ -122,9 +123,41 @@ async function main() {
         assert.ok(calls.length, 'this turn must really call MCP welink_meetings');
         assert.ok(calls.every(x => x.value && !x.isError), 'each meeting MCP result must succeed');
         const text = calls.map(x => x.value.text || '').join('\n');
-        const ranges = ['跨区评审', '中国区对齐会'].map(subject => text.split('\n').find(line => line.includes(' · ' + subject + ' · '))?.split(' · ')[0]);
-        const expectedTimes = [['17:00', '18:00'], ['14:00', '15:00']];
-        ranges.forEach((range, ix) => { assert.ok(range, 'both meeting sources in MCP result'); assert.ok(range.includes(day) && /周[日一二三四五六]/.test(range)); for (const time of expectedTimes[ix]) assert.ok(range.includes(time), 'fixture offset must yield ' + time); assert.ok(turn.answer.replace(/\*\*/g, '').includes(range), 'answer must quote exact visible tool time range: ' + range); });
+        const expected = [
+          { subject: '跨区评审', times: ['17:00', '18:00'], source: 'WeLink 待参加会议', sourcePrefix: 'meeting:utc-review:', queryTypes: ['1'] },
+          { subject: '上午复盘（已结束）', times: ['09:00', '10:00'], source: 'WeLink 已结束会议', sourcePrefix: 'meeting:ended-morning:', queryTypes: ['2'] },
+          { subject: '中国区对齐会', times: ['14:00', '15:00'], source: 'Exchange 日程', sourcePrefix: 'cal:china-sync:' },
+        ];
+        const queryEvidence = calls.map(call => {
+          assert.equal(call.value.total, 3, 'actual MCP result has two WeLink records and one Exchange record');
+          assert.match(call.value.queryId, /^[a-f0-9-]{36}$/);
+          const query = JSON.parse(fs.readFileSync(path.join(assistantDir, 'queries', call.value.queryId + '.json'), 'utf8'));
+          assert.equal(query.id, call.value.queryId); assert.equal(query.kind, 'meetings');
+          assert.equal(query.items.length, 3); assert.equal(query.counts.meetings, 2); assert.equal(query.counts.calendar, 1);
+          assert.equal(query.coverage.status, 'complete'); assert.equal(query.coverage.meeting.status, 'complete'); assert.equal(query.coverage.calendar.status, 'complete');
+          assert.deepEqual(query.coverage.meeting.queryTypes, ['1', '2']); assert.equal(query.coverage.meeting.queryType, '1,2');
+          for (const type of ['1', '2']) assert.equal(query.coverage.meeting.byType[type].status, 'complete');
+          for (const item of expected) {
+            const row = query.items.find(x => x.subject === item.subject);
+            assert.ok(row?.sourceId.startsWith(item.sourcePrefix), 'source must belong to the expected original fixture record: ' + item.subject);
+            if (item.queryTypes) assert.deepEqual(row.queryTypes, item.queryTypes);
+          }
+          return { queryId: query.id, counts: query.counts, coverage: query.coverage,
+            rows: query.items.map(x => ({ sourceId: x.sourceId, subject: x.subject, displayRange: x.displayRange, queryTypes: x.queryTypes })) };
+        });
+        const sourceLines = expected.map(item => {
+          const line = text.split('\n').find(value => value.includes(' · ' + item.subject + ' · '));
+          assert.ok(line, 'all three source records must appear in actual MCP output: ' + item.subject);
+          const range = line.split(' · ')[0];
+          assert.ok(range.includes(day) && /周[日一二三四五六]/.test(range));
+          for (const time of item.times) assert.ok(range.includes(time), 'fixture offset must yield ' + time);
+          assert.ok(line.includes(' · ' + item.source + ' [' + item.sourcePrefix), 'MCP line must identify the source category and original record');
+          assert.ok(turn.answer.replace(/\*\*/g, '').includes(range), 'answer must quote exact visible tool time range: ' + range);
+          assert.ok(turn.answer.replace(/\*\*/g, '').includes(line), 'answer must quote the complete source line unchanged: ' + line);
+          assert.ok(turn.nativeText.replace(/\*\*/g, '').includes(line), 'native model final must itself preserve each complete source line: ' + line);
+          return line;
+        });
+        const ranges = sourceLines.map(line => line.split(' · ')[0]);
         assert.doesNotMatch(turn.answer, /(?:09:00|10:00).*跨区评审|跨区评审.*(?:09:00|10:00)/);
         if (followup) {
           const summaries = new Map(calls.map(call => [call.value.queryId, call.value.text.split('\n').filter(line => /^(?:覆盖：|范围说明：|在本次查询范围内找到)/.test(line))]));
@@ -133,8 +166,8 @@ async function main() {
           assert.deepEqual(turn.queryCoverage, actualCoverage, 'saved coverage must come from this turn actual MCP results');
           const prefix = ['> **Hub 核实的查询范围**', ...actualCoverage.map(line => '> ' + line), ''].join('\n') + '\n';
           assert.ok(turn.answer.startsWith(prefix), 'Hub verified coverage must appear before any model prose');
-          assert.match(prefix, /在本次查询范围内找到 2 [条场]/);
-          assert.match(prefix, /查询类型=1/); assert.match(prefix, /待参加会议（类型 1）/);
+          assert.match(prefix, /在本次查询范围内找到 3 [条场]/); assert.match(prefix, /WeLink 2 条、Exchange 1 条/);
+          assert.match(prefix, /查询类型=1,2/); assert.match(prefix, /待参加及已结束会议（类型 1、2）/);
           assert.match(prefix, /其他会议类型未纳入本次查询/);
           assert.ok(turn.agentText, 'original model final is retained separately');
           assert.equal(turn.agentText.trim(), turn.nativeText.trim(), 'agentText is the actual native final, not generated test text');
@@ -146,7 +179,7 @@ async function main() {
           const nativeFirst = turn.agentText.split('\n').find(line => line.trim());
           result.meetingGuard = { displayedPrefix: prefix, nativeFirstConclusion: nativeFirst, nativeFirstRespectsScope: /(?:本次|当前).*(?:范围|条件)/.test(nativeFirst), rawQueryCalls: rawQuery.length, tools: turn.calls.map(x => x.name) };
         }
-        result.meetingAttempts.push({ number: i + 1, ok: true, ranges, toolIds: calls.map(x => x.id), chatId: turn.chatId });
+        result.meetingAttempts.push({ number: i + 1, ok: true, ranges, sourceLines, queryEvidence, toolIds: calls.map(x => x.id), chatId: turn.chatId });
       });
       if (!result.meetingAttempts.some(x => x.number === i + 1)) result.meetingAttempts.push({ number: i + 1, ok: false });
     }
