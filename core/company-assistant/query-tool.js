@@ -175,7 +175,7 @@ class AssistantQuery {
       `在本次查询范围内找到 ${page.total} 条记录：WeLink ${page.counts.meetings} 条、Exchange ${page.counts.calendar} 条${c.unknownTime ? `，其中 ${c.unknownTime} 条时间待核对` : ''}。两源可能记录同一场会，尚无共享身份依据，分别保留。`];
     this.captureCoverage(page.queryId, summary);
     return { text: [...summary, ...lines, ...c.errors.map(e => `取数问题：${e.label} ${e.text}`)].join('\n'),
-      queryId: page.queryId, nextCursor: page.nextCursor, total: page.total, note: '先写“在本次查询范围内找到 N 条会议/日程记录”，分别列 WeLink 和 Exchange 条数，并保留每条来源、覆盖与范围说明。合计按记录计数；跨源同名可能是同一场。时间和星期照抄。请翻完 nextCursor；失败、时间未知的条目单列待核对。' };
+      queryId: page.queryId, nextCursor: page.nextCursor, total: page.total, note: '先写“在本次查询范围内找到 N 条会议/日程记录”，分别列 WeLink 和 Exchange 条数，并保留覆盖与范围说明。每条记录将上面的“完整时间范围 · 主题 · 地点 · 来源 [出处]”整行原样引用，起止时间保持在同一行；分析另起一段。合计按记录计数；跨源同名可能是同一场。请翻完 nextCursor；失败、时间未知的条目单列待核对。' };
   }
   async message(args = {}) {
     const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
