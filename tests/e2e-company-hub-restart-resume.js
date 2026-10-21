@@ -114,7 +114,7 @@ async function main() {
     await until('paired', async () => (await status(cc)).link.state === 'paired' && (await status(hc)).link.state === 'paired', 120000, 2000);
     await cc.eval(`require("electron").ipcRenderer.invoke("bridge:set-settings", ${j({ codeRoots: [codeDir], effort: 'low' })})`);
     const cs0 = await status(cc);
-    check(cs0.settings.restartGraceMinutes === 3 && cs0.settings.allowRemoteAdmin === true, '家里与公司配对接通；公司「重启前最多等」默认 3 分钟');
+    check(cs0.settings.restartGraceMinutes === 20 && cs0.settings.allowRemoteAdmin === true, '家里与公司配对接通；公司「重启前最多等」默认 20 分钟');
 
     // ---- 家里：一个 CodeAgent（替身）会话当提问方，用「问公司」命令行提问 ----
     const asker = await hc.eval(`require("electron").ipcRenderer.invoke('create-session', ${j({ kind: 'codeagent', opts: { cwd: homeWork, title: '家里 · 提问方' } })})`);

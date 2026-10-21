@@ -110,7 +110,7 @@ test('有在途任务时等它答完再重启；等待期间不派发新任务�
   await roundTrip(r);
   assert.deepEqual(r.box.controller.calls, ['check', 'download']);
   const waiting = statuses(r).find(x => x.id === sent.id && x.phase === 'waiting');
-  assert.match(waiting.note, /已下载 v2\.1\.9，等 1 个任务答完后重启到 v2\.1\.9/);
+  assert.match(waiting.note, /已下载 v2\.1\.9，等 1 个本机会话的任务答完再重启到 v2\.1\.9/);
   // 等待期间来了新问题：先排队，不开会话
   r.hs.map.set('home-s', { id: 'home-s', kind: 'claude', status: 'idle' });
   await r.home.ask('home-s', { question: '请帮我看一下公司 L2 的 HARQ 合并逻辑' });
@@ -128,14 +128,14 @@ test('有在途任务时等它答完再重启；等待期间不派发新任务�
   assert.deepEqual(f.box.controller.calls, ['check', 'download', 'apply'], 'force 不等任务');
 });
 
-test('宽限期（默认 3 分钟）内任务答完就直接重启，不记恢复清单', async t => {
+test('宽限期（默认 20 分钟，2026-10-21 起；原 3 分钟）内任务答完就直接重启，不记恢复清单', async t => {
   const r = setup(t); await pair(r);
   r.cs.map.set('s-busy', { id: 's-busy', kind: 'codeagent', status: 'idle' }); r.cs.busy.add('s-busy'); r.box.ids.push('s-busy');
   const sent = await r.home.hubAdmin({ op: 'restart' });
   await roundTrip(r);
   assert.equal(r.box.relaunched, 0);
-  assert.match(statuses(r).find(x => x.id === sent.id && x.phase === 'accepted').note, /最多等 3 分钟，到时先记下、重启后自动接着做/);
-  assert.match(statuses(r).find(x => x.id === sent.id && x.phase === 'waiting').note, /等 1 个任务答完后重启（最多等 3 分钟，到时先记下、中断，重启后自动接着做/);
+  assert.match(statuses(r).find(x => x.id === sent.id && x.phase === 'accepted').note, /最多等 20 分钟，到时先记下、重启后自动接着做/);
+  assert.match(statuses(r).find(x => x.id === sent.id && x.phase === 'waiting').note, /等 1 个本机会话的任务答完再重启（最多等 20 分钟，预计最晚 \d\d:\d\d；到时还没答完的先记下、中断，重启后自动接着做/);
   r.clock.now += 2 * MIN; await r.company.checkNow();
   assert.equal(r.box.relaunched, 0, '宽限内还在等');
   r.cs.busy.delete('s-busy'); await r.company.checkNow(); await r.home.checkNow();
@@ -179,13 +179,13 @@ test('宽限到了还有任务在跑：记下清单（通道 + 本机会话）�
   const sent = await r.home.hubAdmin({ op: 'restart' });
   await roundTrip(r);
   assert.equal(r.box.relaunched, 0);
-  r.clock.now += 3 * MIN + 1000; await r.company.checkNow(); await r.home.checkNow();
+  r.clock.now += 20 * MIN + 1000; await r.company.checkNow(); await r.home.checkNow();
   assert.equal(r.box.relaunched, 1);
   const plan = r.company.hubAdmin.state().resumeAfterRestart;
   assert.deepEqual(plan.items.map(x => [x.kind, x.sessionId, x.thread, x.round]), [['bridge', sid, thread, 1], ['local', 's-local', null, null]]);
   assert.ok(plan.items.every(x => x.interruptedAt === r.clock.now));
   assert.equal(r.company.thread(thread).rounds[0].resumePending, true);
-  assert.match(statuses(r).find(x => x.id === sent.id && x.phase === 'restarting').note, /中断 2 个任务后重启（等了 3 分钟；重启后自动恢复这些会话并接着做）/);
+  assert.match(statuses(r).find(x => x.id === sent.id && x.phase === 'restarting').note, /中断 2 个任务后重启（等了 20 分钟；重启后自动恢复这些会话并接着做）/);
   assert.match(r.home.thread(thread).rounds[0].note, /公司 Hub 要重启：这一轮先记下/);
   // 已报「即将重启」、进程还没退出：新问题只排队
   assert.equal(r.company.hubAdmin.holdingDispatch(), true);
@@ -298,7 +298,7 @@ test('恢复途中又重启：标了「恢复中」的不再发第二遍「继�
 
 test('宽限设为 0 = 立即；设置范围 0–30；恢复后会话已自己接着做就不再发', async t => {
   const r = setup(t); await pair(r);
-  assert.equal(r.company.settings().restartGraceMinutes, 3, '默认 3 分钟');
+  assert.equal(r.company.settings().restartGraceMinutes, 20, '默认 20 分钟（2026-10-21 起）');
   assert.throws(() => r.company.setSettings({ restartGraceMinutes: 31 }), /0–30/);
   r.company.setSettings({ restartGraceMinutes: 0 });
   r.cs.map.set('s-local', { id: 's-local', kind: 'codeagent', status: 'idle' }); r.cs.busy.add('s-local'); r.box.ids.push('s-local');

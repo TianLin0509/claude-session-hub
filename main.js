@@ -2398,6 +2398,8 @@ let companyBridgeService = null;
 let companySessionMemInspector = null; // 公司通道量会话内存用的进程枚举器（懒建，measureSessionMem）
 // 一键更新控制器在后面创建（只有发行目标写了下载源才有）；公司一端经它响应家里的远程更新（core/company-bridge/hub-admin.js）。
 let appUpdateControllerRef = null;
+// 公司一端的远程更新 / 重启管理（只有公司角色有）：一键更新弹窗的「立即重启」也经它先等通道问题答完（2026-10-21）。
+function companyHubAdmin() { return companyBridgeService && companyBridgeService.hubAdmin ? companyBridgeService.hubAdmin : null; }
 try {
   const bridgeRole = require('./core/company-bridge/role').bridgeRole();
   const bridgeDeps = {
@@ -3933,8 +3935,10 @@ require('./main/ipc/appearance-handlers').registerAppearanceIpc(ipcMain, { dataD
     try {
       const { createAppUpdateController, registerAppUpdateIpc } = require('./main/app-update-controller');
       const appUpdate = createAppUpdateController({ app, config: distribution.updateConfig, dataDir: getHubDataDir(),
-        currentVersion: distribution.editionVersion || app.getVersion(), sendToRenderer, prepareLaunch: prepareHubLaunchClean });
-      registerAppUpdateIpc(ipcMain, appUpdate);
+        currentVersion: distribution.editionVersion || app.getVersion(), sendToRenderer, prepareLaunch: prepareHubLaunchClean,
+        // 公司版：通道有在途问题时「等答完再重启」的状态与入口（core/company-bridge/hub-admin.js，2026-10-21）
+        restartWait: () => companyHubAdmin()?.restartWaitView?.() || null });
+      registerAppUpdateIpc(ipcMain, appUpdate, { gate: { apply: opts => { const admin = companyHubAdmin(); return admin && typeof admin.localApply === 'function' ? admin.localApply(opts) : null; } } });
       appUpdateControllerRef = appUpdate;
       app.whenReady().then(() => appUpdate.startBackgroundChecks());
       app.on('will-quit', () => appUpdate.dispose());

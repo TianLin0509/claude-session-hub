@@ -84,8 +84,9 @@ test('_createSession 的显示名：号池号用同步配置定下的模型，�
   assert.equal(manager.getSession(routeResumed.id).currentModel.id, GLM);
   assert.match(fs.readFileSync(path.join(personal, 'settings.json'), 'utf8'), /"GLM-5\.2-WX"/, '个人账号 settings.json 没被改写');
   // 号池号的通道会话：选它同步配置定下的模型；号池号也不认调用方带来的模型名
-  const poolBridge = manager.createSession('codeagent', { cwd, purpose: 'company-assistant', codeagentAccount: 'pool', model: GLM, codeagentModelPick: true });
-  assert.deepEqual(picks.slice(1).map(p => [p.sessionId, p.modelId]), [[poolBridge.id, DS]], '号池号选 DS');
+  // 2026-10-21 起号的默认就是 DS、家里没指定模型时不开菜单（core/codeagent-auto-pick.js），调用方带来的 GLM 仍不认
+  manager.createSession('codeagent', { cwd, purpose: 'company-assistant', codeagentAccount: 'pool', model: GLM, codeagentModelPick: true });
+  assert.deepEqual(picks.slice(1), [], '号池号默认就是 DS：不开菜单，也不选 GLM');
 
   // 什么都不知道时才写占位
   fs.rmSync(pool.personalModelsFile(dataDir));
