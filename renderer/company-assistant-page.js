@@ -109,8 +109,23 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
       !d.cliFound ? '<button class="ca-link ca-side-copy" data-ca="find-cli">查找</button>' : !online && !renewing ? '<button class="ca-link ca-side-copy" data-ca="login">扫码登录</button>' : '')
       + row('✉', '会议、日程与邮件', mailText, coverages.every(([, c]) => c?.status === 'complete') ? 'ok' : coverages.some(([, c]) => ['failed', 'partial'].includes(c?.status)) ? 'warn' : '', 'settings-tab:welink')
       + row('▣', '手机群', !p.groupId ? '填入群 ID 即可接通' : phone.lastError ? phone.lastError : !p.enabled ? '已暂停' : (p.groupName || '群 ' + p.groupId.slice(-6)), p.enabled && p.groupId && !phone.lastError ? 'ok' : '', 'settings-tab:phone')
+      + toolsRow(row)
       + row('↻', '数据更新时间', d.refreshing ? '正在刷新…' : d.refreshedAt ? when(d.refreshedAt) : '还没取过数据', d.refreshedAt ? 'ok' : '', 'refresh', '<button class="ca-link ca-side-copy" data-ca="refresh" title="刷新数据">刷新</button>')
       + `<p class="ca-next ca-side-copy">下一份简报 · ${d.nextBriefAt ? when(d.nextBriefAt) : '—'}</p>`;
+  }
+  // 会话工具（v3.1.1）：助理会话里查、管其他会话的 hub_sessions 接没接上。没接上时写原因猜测，附「重开助理会话」。
+  let toolsTimer = null;
+  function toolsRow(row) {
+    const t = data.tools;
+    clearTimeout(toolsTimer);
+    if (!t) return '';
+    // 「正在接通」到期（会话起来满 90 秒）时重新取一次状态，到点翻成「未接上」。
+    if (t.state === 'starting' && t.checkAt) toolsTimer = setTimeout(() => { void load().catch(() => {}); }, Math.max(1000, t.checkAt - (data.now || Date.now()) + 500));
+    const color = { linked: 'ok', starting: 'run', missing: 'warn' }[t.state] || '';
+    if (t.state !== 'missing') return row('⇄', '会话工具', t.label, color, 'open-session');
+    // 原因单独一行（沿用「下一份简报」那行的小字样式），侧栏窄也能读全
+    return row('⇄', '会话工具', t.label, color, 'open-session', '<button class="ca-link ca-side-copy" data-ca="reopen-session">重开助理会话</button>')
+      + (t.reason ? `<p class="ca-next ca-side-copy ca-tools-reason">原因：${esc(t.reason)}</p>` : '');
   }
   function messageCoverage() {
     const scope = data.scope;
@@ -366,6 +381,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     if (verb === 'setup-mail') return setupMail(page.querySelector('[data-f="setup-email"]'), page.querySelector('[data-f="setup-msg"]'), button);
     if (verb === 'settings-tab') return openSettings(arg);
     if (verb === 'open-session') return window.__companyAssistantOpenSession();
+    if (verb === 'reopen-session') { button.disabled = true; showMessage?.('正在重开助理会话…'); await call('reopen-session'); await load(); showMessage?.('助理会话已重开，会话工具接上后这里会显示「已接上」'); return; }
     const reopenSettings = () => { const p = page.querySelector('[data-slot="panel"]'); if (p.dataset.kind === 'settings' && !p.hidden) openSettings(); };
     if (verb === 'find-cli') { button.disabled = true; await call('find-cli'); await load(); reopenSettings(); showMessage?.(data.cliFound ? '找到 welink-cli 了' : '全盘也没找到 welink-cli，可以点「手动选择…」'); return; }
     if (verb === 'pick-cli') { const r = await call('pick-cli'); if (!r.canceled) { showMessage?.('已用 ' + r.path); await load(); reopenSettings(); } return; }
