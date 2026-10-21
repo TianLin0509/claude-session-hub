@@ -168,6 +168,8 @@ class PptLibrary {
   process(command, args, request, options = {}) {
     return new Promise((resolve, reject) => {
       const child = (this.deps.pptSpawn || spawn)(command, args, { windowsHide: true, env: { ...this.env, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+      child.stdout.setEncoding?.('utf8');
+      child.stderr.setEncoding?.('utf8');
       if (options.index) this.indexChild = child;
       let stdout = '', stderr = '', progress = '', settled = false;
       const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value); };

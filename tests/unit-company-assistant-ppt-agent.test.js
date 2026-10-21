@@ -8,6 +8,15 @@ const python = process.env.CLAUDE_HUB_PPT_PYTHON || (process.platform === 'win32
 const ready = spawnSync(python, ['-c', 'import sqlite3; sqlite3.connect(":memory:").execute("create virtual table t using fts5(x)")'], { windowsHide: true }).status === 0;
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
+test('PPT 子进程 JSON 与索引进度的汉字跨 pipe 分块仍完整', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ppt-utf8-'));
+  const ppt = new PptLibrary({ dir: root, settings: () => ({}), now: Date.now, changed() {} });
+  const chunks = [];
+  const code = 'const out=Buffer.from(JSON.stringify({ok:true,text:"开始和结尾"}));const err=Buffer.from(JSON.stringify({stage:"扫描素材"})+"\\n");const a=out.indexOf(Buffer.from("开"))+1,b=err.indexOf(Buffer.from("扫"))+1;process.stdout.write(out.subarray(0,a));process.stderr.write(err.subarray(0,b));setTimeout(()=>{process.stdout.write(out.subarray(a));process.stderr.write(err.subarray(b));},40);';
+  const value = await ppt.process(process.execPath, ['-e', code], {}, { onProgress: p => chunks.push(p) });
+  assert.equal(value.text, '开始和结尾'); assert.deepEqual(chunks, [{ stage: '扫描素材' }]);
+});
+
 test('PPT 自建索引：真实 OOXML、增量更新、跨源编号和 MCP 查询均保留只读素材', { skip: !ready, timeout: 180000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ppt-agent-unit-')), pool = path.join(root, 'pool'), doctor = path.join(root, 'doctor');
   const built = spawnSync(python, [path.join(__dirname, 'fixtures/company-ppt-agent-library.py'), pool], { windowsHide: true, encoding: 'utf8' });
