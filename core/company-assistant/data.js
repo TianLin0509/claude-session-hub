@@ -3,6 +3,7 @@
 // 简报和提醒里的每一句话都要能指回这里的一条原始记录：AI 写的条目带的出处在这里找不到，就删掉。
 // 已核对字段见各函数注释；兼容字段与合成边界测试不代表新的公司接口契约已获验证。
 
+const { createHash } = require('node:crypto');
 const pad = n => String(n).padStart(2, '0');
 const DISPLAY_ZONE = 'Asia/Shanghai';
 const formatters = new Map();
@@ -147,22 +148,38 @@ const textOf = v => {
   return String(v);
 };
 
+// 出处代表具体记录版本：循环会议共用 ID、同 ID 冲突和跨源同名都不能互相覆盖。
+// 对象键排序，避免接口仅调整键顺序就产生一条“新记录”。
+function recordHash(value) {
+  const canonical = v => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object'
+    ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v;
+  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex').slice(0, 32);
+}
+function eventSource(base, raw, startEvidence) {
+  return { sourceId: `${base}:r${recordHash(raw)}`, sourceBaseId: base,
+    occurrenceId: `${base}:t${recordHash(Number.isFinite(startEvidence.at) ? startEvidence.at : startEvidence)}` };
+}
 function meetings(raw) {
   return listIn(raw, ['meetings', 'data']).map(m => {
     const id = String(first(m, ['meetingId', 'enMeetingId', 'id', 'confId']) ?? '');
     const times = eventTimes(m, ['meetingStartTime', 'startTime', 'start'], ['meetingEndTime', 'endTime', 'end']);
     const users = Array.isArray(m.meetingUsers) ? m.meetingUsers : [];
-    return { sourceId: 'meeting:' + id, id, subject: String(first(m, ['subject', 'topic', 'title']) ?? '（无主题）'), ...times,
+    return { ...eventSource('meeting:' + id, m, times.timeEvidence.start), id, subject: String(first(m, ['subject', 'topic', 'title']) ?? '（无主题）'), ...times,
       location: String(first(m, ['location', 'room']) ?? ''), attendees: users.length,
       hasFiles: Array.isArray(m.files) ? m.files.length : 0 };
   }).filter(m => m.id);
 }
 
 function calendarEvents(raw) {
+  const anonymous = new Map();
   return listIn(raw, ['events', 'items', 'value', 'calendars']).map((e, i) => {
-    const id = String(first(e, ['id', 'eventId', 'itemId', 'uid']) ?? i);
+    const stableId = first(e, ['id', 'eventId', 'itemId', 'uid']);
+    const id = String(stableId ?? i), hash = recordHash(e);
+    // 无编号时不把数组下标当作跨刷新身份，也不合并两条内容相同的记录。
+    const ordinal = (anonymous.get(hash) || 0) + 1; anonymous.set(hash, ordinal);
+    const base = stableId != null ? 'cal:' + id : `cal:anon:${hash}:${ordinal}`;
     const times = eventTimes(e, ['start', 'startTime', 'Start', 'begin'], ['end', 'endTime', 'End']);
-    return { sourceId: 'cal:' + id, id, subject: String(first(e, ['subject', 'Subject', 'title', 'summary']) ?? '（无标题）'), ...times, location: textOf(first(e, ['location', 'Location'])) };
+    return { ...eventSource(base, e, times.timeEvidence.start), id, subject: String(first(e, ['subject', 'Subject', 'title', 'summary']) ?? '（无标题）'), ...times, location: textOf(first(e, ['location', 'Location'])) };
   });
 }
 
@@ -278,15 +295,11 @@ function sourceIndex(snapshot) {
   return map;
 }
 
-// 今天的会（WeLink 会议 + Exchange 日程去重：同一开始时间、同主题的只留会议那条）。
+// 今天的会议记录。两源没有已核实的共享事件身份，不能凭标题/时段删除另一条。
 function todaysMeetings(snapshot, day) {
   const dayStart = Date.parse(day + 'T00:00:00+08:00'), range = { start: dayStart, end: dayStart + 86400000 };
   const inDay = x => Number.isFinite(x.start) ? eventInRange(x, range) : x.allDay && x.timeStatus === 'date-only' && (x.startDate === day || x.endDate && x.dateEndExclusive !== null && x.startDate <= day && (x.dateEndExclusive ? day < x.endDate : day <= x.endDate));
-  const ms = (snapshot.meetings || []).filter(inDay);
-  const key = m => `${m.allDay ? 'date:' + (m.startDate || dayKey(m.start)) : m.start}|${m.subject}`;
-  const seen = new Set(ms.map(key));
-  const cal = (snapshot.calendar || []).filter(inDay).filter(e => !seen.has(key(e)));
-  return [...ms, ...cal].sort((a, b) => (a.start || 0) - (b.start || 0));
+  return [...(snapshot.meetings || []), ...(snapshot.calendar || [])].filter(inDay).sort((a, b) => (a.start || 0) - (b.start || 0));
 }
 function unresolvedMeetings(snapshot) {
   return [...(snapshot.meetings || []), ...(snapshot.calendar || [])].filter(m => !Number.isFinite(m.start) && !(m.allDay && m.timeStatus === 'date-only' && m.startDate));

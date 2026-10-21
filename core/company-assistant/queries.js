@@ -38,7 +38,8 @@ async function collectMeetings(runJson, now, { size = 100, maxPages = 30, range 
     if (!Array.isArray(raw.data?.data)) { coverage.reason = 'invalid-shape'; coverage.status = found.size ? 'partial' : 'failed'; break; }
     const records = raw.data.data, rows = D.meetings(raw);
     const previous = found.size;
-    for (const row of rows) found.set(row.id, row);
+    // 完全相同记录的分页重叠可消除；同编号的不同实例/记录版本全部保留。
+    for (const row of rows) found.set(row.sourceId, row);
     coverage.invalid += records.length - rows.length;
     coverage.timeUnknown = (coverage.timeUnknown || 0) + rows.filter(D.eventTimeUnknown).length;
     received += records.length;

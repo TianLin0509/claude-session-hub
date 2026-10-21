@@ -119,15 +119,14 @@ class AssistantQuery {
           + (sc.directoryInvalid ? `${sc.directoryInvalid} 条会话目录记录无法识别，未覆盖对应会话。` : ''),
         details: sc.conversations || [], errors: snap.errors || [] };
     } else {
-      const all = [...(snap.meetings || []), ...(snap.calendar || [])];
-      const seen = new Set();
-      items = all.filter(x => D.eventInRange(x, range)).filter(x => { const key = x.start ? `${x.start}|${x.end}|${x.subject}` : x.allDay ? `${x.startDate}|${x.endDate}|${x.subject}` : x.sourceId; if (seen.has(key)) return false; seen.add(key); return true; })
+      const meetings = (snap.meetings || []).filter(x => D.eventInRange(x, range)), calendar = (snap.calendar || []).filter(x => D.eventInRange(x, range));
+      items = [...meetings, ...calendar]
         .sort((a, b) => (a.start || Infinity) - (b.start || Infinity));
       const unknownTime = items.filter(D.eventTimeUnknown).length;
-      counts = { meetings: snap.meetings?.length || 0, calendar: snap.calendar?.length || 0, unknownTime };
+      counts = { meetings: meetings.length, calendar: calendar.length, unknownTime };
       coverage = { status: snap.login?.ok && snap.meetingCoverage?.status === 'complete' && snap.calendarCoverage?.status === 'complete' && !unknownTime ? 'complete' : 'partial',
         meeting: snap.meetingCoverage || { status: 'failed' }, calendar: snap.calendarCoverage || { status: 'failed' }, unknownTime, errors: snap.errors || [],
-        note: 'WeLink 会议与邮箱日程分别查询；一个源成功不等于另一个源成功。日期/时间待核对项不认作确定在此范围内。' };
+        note: 'WeLink 会议与邮箱日程分别查询；一个源成功不等于另一个源成功。两源记录可能对应同一场会，未证实共享身份前分别保留。日期/时间待核对项不认作确定在此范围内。' };
     }
     const data = { id: randomUUID(), owner: snap.login?.uid || null, capturedAt: this.a.now(), expiresAt: this.a.now() + TTL, kind, scope, range, items, counts, coverage,
       context: kind === 'messages' ? Object.values(snap.messages || {}).flat() : undefined };
@@ -172,10 +171,10 @@ class AssistantQuery {
     const lines = page.items.map(m => `${m.displayRange || m.display || `${m.startDisplay || '时间待核对'} – ${m.endDisplay || '结束时间待核对'}`} · ${m.subject} · ${m.location || '地点未提供'} [${m.sourceId}]`);
     const summary = [`覆盖：${page.range.startDisplay} 至 ${page.range.endDisplay}（上海时间）；${sourceStatus('WeLink 会议', c.meeting)}；${sourceStatus('Exchange 日程', c.calendar)}。`,
       `范围说明：WeLink 当前只查询类型 ${c.meeting.queryType || '1'}，该类型能覆盖哪些会议仍待核实；下列数量仅代表本次查询已取到的记录。`,
-      `在本次查询范围内找到 ${page.total} 条：WeLink ${page.counts.meetings} 场、Exchange ${page.counts.calendar} 条${c.unknownTime ? `，其中 ${c.unknownTime} 条时间待核对` : ''}。`];
+      `在本次查询范围内找到 ${page.total} 条记录：WeLink ${page.counts.meetings} 条、Exchange ${page.counts.calendar} 条${c.unknownTime ? `，其中 ${c.unknownTime} 条时间待核对` : ''}。两源可能记录同一场会，尚无共享身份依据，分别保留。`];
     this.captureCoverage(page.queryId, summary);
     return { text: [...summary, ...lines, ...c.errors.map(e => `取数问题：${e.label} ${e.text}`)].join('\n'),
-      queryId: page.queryId, nextCursor: page.nextCursor, total: page.total, note: '先写“在本次查询范围内找到 N 场”，保留覆盖与范围说明，时间和星期照抄。请翻完 nextCursor；失败、时间未知的条目单列待核对。' };
+      queryId: page.queryId, nextCursor: page.nextCursor, total: page.total, note: '先写“在本次查询范围内找到 N 条会议/日程记录”，保留覆盖与范围说明，时间和星期照抄；跨源同名不能认定同一场。请翻完 nextCursor；失败、时间未知的条目单列待核对。' };
   }
   async message(args = {}) {
     const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];

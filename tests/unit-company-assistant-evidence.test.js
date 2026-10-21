@@ -58,7 +58,7 @@ test('未知时区会议保留出处和原值，但不假装归属今天', () =>
   assert.match(snapshot.calendar[0].startDisplay, /17:00:00/);
   assert.deepEqual(D.todaysMeetings(snapshot, day).map(x => x.id), ['known']);
   assert.deepEqual(D.unresolvedMeetings(snapshot).map(x => x.id), ['unknown']);
-  assert.match(B.fallbackBrief(snapshot, { day, now: NOW }).sections[0].items.find(x => x.source === 'cal:unknown').text, /待核对/);
+  assert.match(B.fallbackBrief(snapshot, { day, now: NOW }).sections[0].items.find(x => x.source === snapshot.calendar[1].sourceId).text, /待核对/);
 });
 
 test('atself 使用显式布尔解析，字符串 false 不变成真，@本人优先于空名单推断的@所有人', () => {
@@ -113,7 +113,7 @@ test('简报小上下文预览如实统计遗漏私聊，全文完整保留并�
 test('会议事实由原始结构确定，AI 错时和错标题不覆盖，遗漏会议全部补回且首屏仅10条', () => {
   const snapshot = empty();
   snapshot.meetings = D.meetings({ meetings: Array.from({ length: 12 }, (_, i) => ({ meetingId: 'm' + i, subject: '原主题' + i, meetingStartTime: NOW + i * 60000 })) });
-  const brief = B.parseAgentBrief(JSON.stringify({ meetings: [{ source: 'meeting:m0', text: '01:00 假主题', preparation: '读材料并列出问题' }] }), snapshot, { day, now: NOW });
+  const brief = B.parseAgentBrief(JSON.stringify({ meetings: [{ source: snapshot.meetings[0].sourceId, text: '01:00 假主题', preparation: '读材料并列出问题' }] }), snapshot, { day, now: NOW });
   const items = brief.sections.find(x => x.key === 'meetings').items;
   assert.equal(items.length, 12);
   assert.match(items[0].text, /10:00.*原主题0/);
@@ -246,7 +246,7 @@ test('简报同栏按明确记忆稳定提权，会议仍按时间，AI顺序不
   }
   const memory = [{ kind: 'person', key: '同事11', text: '直属领导' }];
   for (const brief of [B.fallbackBrief(snapshot, { day, now: NOW, memory }), B.parseAgentBrief('{}', snapshot, { day, now: NOW, memory })]) {
-    assert.deepEqual(brief.sections.find(s => s.key === 'meetings').items.map(x => x.source), ['meeting:earlier', 'meeting:later']);
+    assert.deepEqual(brief.sections.find(s => s.key === 'meetings').items.map(x => x.source), ['earlier', 'later'].map(id => snapshot.meetings.find(m => m.id === id).sourceId));
     const awaiting = brief.sections.find(s => s.key === 'awaiting').items;
     assert.equal(awaiting.length, 12); assert.equal(awaiting[0].source, 'msg:p11:11'); assert.equal(awaiting[0].top, true);
     assert.deepEqual(awaiting.slice(1).map(x => x.source), Array.from({ length: 11 }, (_, i) => `msg:p${i}:${i}`));

@@ -36,7 +36,7 @@ function dueNotices({ snapshot, settings, now, commitments = [], sessionId = nul
     if (m.allDay || D.eventTimeUnknown(m)) continue;
     const left = m.start - now;
     if (left > 0 && left <= prepMs) {
-      add({ id: `prep:${m.sourceId}:${day}`, kind: 'meeting-prep', title: `${Math.max(1, Math.round(left / 60000))} 分钟后开会：${D.short(m.subject, 40)}`,
+      add({ id: `prep:${m.occurrenceId || m.sourceId}:${day}`, kind: 'meeting-prep', title: `${Math.max(1, Math.round(left / 60000))} 分钟后开会：${D.short(m.subject, 40)}`,
         text: [`${D.clock(m.start)}${m.end ? '–' + D.clock(m.end) : ''} ${m.subject}`, m.location ? '地点：' + m.location : '', m.attendees ? `参会 ${m.attendees} 人${m.hasFiles ? '，会议附了材料' : ''}` : '',
           '在助理页点「下午会前准备」，助理会把相关消息、邮件和材料整理成要点。'].filter(Boolean).join('\n'), detail: { source: m.sourceId } });
     }
@@ -45,9 +45,9 @@ function dueNotices({ snapshot, settings, now, commitments = [], sessionId = nul
   const busy = overbooked(meetings);
   if (busy && minute >= minutesOf(settings.briefTime || '08:20') && meetings.some(m => (m.end || m.start) > now)) {
     const parts = [];
-    if (busy.long) parts.push(`${D.clock(busy.long.start)}–${D.clock(busy.long.end)} 连着 ${busy.long.items.length} 场会、${(Math.round((busy.long.end - busy.long.start) / 360000) / 10)} 小时`);
+    if (busy.long) parts.push(`${D.clock(busy.long.start)}–${D.clock(busy.long.end)} 有 ${busy.long.items.length} 条会议/日程记录、覆盖 ${(Math.round((busy.long.end - busy.long.start) / 360000) / 10)} 小时`);
     for (const [a, b] of busy.overlaps.slice(0, 3)) parts.push(`「${D.short(a.subject, 16)}」和「${D.short(b.subject, 16)}」时间重叠`);
-    add({ id: `overbooked:${day}`, kind: 'overbooked', title: '今天会议排得太满', text: parts.join('\n') + '\n可以考虑推掉或请人代参加其中一场。' });
+    add({ id: `overbooked:${day}`, kind: 'overbooked', title: '今天的会议/日程记录有重叠或连续安排', text: parts.join('\n') + '\n请先核对：不同来源可能记录了同一场会；确认是不同会议后再调整安排。' });
   }
   // 3. 答应的事快到期：前一天 17:00 后提醒一次，当天 09:00 后再提醒一次
   const tomorrow = D.dayKey(now + 86400000);
@@ -81,7 +81,7 @@ function dueNotices({ snapshot, settings, now, commitments = [], sessionId = nul
     const dueTomorrow = commitments.filter(c => c.due === tomorrow).length;
     const ended = meetings.filter(m => Number.isFinite(m.end) && m.end <= now).length;
     add({ id: `summary:${day}`, kind: 'day-summary', title: '下班前小结',
-      text: [`已获取今天 ${meetings.length} 场会，其中 ${ended} 场已到计划结束时间。`, waiting ? `还有 ${waiting} 条私聊待回或@你待核对。` : '已获取范围内没有私聊待回或@你待核对。', dueTomorrow ? `明天到期 ${dueTomorrow} 件答应过的事。` : '', '想要详细版就在助理页问「今天做了什么、明天要准备什么」。'].filter(Boolean).join('\n') });
+      text: [`已获取今天 ${meetings.length} 条会议/日程记录，其中 ${ended} 条已到计划结束时间；不同来源可能对应同一场会。`, waiting ? `还有 ${waiting} 条私聊待回或@你待核对。` : '已获取范围内没有私聊待回或@你待核对。', dueTomorrow ? `明天到期 ${dueTomorrow} 件答应过的事。` : '', '想要详细版就在助理页问「今天做了什么、明天要准备什么」。'].filter(Boolean).join('\n') });
   }
   return out.sort((a, b) => PRIORITY[a.kind] - PRIORITY[b.kind]);
 }
