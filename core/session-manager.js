@@ -510,7 +510,20 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config, auth = null) 
   if (EFFORTS.includes(opts.effort)) args.push('--effort', opts.effort);
   args.push('--permission-mode', CLAUDE_PERMISSION_MODES.has(opts.permissionMode) ? opts.permissionMode : 'bypassPermissions');
   if (opts.appendSystemPromptFile) args.push('--append-system-prompt-file', String(opts.appendSystemPromptFile));
-  if (mcp.configPaths && mcp.configPaths.length) args.push('--mcp-config', ...mcp.configPaths);
+  // 通道会话带上成员自己注册的 MCP（2026-10-21 田哥拍板，至少 read-KIA；core/codeagent-member-mcp.js）：号的配置目录、个人账号、
+  // ~/.cac.json、工作目录 .mcp.json、local 作用域里登记的，只读收集后写一份到 Hub 数据目录交给 --mcp-config，不改成员的配置文件。
+  // 用户目录取会话环境（真实启动时由 process.env 来）；环境里没有用户目录（单测夹具）就不扫。
+  let memberMcp = null;
+  if (opts.purpose === 'company-bridge') {
+    try {
+      const homeDir = env.USERPROFILE || env.HOME || '';
+      // 个人账号配置目录按 Hub 自己的环境算（会话环境里的配置目录变量已换成这个号的）
+      const personalDir = homeDir ? require('./codeagent-config').resolveCodeAgentConfig(process.env).configDir : '';
+      memberMcp = require('./codeagent-member-mcp').writeMemberMcpConfig({ hubDataDir, cwd, accountDir: config.configDir, personalDir, homeDir });
+    } catch (error) { memberMcp = { file: null, names: [], error: error.message }; }
+  }
+  const mcpPaths = [...(mcp.configPaths || []), ...(memberMcp && memberMcp.file ? [memberMcp.file] : [])];
+  if (mcpPaths.length) args.push('--mcp-config', ...mcpPaths);
   if (mcp.profile !== 'full') args.push('--strict-mcp-config');
   for (const dir of claudeNativeAddDirs(opts.addDirs)) args.push('--add-dir', dir);
   const { findNativeClaudeHistory } = require('./claude-native-history');
@@ -544,6 +557,7 @@ function buildCodeAgentPtyLaunch(id, kind, opts, cwd, env, config, auth = null) 
     ...(opts.purpose ? { purpose: opts.purpose } : {}),
     requested: inheritModel ? '(inherit)' : opts.model || '(default)', model: requestedModel || '(inherit)', resume: identity.length ? identity[0] : '',
     ...(bridge ? { settingSources: 'user' } : {}),
+    ...(memberMcp ? { memberMcp: memberMcp.names.join(',') || '(none)', ...(memberMcp.error ? { memberMcpError: memberMcp.error } : {}) } : {}),
     ...(auth ? { auth: auth.source, inheritedAuthIgnored: auth.ignoredForNewSessions } : {}),
     ...(codeAgentRouteModel(opts) ? { route: codeAgentRouteModel(opts) } : {}),
   });

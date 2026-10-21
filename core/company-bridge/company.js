@@ -101,7 +101,8 @@ const DEFAULT_SETTINGS = Object.freeze({ enabled: true, codeRoots: [], instructi
   perAccountPeak: 3, perAccountIdle: 6, memFloorPct: 10, busyHours: care.DEFAULT_BUSY_HOURS, usePool: true, pollSeconds: 30, autoGate: false, parallelRev: 2,
   // 允许家里远程更新 / 重启这台 Hub（2026-10-17 田哥：默认开）。
   // restartGraceMinutes：远程重启前最多等手上的任务几分钟，到时先记下、中断，重启后自动接着做（2.1.9；0 = 立即，hub-admin.js）。
-  allowRemoteAdmin: true, restartGraceMinutes: 3,
+  // 2026-10-21 起默认 20 分钟（同事公司 Hub 重启丢在途轮次）；graceRev 1 起存下的值按用户自己选的算，之前存下的旧默认 3 换成新默认。
+  allowRemoteAdmin: true, restartGraceMinutes: 20, graceRev: 1,
   // 允许对端直查这台电脑的状态（2026-10-18，只读，hub-admin.js diag；独立于远程更新开关，默认开）。
   allowRemoteDiag: true,
   // 直查 airview 段看这些目录下最近更新的结果文件（只看名字、大小、修改时间），连同代码位置一起（diag.js resultFiles）。
@@ -326,8 +327,10 @@ class CompanyBridge {
     const instructions = !s.instructions || OLD_DEFAULTS.includes(s.instructions.trim()) ? DEFAULT_INSTRUCTIONS : s.instructions;
     // 旧版设置页只能存「同时 N 个」且默认 2；没调过并行档位的（parallelRev 缺失且仍是旧默认 2）按新默认 3。
     if (!s.parallelRev && Number(s.maxParallel) === 2) delete s.maxParallel;
+    // 设置页保存时整份写回，旧版存下的「重启前最多等 3 分钟」多半只是旧默认：没有 graceRev 的按新默认 20。
+    if (!s.graceRev && Number(s.restartGraceMinutes) === 3) delete s.restartGraceMinutes;
     return { ...DEFAULT_SETTINGS, ...s, instructions, codeRoots: Array.isArray(s.codeRoots) ? s.codeRoots : [], resultDirs: Array.isArray(s.resultDirs) ? s.resultDirs : DEFAULT_SETTINGS.resultDirs,
-      readRoots: Array.isArray(s.readRoots) ? s.readRoots : [], parallelRev: DEFAULT_SETTINGS.parallelRev };
+      readRoots: Array.isArray(s.readRoots) ? s.readRoots : [], parallelRev: DEFAULT_SETTINGS.parallelRev, graceRev: DEFAULT_SETTINGS.graceRev };
   }
   setSettings(patch = {}) {
     const next = this.settings();
