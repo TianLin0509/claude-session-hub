@@ -8,13 +8,13 @@ test('opening uses the completed meeting snapshot after yielding for paint',asyn
  const context={activeSessionId:'old',activeMeetingId:null,meetings:{room:initial},sessions:new Map(),
   terminalPanelEl:{style:{},classList:{remove:noop}},emptyStateEl:null,completionNotificationToggle:null,window:{},ipcRenderer:{send:noop},
   savePreviewState:noop,suspendInactiveTerminalRenderers:noop,setShellNavActive:noop,clearPreviewUI:noop,
-  clearSessionCompletedUnread:()=>false,acknowledgeSessionFailureState:()=>false,paintSidebarActiveTarget:noop,scheduleSessionListRender:noop,
+  markMeetingRead:id=>order.push('read:'+id),clearSessionCompletedUnread:()=>false,acknowledgeSessionFailureState:()=>false,paintSidebarActiveTarget:noop,scheduleSessionListRender:noop,
   setTimeout,clearTimeout,requestAnimationFrame:fn=>{context.meetings.room=latest;setTimeout(fn,0);},
   sessionSplit:{sync:()=>order.push('split-sync')},MeetingRoom:{openMeeting:(id,data)=>{order.push('open');opened.push(data);}},restorePreviewForContext:async()=>{}};
  await vm.runInNewContext(selectSource+"\nselectMeeting('room');",context);
  assert.equal(opened.length,1);assert.equal(opened[0],latest);assert.equal(opened[0].subSessions.length,2);
  // The session split collapses with the terminal panel before the room mounts its panes.
- assert.deepEqual(order,['split-sync','open']);
+ assert.deepEqual(order,['split-sync','read:room','open']);
 });
 test('final meeting-created snapshot refreshes an already opened room',()=>{
  let handler,refreshed;

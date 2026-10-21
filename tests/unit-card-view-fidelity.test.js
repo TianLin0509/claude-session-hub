@@ -126,8 +126,14 @@ test('idle 只压过过期 watcher，新鲜 watcher 可覆盖 PTY 的短暂空�
   assert.match(RUNNING_STATE_SRC,
     /age >= 0 && age <= GC_WORKING_FRESH_MS/,
     'watcher 必须有明确过期窗口，不能恢复成永久 gcWorking');
-  assert.match(LIST_SRC, /if \(_subIsRunning\(sub\)\) statusCls = 'mini-st-thinking';/,
-    '成员点必须走同一判定');
+  const { partitionSidebarSessions } = require('../core/session-sidebar-state');
+  const now = Date.now();
+  const member = { id: 'member', kind: 'claude', meetingId: 'room', status: 'idle',
+    gcWorking: true, _gcWorkingLastTs: now, lastMessageTime: now };
+  const state = value => partitionSidebarSessions([value], { now,
+    sessionMap: new Map([[value.id, value]]), groupMemberIds: new Set([value.id]) }).states.get(value.id);
+  assert.equal(state(member), 'run', '缩进成员行采用共享的新鲜 watcher 状态');
+  assert.equal(state({ ...member, _gcWorkingLastTs: now - 9000 }), 'idle', '过期心跳不能让成员一直显示运行');
   assert.match(SIDEBAR_STATE_SRC, /truths\.some\(item => isSidebarMemberWorking\(item\.session, now\)\)/,
     '群聊父项聚合采用工作状态投影，等待输入不冒充运行');
   assert.match(SIDEBAR_STATE_SRC, /function isSidebarMemberWorking[\s\S]*?isGroupChatMemberRunning\(session, now\)/,

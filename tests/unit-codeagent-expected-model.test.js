@@ -135,7 +135,7 @@ test('唤醒合并：主进程给的显示名为空或是占位时保留本地�
   assert.equal(models.iconModelId({ kind: 'codeagent', currentModel: { id: GLM }, codeagentActualModel: DS }), GLM);
   assert.equal(models.iconModelId({ kind: 'claude', currentModel: { id: '' }, codeagentActualModel: DS }), '');
   const list = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'session-list-renderer.js'), 'utf8');
-  assert.equal((list.match(/iconModelId\(/g) || []).length, 3, '侧栏三处图标都按 iconModelId');
+  assert.equal((list.match(/iconModelId\(/g) || []).length, 2, '统一后群头像和普通成员行两处图标都按 iconModelId');
 });
 
 test('持久化：上一轮实际模型、通道实际启动模型进会话文件和合并字段，主进程的值优先', () => {
