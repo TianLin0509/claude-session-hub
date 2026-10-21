@@ -68,6 +68,21 @@ test('会议工具只输出确定的上海时间；一个数据源失败不说�
   const result = await a.query.meetings({ date: '今天' });
   assert.match(result.text, /17:00/); assert.match(result.text, /18:00/); assert.match(result.text, /模拟日程错误/); assert.doesNotMatch(result.text, /1792\d{9}/);
 });
+
+test('会议逐条保留来源，范围明确为待参加，跨源总数按记录而非场数', async t => {
+  const a = rig(t);
+  a.collectQuery = async () => ({ login: { ok: true, uid: 'owner-a' },
+    meetings: D.meetings([{ meetingId: 'm1', subject: '跨区评审', meetingStartTime: '2026-10-21T09:00:00Z', meetingEndTime: '2026-10-21T10:00:00Z' }]),
+    calendar: D.calendarEvents([{ id: 'c1', subject: '中国区对齐会', start: '2026-10-21T14:00:00+08:00', end: '2026-10-21T15:00:00+08:00' }]),
+    meetingCoverage: { status: 'complete', queryType: '1' }, calendarCoverage: { status: 'complete' }, errors: [] });
+  const result = await a.query.meetings({ date: '今天' });
+  const lines = result.text.split('\n');
+  assert.match(lines.find(line => line.includes(' · 跨区评审 · ')), / · WeLink 待参加会议 \[meeting:/);
+  assert.match(lines.find(line => line.includes(' · 中国区对齐会 · ')), / · Exchange 日程 \[cal:/);
+  assert.match(result.text, /范围说明：WeLink 当前只查询待参加会议（类型 1）/);
+  assert.match(result.text, /2 条记录：WeLink 1 条、Exchange 1 条/);
+  assert.doesNotMatch(result.text, /该类型能覆盖哪些会议仍待核实/);
+});
 test('日程按下一天作为结束边界；错误结构与更多页不会被算作空成功', async () => {
   const range = queryRange({ period: 'today' }, NOW); let call;
   const good = await collectCalendar(async (label, args) => { call = args; return { events: [] }; }, range);

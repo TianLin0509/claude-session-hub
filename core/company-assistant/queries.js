@@ -51,7 +51,7 @@ function meetingArgs(now, page = 1, size = MEETING_PAGE_MAX, range = null) {
 async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages = 30, range = null } = {}) {
   size = meetingPageSize(size); // 参数与短页判断必须使用同一个实际页大小。
   const found = new Map(), instances = new Map();
-  const coverage = { status: 'partial', reason: 'page-limit', pages: 0, total: null, invalid: 0, instances: 0, versionConflicts: 0, scope: '指定日期范围内 type=1 的 WeLink 会议', queryType: '1' };
+  const coverage = { status: 'partial', reason: 'page-limit', pages: 0, total: null, invalid: 0, instances: 0, versionConflicts: 0, scope: '指定日期范围内待参加的 WeLink 会议（type=1）', queryType: '1' };
   for (let page = 1; page <= maxPages; page += 1) {
     const raw = await runJson('会议', meetingArgs(now, page, size, range));
     coverage.pages += 1;

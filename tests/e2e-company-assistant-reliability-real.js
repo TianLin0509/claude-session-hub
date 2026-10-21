@@ -134,7 +134,8 @@ async function main() {
           const prefix = ['> **Hub 核实的查询范围**', ...actualCoverage.map(line => '> ' + line), ''].join('\n') + '\n';
           assert.ok(turn.answer.startsWith(prefix), 'Hub verified coverage must appear before any model prose');
           assert.match(prefix, /在本次查询范围内找到 2 [条场]/);
-          assert.match(prefix, /查询类型=1/); assert.match(prefix, /仍待核实/);
+          assert.match(prefix, /查询类型=1/); assert.match(prefix, /待参加会议（类型 1）/);
+          assert.match(prefix, /其他会议类型未纳入本次查询/);
           assert.ok(turn.agentText, 'original model final is retained separately');
           assert.equal(turn.agentText.trim(), turn.nativeText.trim(), 'agentText is the actual native final, not generated test text');
           assert.equal(turn.answer.slice(prefix.length), turn.agentText, 'verified prefix must not rewrite or hide the original native answer');

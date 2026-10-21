@@ -169,13 +169,13 @@ class AssistantQuery {
     const page = await this.execute({ ...args, op: 'list', kind: 'meetings', period: 'custom', start, end });
     const c = page.coverage;
     const sourceStatus = (label, value) => `${label}：${value.status === 'complete' ? '已完成当前条件下的查询' : '未取全'}${value.reasonLabel ? '（' + value.reasonLabel + '）' : ''}${value.queryType ? `；查询类型=${value.queryType}` : ''}`;
-    const lines = page.items.map(m => `${m.displayRange || m.display || `${m.startDisplay || '时间待核对'} – ${m.endDisplay || '结束时间待核对'}`} · ${m.subject} · ${m.location || '地点未提供'} [${m.sourceId}]`);
+    const lines = page.items.map(m => `${m.displayRange || m.display || `${m.startDisplay || '时间待核对'} – ${m.endDisplay || '结束时间待核对'}`} · ${m.subject} · ${m.location || '地点未提供'} · ${m.sourceId.startsWith('cal:') ? 'Exchange 日程' : 'WeLink 待参加会议'} [${m.sourceId}]`);
     const summary = [`覆盖：${page.range.startDisplay} 至 ${page.range.endDisplay}（上海时间）；${sourceStatus('WeLink 会议', c.meeting)}；${sourceStatus('Exchange 日程', c.calendar)}。`,
-      `范围说明：WeLink 当前只查询类型 ${c.meeting.queryType || '1'}，该类型能覆盖哪些会议仍待核实；下列数量仅代表本次查询已取到的记录。`,
+      '范围说明：WeLink 当前只查询待参加会议（类型 1），其他会议类型未纳入本次查询；下列数量仅代表本次查询已取到的记录。',
       `在本次查询范围内找到 ${page.total} 条记录：WeLink ${page.counts.meetings} 条、Exchange ${page.counts.calendar} 条${c.unknownTime ? `，其中 ${c.unknownTime} 条时间待核对` : ''}。两源可能记录同一场会，尚无共享身份依据，分别保留。`];
     this.captureCoverage(page.queryId, summary);
     return { text: [...summary, ...lines, ...c.errors.map(e => `取数问题：${e.label} ${e.text}`)].join('\n'),
-      queryId: page.queryId, nextCursor: page.nextCursor, total: page.total, note: '先写“在本次查询范围内找到 N 条会议/日程记录”，保留覆盖与范围说明，时间和星期照抄；跨源同名不能认定同一场。请翻完 nextCursor；失败、时间未知的条目单列待核对。' };
+      queryId: page.queryId, nextCursor: page.nextCursor, total: page.total, note: '先写“在本次查询范围内找到 N 条会议/日程记录”，分别列 WeLink 和 Exchange 条数，并保留每条来源、覆盖与范围说明。合计按记录计数；跨源同名可能是同一场。时间和星期照抄。请翻完 nextCursor；失败、时间未知的条目单列待核对。' };
   }
   async message(args = {}) {
     const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
