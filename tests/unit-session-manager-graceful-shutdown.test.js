@@ -9,6 +9,7 @@ function attachFakePty(manager, sessionId) {
   const exitHandlers = [];
   const snapshot = { disposeCalls: 0, dispose() { this.disposeCalls += 1; } };
   const pty = {
+    pid: 123456789,
     killCalls: 0,
     kill() { this.killCalls += 1; },
     onExit(handler) {
@@ -19,6 +20,7 @@ function attachFakePty(manager, sessionId) {
       for (const handler of [...exitHandlers]) handler(exitInfo);
     },
   };
+  require('../core/pty-process-owner').recordPtySpawn(pty);
   manager.sessions.set(sessionId, {
     info: { id: sessionId, kind: 'powershell', meetingId: 'meeting-1' },
     pty,
@@ -246,14 +248,150 @@ test('missing native onExit reaches a retryable timeout instead of hanging forev
     logger: { warn() {}, error() {} },
   });
   await timedOut;
+  let forcedRetries = 0;
+  retryManager._forceTerminatePty = async () => { forcedRetries += 1; return 12345; };
   const retry = retryManager.disposeGracefully({
     warnAfterMs: 0,
     drainTimeoutMs: 30,
     logger: { warn() {}, error() {} },
   });
   assert.notStrictEqual(retry, timedOut);
+  assert.equal(forcedRetries, 1);
+  assert.equal(retryFixture.pty.killCalls, 1, 'retry must not close the same native handle again');
   retryFixture.pty.emitExit();
   assert.equal((await retry).safeToQuit, true);
+});
+
+function captureForcedProcessExit(t, error = null) {
+  const commands = [];
+  t.mock.method(SessionManager.prototype, '_readPtyProcessBirth', async () => 1000);
+  t.mock.method(require('child_process'), 'execFile', (command, args, options, callback) => {
+    commands.push({ command, args, options });
+    queueMicrotask(() => callback(error));
+  });
+  return commands;
+}
+
+test('timeout retry terminates the exact owned process and still waits for native onExit', async (t) => {
+  const commands = captureForcedProcessExit(t);
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'stuck');
+  pty.pid = 123456789;
+  const options = { warnAfterMs: 0, drainTimeoutMs: 100, logger: { warn() {}, error() {} } };
+  assert.equal((await manager.disposeGracefully(options)).safeToQuit, false);
+  assert.equal(commands.length, 0, 'the initial exit attempt only requests normal PTY shutdown');
+  let resolved = false;
+  const retry = manager.disposeGracefully(options);
+  retry.then(() => { resolved = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  const resolvedBeforeExit = resolved;
+  pty.emitExit();
+  const result = await retry;
+  assert.equal(resolvedBeforeExit, false, 'taskkill success cannot substitute for the native exit callback');
+  assert.equal(result.safeToQuit, true);
+  assert.equal(pty.killCalls, 1);
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].command, 'powershell.exe');
+  assert.deepStrictEqual(commands[0].args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+  const script = Buffer.from(commands[0].args[3], 'base64').toString('utf16le');
+  assert.match(script, /\$heldHandle=\$p\.Handle/);
+  assert.match(script, /if \(\$birth -ne 1000\).*termination refused/);
+  assert.ok(script.includes('"$env:SystemRoot\\System32\\taskkill.exe" -ArgumentList \'/pid ' + pty.pid + ' /t /f\''));
+  assert.ok(script.indexOf('termination refused') < script.indexOf('taskkill.exe'));
+  assert.match(script, /if \(-not \$killer\.WaitForExit\(5000\)\) \{ \$killer\.Kill\(\)/);
+  assert.ok(script.indexOf('$killer.WaitForExit()') < script.indexOf('$p.Dispose()'));
+  assert.ok(script.indexOf('$p.Dispose()') > script.indexOf('taskkill.exe'));
+  assert.equal(commands[0].options.windowsHide, true);
+  assert.equal(commands[0].options.timeout, undefined, 'the identity holder cannot be killed before taskkill finishes');
+  assert.equal(commands[0].options.shell, undefined);
+  assert.deepStrictEqual(result.forceRequestedPids, [pty.pid]);
+});
+
+test('timeout retry exposes process termination failures without declaring the PTY drained', async (t) => {
+  const commands = captureForcedProcessExit(t, new Error('process termination denied'));
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'stuck');
+  pty.pid = 123456789;
+  const options = { warnAfterMs: 0, drainTimeoutMs: 100, logger: { warn() {}, error() {} } };
+  await manager.disposeGracefully(options);
+  const result = await manager.disposeGracefully(options);
+  assert.equal(result.safeToQuit, false);
+  assert.equal(pty.killCalls, 1);
+  assert.equal(commands.length, 1);
+  assert.deepStrictEqual(result.pendingSessionIds, ['stuck']);
+  assert.match(result.killErrors[0].message, /process termination denied/);
+  assert.deepStrictEqual(result.forceRequestedPids, []);
+  pty.emitExit();
+});
+
+test('forced shutdown refuses invalid or replaced process ownership', async (t) => {
+  const commands = captureForcedProcessExit(t);
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'stuck');
+  const entry = manager.sessions.get('stuck');
+  for (const pid of [0, -1, NaN, process.pid]) {
+    pty.pid = pid;
+    await assert.rejects(manager._forceTerminatePty('stuck', entry), /未强制结束进程/);
+  }
+  pty.pid = 123456789;
+  attachFakePty(manager, 'stuck');
+  assert.equal(await manager._forceTerminatePty('stuck', entry), null);
+  assert.equal(commands.length, 0);
+});
+
+test('timeout retry refuses reused PIDs and unreadable process identity', async (t) => {
+  const commands = captureForcedProcessExit(t);
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'stuck');
+  pty.pid = 123456789;
+  manager.closeSession('stuck');
+  const entry = manager.sessions.get('stuck');
+  const observedAt = manager._ptyTerminationOwners.get(pty).observedAt;
+  for (const birth of [observedAt + 1, NaN, 0]) {
+    manager._readPtyProcessBirth = async () => birth;
+    await assert.rejects(manager._forceTerminatePty('stuck', entry), /未强制结束进程/);
+  }
+  manager._readPtyProcessBirth = async () => { throw new Error('birth access denied'); };
+  await assert.rejects(manager._forceTerminatePty('stuck', entry), /birth access denied/);
+  assert.equal(commands.length, 0, 'unverified process identity must never reach a termination command');
+  pty.emitExit();
+});
+
+test('process identity is anchored at spawn, not at the later close request', async (t) => {
+  const commands = captureForcedProcessExit(t);
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'stuck');
+  const owner = require('../core/pty-process-owner').ptyProcessOwner(pty);
+  t.mock.method(Date, 'now', () => owner.observedAt + 1000);
+  manager.closeSession('stuck');
+  assert.strictEqual(manager._ptyTerminationOwners.get(pty), owner);
+  manager._readPtyProcessBirth = async () => owner.observedAt + 500;
+  await assert.rejects(manager._forceTerminatePty('stuck', manager.sessions.get('stuck')), /已复用/);
+  assert.equal(commands.length, 0, 'a PID reused before the first kill must still be rejected');
+  pty.emitExit();
+});
+
+test('missing native spawn evidence refuses force termination', async (t) => {
+  const commands = captureForcedProcessExit(t);
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'stuck');
+  const entry = manager.sessions.get('stuck');
+  entry.pty = { pid: pty.pid, kill() {} };
+  manager.closeSession('stuck');
+  await assert.rejects(manager._forceTerminatePty('stuck', entry), /归属已变化/);
+  assert.equal(commands.length, 0);
+});
+
+test('forced shutdown rechecks session ownership after the asynchronous identity probe', async (t) => {
+  const commands = captureForcedProcessExit(t);
+  const manager = new SessionManager();
+  const { pty } = attachFakePty(manager, 'stuck');
+  pty.pid = 123456789;
+  manager.closeSession('stuck');
+  const entry = manager.sessions.get('stuck');
+  manager._readPtyProcessBirth = async () => { attachFakePty(manager, 'stuck'); return 1000; };
+  assert.equal(await manager._forceTerminatePty('stuck', entry), null);
+  assert.equal(commands.length, 0);
 });
 
 test('partial drain timeout turns completed PTYs dormant and keeps the stuck PTY tracked', async () => {
