@@ -2469,7 +2469,25 @@ try {
       // 剪贴板图片在 sendToPty 往 CodeAgent 粘贴前统一清掉（core/company-bridge/clipboard-guard.js）。
       sendPrompt: (sessionId, text, clientSubmissionId) => bridgeDeps.sendPrompt(sessionId, text, clientSubmissionId),
       // 答完的通道会话按追问规律和内存余量休眠（core/company-bridge/session-care.js）；底线由 suspendSession 的排除项保证。
-      suspendSession: (id, opts) => sessionManager.suspendSession(id, opts),
+      // CodeAgent 会话休眠时补杀进程树残余（core/session-tree-sweep.js）：node-pty 只结束挂在伪终端上的进程，带独立 conhost 的 MCP 插件会变孤儿。
+      // 休眠前从最近一次进程快照（量会话内存时留下的）取整棵树，根结束 8 秒后重新枚举，PID + 启动时间对得上的按 PID 结束。
+      suspendSession: (id, opts) => {
+        const entry = sessionManager.sessions?.get?.(id);
+        const isCodeAgent = /^codeagent(?:-resume)?$/.test(String(entry?.info?.kind || ''));
+        const rootPid = isCodeAgent ? Number(entry?.pty?.pid) || 0 : 0;
+        let sweeper = null, before = [];
+        if (rootPid && companySessionMemInspector) {
+          try {
+            sweeper = require('./core/session-tree-sweep').createTreeSweeper({ inspector: companySessionMemInspector,
+              protect: () => [process.pid, ...(sessionManager.listLivePtyPids?.() || []).filter(pid => pid !== rootPid)],
+              log: line => { try { companyBridgeService?.careLog?.(line); } catch { /* 日志写不了不影响休眠 */ } } });
+            before = sweeper.capture(rootPid);
+          } catch { sweeper = null; }
+        }
+        const result = sessionManager.suspendSession(id, opts);
+        if (result?.ok && sweeper && before.length) sweeper.schedule(before, `session=${String(id).slice(0, 8)}`);
+        return result;
+      },
       // 最后一次往这个会话终端输入的时间（人打字或 Hub 发送）；只看输入，CLI 界面自己的重绘不算活动。
       sessionInputAt: id => Number(sessionManager.sessions?.get(id)?.lastInputAt) || 0,
       // 每个在运行的 CodeAgent 会话占多少内存（PTY 进程树的工作集）：并行上限和收会话按它的均值估算（session-care.js createSessionMemEstimator，
