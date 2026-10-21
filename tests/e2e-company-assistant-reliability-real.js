@@ -14,6 +14,15 @@ const freePort = () => new Promise((resolve, reject) => { const s = net.createSe
 const CODEAGENT = path.join(__dirname, 'fixtures', 'codeagent-standin', 'codeagent.cmd');
 const WELINK = path.join(__dirname, 'fixtures', 'welink-cli-reliability.js');
 const visibleText = value => String(value || '').replace(/\*\*/g, '').replace(/\s+/g, '');
+function assertReviewTimeOnEvidenceLines(answer) {
+  // A summary may mention multiple meetings in one sentence; pair times only
+  // within this record, supplementing the unchanged complete-line assertions.
+  for (const line of String(answer || '').split(/\r?\n/)) {
+    if (line.includes(' · 跨区评审 · ')) {
+      assert.doesNotMatch(line, /(?:09:00|10:00).*跨区评审|跨区评审.*(?:09:00|10:00)/);
+    }
+  }
+}
 function jsonLines(file) { return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean) : []; }
 function filesBelow(dir) { return fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? filesBelow(path.join(dir, e.name)) : [path.join(dir, e.name)]) : []; }
 function toolEvidence(records) {
@@ -158,7 +167,7 @@ async function main() {
           return line;
         });
         const ranges = sourceLines.map(line => line.split(' · ')[0]);
-        assert.doesNotMatch(turn.answer, /(?:09:00|10:00).*跨区评审|跨区评审.*(?:09:00|10:00)/);
+        assertReviewTimeOnEvidenceLines(turn.answer);
         if (followup) {
           const summaries = new Map(calls.map(call => [call.value.queryId, call.value.text.split('\n').filter(line => /^(?:覆盖：|范围说明：|在本次查询范围内找到)/.test(line))]));
           const actualCoverage = [...summaries.values()].flat();
@@ -261,4 +270,5 @@ async function main() {
   }
   if (!result.passed) throw Error('reliability real-agent E2E failed; see ' + receipt);
 }
-main().then(() => setTimeout(() => process.exit(0), 300), error => { console.error(error.message); setTimeout(() => process.exit(1), 300); });
+module.exports = { assertReviewTimeOnEvidenceLines };
+if (require.main === module) main().then(() => setTimeout(() => process.exit(0), 300), error => { console.error(error.message); setTimeout(() => process.exit(1), 300); });
