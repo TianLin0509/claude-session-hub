@@ -199,6 +199,10 @@ function updatePackage(outDir, manifest, versions) {
   for (const pattern of meta.buildFilesAppend || []) {
     if (Array.isArray(pkg.build.files) && !pkg.build.files.includes(pattern)) pkg.build.files.push(pattern);
   }
+  for (const pattern of meta.buildAsarUnpackAppend || []) {
+    if (!Array.isArray(pkg.build.asarUnpack)) pkg.build.asarUnpack = [];
+    if (!pkg.build.asarUnpack.includes(pattern)) pkg.build.asarUnpack.push(pattern);
+  }
   delete pkg.author;
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
   const lockPath = path.join(outDir, 'package-lock.json');
@@ -242,6 +246,7 @@ function applyTargetPackaging(manifest, targetSpec) {
   if (Array.isArray(targetSpec.drop)) manifest.drop = [...(manifest.drop || []), ...targetSpec.drop];
   const pkg = manifest.package = { ...(manifest.package || {}) };
   if (Array.isArray(targetSpec.buildFilesAppend)) pkg.buildFilesAppend = [...(pkg.buildFilesAppend || []), ...targetSpec.buildFilesAppend];
+  if (Array.isArray(targetSpec.buildAsarUnpackAppend)) pkg.buildAsarUnpackAppend = [...(pkg.buildAsarUnpackAppend || []), ...targetSpec.buildAsarUnpackAppend];
   if (targetSpec.build && typeof targetSpec.build === 'object') {
     const build = pkg.build = { ...(pkg.build || {}) };
     for (const [key, value] of Object.entries(targetSpec.build)) {

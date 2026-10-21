@@ -19,6 +19,9 @@ async function main() {
   fs.writeFileSync(state, 'ok'); fs.writeFileSync(path.join(root, 'welink-exchange'), 'user001@example.com');
   const exe = path.join(room, 'MishuTerminator-2.1.0.exe');
   fs.copyFileSync(path.join(original, 'release', 'v2.1.0', 'MishuTerminator-2.1.0.exe'), exe);
+  if (!process.env.HUB_V3_ENTRY && !process.env.HUB_V3_EXE) {
+    await require('../core/company-assistant/room-component/build-runtime').stageRuntime({ appDir: path.resolve(__dirname, '..'), source: exe });
+  }
   const build = spawnSync(python, [path.join(__dirname, 'fixtures', 'company-ppt-index.py'), path.join(root, 'ppt'), 'C:\\Users\\lintian\\pptx-finder'], { encoding: 'utf8', windowsHide: true });
   assert.equal(build.status, 0, build.stderr);
   const db = path.join(root, 'ppt', 'index.db'), dbHash = () => require('crypto').createHash('sha256').update(fs.readFileSync(db)).digest('hex'), beforeHash = dbHash();
@@ -26,7 +29,7 @@ async function main() {
   const day = new Date().toLocaleDateString('sv-SE'), now = Date.now();
   fs.writeFileSync(path.join(dir, `brief-${day}.json`), j({ day, by: 'rules', generatedAt: now, total: 1, sections: [{ key: 'meetings', title: '今天的会', items: [{ text: '14:00 算法讨论 · 准备 SRS 素材', source: 'fixture' }] }] }));
   fs.writeFileSync(path.join(dir, 'chat.json'), j([{ id: 'visual-fixture', q: '帮我找一下 SRS 信道估计的材料。', a: '可以从已有 PPT 素材库检索，再读完整页面，附上文件路径和页码。', state: 'done', askedAt: now, answeredAt: now }]));
-  let hub, c, mock, secretaryPid;
+  let hub, c, mock, secretaryPid, secretaryExe;
   const until = async (fn, label, timeout = 45000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await fn()) return; await sleep(300); } throw Error('timeout: ' + label); };
   const ui = async (expr, label, timeout) => until(() => c.eval(expr), label, timeout);
   const shot = async name => { const file = path.join(out, `20261020-company-v3${variant}-${name}-codex2.png`); const p = await c.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(file, Buffer.from(p.data, 'base64')); result.shots.push(file); };
@@ -61,9 +64,7 @@ async function main() {
     await shot('02-phone');
     result.checks.push('manual group ID -> welcome -> connected');
     await click('[data-ca="settings-tab:rooms"]');
-    await ui('!!document.querySelector("[data-room-op=connect]")', 'room connect');
-    await click('[data-room-op="connect"]');
-    await ui('!!document.querySelector("[data-room=rooms]") && !document.querySelector("[data-room-op=start]").disabled', 'secretary connected', 60000);
+    await ui('!!document.querySelector("[data-room=rooms]") && !document.querySelector("[data-room-op=start]").disabled', 'room component auto prepared', 150000);
     const live = JSON.parse(fs.readFileSync(path.join(room, 'hub-control', 'status.json')));
     secretaryPid = live.pid; assert.equal(live.version, '2.1.1');
     await value('[data-room="主题"]', 'Hub 控制链验收'); await value('[data-room="rooms"]', '练秋湖F12-3-13R');
@@ -74,16 +75,17 @@ async function main() {
     await shot('03-rooms');
     await until(() => fs.existsSync(path.join(room, 'runtime.json')), 'old exe new code runtime');
     const runtime = JSON.parse(fs.readFileSync(path.join(room, 'runtime.json')));
+    secretaryExe = runtime.exe;
+    const relativeRuntime = path.relative(path.join(dir, 'room-runtime'), path.resolve(secretaryExe));
+    assert.ok(relativeRuntime && !relativeRuntime.startsWith('..') && !path.isAbsolute(relativeRuntime), 'runtime belongs to this isolated Hub');
     assert.equal(runtime.exe_version, '2.1.0'); assert.equal(runtime.version, '2.1.1');
     await click('[data-ca="settings-tab:ppt"]');
-    await ui('!!document.querySelector("[data-f=ppt-query]") && !document.querySelector("[data-x=ppt-search] button").disabled', 'PPT library ready');
-    await value('[data-f="ppt-query"]', 'SRS 信道估计');
-    await c.eval('document.querySelector("[data-x=ppt-search]").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
-    await ui('!!document.querySelector("[data-ppt-read]")', 'search result');
-    await click('[data-ppt-read]');
-    await ui('/通过导频观测/.test(document.querySelector(".ca-ppt-result")?.innerText || "")', 'read complete text');
+    await ui('/已索引|份/.test(document.querySelector(".ca-tab-body")?.innerText || "") && !!document.querySelector("[data-x=ppt-pick]")', 'PPT index settings ready');
+    assert.equal(await c.eval('!!document.querySelector("[data-f=ppt-query]")'), false);
     await shot('04-ppt');
-    assert.equal(dbHash(), beforeHash); result.checks.push('actual Doctor-built synthetic index search/read; DB hash unchanged');
+    await value('[data-slot="form"] textarea', ''); await click('[data-ca="ppt-assist"]');
+    assert.match(await c.eval('document.querySelector("[data-slot=form] textarea").value'), /讲清楚/);
+    assert.equal(dbHash(), beforeHash); result.checks.push('Doctor index settings remain read-only; sidebar PPT enters natural-language composer (real model tested separately)');
     const mockState = JSON.parse(fs.readFileSync(path.join(room, 'mock-ready.json')));
     let booked;
     await until(async () => { booked = await (await fetch(`http://127.0.0.1:${mockState.port}/__state`)).json(); return booked.length; }, 'real engine submits mock booking', 150000);
@@ -93,7 +95,7 @@ async function main() {
     const group = path.join(root, 'welink-phone-group.jsonl');
     await until(() => fs.existsSync(group) && /会议室成功/.test(fs.readFileSync(group, 'utf8')), 'room phone push');
     result.bookingReceipt = booked[0]; result.runtime = runtime; result.checks.push('signed old exe + new code; GUI rules -> daemon -> mock 14:00 booking -> history -> card -> phone');
-    await click('[data-ca="close-panel"]');
+    assert.equal(await c.eval('document.querySelector("[data-slot=panel]").hidden'), true, 'PPT capability returns to the conversation');
     await ui('/\\d{2}-\\d{2}（周[一二三四五六日]）14:00–16:00 · /.test(document.querySelector("[data-slot=rooms]")?.innerText || "")', 'room card shows date, weekday and 14:00–16:00');
     assert.equal(await c.eval('getComputedStyle(document.querySelector(".ca-status .ca-dot")).width'), '10px');
     assert.deepEqual(fs.readdirSync(dir).filter(f => f.startsWith('mishu-probe-')), []);
@@ -127,14 +129,23 @@ async function main() {
       result.hubLogTail = hub.log().slice(-24);
     }
     if (!secretaryPid) { try { secretaryPid = JSON.parse(fs.readFileSync(path.join(room, 'hub-control', 'status.json'))).pid; } catch {} }
-    if (secretaryPid) {
-      const procPath = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(secretaryPid)} -ErrorAction Stop).Path`], { encoding: 'utf8', windowsHide: true }).trim();
-      assert.equal(path.resolve(procPath).toLowerCase(), path.resolve(exe).toLowerCase());
-      execFileSync('taskkill.exe', ['/PID', String(secretaryPid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    try {
+      if (secretaryPid) {
+        if (!secretaryExe) { try { secretaryExe = JSON.parse(fs.readFileSync(path.join(room, 'runtime.json'))).exe; } catch {} }
+        const procPath = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(secretaryPid)} -ErrorAction SilentlyContinue).Path`], { encoding: 'utf8', windowsHide: true }).trim();
+        if (procPath) {
+          assert.ok(secretaryExe, 'runtime path must be known before cleanup');
+          const relative = path.relative(path.join(dir, 'room-runtime'), path.resolve(secretaryExe));
+          assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+          assert.equal(path.resolve(procPath).toLowerCase(), path.resolve(secretaryExe).toLowerCase());
+          execFileSync('taskkill.exe', ['/PID', String(secretaryPid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        }
+      }
+    } finally {
+      mock?.kill();
+      result.mockErrors = errors; result.finished = Date.now();
+      fs.writeFileSync(path.join(out, `20261020-company-v3${variant}-e2e-codex2.json`), j(result));
     }
-    mock?.kill();
-    result.mockErrors = errors; result.finished = Date.now();
-    fs.writeFileSync(path.join(out, `20261020-company-v3${variant}-e2e-codex2.json`), j(result));
   }
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });

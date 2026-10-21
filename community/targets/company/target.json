@@ -50,8 +50,12 @@
     "!node_modules/node-pty/prebuilds/darwin-*/**",
     "!node_modules/node-pty/prebuilds/win32-arm64/**"
   ],
+  "buildAsarUnpackAppend": [
+    "core/company-assistant/room-component/runtime/**"
+  ],
   "$build": "安装包不附带 electron-builder 的差分更新数据：公司版用自己的一键更新（只换 app.asar，见 core/app-update），不用 electron-updater",
   "build": {
+    "beforePack": "core/company-assistant/room-component/build-runtime.js",
     "nsis": {
       "differentialPackage": false,
       "shortcutName": "AI HUB-Huawei",
@@ -78,9 +82,11 @@
   },
   "$releaseNotes": "本版的发布说明，写进 latest.json，更新弹窗里显示",
   "releaseNotes": [
-    "公司联动的会话一眼看出谁对接谁：会话名和顶部写明家里是哪个会话、哪个模型，本会话由哪个号、哪个模型作答",
-    "换号重做的会话名带「重做 N」，不再出现两个同名会话；DeepSeek、GLM 等不再被标成 Claude",
-    "回执首行带上题目，多个问题同时在途也分得清",
-    "同时开几个会话按实测的每会话内存估算（没有样本时按 3.8 GB），内存紧时少开、不再把电脑开到卡顿"
+    "查消息统一走助理 MCP：补拉所选时段的私聊、群 @本人和 @所有人，明确覆盖范围、分页与未取全原因",
+    "会议与日程由 Hub 处理上海时区、星期和跨天边界；简报保留已核实事实，AI 单独补准备建议",
+    "新增可编辑、可删除的助理短记忆，跨重启保留；每次只带相关内容，明确重要的人和群优先显示",
+    "PPT 素材改为自然语言 MCP 检索：按用途扩搜、读原页并显示可打开到页的出处；也可直接为选定文件夹建立文字索引",
+    "抢会议室组件随 Hub 安装包内嵌，首次使用自动准备，无需另装秘书终结者；保留原抢订引擎和规则",
+    "会议、日程和未读邮件分别展示取数状态；无法解析或未取全时明确说明，避免空结果被当成查询成功"
   ]
 }

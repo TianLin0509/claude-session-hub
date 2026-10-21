@@ -108,7 +108,8 @@ test('简报：清单版五栏、空栏不显示；AI 版出处不在原始数�
   const ai = B.parseAgentBrief(reply, snap, { day: '2026-10-14', now: NOW });
   assert.equal(ai.by, 'ai');
   assert.equal(ai.dropped, 2);
-  assert.equal(ai.total, 4);
+  assert.equal(ai.total, 7, 'AI漏掉的会议必须从原始数据补回');
+  assert.equal(ai.sections.find(s => s.key === 'meetings').items.length, 4);
   assert.deepEqual(ai.sections.find(s => s.key === 'commitments').items[0].due, '2026-10-16');
   assert.equal(ai.sections.find(s => s.key === 'commitments').items[0].guess, true);
   assert.equal(B.parseAgentBrief('我没法整理', snap, { day: '2026-10-14' }), null);
@@ -116,7 +117,7 @@ test('简报：清单版五栏、空栏不显示；AI 版出处不在原始数�
   assert.equal(done.sections.some(s => s.key === 'awaiting'), false);
   const many = { meetings: Array.from({ length: 14 }, () => ({ text: '会', source: 'meeting:m1' })), mail: Array.from({ length: 3 }, () => ({ text: '信', source: 'mail:x1' })) };
   const capped = B.parseAgentBrief(JSON.stringify(many), snap, { day: '2026-10-14' });
-  assert.equal(capped.total, 2, '同一出处同一栏只留一条');
+  assert.equal(capped.total, 6, '同一出处同一栏只留一条，并保留全部会议和待回事项');
   const crowded = { ...snap, meetings: D.meetings({ meetings: Array.from({ length: 12 }, (_, i) => ({ meetingId: 'c' + i, subject: '会' + i, meetingStartTime: at(8, i * 30), meetingEndTime: at(9, i * 30) })) }) };
   const full = B.fallbackBrief(crowded, { day: '2026-10-14', now: NOW });
   assert.ok(full.total > 10);

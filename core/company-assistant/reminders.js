@@ -6,12 +6,12 @@ const D = require('./data');
 
 const PRIORITY = { 'meeting-prep': 0, overbooked: 1, 'commitment-due': 2, 'awaiting-reply': 3, keyword: 4, 'day-summary': 5, brief: 0 };
 const minutesOf = hhmm => { const [h, m] = String(hhmm || '').split(':').map(Number); return (Number(h) || 0) * 60 + (Number(m) || 0); };
-const nowMinutes = now => { const d = new Date(now); return d.getHours() * 60 + d.getMinutes(); };
-const isWorkday = (now, settings) => (settings.workdays || [1, 2, 3, 4, 5]).includes(new Date(now).getDay());
+const nowMinutes = now => { const d = D.dateParts(now); return d ? d.hour * 60 + d.minute : NaN; };
+const isWorkday = (now, settings) => (settings.workdays || [1, 2, 3, 4, 5]).includes(new Date(D.dayKey(now) + 'T00:00:00Z').getUTCDay());
 
 // 会议排太满：有重叠，或首尾相接（间隔不超过 15 分钟）连着开满 3 小时。
 function overbooked(list, { blockHours = 3, gapMinutes = 15 } = {}) {
-  const ms = list.filter(m => m.start && m.end && m.end > m.start).sort((a, b) => a.start - b.start);
+  const ms = list.filter(m => !m.allDay && !D.eventTimeUnknown(m) && Number.isFinite(m.start) && Number.isFinite(m.end) && m.end > m.start).sort((a, b) => a.start - b.start);
   const overlaps = [];
   let block = null, longest = null;
   for (let i = 0; i < ms.length; i += 1) {
@@ -25,7 +25,7 @@ function overbooked(list, { blockHours = 3, gapMinutes = 15 } = {}) {
   return overlaps.length || long ? { overlaps, long } : null;
 }
 
-function dueNotices({ snapshot, settings, now, commitments = [], sessionId = null }) {
+function dueNotices({ snapshot, settings, now, commitments = [], sessionId = null, done = new Set() }) {
   if (!snapshot || !isWorkday(now, settings)) return [];
   const day = D.dayKey(now), minute = nowMinutes(now), out = [];
   const add = n => out.push({ sessionId, at: now, ...n });
@@ -33,6 +33,7 @@ function dueNotices({ snapshot, settings, now, commitments = [], sessionId = nul
   // 1. 会前准备卡
   const prepMs = (Number(settings.prepMinutes) || 15) * 60000;
   for (const m of meetings) {
+    if (m.allDay || D.eventTimeUnknown(m)) continue;
     const left = m.start - now;
     if (left > 0 && left <= prepMs) {
       add({ id: `prep:${m.sourceId}:${day}`, kind: 'meeting-prep', title: `${Math.max(1, Math.round(left / 60000))} 分钟后开会：${D.short(m.subject, 40)}`,
@@ -59,9 +60,9 @@ function dueNotices({ snapshot, settings, now, commitments = [], sessionId = nul
   const waitMs = (Number(settings.waitHours) || 4) * 3600000;
   if (minute >= 9 * 60 && minute < 20 * 60) {
     for (const m of D.awaiting(snapshot, settings)) {
-      if (now - m.since < waitMs) continue;
-      add({ id: `await:${m.conv}:${m.key}`, kind: 'awaiting-reply', title: `${D.short(m.sender, 12)} 等你回复 ${Math.round((now - m.since) / 3600000)} 小时`,
-        text: `${m.group ? '群「' + m.convName + '」' : '单聊'} ${D.clock(m.since)}：${D.short(m.text, 120)}`, detail: { source: m.sourceId } });
+      if (done.has(m.sourceId) || !Number.isFinite(m.since) || now - m.since < waitMs) continue;
+      add({ id: `await:${m.conv}:${m.key}`, kind: 'awaiting-reply', title: `${D.short(m.sender, 12)} ${m.needsReplyReview ? '@你的消息已过' : '等你回复'} ${Math.round((now - m.since) / 3600000)} 小时`,
+        text: `${m.group ? '群「' + m.convName + '」' : '私聊'} ${D.clock(m.since)}：${D.short(m.text, 120)}${m.needsReplyReview ? '\n回复关联不明确，请核对是否已处理。' : ''}`, detail: { source: m.sourceId } });
     }
   }
   // 5. 关注词：别人新说的话里出现关注词（keywordSince 之前的旧消息不算）
@@ -76,11 +77,11 @@ function dueNotices({ snapshot, settings, now, commitments = [], sessionId = nul
   }
   // 6. 下班前小结
   if (minute >= minutesOf(settings.summaryTime || '18:00')) {
-    const waiting = D.awaiting(snapshot, settings).length;
+    const waiting = D.awaiting(snapshot, settings).filter(m => !done.has(m.sourceId)).length;
     const dueTomorrow = commitments.filter(c => c.due === tomorrow).length;
-    const done = meetings.filter(m => (m.end || m.start) <= now).length;
+    const ended = meetings.filter(m => Number.isFinite(m.end) && m.end <= now).length;
     add({ id: `summary:${day}`, kind: 'day-summary', title: '下班前小结',
-      text: [`今天 ${meetings.length} 场会，已开完 ${done} 场。`, waiting ? `还有 ${waiting} 人在等你回复。` : '没有人在等你回复。', dueTomorrow ? `明天到期 ${dueTomorrow} 件答应过的事。` : '', '想要详细版就在助理页问「今天做了什么、明天要准备什么」。'].filter(Boolean).join('\n') });
+      text: [`已获取今天 ${meetings.length} 场会，其中 ${ended} 场已到计划结束时间。`, waiting ? `还有 ${waiting} 条私聊待回或@你待核对。` : '已获取范围内没有私聊待回或@你待核对。', dueTomorrow ? `明天到期 ${dueTomorrow} 件答应过的事。` : '', '想要详细版就在助理页问「今天做了什么、明天要准备什么」。'].filter(Boolean).join('\n') });
   }
   return out.sort((a, b) => PRIORITY[a.kind] - PRIORITY[b.kind]);
 }

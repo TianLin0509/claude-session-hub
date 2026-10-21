@@ -94,7 +94,7 @@ test('简报：「群里和你相关」自动挑 @ 我的群；提问里先列�
   const list = B.fallbackBrief(snap, { day, now: Date.now(), settings: s });
   const groups = list.sections.find(x => x.key === 'groups');
   assert.equal(groups.title, '群里和你相关');
-  assert.match(groups.items[0].text, /^部门大群：36 小时内 140 条，@你 1 次/);
+  assert.ok(groups.items.some(x => /^部门大群：36 小时内 140 条，@你 1 次/.test(x.text)), '群摘要保留，同时逐条保留@所有人');
   assert.ok(list.sections.find(x => x.key === 'awaiting').items.some(i => /周报模板/.test(i.text)), '群里 @ 我、我没回：算等你回复');
   const prompt = B.briefPrompt(snap, { day, now: Date.now(), settings: s });
   assert.match(prompt, /@我/);
@@ -106,7 +106,8 @@ test('简报：「群里和你相关」自动挑 @ 我的群；提问里先列�
   const picked = B.inlineMessages(big, { now: Date.now(), settings: { ...s, day } });
   assert.ok(picked.omitted > 0 && picked.lines.join('\n').length <= B.INLINE_CHARS + 400);
   assert.ok(picked.lines.some(l => l.includes('周报模板')));
-  assert.match(B.briefPrompt(big, { day, now: Date.now(), settings: s }), new RegExp(`另有 ${picked.omitted} 条群消息没有列出.*data/brief-input-${day}\\.md`));
+  const bigPrompt = B.briefPrompt(big, { day, now: Date.now(), settings: s });
+  assert.ok(bigPrompt.includes(String(picked.omitted)) && bigPrompt.includes(`data/brief-input-${day}.md`), '省略计数与全文入口均保留，明确私聊也可能超出预算');
   const file = B.briefInputFile(big, { day, now: Date.now(), settings: s });
   assert.equal((file.match(/^\[msg:/gm) || []).length, picked.total, '文件里是全部消息');
   await r.svc.generateBrief({ force: true });
