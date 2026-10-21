@@ -134,8 +134,7 @@ async function main() {
     result.checks.push('成员未读状态夹具令群聊进入未读；另一成员真实原生运行状态仍标为运行中');
     await shot('dark-unread');
     await clickPoint(client,groupRow(group.id)+' .sl-title');
-    assert.equal(await client.eval(`sessions.get(${JSON.stringify(b)}).unreadCount`),1,'opening the room does not read every member');
-    await clickPoint(client,groupRow(group.id)+` .sl-unread-member[data-sub-id="${b}"]`);
+    assert.equal(await client.eval(`sessions.get(${JSON.stringify(b)}).unreadCount`),0,'opening the room reads every current member');
     await waitFor('read acknowledged',()=>client.eval(`sessions.get(${JSON.stringify(b)}).unreadCount===0 && !sessions.get(${JSON.stringify(b)}).replyReady`));
     const mainMembers=await invoke('get-sessions');
     assert.equal(mainMembers.find(s=>s.id===b).unreadCount || 0,0);

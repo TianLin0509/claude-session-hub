@@ -54,30 +54,26 @@ async function main() {
     await invoke('update-meeting-sync',{meetingId:group.id,fields:{pinned:true,title:'AI HUB · 很长的群聊标题用于检查未读人数和成员按钮布局'}});
     await wait('pinned unread',async()=>/sec-unread/.test(await section()));
     check('Pinned group enters unread once, keeps pin icon',await c.eval(`document.querySelectorAll(${JSON.stringify(row)}).length===1 && !!document.querySelector(${JSON.stringify(row+' .sl-pin')})`));
-    check('Count and both member chips visible',await c.eval(`document.querySelector(${JSON.stringify(row+' .sl-unread-badge')}).textContent==='2 位未读' && document.querySelectorAll(${JSON.stringify(row+' .sl-unread-member.has-unread')}).length===2`));
+    check('Unread uses ordinary indented rows without a second chip layout',await c.eval(`!!document.querySelector(${JSON.stringify(row+' .sl-time.has-unread')}) && document.querySelectorAll('[data-sidebar-group="${group.id}"] .child.need-unread').length===2 && !document.querySelector(${JSON.stringify(row+' .sl-unread-members')})`));
+    await click(`#session-list [data-session-id="${b}"] .sl-title`);
+    await wait('one member read',async()=>await unread()===1);
+    check('Reading one member acknowledges only that member');
     await click(row+' .sl-title');
     await wait('room selected',()=>c.eval(`activeMeetingId===${JSON.stringify(group.id)}`));
-    check('Entering the room keeps both members unread',await unread()===2);
-    await screenshot('selected-unread');
-    await click(`.mr-gc-msg[data-unread-answer="true"][data-source-sid="${b}"] .mr-gc-bubble`);
-    await wait('latest bubble read',async()=>await unread()===1);
-    check('Reading one latest group bubble acknowledges only its member');
+    check('Entering the room clears all member unread',await unread()===0);
+    await screenshot('selected-read');
     const rereply=await invoke('groupchat:turn',{meetingId:group.id,userInput:'fixture:normal followup',targetMemberIds:[group.slotSpecs?.[1]?.memberId || 'm2'],turnTimeoutMs:20000});
-    assert.equal(rereply.status,'completed');await wait('both unread again',async()=>await unread()===2);
-    await click(row+` [data-sub-id="${a}"]`);
-    await wait('one member read',async()=>await unread()===1);
-    check('Member chip opens real member session and only clears that member',await c.eval(`activeSessionId===${JSON.stringify(a)} && meetings[${JSON.stringify(group.id)}].unreadAnswered.has(${JSON.stringify(b)})`));
-    await click(row+' .sl-meeting-read');
+    assert.equal(rereply.status,'completed');await wait('new reply unread',async()=>await unread()===1);
+    await click(row+' .sl-title');
     await wait('group read',async()=>await unread()===0);
-    check('Whole-group read returns the group to pinned',/sec-pinned/.test(await section()));
-    check('Whole-group read does not navigate away',await c.eval(`activeSessionId===${JSON.stringify(a)}`));
+    check('Next explicit group visit clears replies received after opening');
     // Start two more real group turns while the group is selected. Reading a
     // member between them exercises preserved unread across turn boundaries.
     await click(row+' .sl-title');
     const second=await invoke('groupchat:turn',{meetingId:group.id,userInput:'fixture:normal second',turnTimeoutMs:20000});assert.equal(second.status,'completed');
     await wait('selected group replies unread',async()=>await unread()===2);
     check('Selected room still receives new unread replies');
-    await click(row+` [data-sub-id="${a}"]`);
+    await click(`#session-list [data-session-id="${a}"] .sl-title`);
     await click(`#session-list [data-session-id="${ready.id}"]`);
     // The next round targets only a: b must retain the answer from the old round.
     const third=await invoke('groupchat:turn',{meetingId:group.id,userInput:'fixture:normal third',targetMemberIds:[group.slotSpecs?.[0]?.memberId || 'm1'],turnTimeoutMs:20000});
@@ -86,19 +82,19 @@ async function main() {
     check('Old unread survives a new round answering only the other member');
     const pending=await invoke('session:send-prompt',{sessionId:a,text:'fixture:wait'});assert.equal(pending.ok,true);
     await wait('waiting member',()=>c.eval(`sessions.get(${JSON.stringify(a)})?.nativeRuntime?.state==='waiting'`));
-    await wait('waiting icon rendered',()=>c.eval(`!!document.querySelector(${JSON.stringify(row+' .sl-group-icon.wait')}) && !!document.querySelector(${JSON.stringify(row+' .sl-unread-badge')})`));
+    await wait('waiting icon rendered',()=>c.eval(`!!document.querySelector(${JSON.stringify('#session-list [data-session-id="'+a+'"] .sl-kind[data-state="wait"]')}) && !!document.querySelector(${JSON.stringify(row+' .sl-time.has-unread')})`));
     check('Unread badge coexists with actual waiting state');
     result.themes=[];
     for(const theme of ['dark','frost','claude','codex','hub','slate']) {
       await c.eval(`themeController.setTheme(${JSON.stringify(theme)})`);
       await _waitMs(150);
-      const color=await c.eval(`(() => {const e=document.querySelector(${JSON.stringify(row)}),s=getComputedStyle(e);return {theme:document.documentElement.dataset.theme,background:s.backgroundColor,shadow:s.boxShadow,badge:getComputedStyle(e.querySelector('.sl-unread-badge')).color};})()`);
+      const color=await c.eval(`(() => {const e=document.querySelector(${JSON.stringify(row)}),s=getComputedStyle(e);return {theme:document.documentElement.dataset.theme,background:s.backgroundColor,shadow:s.boxShadow,badge:getComputedStyle(e.querySelector('.sl-time.has-unread')).color};})()`);
       assert.notEqual(color.background,'rgba(0, 0, 0, 0)');assert.notEqual(color.shadow,'none');result.themes.push(color);
       if(['frost','codex'].includes(theme))await screenshot(theme+'-unread');
     }
     check('Unread fill and edge persist across all six themes');
     await click('#btn-session-details');
-    check('Details mode retains unread badges',await c.eval(`!!document.querySelector(${JSON.stringify(row+' .sl-unread-badge')})`));
+    check('Details mode retains unread badges',await c.eval(`!!document.querySelector(${JSON.stringify(row+' .sl-time.has-unread')})`));
     await screenshot('details-unread');
     await click('#session-list .sec-mark-all-read');
     await wait('all read',async()=>await unread()===0);

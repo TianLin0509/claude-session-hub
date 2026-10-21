@@ -66,7 +66,7 @@ async function main() {
     assert.equal(await cdp.eval(`document.querySelectorAll('.sl-details').length`), 0);
     assert.equal(await cdp.eval(`document.querySelector('[data-session-id="member-codex"]').classList.contains('child')`), true);
     assert.equal(await cdp.eval(`document.querySelectorAll('#session-list [data-session-id="member-codex"]').length`), 1);
-    assert.equal(await cdp.eval(`document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height`), 0);
+    assert.ok(await cdp.eval(`document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height > 0`));
     const groupPoint = await cdp.eval(`(()=>{const r=document.querySelector('[data-meeting-id="details-group"]').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...groupPoint });
     await until(cdp, `document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height > 0`);
@@ -81,8 +81,8 @@ async function main() {
     assert.equal(await cdp.eval(`!!document.querySelector('.hub-session-peek')`), false, 'member hover must not open a summary card');
     result.screenshots.push(await shot(cdp, 'compact-hover'));
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1000, y: 500 });
-    await until(cdp, `document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height === 0`);
-    result.checks.push('compact group is one line; hover reveals members; missing meetingId repaired; no duplicate top-level row');
+    await until(cdp, `document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height > 0`);
+    result.checks.push('compact group keeps visible indented members without hover; missing meetingId repaired; no duplicate top-level row');
     result.screenshots.push(await shot(cdp, 'compact'));
     await click(cdp, '#btn-session-details');
     await until(cdp, `document.querySelector('[data-usage-id="single-codex"]')?.textContent.includes('1.28M/64k')`);
@@ -109,12 +109,9 @@ async function main() {
       assert.match(await cdp.eval(`document.querySelector('[data-usage-id="${id}"]').title`), /1,280,000/);
     }
     result.checks.push('ordinary/member usage keeps hover details; physical clicks neither open a modal nor navigate');
-    await click(cdp, '[data-meeting-id="details-group"] .expand-arrow');
-    await until(cdp, `document.querySelectorAll('.child.has-details').length === 0`);
-    await _waitMs(450);
-    await click(cdp, '[data-meeting-id="details-group"] .expand-arrow');
-    await until(cdp, `document.querySelectorAll('.child.has-details').length === 2`);
-    result.checks.push('group collapse/expand uses real pointer navigation');
+    assert.equal(await cdp.eval(`document.querySelectorAll('[data-meeting-id="details-group"] .expand-arrow').length`), 0);
+    assert.equal(await cdp.eval(`document.querySelectorAll('.child.has-details').length`), 2);
+    result.checks.push('details mode retains the same group/member layout without a separate collapse UI');
     const { session: native } = await cdp.eval(`ipcRenderer.invoke('add-meeting-sub', {meetingId:'details-group',kind:'codex', opts:{cwd:${JSON.stringify(root)},model:'gpt-6-astra',effort:'high',mcpProfile:'none'}})`);
     assert.equal(native.meetingId, 'details-group');
     await until(cdp, `sessions.get(${JSON.stringify(native.id)})?.nativeRuntime?.state === 'idle'`);

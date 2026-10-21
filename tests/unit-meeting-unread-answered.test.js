@@ -35,9 +35,32 @@ test('only the foreground member latest view suppresses new attention', () => {
   f.send('a', 1); f.send('b', 1);
   assert.deepEqual([...f.meeting.unreadAnswered], ['b']);
 });
-test('selectMeeting no longer acknowledges all members; renderer preserves local attention on updates', () => {
+test('selectMeeting acknowledges all current members; metadata updates still preserve local attention', () => {
   const start = source.indexOf('async function selectMeeting(');
   const body = source.slice(start, source.indexOf('paintSidebarActiveTarget', start));
-  assert.doesNotMatch(body, /clearSessionCompletedUnread|unreadAnswered.*clear/);
+  assert.match(body, /markMeetingRead\(meetingId\)/);
   assert.match(source, /meetingUnread\.preserveMeetingAttention\(previous, meeting\)/);
+});
+
+test('reading a room clears all completed unread, preserves input requests and completion deduplication', () => {
+  const sessions = new Map([
+    ['a', { unreadCount: 2, replyReady: true, attentionState: 'reply-ready' }],
+    ['b', { unreadCount: 1, needsUserInput: true, attentionState: 'needs-input' }],
+    ['other', { unreadCount: 3, replyReady: true }],
+  ]);
+  const meeting = { subSessions: ['a', 'b'], unreadCount: 9 };
+  const completion = { sid: 'a', status: 'completed', turnNum: 1, runId: 'r' };
+  meetingUnread.recordMeetingAnswer(meeting, completion);
+  const result = meetingUnread.readMeeting(meeting, sessions);
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.sessionIds, ['a', 'b']);
+  assert.equal(meetingUnread.getMeetingUnreadMemberIds(meeting, sessions).size, 0);
+  assert.equal(meeting.unreadCount, 0);
+  assert.equal(sessions.get('b').needsUserInput, true);
+  assert.equal(sessions.get('other').unreadCount, 3);
+  assert.equal(meetingUnread.recordMeetingAnswer(meeting, completion), false);
+  assert.equal(meeting.unreadAnswered.size, 0);
+  assert.equal(meetingUnread.readMeeting(meeting, sessions).changed, false);
+  meetingUnread.recordMeetingAnswer(meeting, { ...completion, turnNum: 2 });
+  assert.deepEqual([...meeting.unreadAnswered], ['a']);
 });
