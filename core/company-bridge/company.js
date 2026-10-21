@@ -141,6 +141,22 @@ const MAX_HIJACK = 2;
 // CLI 还没就绪时（发送入口报 cli-not-ready，明确没发）重试的间隔和最长等待；重启后恢复发「继续」同样适用（hub-admin.js）。
 const NOT_READY_RETRY_MS = 15000;
 const NOT_READY_MAX_MS = 5 * 60000;
+// 按问题文本在原生记录里找回答（receipt-reader.js findRoundAnswer，2026-10-21 同事公司 Hub）：同一轮最快多久查一次（读整份记录）；
+// 找到的回答已收尾后，记录文件要静这么久才发（Stop 之后 CLI 可能还在补写几行）；重启后重新打开的会话，记录这么久内还在写就再等等。
+const FIND_EVERY_MS = 30000;
+const FOUND_QUIET_MS = 20000;
+const RESTART_WRITING_MS = 2 * 60000;
+// 一轮回答由多段文字拼成（工具调用前后各写了一些，2026-10-21）：总长超过上限时从前面截（结论在最后），并注明截掉多少；
+// 只有一段、或最后一段本身就超限时原样交给 sendReply，沿用从后面截的老办法。
+function fitReply(parts, max = MAX_REPLY_CHARS) {
+  const list = (parts || []).map(p => String(p && p.text || '').trim()).filter(Boolean);
+  const text = list.join('\n\n');
+  if (text.length <= max || list.length < 2 || list[list.length - 1].length >= max - 400) return text;
+  let kept = text.slice(text.length - (max - 400));
+  const nl = kept.indexOf('\n');
+  if (nl >= 0 && nl < 2000) kept = kept.slice(nl + 1);
+  return `（这一轮的回答共 ${text.length} 字，超过 ${max} 字上限：前面 ${text.length - kept.length} 字的过程文字截掉了，保留后面的结论；需要的话请追问前半部分。）\n\n` + kept;
+}
 // 从 CodeAgent 的原生记录（Claude 格式 jsonl）里取用户发出的消息：时间、文字、图片张数（工具结果不算）。
 function userTurnsFromTranscript(file) {
   let raw = '';
@@ -1240,6 +1256,12 @@ class CompanyBridge {
     if (this.sessionBusy(t.sessionId)) return;
     const since = activeSince(r);
     const final = this.lastFinal(t.sessionId);
+    // Hub 重启打断的在途轮次（2026-10-21 同事公司 Hub：三天重启 11 次，4 轮在重启后被判「会话已关闭，没有读到回答」）：
+    // 重启前发出、不是远程重启后自动接着做的那种（那种有 resumePending / resumedAt，归 hub-admin.js），按问题文本从原生记录补收一次。
+    if (r.restartChecked !== this.bootAt && since < this.bootAt && !(final && final.id !== r.baseline) && !this.roundResuming(t, r)) {
+      if (await this.recoverAfterRestart(t, r)) return;
+      t = this.thread(t.id) || t;
+    }
     // 发出结果未知、3 分钟后会话停着而原生记录文件都还没有：CodeAgent 确实没收到，重发一次（不会重复）。
     // 重发前先查一遍记录：只是慢（提问已经落进记录、还没开工）的不重发（2026-10-18 v2.1.9 验收：重发的那一份和卡在输入框里的
     // 第一份一起提交，回执核对随之卡住，见 receipt-reader.js repeatedCopy）。
@@ -1266,6 +1288,16 @@ class CompanyBridge {
           }
           return this.failRound(t, r, '提问没能送进公司的 CodeAgent（重发一次后它的记录里仍没有这条提问）；可在「AI特战队专用功能」里点重试，或追问重发');
         }
+      }
+      // 绑定的记录里没有新回答：可能是会话身份没绑上（hook 没到），或休眠后恢复的 CLI 换了记录文件（2026-10-21 同事公司 Hub，
+      // 「会话停下了，但一直没读到回答」、Q-1020-06 答完 20 分钟没送回）。按这一轮的问题在同号同工作目录的记录里找。
+      if (this.now() - r.sentAt > VERIFY_MS) {
+        const found = this.findByQuestion(t, r);
+        if (found && found.finished && found.text && this.now() - found.mtime > FOUND_QUIET_MS) {
+          this.bridgeLog(`found-by-question ${t.id}#${r.round} 绑定的记录里没有新回答，按问题在 ${require('node:path').basename(found.file)} 里找到`);
+          return this.sendFound(t, r, found, { allowRewrite: true });
+        }
+        if (found && this.now() - found.mtime < NO_ANSWER_MS && this.now() - r.sentAt < LONG_RUN_MS) return; // 别的记录文件还在写：还在干活
       }
       // CodeAgent 的原生记录还在写就是还在干活（长时间的编译、仿真）：会话表里查不到、或停摆超过 30 分钟都先别判失败，
       // 最多等 LONG_RUN_MS（2026-10-17 Q-1017-17/21：跑 AirView 的会话还在运行，10 分钟就被判成「会话已关闭」）。
@@ -1301,7 +1333,7 @@ class CompanyBridge {
       }
       if (r.receiptIssue) t = this.patchRound(t, r.round, { receiptIssue: null });
     }
-    let text = String(receipt ? receipt.text : final.text || '').trim();
+    let text = String(receipt ? (Array.isArray(receipt.parts) && receipt.parts.length ? fitReply(receipt.parts) : receipt.text) : final.text || '').trim();
     if (sourceVerdict(text).tooMuch && !r.rewriteAsked) {
       // 第一次发现成段源码：请它自己改写（同一会话），改写稿出来再发。
       this.patchRound(t, r.round, { rewriteAsked: true, rewrite: true, sentAt: null, firstDraftChars: text.length });
@@ -1379,6 +1411,31 @@ class CompanyBridge {
       return;
     }
     const meta = t.sessionId && (this.deps.getSession(t.sessionId) || this.deps.getSessionMetadata?.(t.sessionId));
+    // 2026-10-21 起先按这一轮发出的问题在原生记录里定位（不靠内存状态，Hub 重启后照样能补收）：
+    // 1) 绑定的记录里能逐条核对到（readReceipt）→ 取这一轮的全部回答；
+    // 2) 按问题文本在同号同工作目录的记录里找到、且已收尾 → 取它之后的全部回答；没收尾的如实说「没写完」；
+    // 3) 记录里找不到这一轮的问题，才退回老办法：取这一轮发出之后的最新回答（注明没核对归属）。
+    let receipt = null;
+    if (meta && this.deps.readReceipt) { try { receipt = this.deps.readReceipt(meta, { ...r, threadId: t.id }); } catch { receipt = null; } }
+    if (receipt && receipt.available) {
+      const text = Array.isArray(receipt.parts) && receipt.parts.length ? fitReply(receipt.parts) : String(receipt.text || '');
+      this.notify('补收', `${t.id} 第 ${r.round} 轮：已从公司会话记录核对取回这一轮的回答`, t.sessionId);
+      return this.sendReply(this.thread(t.id) || t, r, '（补收：按这一轮的问题在公司会话记录里核对到的回答，原样取回。）\n\n' + text.trim(),
+        { recollected: true, userMessageId: receipt.userMessageId, sourceMessageIds: (receipt.records || []).map(x => x.messageId) });
+    }
+    const found = this.findByQuestion(t, r, { force: true });
+    if (found && found.finished && found.text) {
+      this.notify('补收', `${t.id} 第 ${r.round} 轮：已按问题从公司会话记录取回这一轮的回答`, t.sessionId);
+      return this.sendFound(t, r, found, { note: '（补收：按这一轮的问题在公司会话记录里找到的回答，原样取回。）' });
+    }
+    if (found) {
+      const written = found.parts.reduce((n, p) => n + p.text.length, 0);
+      const writing = this.now() - found.mtime < RESTART_WRITING_MS && !!this.deps.getSession(t.sessionId);
+      void this.link.send('status', { thread: t.id, gen: t.gen, round: r.round, state: writing ? 'running' : 'error', note: writing
+        ? '补收：公司会话记录里这一轮的回答还在写，答完会照常回执'
+        : `补收不到完整回答：公司会话记录里找到了这一轮的问题，但回答没写完（${written ? `之后写了 ${written} 字、没有最终回答` : '之后还没写回答'}），可以追问让它接着做，或重问` }).catch(() => {});
+      return;
+    }
     const since = (r.firstSentAt || r.sentAt || r.receivedAt || 0) - 5000;
     const finals = meta && this.deps.readFinals ? this.deps.readFinals(meta) : [];
     const latest = [...(finals || [])].reverse().find(f => (f.timestamp || 0) >= since && f.id !== r.baseline);
@@ -1389,6 +1446,54 @@ class CompanyBridge {
     const note = '（补收：这是公司会话在这一轮发出之后写下的最新回答，按家里要求直接取回，没有逐条核对它对应哪条提问。）';
     this.notify('补收', `${t.id} 第 ${r.round} 轮：已从公司会话取回最新回答`, t.sessionId);
     return this.sendReply(this.thread(t.id) || t, r, note + '\n\n' + String(latest.text || '').trim(), { recollected: true });
+  }
+  // 按这一轮发出的问题在原生记录里找回答（receipt-reader.js findRoundAnswer）：不靠会话身份绑定和内存状态。
+  // 同一轮 FIND_EVERY_MS 内重复调用返回上次的结果（要读整份记录）；force 时现读。
+  findByQuestion(t, r, { force = false } = {}) {
+    if (!t || !r || !t.sessionId || !(r.sentAt || r.firstSentAt)) return null;
+    const memo = this.findMemo || (this.findMemo = new Map());
+    const key = t.id + '#' + r.round + '#' + (r.sentAt || '') + '#' + (r.promptFingerprint || '');
+    const prev = memo.get(key);
+    if (!force && prev && this.now() - prev.at < FIND_EVERY_MS) return prev.found;
+    const meta = this.deps.getSession(t.sessionId) || this.deps.getSessionMetadata?.(t.sessionId) || null;
+    let found = null;
+    if (meta) {
+      try { found = (this.deps.findRoundAnswer || require('./receipt-reader').findRoundAnswer)(meta, { ...r, threadId: t.id }); } catch (e) { found = null; this.bridgeLog(`find-by-question ${t.id}#${r.round} 读记录出错：${short(e.message, 120)}`); }
+    }
+    if (memo.size > 200) memo.clear();
+    memo.set(key, { at: this.now(), found });
+    return found;
+  }
+  // 发回按问题找到的回答（collect 兜底、重启补收、家里补收共用）。allowRewrite：成段源码先请它改写（同 collect）。
+  async sendFound(t, r, found, { note = '', allowRewrite = false, ...extra } = {}) {
+    const text = fitReply(found.parts && found.parts.length ? found.parts : [{ text: found.text }]).trim();
+    if (allowRewrite && sourceVerdict(text).tooMuch && !r.rewriteAsked) {
+      this.patchRound(t, r.round, { rewriteAsked: true, rewrite: true, sentAt: null, firstDraftChars: text.length });
+      return;
+    }
+    return this.sendReply(this.thread(t.id) || t, r, note ? note + '\n\n' + text : text, { foundBy: 'question', ...(note ? { recollected: true } : {}), ...extra });
+  }
+  // 重启前发出的在途轮次（recoverAfterRestart 只对每个进程每轮做一次）：答完整的照常回执；没答完的标失败、写明重启打断；
+  // 记录里找不到这一轮的问题（或不知道记录在哪）就交回原有流程（核实提问、重发、超时判失败）。返回 true 表示已处理或要再等。
+  async recoverAfterRestart(t, r) {
+    const open = !!this.deps.getSession(t.sessionId);
+    // 会话被重新打开了：CLI 刚起来状态还没报上来，先等启动宽限
+    if (open && this.now() - this.bootAt < STARTUP_GRACE_MS) return true;
+    const found = this.findByQuestion(t, r, { force: true });
+    if (found && found.finished && found.text) {
+      this.bridgeLog(`restart-recollect ${t.id}#${r.round} 重启前答完的回答按问题从原生记录补收`);
+      await this.sendFound(t, r, found, { restartRecovered: true });
+      return true;
+    }
+    if (found) {
+      if (open && this.now() - found.mtime < RESTART_WRITING_MS) return true; // 重新打开的会话还在往记录里写
+      const written = found.parts.reduce((n, p) => n + p.text.length, 0);
+      this.bridgeLog(`restart-interrupted ${t.id}#${r.round} 重启前没答完（已写 ${written} 字）`);
+      this.failRound(this.thread(t.id) || t, r, `Hub 重启打断，回答没写完（公司会话记录里找到了这一轮的问题，${written ? `之后写了 ${written} 字、没写出最终回答` : '之后还没写回答'}）；家里可以重问`);
+      return true;
+    }
+    this.patchRound(t, r.round, { restartChecked: this.bootAt });
+    return false;
   }
   // 这一轮是不是「重启中断、正在自动接着做」（hub-admin.js）：还没恢复（标着待恢复，或恢复清单里待处理 / 恢复中），
   // 或已恢复并发了「继续」、之后还没写出新回答，且仍在收回执的等待窗口里（原生记录还在写最多 LONG_RUN_MS，否则同 collect 的 NO_ANSWER_MS×3）。
