@@ -39,6 +39,74 @@ test('日历成功退出的准确空结果文本只执行一次，并转换为�
   assert.equal(calls, 1);
 });
 
+// Q-1021-09 第2轮真机空页为 code=200,data={page:2,size:30,start:60,total:0}，没有 data.data。
+// page=1 的空页和以下会议记录是合成边界；不推断 start 的通用公式或 roles 的含义。
+const meetingEmptyPage = (page, size) => ({ code: 200, data: { page, size, total: 0 }, description: 'success' });
+
+test('已核实的无列表空页结构可以表示首个空页，不再误报查询失败', async () => {
+  const got = await collectMeetings(async () => meetingEmptyPage(1, 30), NOW);
+  assert.equal(got.coverage.status, 'complete');
+  assert.equal(got.coverage.total, 0);
+  assert.deepEqual(got.meetings, []);
+});
+
+test('满页后遇到真机形状的无列表空页，保留前页总数和全部记录', async () => {
+  const rows = Array.from({ length: 30 }, (_, i) => event(i));
+  const got = await collectMeetings(async (_label, args) => Number(arg(args, '--page')) === 1
+    ? { code: 200, data: { data: rows, total: 30 } }
+    : { code: 200, data: { page: 2, size: 30, start: 60, total: 0 }, description: 'success', timestamp: NOW }, NOW);
+  assert.equal(got.coverage.pages, 2);
+  assert.equal(got.coverage.total, 30);
+  assert.equal(got.coverage.status, 'complete');
+  assert.equal(got.meetings.length, 30);
+});
+
+test('显式空列表的末页 total=0 也不能清除前页正总数', async () => {
+  const got = await collectMeetings(async (_label, args) => Number(arg(args, '--page')) === 1
+    ? { code: 200, data: { data: [event(1), event(2)], total: 2 } }
+    : { code: 200, data: { data: [], total: 0 } }, NOW, { size: 2 });
+  assert.equal(got.coverage.total, 2);
+  assert.equal(got.coverage.status, 'complete');
+  assert.equal(got.meetings.length, 2);
+});
+
+test('只取到部分记录就遇到已核实空页，仍标明没有取齐', async () => {
+  const got = await collectMeetings(async (_label, args) => Number(arg(args, '--page')) === 1
+    ? { code: 200, data: { data: [event(1)], total: 2 } }
+    : meetingEmptyPage(2, 1), NOW, { size: 1 });
+  assert.equal(got.coverage.total, 2);
+  assert.equal(got.coverage.status, 'partial');
+  assert.equal(got.coverage.reason, 'early-end');
+  assert.equal(got.meetings.length, 1);
+});
+
+test('无列表不等于空结果：错误业务码、页号、页大小、总数和未知形状均不能吞掉', async () => {
+  const malformed = [
+    { code: 500, data: { page: 1, size: 30, total: 0 } },
+    { data: { page: 1, size: 30, total: 0 } },
+    ...[{}, { page: 2, size: 30, total: 0 }, { page: 1, size: 1, total: 0 },
+      { page: 1, size: 30 }, ...[1, -1, null, false, '0'].map(total => ({ page: 1, size: 30, total })),
+      ...[null, {}, ''].map(data => ({ page: 1, size: 30, total: 0, data }))]
+      .map(data => ({ code: 200, data })),
+    { code: 200, data: null }, { code: 200, data: [] },
+  ];
+  for (const raw of malformed) {
+    const got = await collectMeetings(async () => raw, NOW);
+    assert.equal(got.coverage.status, 'failed', JSON.stringify(raw));
+    assert.equal(got.coverage.reason, 'invalid-shape');
+  }
+});
+
+test('已取得会议后收到未知无列表页，保留记录并报部分失败', async () => {
+  const got = await collectMeetings(async (_label, args) => Number(arg(args, '--page')) === 1
+    ? { code: 200, data: { data: [event(1)], total: 2 } }
+    : { code: 200, data: { page: 2, size: 1 } }, NOW, { size: 1 });
+  assert.equal(got.coverage.total, 2);
+  assert.equal(got.coverage.status, 'partial');
+  assert.equal(got.coverage.reason, 'invalid-shape');
+  assert.equal(got.meetings.length, 1);
+});
+
 test('空日历文字不能掩盖进程失败、缺失退出码或其他命令失败', async () => {
   for (const [command, code] of [
     [['calendar', 'list'], 1], [['calendar', 'list'], null], [['calendar', 'list'], undefined],

@@ -56,8 +56,12 @@ async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages
     const raw = await runJson('会议', meetingArgs(now, page, size, range));
     coverage.pages += 1;
     if (!raw) { coverage.reason = 'query-failed'; coverage.status = found.size ? 'partial' : 'failed'; break; }
-    if (!Array.isArray(raw.data?.data)) { coverage.reason = 'invalid-shape'; coverage.status = found.size ? 'partial' : 'failed'; break; }
-    const records = raw.data.data, rows = D.meetings(raw);
+    // Q-1021-09：成功空页省略列表字段；只接受与本次请求匹配的已核实包络。
+    const emptyPage = raw.code === 200 && raw.data && !Array.isArray(raw.data)
+      && raw.data.total === 0 && raw.data.page === page && raw.data.size === size
+      && !Object.prototype.hasOwnProperty.call(raw.data, 'data');
+    if (!Array.isArray(raw.data?.data) && !emptyPage) { coverage.reason = 'invalid-shape'; coverage.status = found.size ? 'partial' : 'failed'; break; }
+    const records = emptyPage ? [] : raw.data.data, rows = D.meetings(raw);
     const previous = found.size;
     // 完全相同记录的分页重叠可消除；同编号的不同实例/记录版本全部保留。
     for (const row of rows) {
@@ -71,7 +75,9 @@ async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages
     coverage.invalid += records.length - rows.length;
     coverage.timeUnknown = (coverage.timeUnknown || 0) + rows.filter(D.eventTimeUnknown).length;
     const total = Number(raw.data.total);
-    if (raw.data.total != null && Number.isFinite(total) && total >= 0) coverage.total = total;
+    // 越界空页报告 total=0，并不表示前页的正总数消失；取不足时仍须报 early-end。
+    if (raw.data.total != null && Number.isFinite(total) && total >= 0
+      && !(records.length === 0 && total === 0 && coverage.total > 0)) coverage.total = total;
     if (rows.length && found.size === previous) { coverage.reason = 'repeated-page'; break; }
     // 总数可能包含分页重叠，记录版本数也不是独立实例数；满页继续取到真实边界。
     if (records.length < size) { coverage.reason = 'exhausted'; break; }
