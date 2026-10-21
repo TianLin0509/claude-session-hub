@@ -54,6 +54,8 @@ async function main() {
     await wait("Boolean(document.querySelector('.wb-compose .writing-input'))",'writing composer');
     check('three configurable defaults',await c.eval("document.querySelectorAll('.writing-member-row').length===3"));
     check('member cards match group create (DeepSeek on Claude Code, V4.1 Flash default)',await c.eval("(()=>{const ds=document.querySelector('.writing-member-row[data-kind=\"deepseek-claude\"]');return !!document.querySelector('.writing-members .mcm-slots .mcm-slot .mcm-avatar')&&!!ds&&ds.querySelector('.writing-member-model').value==='deepseek-v4.1-flash'&&!!ds.querySelector('.writing-member-route')&&![...document.querySelectorAll('.writing-member-kind option')].some(o=>o.value==='deepseek');})()"));
+    // 2026-10-22：写作成员与建群弹窗同一份清单，Antigravity 也在列。
+    check('Antigravity selectable as a writing member',await c.eval("(()=>{const opts=[...document.querySelectorAll('.writing-member-kind option')].map(o=>o.value);return opts.includes('gemini')&&opts.includes('codex')&&opts.includes('codeagent');})()"));
     check('shared voice, polish, reference, collapse controls',await c.eval("!!document.querySelector('.wb-compose .voice-mic')&&!!document.querySelector('.wb-compose .prompt-polish-button')&&!!document.querySelector('.wb-compose .composer-collapse')&&[...document.querySelectorAll('.wb-compose button')].some(b=>b.textContent==='引用会话')"));
     await click('.writing-member-row:last-child .writing-member-remove');
     await click('.writing-member-row:last-child .writing-member-remove');

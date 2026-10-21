@@ -11,7 +11,7 @@
 //   - 个人协作约定：Claude 关 CLAUDE.md；Codex 换到写作专用配置目录（core/writing/codex-writing-home.js）
 //   - 输出风格：Claude 用回默认输出风格，不带田哥日常的 Lintian-Plain
 //   - 记忆、技能清单、插件、MCP、浏览器扩展说明：Claude 关自动记忆、关全部 skill、MCP 清空、--no-chrome；
-//     Codex 在写作配置目录里关掉
+//     Codex 在写作配置目录里关掉；Antigravity 换到空的用户目录（core/writing/antigravity-writing-home.js）
 //   - 工具：留读写文件、检索与上网查资料，够起草和交稿
 //   - purpose = 'writing'：Hub 发消息时不再追加共享工作区规则（core/hub-memory-service.js）
 
@@ -22,6 +22,11 @@ const WRITING_CLAUDE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', '
 // deepseek-legacy / deepseek-claude 走的也是 Claude CLI（core/ai-kinds.js 的 CLAUDE_FAMILY），同样要关掉 CLAUDE.md
 function isClaudeKind(kind) {
   return /^(claude|deepseek-legacy|deepseek-claude)(?:$|-)/.test(String(kind || ''));
+}
+
+// Antigravity（kind=gemini）的全局指令挂在 %USERPROFILE%\.gemini 上，没有关掉的开关，只能换用户目录。
+function isGeminiKind(kind) {
+  return /^gemini(?:$|-)/.test(String(kind || ''));
 }
 
 /**
@@ -43,10 +48,19 @@ function withWritingMemberOpts(kind, opts = {}, ctx = {}) {
     next.claudeTools = [...WRITING_CLAUDE_TOOLS];
     delete next.appendSystemPromptFile;
     if (pack) next.systemPromptFile = pack;
+  } else if (isGeminiKind(kind)) {
+    // agy 只读用户目录里的全局指令，命令行没有关掉的开关：换到一个只为写作准备的目录，
+    // 写作须知走文章目录的 AGENTS.md（agy 按工作目录加载）。失败时不拦会话，状态栏说明降级。
+    try {
+      const home = require('./antigravity-writing-home.js').prepareWritingHome();
+      next.extraEnv = { ...(opts.extraEnv || {}), USERPROFILE: home, HOME: home };
+    } catch (error) {
+      next.sceneWarning = '写作专用用户目录没准备好，本次带着个人规则启动：' + (error && error.message);
+    }
   } else if (pack) {
     next.codexInstructionFile = pack;
   }
   return next;
 }
 
-module.exports = { withWritingMemberOpts, isClaudeKind, WRITING_CLAUDE_TOOLS };
+module.exports = { withWritingMemberOpts, isClaudeKind, isGeminiKind, WRITING_CLAUDE_TOOLS };
