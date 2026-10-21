@@ -1,6 +1,9 @@
 'use strict';
 const W = require('./welink');
 const D = require('./data');
+const MEETING_PAGE_MAX = 30;
+const CALENDAR_MAX = 500;
+const meetingPageSize = value => Number.isFinite(Number(value)) ? Math.max(1, Math.min(MEETING_PAGE_MAX, Math.floor(Number(value)))) : MEETING_PAGE_MAX;
 
 function readableError(value, depth = 0) {
   if (typeof value === 'string') return value.trim();
@@ -15,17 +18,19 @@ function readableError(value, depth = 0) {
 
 // 命令执行成功、业务成功、JSON 可读是三个条件。联系人成功码为 0，会议为 200。
 async function readJson(run, args) {
+  const command = args.slice(0, 2).join(' ');
   let result = await run(args);
   const checkExit = r => {
     if (r.code === null || r.code !== undefined && Number(r.code) !== 0) throw new Error(String(r.stderr || r.stdout || `查询退出码 ${r.code}`).trim());
   };
   checkExit(result);
+  // Q-1021-07：仅 calendar list 的成功空结果是纯文本；不接受其他命令或失败退出。
+  if (command === 'calendar list' && [0, '0'].includes(result.code) && String(result.stdout || '').trim() === 'No events found.') return [];
   let data = W.parseJsonBig(result.stdout);
-  if (data == null && !args.includes('--format')) {
+  if (data == null && command !== 'calendar list' && !args.includes('--format')) {
     result = await run([...args, '--format', 'json']); checkExit(result); data = W.parseJsonBig(result.stdout);
   }
   if (!data || typeof data !== 'object') throw new Error(String(result.stderr || result.stdout || '查询没有返回 JSON').trim());
-  const command = args.slice(0, 2).join(' ');
   const code = data.code ?? data.resultCode ?? data.error?.error_code;
   // Q-1021-08：会话目录成功码是 IM.0000；仅对该命令接受，不能放开所有 IM 错误。
   const allowed = command === 'contact detail' ? ['0'] : command === 'meeting query-list' ? ['200']
@@ -37,13 +42,14 @@ async function readJson(run, args) {
   return data;
 }
 
-function meetingArgs(now, page = 1, size = 100, range = null) {
+function meetingArgs(now, page = 1, size = MEETING_PAGE_MAX, range = null) {
   const begin = range?.start ?? Date.parse(D.dayKey(now) + 'T00:00:00+08:00');
   const end = (range?.end ?? begin + 86400000) - 1;
-  return ['meeting', 'query-list', '--page', String(page), '--size', String(size), '--meeting-start-time', String(begin), '--meeting-end-time', String(end), '--type', '1', '--meeting-sort', 'asc'];
+  return ['meeting', 'query-list', '--page', String(page), '--size', String(meetingPageSize(size)), '--meeting-start-time', String(begin), '--meeting-end-time', String(end), '--type', '1', '--meeting-sort', 'asc'];
 }
 
-async function collectMeetings(runJson, now, { size = 100, maxPages = 30, range = null } = {}) {
+async function collectMeetings(runJson, now, { size = MEETING_PAGE_MAX, maxPages = 30, range = null } = {}) {
+  size = meetingPageSize(size); // 参数与短页判断必须使用同一个实际页大小。
   const found = new Map(), instances = new Map();
   const coverage = { status: 'partial', reason: 'page-limit', pages: 0, total: null, invalid: 0, instances: 0, versionConflicts: 0, scope: '指定日期范围内 type=1 的 WeLink 会议', queryType: '1' };
   for (let page = 1; page <= maxPages; page += 1) {
@@ -87,7 +93,7 @@ async function collectCalendar(runJson, range) {
   // calendar list 使用日期边界，至少覆盖到下一天；最终按精确窗口过滤。
   const start = D.dayKey(range.start), endDay = D.dayKey(range.end);
   const end = Date.parse(endDay + 'T00:00:00+08:00') < range.end ? D.dayKey(range.end + 86400000) : endDay;
-  const raw = await runJson('日程', ['calendar', 'list', '--start', start, '--end', end, '--format', 'json']);
+  const raw = await runJson('日程', ['calendar', 'list', '--start', start, '--end', end, '--max', String(CALENDAR_MAX)]);
   if (!raw) return { events: [], coverage: { status: 'failed', reason: 'query-failed', reasonLabel: 'Exchange 日程查询失败' } };
   const records = D.recordsAt ? D.recordsAt(raw, ['events', 'items', 'value', 'calendars', 'data']) : recordsAt(raw);
   if (records === null) return { events: [], coverage: { status: 'failed', reason: 'invalid-shape', reasonLabel: '无法识别日程结构；不能当作没有日程' } };
@@ -98,9 +104,10 @@ async function collectCalendar(runJson, range) {
   const flag = x => x === true || x === 'true' || x === 1;
   const hasMore = envelopes.some(x => flag(x.hasMore) || flag(x.has_more) || x.nextLink || x.next_link || x.next_cursor || x['@odata.nextLink'])
     || total != null && (!Number.isFinite(Number(total)) || Number(total) > records.length);
-  const coverage = { status: invalid || unknownTime || hasMore ? 'partial' : 'complete', records: records.length, invalid, unknownTime,
-    reason: hasMore ? 'more-records' : invalid ? 'invalid-record' : unknownTime ? 'unknown-time' : 'exhausted',
-    reasonLabel: hasMore ? '接口还有日程，分页协议尚未核实' : invalid ? `${invalid} 条日程无法解析` : unknownTime ? `${unknownTime} 条日程时间待核对` : '日程查询完成' };
+  const limited = records.length >= CALENDAR_MAX;
+  const coverage = { status: invalid || unknownTime || hasMore || limited ? 'partial' : 'complete', records: records.length, invalid, unknownTime, limited, limit: CALENDAR_MAX,
+    reason: hasMore ? 'more-records' : limited ? 'result-limit' : invalid ? 'invalid-record' : unknownTime ? 'unknown-time' : 'exhausted',
+    reasonLabel: hasMore ? '接口还有日程，分页协议尚未核实' : limited ? `已达到日程 ${CALENDAR_MAX} 条返回上限，可能还有记录；分页协议尚未核实` : invalid ? `${invalid} 条日程无法解析` : unknownTime ? `${unknownTime} 条日程时间待核对` : '日程查询完成' };
   return { events: all.filter(x => D.eventInRange(x, range)), coverage };
 }
 function recordsAt(raw) {

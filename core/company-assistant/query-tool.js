@@ -112,10 +112,11 @@ class AssistantQuery {
         .map(x => ({ ...x, priority: priority(x), timeDisplay: D.displayTime(x.at) }));
       counts = { all: all.length, private: all.filter(x => !x.group).length, atMe: all.filter(x => x.group && x.atMe).length, atAll: all.filter(x => x.group && x.atAll).length };
       const sc = snap.scope || {}, unknownTime = (sc.conversations || []).reduce((n, c) => n + (c.unknownTime || 0), 0);
-      const complete = snap.login?.ok && !sc.partial && !sc.listFull && !sc.limited && !sc.stale && !sc.directoryInvalid && !unknownTime;
+      const complete = snap.login?.ok && !sc.partial && !sc.listFull && !sc.limited && !sc.stale && !sc.directoryInvalid && !sc.directoryFallback && !unknownTime;
       coverage = { status: complete ? 'complete' : 'partial', discovery: sc.listFull ? 'recent-list-capped' : sc.stale ? 'failed' : 'available-conversations',
         knownConversations: sc.known || sc.listed || 0, scanned: sc.fetched || 0, unknownTime, partialConversations: sc.partial || 0, directoryInvalid: sc.directoryInvalid || 0,
-        limitation: (sc.listFull ? `最近会话接口只返回 ${sc.listCap} 个；已补查历史已知会话，但从未发现的会话无法保证覆盖。` : '')
+        limitation: (sc.listFull ? `本轮最近会话返回 ${sc.listed || sc.listCap} 个，可能达到接口上限；已补查历史已知会话，但从未发现的会话无法保证覆盖。` : '')
+          + (sc.directoryFallback ? '较大范围查询失败，已退回兼容查询，覆盖仍待核对。' : '')
           + (sc.directoryInvalid ? `${sc.directoryInvalid} 条会话目录记录无法识别，未覆盖对应会话。` : ''),
         details: sc.conversations || [], errors: snap.errors || [] };
     } else {

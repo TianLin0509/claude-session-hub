@@ -2,7 +2,7 @@
 // 公司版「助理」服务（2026-10-16 定稿：简报 + 对话；6 条提醒都要；只读；数据只留在这台电脑）。
 //   取数：Hub 用 welink-cli 的查询命令（白名单见 welink.js）取会议、日程、消息、邮件，存在 <数据目录>/company-assistant/。
 //     消息（2026-10-18 田哥改）：默认取回看时间（36 小时）内所有私聊和群的全部消息，不限个数、不限条数，宁可多；
-//     「全部」= welink-cli 能列出的最近 50 个会话（--count 上限 50、不能翻页；默认只给 10 个）。设置里可以限个数、调回看时长。
+//     「全部」= 本轮可发现会话 + 本账号历史已知目录，不等于全部 WeLink。设置可限制个数、回看时长。
 //     免打扰、置顶 welink-cli 拿不到（Q-1018-10），所以不做这两个设置。不再要手动勾「关注群」。每个会话缓存已取到的消息，之后只补拉新的。
 //   简报：工作日定时（默认 08:20）生成；打开助理页时当天还没有就当场生成。先出按规则排的清单，再请 CodeAgent 挑重点，逐条核对出处。
 //   对话：固定一个 CodeAgent 会话（purpose=company-assistant，不挂 Hub 的 MCP 和「问家里」），它查 WeLink 只用工作目录里的只读包装 welink-ro.cmd。
@@ -68,7 +68,7 @@ const FRESH_MS = 3 * 60000;
 const HISTORY_PAGE = 100;
 const MAX_PAGES = 30;
 const LOOKBACK_CHOICES = [12, 24, 36, 48, 72];
-const CONVERSATION_LIMIT = 50; // query-recent-conversation --count 的上限（默认 10），不能翻页
+const CONVERSATION_LIMIT = 100; // 帮助写50，但公司1.0.14实测可返回100；旧CLI失败时兼容50。
 // 消息编号比大小：真机是长整数（BigInt 比），测试数据可能是普通字符串。
 const idCmp = (a, b) => { try { const x = BigInt(a), y = BigInt(b); return x < y ? -1 : x > y ? 1 : 0; } catch { return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0; } };
 
@@ -308,6 +308,18 @@ class CompanyAssistant {
     snap.directoryInvalid = Math.max(0, snap.directoryRawCount - snap.conversations.length);
     if (snap.directoryInvalid) snap.errors.push({ label: '最近会话', text: `${snap.directoryInvalid} 条会话记录缺少可用编号，未能补查，当前消息范围可能不全` });
   }
+  async recentConversations(snap, runJson) {
+    snap.directoryRequested = CONVERSATION_LIMIT;
+    snap.directoryLimit = CONVERSATION_LIMIT;
+    const args = count => ['im', 'query-recent-conversation', '--count', String(count)];
+    let raw = await runJson('最近会话', args(CONVERSATION_LIMIT));
+    if (!raw) {
+      // 兼容严格校验帮助范围的旧版本；原错误保留，不能把回退称为范围完整。
+      snap.directoryFallback = true; snap.directoryLimit = 50;
+      raw = await runJson('最近会话（兼容查询）', args(50));
+    }
+    return raw;
+  }
   // 自然语言查询与简报复用取数/翻页器；查询窗口不覆盖“今日”快照。
   collectQuery(kind, range) { return this.withCollection(() => this.collectQueryUnlocked(kind, range)); }
   async collectQueryUnlocked(kind, range) {
@@ -329,7 +341,7 @@ class CompanyAssistant {
       const calendar = await Q.collectCalendar(runJson, range);
       snap.calendar = calendar.events; snap.calendarCoverage = calendar.coverage;
     } else {
-      const raw = await runJson('最近会话', ['im', 'query-recent-conversation', '--count', String(CONVERSATION_LIMIT)]);
+      const raw = await this.recentConversations(snap, runJson);
       if (!raw || D.conversationRecords(raw) === null) {
         snap.scope = { stale: true, partial: 1 };
         snap.errors.push({ label: '最近会话', text: '本次会话目录未取到，无法判断消息范围' });
@@ -376,7 +388,7 @@ class CompanyAssistant {
         if (snap.mailSetup.ok) { for (let i = errors.length - 1; i >= 0; i -= 1) if (errors[i].calendar) errors.splice(i, 1); await queryCalendar(); }
       }
       snap.calendarNeedsSetup = errors.some(e => e.calendar);
-      const convRaw = await runJson('最近会话', ['im', 'query-recent-conversation', '--count', String(CONVERSATION_LIMIT)]);
+      const convRaw = await this.recentConversations(snap, runJson);
       if (convRaw && D.conversationRecords(convRaw) !== null) {
         this.setConversationDirectory(snap, convRaw);
         await this.collectMessages(snap, s, now, runJson);
@@ -465,7 +477,9 @@ class CompanyAssistant {
     const all = Object.values(snap.messages);
     snap.scope = { lookbackHours: s.lookbackHours, since: cutoff, listed, known: snap.conversations.length, fetched: list.length, limited, maxConversations: s.maxConversations,
       withMessages: all.length, messages: all.reduce((n, l) => n + l.length, 0), p2p: Object.keys(snap.messages).filter(id => !snap.conversations.find(c => c.id === id)?.group).length,
-      listCap: CONVERSATION_LIMIT, listFull: listed >= CONVERSATION_LIMIT, directoryRawCount: listed, directoryInvalid: snap.directoryInvalid || 0,
+      requested: snap.directoryRequested || CONVERSATION_LIMIT, listCap: listed === 50 ? 50 : snap.directoryLimit || CONVERSATION_LIMIT,
+      listFull: listed >= (snap.directoryLimit || CONVERSATION_LIMIT) || listed === 50, directoryFallback: !!snap.directoryFallback,
+      directoryRawCount: listed, directoryInvalid: snap.directoryInvalid || 0,
       partial: coverage.filter(c => c.status !== 'complete').length, conversations: coverage, migrated: sameOwner && stored.version !== 3 };
   }
   async conversationHistory(conv, cached, cutoff, me, myName, runJson, names = null) {

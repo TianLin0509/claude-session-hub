@@ -116,7 +116,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     const scope = data.scope;
     if (!scope) return null;
     const reasons = [scope.stale ? '最近会话查询失败，显示上次记录' : '', scope.partial ? `${scope.partial} 个会话未取全` : '',
-      scope.listFull ? `最近会话目录达到 ${scope.listCap || 50} 个上限，目录外的会话尚未覆盖` : '', scope.limited ? `按设置只查询最近 ${scope.maxConversations} 个会话` : '',
+      scope.listFull ? `最近会话返回 ${scope.listed || scope.listCap} 个，可能达到接口上限，未知会话仍可能遗漏` : '', scope.directoryFallback ? '已退回兼容查询，覆盖待核对' : '', scope.limited ? `按设置只查询最近 ${scope.maxConversations} 个会话` : '',
       scope.directoryInvalid ? `${scope.directoryInvalid} 条会话目录记录无法解析` : '', (scope.conversations || []).some(c => c.unknownTime) ? '部分消息缺少时间，无法确认是否覆盖所选时段' : ''].filter(Boolean);
     return { status: reasons.length ? 'partial' : 'complete', reasonLabel: reasons.join('；') };
   }
@@ -202,7 +202,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     const issues = [messageScope?.status === 'partial' ? '消息范围未取全' : '', errors.length ? `${errors.length} 项查询异常` : '', names?.unresolved ? `${names.unresolved} 个发言人姓名未确认` : ''].filter(Boolean);
     const rows = (s?.conversations || []).map(c => `<li><b>${esc(c.name)}</b> · ${c.status === 'complete' ? '读取完成' : '部分结果'} · ${esc(c.reasonLabel || '')}${c.oldestAt ? ' · 最早 ' + when(c.oldestAt) : ''}${c.newestAt ? '，最新 ' + when(c.newestAt) : ''}${c.unknownTime ? ` · ${c.unknownTime} 条缺少时间` : ''}</li>`).join('');
     const queries = [...queryRows, ['消息', messageScope, data.counts?.messages]].map(([name, c, n]) => `<li><b>${name}</b> · ${({ complete: '查询完成', partial: '部分结果', failed: '查询失败' })[c?.status] || '尚未确认'}${c?.status === 'complete' && Number.isInteger(n) ? ` · ${n} 条` : ''}${c?.reasonLabel ? ' · ' + esc(c.reasonLabel) : ''}</li>`).join('');
-    return `<details class="ca-coverage"><summary>${esc(counts)}${issues.length ? ' · ' + esc(issues.join('，')) : ''}</summary><ul>${queries}</ul>${s?.stale ? `<p class="ca-note bad">最近会话查询失败。${s.capturedAt ? '以下消息取自 ' + esc(new Date(s.capturedAt).toLocaleString('zh-CN', { hour12: false })) + '，可能已过期。' : '尚无可复用的当前账号聊天记录。'}</p>` : ''}${s ? `<p class="ca-note">范围是 CLI 列出的最近 ${s.listCap || 50} 个会话${s.limited ? '中你设置的前 ' + s.maxConversations + ' 个' : ''}；专用手机群不参与简报。查询失败时保留已取到的内容。</p>` : ''}${errors.map(e => `<p class="ca-note bad">${esc(e.label)}：${esc(e.text)}</p>`).join('')}${rows ? `<ul>${rows}</ul>` : ''}</details>`;
+    return `<details class="ca-coverage"><summary>${esc(counts)}${issues.length ? ' · ' + esc(issues.join('，')) : ''}</summary><ul>${queries}</ul>${s?.stale ? `<p class="ca-note bad">最近会话查询失败。${s.capturedAt ? '以下消息取自 ' + esc(new Date(s.capturedAt).toLocaleString('zh-CN', { hour12: false })) + '，可能已过期。' : '尚无可复用的当前账号聊天记录。'}</p>` : ''}${s ? `<p class="ca-note">本轮列出 ${s.listed || 0} 个最近会话，结合历史目录共检查 ${s.fetched || 0} 个${s.limited ? '（已按设置限制数量）' : ''}；专用手机群不参与简报。查询失败时保留已取到的内容，未覆盖范围会单独提示。</p>` : ''}${errors.map(e => `<p class="ca-note bad">${esc(e.label)}：${esc(e.text)}</p>`).join('')}${rows ? `<ul>${rows}</ul>` : ''}</details>`;
   }
 
   async function openSource(source, day) {
@@ -491,7 +491,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     return `<fieldset class="col"><legend>聊天记录范围（简报、提醒和对话都用这份数据）</legend>
         <div class="ca-row"><label>回看最近<select data-f="lookbackHours">${opts([12, 24, 36, 48, 72], s.lookbackHours, x => x + ' 小时')}</select></label>
           <label>会话个数<select data-f="maxConversations">${opts([0, 10, 20, 30], s.maxConversations, x => (Number(x) ? '最近 ' + x + ' 个' : '全部（默认）'))}</select></label></div>
-        <p class="ca-note">「全部」是 WeLink 最近会话里排前 50 个（welink-cli 一次最多列 50 个）中，回看时间内有消息的私聊和群，每个都取全部消息。WeLink 的免打扰、置顶信息 welink-cli 拿不到，所以没有这两项设置。</p>
+        <p class="ca-note">默认查询最近 100 个会话，并补查历史已知会话；旧 CLI 会尝试兼容查询。每个会话按回看时间翻页，未取全会显示原因。目录外从未发现的会话仍可能遗漏。WeLink 的免打扰、置顶信息暂不可用。</p>
         <p class="ca-note">${last}</p></fieldset>
       <fieldset><legend>提醒</legend>
         <label>关注词（逗号分隔）<input type="text" data-f="keywords" value="${esc(s.keywords.join('，'))}"></label>

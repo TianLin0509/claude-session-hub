@@ -148,6 +148,52 @@ test('真实取数器：历史已知第60个群仍补查；250条私聊翻3页�
   const stored = svc.query.load(first.queryId); assert.ok(stored.items.some(x => x.conv === 'g60' && x.atMe));
   const second = await svc.query.inbox({}); assert.equal(second.total, 251); assert.equal(history, 4, '第二次从缓存最新游标增量补拉一页');
 });
+
+test('最近会话请求100个：首次使用没有历史目录也能发现第60个群提及', async t => {
+  const base = rig(t), svc = new CompanyAssistant({ dataDir: base.dir, noTimer: true, noTools: true, now: () => NOW });
+  t.after(() => svc.close());
+  const counts = [], catalog = Array.from({ length: 80 }, (_, i) => ({ group_id: `g${i}`, group_name: `合成群${i}`, recent_conversation_type: 'CHAT_TYPE_GROUP_MSG' }));
+  svc.welink = async args => {
+    const json = body => ({ code: 0, stdout: JSON.stringify(body), stderr: '' });
+    if (args[0] === 'auth') return { code: 0, stdout: 'UID: owner-a\nToken: VALID', stderr: '' };
+    if (args[1] === 'query-recent-conversation') {
+      const count = Number(args[args.indexOf('--count') + 1]); counts.push(count);
+      return json({ error: { error_code: 'IM.0000', error_msg: 'success' }, conversation_info: catalog.slice(0, count) });
+    }
+    if (args[1] === 'query-history-message') return json({ resultCode: '0', respData: { chatInfo: args[3] === 'g60'
+      ? [{ msgId: '99000000010000000', sender: 'other', content: '合成任务', serverSendTime: NOW - 1000, atAccountList: ['owner-a'] }] : [] } });
+    return json({ code: 0, users: [] });
+  };
+  const page = await svc.query.inbox({});
+  assert.deepEqual(counts, [100]);
+  const stored = svc.query.load(page.queryId);
+  assert.equal(stored.coverage.knownConversations, 80);
+  assert.equal(page.total, 1);
+  assert.equal(stored.items[0].conv, 'g60');
+  assert.equal(stored.items[0].atMe, true);
+});
+
+test('旧CLI50个上限兼容：100请求失败后回退50，仍明确可能不全', async t => {
+  const base = rig(t), svc = new CompanyAssistant({ dataDir: base.dir, noTimer: true, noTools: true, now: () => NOW });
+  t.after(() => svc.close());
+  const counts = [], catalog = Array.from({ length: 50 }, (_, i) => ({ group_id: `g${i}`, group_name: `合成群${i}`, recent_conversation_type: 'CHAT_TYPE_GROUP_MSG' }));
+  svc.welink = async args => {
+    const json = body => ({ code: 0, stdout: JSON.stringify(body), stderr: '' });
+    if (args[0] === 'auth') return { code: 0, stdout: 'UID: owner-a\nToken: VALID', stderr: '' };
+    if (args[1] === 'query-recent-conversation') {
+      const count = Number(args[args.indexOf('--count') + 1]); counts.push(count);
+      return count > 50 ? { code: 1, stdout: '', stderr: '--count must be <= 50 (synthetic old CLI)' }
+        : json({ error: { error_code: 'IM.0000', error_msg: 'success' }, conversation_info: catalog });
+    }
+    return json({ resultCode: '0', respData: { chatInfo: [] } });
+  };
+  const page = await svc.query.inbox({});
+  assert.deepEqual(counts, [100, 50]);
+  const stored = svc.query.load(page.queryId);
+  assert.equal(stored.coverage.knownConversations, 50);
+  assert.equal(stored.coverage.status, 'partial');
+  assert.match(page.text, /可能不全/);
+});
 test('自动刷新与工具查询共用串行取数队列，失败不锁死下一次任务', async t => {
   const base = rig(t), svc = new CompanyAssistant({ dataDir: base.dir, noTimer: true, noTools: true, now: () => NOW });
   t.after(() => svc.close());

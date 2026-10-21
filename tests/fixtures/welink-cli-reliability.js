@@ -16,13 +16,21 @@ else if (group === 'meeting' && sub === 'query-list') {
   if (required.some(k => !arg(k))) { process.stderr.write('required meeting query parameter missing'); process.exitCode = 106; }
   else {
     const page = Number(arg('--page')), size = Number(arg('--size'));
-    const all = [{ meetingId: 'utc-review', subject: '跨区评审', location: '会议室甲', meetingStartTime: seed.day + 'T09:00:00Z', meetingEndTime: seed.day + 'T10:00:00Z', meetingUsers: [] }];
-    const selected = all.filter(m => Date.parse(m.meetingStartTime) >= Number(arg('--meeting-start-time')) && Date.parse(m.meetingStartTime) <= Number(arg('--meeting-end-time')));
-    out({ code: 200, data: { data: selected.slice((page - 1) * size, page * size), page, size, total: selected.length } });
+    if (!Number.isInteger(size) || size < 1 || size > 30) out({ code: '400', message: { message: 'BAD_REQUEST', details: 'synthetic: meeting size must be between 1 and 30' } });
+    else {
+      const all = [{ meetingId: 'utc-review', subject: '跨区评审', location: '会议室甲', meetingStartTime: seed.day + 'T09:00:00Z', meetingEndTime: seed.day + 'T10:00:00Z', meetingUsers: [] }];
+      const selected = all.filter(m => Date.parse(m.meetingStartTime) >= Number(arg('--meeting-start-time')) && Date.parse(m.meetingStartTime) <= Number(arg('--meeting-end-time')));
+      out({ code: 200, data: { data: selected.slice((page - 1) * size, page * size), page, size, total: selected.length } });
+    }
   }
 } else if (group === 'calendar' && sub === 'list') {
-  const item = { id: 'china-sync', subject: '中国区对齐会', start: { dateTime: seed.day + 'T14:00:00', timeZone: 'China Standard Time' }, end: { dateTime: seed.day + 'T15:00:00', timeZone: 'China Standard Time' }, location: '线上' };
-  out({ items: seed.day >= String(arg('--start')) && seed.day < String(arg('--end')) ? [item] : [] });
+  const max = Number(arg('--max') ?? 20);
+  if (!Number.isInteger(max) || max < 0 || max > 500) { process.stderr.write('calendar max must be between 0 and 500'); process.exitCode = 1; }
+  else {
+    const item = { id: 'china-sync', subject: '中国区对齐会', start: { dateTime: seed.day + 'T14:00:00', timeZone: 'China Standard Time' }, end: { dateTime: seed.day + 'T15:00:00', timeZone: 'China Standard Time' }, location: '线上', isAllDay: false, isCancelled: false };
+    const rows = (seed.day >= String(arg('--start')) && seed.day < String(arg('--end')) ? [item] : []).slice(0, max);
+    out(rows.length ? rows : 'No events found.\n');
+  }
 } else if (group === 'contact' && sub === 'detail') {
   const accounts = String(arg('--accounts') || 'user001').split(',');
   out({ code: '0', message: 'SUCCESS', users: accounts.map(account => ({ w3Account: account, personAccount: account, chineseName: { user001: '用户甲', colleague_a: '同事甲', colleague_b: '同事乙' }[account] || account, workId: '00000001', employeeNumber: '12345678912345678' })) });
@@ -31,7 +39,7 @@ else if (group === 'meeting' && sub === 'query-list') {
     { cross_instance: false, group_id: '0', group_name: '', group_type: 'NORMAL_GROUP', native_name: '同事甲', recent_conversation_type: 'CHAT_TYPE_P2P_MSG', staff_name: 'colleague_a 00000000', target_account: 'colleague_a' },
     { cross_instance: false, group_id: 'g-reliability', group_name: '可靠性项目群', group_type: 'NORMAL_GROUP', native_name: '', recent_conversation_type: 'CHAT_TYPE_GROUP_MSG', staff_name: '', target_account: '' },
   ];
-  out({ conversation_info: all.slice(0, Math.min(50, Number(arg('--count') || 10))), error: { error_code: 'IM.0000', error_msg: 'success' } });
+  out({ conversation_info: all.slice(0, Math.min(100, Number(arg('--count') || 10))), error: { error_code: 'IM.0000', error_msg: 'success' } });
 } else if (group === 'im' && sub === 'query-history-message') {
   const conv = arg('--user-account') || arg('--group-id');
   const privateRows = Array.from({ length: 250 }, (_, i) => ({
