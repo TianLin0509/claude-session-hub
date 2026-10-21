@@ -785,27 +785,61 @@ class CompanyAssistant {
     this.manualLoginStart = this.startLogin().finally(() => { this.manualLoginStart = null; });
     return this.manualLoginStart;
   }
+  // 扫码面板要的东西都从登录输出里取（2026-10-22 v3.1.1，welink-cli 1.0.14 真机格式见 welink.js）：
+  // qr 只收能放进 <img> 的（字符画转成的 SVG、data URI、图片路径）；登录网页存 url，只当「在浏览器打开」的兜底链接；
+  // progress 是等待扫码 / 已扫码 / 失败；输出像是编码不对时存一份诊断文件，面板提示改用链接。
+  loginFlowFrom(text, extra = {}) {
+    const prev = this.loginFlow || {}, found = welink.qrFromLoginOutput(text);
+    const flow = { ...prev, ...extra, text: text.slice(-4000), qr: found && found.kind !== 'url' ? found : prev.qr || null,
+      url: welink.loginUrlFromOutput(text) || prev.url || null, progress: welink.loginProgress(text) || prev.progress || null };
+    if (!flow.qr && !prev.garbled && welink.loginOutputGarbled(text)) {
+      flow.garbled = true;
+      try {
+        const dir = path.join(this.dir, 'diag'), d = new Date(this.now());
+        const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}${String(d.getSeconds()).padStart(2, '0')}`;
+        fs.mkdirSync(dir, { recursive: true });
+        // 只存这次 auth login 的输出（扫码前没有令牌；万一有 token= 之类也抹掉）。
+        flow.diag = path.join(dir, `${stamp}-welink-login-output.txt`);
+        fs.writeFileSync(flow.diag, text.replace(/((?:token|ticket|secret|password)\w*\s*[:=]\s*)\S+/gi, '$1***'), 'utf8');
+      } catch (error) { console.warn('[company-assistant] 保存扫码诊断失败', error.message); }
+    }
+    return flow;
+  }
   async startLogin() {
-    if (this.loginFlow && this.loginFlow.state === 'waiting') return this.loginFlow;
+    // 输出里已经报超时/失败、进程却还没退时，「重新获取二维码」先结束这一次，再开新的。
+    if (this.loginFlow && this.loginFlow.state === 'waiting' && this.loginFlow.progress?.phase !== 'failed') return this.loginFlow;
+    if (this.loginDone) { this.loginStop?.abort(); await this.loginDone.catch(() => {}); }
     if (this.auth.pending) {
       await this.auth.pending;
       if (this.auth.status().state === 'online') return { state: 'ok' };
     }
-    this.loginFlow = { state: 'waiting', startedAt: this.now(), qr: null, text: '' };
+    this.loginFlow = { state: 'waiting', startedAt: this.now(), qr: null, url: null, progress: null, text: '' };
     this.changed();
     // Hub exit aborts this signal; welink.run then ends the login process tree by PID.
     const stop = this.loginStop = new AbortController();
+    let shown; const shownOnce = new Promise(r => { shown = r; });
     const done = this.welink(['auth', 'login'], { allowSetup: true, timeoutMs: 5 * 60000, signal: stop.signal, onData: text => {
-      this.loginFlow = { ...this.loginFlow, text: text.slice(-4000), qr: welink.qrFromLoginOutput(text) || this.loginFlow.qr };
+      this.loginFlow = this.loginFlowFrom(text);
+      if (this.loginFlow.qr || this.loginFlow.garbled || this.loginFlow.progress?.phase === 'failed') shown();
       this.changed();
     } }).then(r => {
-      this.loginFlow = { ...this.loginFlow, state: 'finished', code: r.code, text: (r.stdout + r.stderr).slice(-4000), qr: this.loginFlow.qr || welink.qrFromLoginOutput(r.stdout + r.stderr) };
+      this.loginFlow = this.loginFlowFrom(r.stdout + r.stderr, { state: 'finished', code: r.code });
     }).catch(error => { this.loginFlow = { ...this.loginFlow, state: 'failed', error: error.message }; })
       .finally(() => { if (this.loginStop === stop) this.loginStop = null; })
       .then(() => this.refresh({ force: true }).catch(() => {}))
-      .then(snap => { if (snap?.login?.ok) { this.auth.manualSucceeded(snap.login); this.loginFlow = { ...this.loginFlow, state: 'ok' }; const day = D.dayKey(this.now()); if (!this.brief(day) || this.brief(day).by === 'none') void this.generateBrief().catch(() => {}); } this.changed(); });
-    // 二维码一般几秒内出来；先等一会儿再回，界面随后靠状态刷新。
-    await Promise.race([done, new Promise(r => setTimeout(r, 4000))]);
+      .then(snap => {
+        if (snap?.login?.ok) { this.auth.manualSucceeded(snap.login); this.loginFlow = { ...this.loginFlow, state: 'ok' }; const day = D.dayKey(this.now()); if (!this.brief(day) || this.brief(day).by === 'none') void this.generateBrief().catch(() => {}); }
+        // 命令结束、核对后仍没登录：转成失败并给出原因，面板才会出「重新获取二维码」，不停在「正在核对」。
+        else if (this.loginFlow?.state === 'finished') this.loginFlow = { ...this.loginFlow, state: 'failed', error: '登录命令已结束，但没查到已登录' + (this.loginFlow.code ? `（退出码 ${this.loginFlow.code}）` : '') };
+        this.changed();
+      });
+    this.loginDone = done;
+    const settled = () => { if (this.loginDone === done) this.loginDone = null; };
+    done.then(settled, settled);
+    // 二维码一般几秒内出来；先等一会儿再回（二维码一画完就回），界面随后靠状态刷新。
+    let wait;
+    await Promise.race([done, shownOnce, new Promise(r => { wait = setTimeout(r, 4000); })]);
+    clearTimeout(wait);
     return this.loginFlow;
   }
   async setupCalendar(email) {

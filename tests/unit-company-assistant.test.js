@@ -316,7 +316,10 @@ test('服务：WeLink 登录过期时简报提示扫码；扫码登录拿到二�
   assert.match(brief.note, /扫码登录/);
   assert.equal(svc.status().login.ok, false);
   const flow = await svc.login();
-  assert.equal(flow.qr?.kind, 'data');
+  // 2026-10-22 v3.1.1：替身按真机格式输出半块字符画，主进程转成 SVG；登录网页只作兜底链接
+  assert.equal(flow.qr?.kind, 'blocks');
+  assert.match(flow.qr.value, /^data:image\/svg\+xml;base64,/);
+  assert.match(flow.url, /^https:\/\//);
   for (let i = 0; i < 50 && svc.status().login?.ok !== true; i += 1) await new Promise(r => setTimeout(r, 200));
   assert.equal(svc.status().login.ok, true);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));
