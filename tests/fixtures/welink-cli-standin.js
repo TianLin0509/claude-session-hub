@@ -31,9 +31,43 @@ if (group === '__test' && sub === 'say') {
 } else if (group === 'auth' && sub === 'status') {
   out(loggedIn() ? 'UID: user001\nUser Token: VALID\n' : 'UID: user001\nUser Token: EXPIRED\n');
 } else if (group === 'auth' && sub === 'login') {
-  // 1x1 像素的 PNG，当作二维码图片
-  out('请用 WeLink 扫码登录：\ndata:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\n');
-  setTimeout(() => { if (stateFile) fs.writeFileSync(stateFile, 'ok'); out('登录成功\n'); }, 2000);
+  // 2026-10-22（v3.1.1）：按公司真机 welink-cli 1.0.14 的格式（回执 Q-1021-14）在 stdout 上用半块字符画二维码，
+  // 矩阵是 welink-login-qr.json 里离线生成的真实二维码（内容 qrcode_content），框外四周各留 1 个白模块；框后是登录网页地址。
+  // WELINK_STANDIN_SCAN_MS：多久后「扫码成功」（默认 2 秒）。WELINK_STANDIN_LOGIN_MODE：空格分开的词——
+  //   garbled（按 GB18030 字节输出字符画，模拟编码不对）/ legacy（旧的 data URI）/ timeout（不扫码，到时报超时退出）/ scan=<毫秒>。
+  //   E2E 要在同一个 Hub 里换着测：WELINK_STANDIN_STATE 同目录下有 welink-login-mode 文件时以它的内容为准，例如「garbled timeout scan=6000」。
+  const modeFile = stateFile ? require('node:path').join(require('node:path').dirname(stateFile), 'welink-login-mode') : null;
+  const words = (modeFile && fs.existsSync(modeFile) ? fs.readFileSync(modeFile, 'utf8') : process.env.WELINK_STANDIN_LOGIN_MODE || '').trim().split(/\s+/).filter(Boolean);
+  const mode = words.includes('legacy') ? 'legacy' : words.includes('garbled') ? 'garbled' : 'blocks';
+  const timeoutOutcome = words.includes('timeout');
+  const scanWord = words.find(w => /^scan=\d+$/.test(w));
+  const scanMs = Number(scanWord ? scanWord.slice(5) : process.env.WELINK_STANDIN_SCAN_MS || 2000);
+  if (mode === 'legacy') {
+    out('请用 WeLink 扫码登录：\ndata:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\n');
+    setTimeout(() => { if (stateFile) fs.writeFileSync(stateFile, 'ok'); out('登录成功\n'); }, scanMs);
+  } else {
+    // 字符画自己画（不借用被测的 welink.js）：每个字符 = 上下两行模块。
+    // 按脚本路径找 fixture（单测会在测试进程里直接执行本文件，相对 require 不可靠）。
+    const qr = JSON.parse(fs.readFileSync(require('node:path').join(require('node:path').dirname(process.argv[1]), 'welink-login-qr.json'), 'utf8'));
+    const n = qr.size + 2, black = (y, x) => qr.rows[y - 1]?.[x - 1] === '1';
+    const lines = [];
+    for (let y = 0; y < n; y += 2) { let s = ''; for (let x = 0; x < n; x++) { const t = black(y, x), b = y + 1 < n && black(y + 1, x); s += t && b ? '█' : t ? '▀' : b ? '▄' : ' '; } lines.push('|' + s + '|'); }
+    const border = '+' + '-'.repeat(n) + '+', art = [border, ...lines, border].join('\n');
+    out('Obtaining QR code...\n     WeLink QR Code Login\n\nPlease scan QR code below with WeLink mobile app:\n\n');
+    // garbled：按 GB18030 字节写出（Hub 按 UTF-8 解码时就是乱码），模拟控制台代码页不对。
+    if (mode === 'garbled') process.stdout.write(Buffer.concat([...art + '\n'].map(ch => ({ '█': Buffer.from('a880', 'hex'), '▀': Buffer.from('81379932', 'hex'), '▄': Buffer.from('a87b', 'hex') }[ch] || Buffer.from(ch)))));
+    else out(art + '\n');
+    out(`\nIf QR code is not displayed correctly, open this URL to scan:\n${qr.url}\n\nWaiting for scan...\n`);
+    const started = Date.now();
+    const tick = setInterval(() => out(`\rWaiting for scan... (elapsed ${Math.round((Date.now() - started) / 1000)} seconds)`), 1000);
+    if (timeoutOutcome) setTimeout(() => { clearInterval(tick); out('\nQR code login timeout, please try again.\n'); process.exitCode = 1; }, scanMs);
+    else setTimeout(() => {
+      clearInterval(tick);
+      if (stateFile) fs.writeFileSync(stateFile, 'ok');
+      out('\nScan successful! Obtaining login credentials...\n');
+      setTimeout(() => out('Login successful.\n'), 1500); // 真机换令牌要一会儿：面板此时显示「已扫码，正在登录…」
+    }, scanMs);
+  }
 } else if (!loggedIn()) {
   process.stderr.write('Token expired, please run: welink-cli auth login\n');
   process.exitCode = 1;

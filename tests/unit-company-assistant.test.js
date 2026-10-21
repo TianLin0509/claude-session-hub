@@ -173,7 +173,12 @@ test('发行版开关：只有公司版（或隔离测试显式打开）启用�
   assert.equal(companyAssistantEnabled({}, { target: null, featureEnabled: () => true }), false);
   assert.equal(companyAssistantEnabled({ CLAUDE_HUB_COMPANY_ASSISTANT: '1' }, { target: null, featureEnabled: () => true }), false, '没有隔离数据目录不认');
   assert.equal(companyAssistantEnabled({ CLAUDE_HUB_COMPANY_ASSISTANT: '1', CLAUDE_HUB_DATA_DIR: 'x' }, { target: null, featureEnabled: () => true }), true);
-  const target = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'community', 'targets', 'company', 'target.json'), 'utf8'));
+});
+
+// 公司版导出物不带 community/ 目录（导出配置只在上游源码仓库里）：在导出物上跑时跳过这一条，并写明原因。
+const COMPANY_TARGET = path.join(__dirname, '..', 'community', 'targets', 'company', 'target.json');
+test('公司版导出配置打开助理页（features.companyAssistant）', { skip: fs.existsSync(COMPANY_TARGET) ? false : '缺少 community/targets/company/target.json：导出物不带上游的导出配置，这条只在源码仓库里检查' }, () => {
+  const target = JSON.parse(fs.readFileSync(COMPANY_TARGET, 'utf8'));
   assert.equal(target.features.companyAssistant, true);
 });
 
@@ -316,7 +321,10 @@ test('服务：WeLink 登录过期时简报提示扫码；扫码登录拿到二�
   assert.match(brief.note, /扫码登录/);
   assert.equal(svc.status().login.ok, false);
   const flow = await svc.login();
-  assert.equal(flow.qr?.kind, 'data');
+  // 2026-10-22 v3.1.1：替身按真机格式输出半块字符画，主进程转成 SVG；登录网页只作兜底链接
+  assert.equal(flow.qr?.kind, 'blocks');
+  assert.match(flow.qr.value, /^data:image\/svg\+xml;base64,/);
+  assert.match(flow.url, /^https:\/\//);
   for (let i = 0; i < 50 && svc.status().login?.ok !== true; i += 1) await new Promise(r => setTimeout(r, 200));
   assert.equal(svc.status().login.ok, true);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l));

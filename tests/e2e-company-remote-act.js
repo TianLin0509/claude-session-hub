@@ -139,7 +139,14 @@ async function main() {
     await hc.eval('document.querySelector("dialog.cl-diag [data-diag=close]").click()');
 
     // ---- 2. suspend-idle：只休眠空闲的通道会话 ----
-    await _waitMs(Math.max(0, 65000 - (Date.now() - repliedAt))); // 休眠底线：空闲满 1 分钟
+    // 休眠底线是会话自己「空闲满 1 分钟」（suspendSession minIdleMs=60000，按会话最后一次输入输出算），
+    // 不是测试看到回答的时刻：CLI 答完后还会刷新界面。按 Hub 的休眠预演里这个会话的 idleMs 等够再动手（v3.1.0 首跑在这里失败过）。
+    const idleItem = await until('bridge session idle ≥ 60s', async () => {
+      const p = await cc.eval('require("electron").ipcRenderer.invoke("preview-auto-suspend")');
+      const item = (p?.items || []).find(x => x.sessionId === bridgeSession);
+      return item && item.idleMs >= 60000 ? item : null;
+    }, 5 * 60000, 2000);
+    log(`通道会话已空闲 ${Math.round(idleItem.idleMs / 1000)} 秒（看到回答后 ${Math.round((Date.now() - repliedAt) / 1000)} 秒）`);
     const s1 = cli(['--act', 'suspend-idle']);
     result.suspend = s1;
     check(s1.status === '已执行' && s1.act.suspended.length === 1 && s1.act.suspended[0].thread === thread, `suspend-idle 休眠了通道会话（${thread}）：${s1.note}`);
