@@ -142,12 +142,25 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   function loginPanel() {
     const f = data.loginFlow;
     if (!f || f.state === 'ok') return '';
+    // 2026-10-22 v3.1.1：真机二维码是字符画，主进程转成 SVG（kind:'blocks'）按原尺寸显示，不缩放免得模块边缘发糊；
+    // 登录网页（f.url）不是图片，只做下面那行「在浏览器打开」。
+    const p = f.progress || {};
+    const failed = f.state === 'failed' || p.phase === 'failed', scanned = !failed && p.phase === 'scanned';
+    // 超时或失败后旧二维码已失效、扫码成功后也用不着了，都不再显示。
     let qr = '';
-    if (f.qr?.kind === 'data' || f.qr?.kind === 'url') qr = `<img class="ca-qr" src="${esc(f.qr.value)}" alt="WeLink 登录二维码">`;
+    if (failed || scanned) { /* 不显示 */ } else if (f.qr?.kind === 'blocks') qr = `<img class="ca-qr ca-qr-blocks" src="${esc(f.qr.value)}" width="${Number(f.qr.px) || ''}" height="${Number(f.qr.px) || ''}" alt="WeLink 登录二维码">`;
+    else if (f.qr?.kind === 'data') qr = `<img class="ca-qr" src="${esc(f.qr.value)}" alt="WeLink 登录二维码">`;
     else if (f.qr?.kind === 'file') qr = `<img class="ca-qr" src="${esc('file:///' + f.qr.value.replace(/\\/g, '/'))}" alt="WeLink 登录二维码">`;
-    const state = { waiting: '用手机 WeLink 扫下面的二维码；扫完这里会自动刷新。', finished: '登录命令已结束，正在核对登录状态…', failed: '登录没成功：' + esc(f.error || ''), ok: '' }[f.state] || '';
-    const raw = !f.qr && f.text ? `<pre class="ca-qr-text">${esc(f.text.slice(-3000))}</pre>` : '';
-    return `<div class="ca-login"><b>扫码登录 WeLink</b><p>${state}</p>${qr}${raw}<div class="ca-row"><button type="button" class="ca-btn" data-ca="close-panel">收起</button>${f.state === 'failed' || f.state === 'finished' ? '<button type="button" class="ca-btn primary" data-ca="login">再试一次</button>' : ''}</div></div>`;
+    const reason = p.phase === 'failed' ? p.reason : f.error;
+    const state = failed ? '登录没成功：' + esc(reason || '') : scanned ? '已扫码，正在登录…'
+      // 字符画已经输出完（进入等待扫码）却没能还原成二维码：同样提示改用链接，下面附上原样输出备查。
+      : { waiting: f.garbled || (!f.qr && p.phase === 'waiting') ? '二维码显示失败，请用下方链接。' : '用手机 WeLink 扫下面的二维码；扫完这里会自动刷新。', finished: '登录命令已结束，正在核对登录状态…', ok: '' }[f.state] || '';
+    const tick = f.state === 'waiting' && !failed && p.phase === 'waiting' ? `<p class="ca-qr-status">等待扫码 · ${Number(p.elapsed) || 0} 秒</p>` : '';
+    const link = !scanned && /^https:\/\//i.test(f.url || '') ? `<p class="ca-qr-link">二维码扫不出来？<button type="button" class="ca-link" data-ca="open-login-url">在浏览器打开</button></p>` : '';
+    // 认不出的输出原样给出来（排查用）；框还在流式输出（obtaining）、判成乱码或已结束时不贴。
+    const raw = !f.qr && f.text && !f.garbled && !failed && !scanned && p.phase !== 'obtaining' ?`<pre class="ca-qr-text">${esc(f.text.slice(-3000))}</pre>` : '';
+    const retry = failed || (f.state === 'finished' && !scanned) ? '<button type="button" class="ca-btn primary" data-ca="login">重新获取二维码</button>' : '';
+    return `<div class="ca-login"><b>扫码登录 WeLink</b><p>${state}</p>${qr}${tick}${link}${raw}<div class="ca-row"><button type="button" class="ca-btn" data-ca="close-panel">收起</button>${retry}</div></div>`;
   }
 
   // 邮件和日历没接入、WeLink 里也读不到邮箱时，在简报上方请用户填一次（只出现这一处，填完就消失）。
@@ -330,6 +343,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     if (verb === 'source') return openSource(arg, button.dataset.sourceDay);
     if (verb === 'retry') { await call('retry-chat', { id: arg }); await load(); return; }
     if (verb === 'login') { button.disabled = true; const panel = page.querySelector('[data-slot="panel"]'); panel.dataset.kind = 'login'; await call('login'); await load(); return; }
+    if (verb === 'open-login-url') { const url = data.loginFlow?.url || ''; if (/^https:\/\//i.test(url)) await require('electron').shell.openExternal(url); return; }
     if (verb === 'close-panel') { const panel = page.querySelector('[data-slot="panel"]'); panel.hidden = true; panel.innerHTML = ''; panel.dataset.kind = 'closed'; return; }
     if (verb === 'calendar') return openSettings('welink');
     if (verb === 'settings') return openSettings();
