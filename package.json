@@ -58,6 +58,7 @@
       "renderer/**/*",
       "scripts/**/*",
       "!scripts/firewall-whitelist-electron.ps1",
+      "!**/*.map",
       "claude-wx.ico",
       "package.json"
     ],
