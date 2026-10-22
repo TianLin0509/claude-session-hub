@@ -162,5 +162,7 @@ test('磁盘旧覆盖不能冒充本轮请求，本轮覆盖仍优先于磁盘',
 
 test('选模型成功后记下用户明确选中的模型，供原地重拉使用', () => {
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main', 'ipc', 'session-handlers.js'), 'utf8');
-  assert.match(src, /codeagentModelPick: false,\s*\n\s*\/\/[^\n]*\n\s*codeagentUserModel: modelId \}\)/);
+  // 2026-10-22：「选中的模型」是 picked（目标模型不在权限清单里时会被换成清单里的那个），不是最初请求的 modelId
+  assert.match(src, /let picked = modelId;/);
+  assert.match(src, /codeagentModelPick: false,\s*\n\s*\/\/[^\n]*\n\s*codeagentUserModel: picked \}\)/);
 });

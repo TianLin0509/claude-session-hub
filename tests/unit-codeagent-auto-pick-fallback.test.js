@@ -2,7 +2,7 @@
 // 2026-10-21 同事公司 Hub 3.0.1：自动选模型 13 次全失败（「模型命令尚未确认，请查看终端；未自动补发回车；尚未确认恢复普通输入框」），
 // 问题因此没发出去（send-threw）或 180 秒后才补发。这里核对：
 //   1. 菜单认不出、旧版输入框也认不出，但菜单已关 → 自动会话照常发问题；菜单真关不掉才走失败路径，原因写人话；
-//   2. 号池号默认就是目标、家里没指定 → 不开菜单；恢复的会话上一轮已是目标模型 → 不选；个人账号照常选（Q-1020-14）；
+//   2. 只认真实证据跳过：恢复的会话上一轮已是目标模型 → 不选；配置里写的默认模型不再跳过（2026-10-22：号池号也一律走菜单）；
 //   3. 同一账号连续 3 次没选成 → 4 小时内跳过，成功一次清零，重启后仍记得。
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -127,20 +127,20 @@ test('熔断：同一账号连续 3 次自动选模型失败 → 4 小时内跳�
   assert.equal(autoPick.openFor(dataDir, 'p2', { now: t0 }), null);
 });
 
-test('跳过规则：号池号默认就是目标且家里没指定 → 不开菜单；恢复已是目标 → 不选；家里指定、个人账号照常选', t => {
+test('跳过规则：只认真实证据（上一轮实际作答）；配置里写的默认模型不再跳过，恢复已是目标才不选', t => {
   const dataDir = tmp(t, 'skip');
   const base = { dataDir, account: 'acct01', isPool: true, target: DS };
-  assert.equal(autoPick.skipReason({ ...base, freshLaunch: true, writtenModel: DS }).reason, 'account-default');
-  assert.equal(autoPick.skipReason({ ...base, freshLaunch: true, writtenModel: GLM }), null, '默认不是目标');
-  assert.equal(autoPick.skipReason({ ...base, freshLaunch: true, writtenModel: DS, routeModel: DS }), null, '家里指定了模型照常选');
+  // 2026-10-22：号池号 fresh launch 一律走菜单——Q-1022-* 真机上 settings.json 写的是 DeepSeek，CLI 照样按 GLM 起来。
+  assert.equal(autoPick.skipReason({ ...base, freshLaunch: true }), null, '号池号新开照常选（配置里写的不可信）');
+  assert.equal(autoPick.skipReason({ ...base, freshLaunch: true, actualModel: DS }), null, '新开的会话不看 actualModel');
   assert.equal(autoPick.skipReason({ ...base, freshLaunch: false, actualModel: DS }).reason, 'resume-same-model');
   assert.equal(autoPick.skipReason({ ...base, freshLaunch: false, actualModel: GLM }), null, '上一轮不是目标');
-  assert.equal(autoPick.skipReason({ ...base, isPool: false, account: 'personal', freshLaunch: true, writtenModel: DS }), null, '个人账号照常选（Q-1020-14）');
+  assert.equal(autoPick.skipReason({ ...base, isPool: false, account: 'personal', freshLaunch: true }), null, '个人账号照常选（Q-1020-14）');
   assert.equal(autoPick.skipReason({ ...base, isPool: false, account: 'personal', freshLaunch: false, actualModel: DS }), null);
   assert.equal(autoPick.skipReason({ ...base, target: '' }), null);
 });
 
-test('_createSession 接线：号池号默认就是目标 → 不发选模型事件、日志写 pick-skipped；恢复已是目标 → 不选；个人账号熔断 → 不选', async t => {
+test('_createSession 接线：号池号新开 → 发选模型事件；恢复已是目标 → 不选；个人账号熔断 → 不选', async t => {
   const pool = require('../core/codeagent-pool');
   const probe = require('../core/codeagent-model-probe');
   const models = require('../core/codeagent-models');
@@ -176,27 +176,28 @@ test('_createSession 接线：号池号默认就是目标 → 不发选模型事
   manager.on('codeagent-model-pick', event => picks.push(event));
 
   const fresh = manager.createSession('codeagent', { cwd, purpose: 'company-bridge', codeagentAccount: 'pool' });
-  assert.deepEqual(picks, [], '号池号默认就是 DS、家里没指定：不开菜单');
-  assert.deepEqual(manager.getSession(fresh.id).currentModel, { id: '', displayName: DS }, '显示仍是预计模型');
+  assert.equal(picks.length, 1, '号池号新开：照常开菜单（配置里写的 DS 不再作为跳过的依据，Q-1022-* 真机按 GLM 起来过）');
+  assert.equal(picks[0].modelId, DS, '目标仍是这个号该用的 DS');
+  assert.deepEqual(manager.getSession(fresh.id).currentModel, { id: DS, displayName: models.modelLabel(DS) }, '选型标记打开，显示按目标模型');
   const log = () => fs.readFileSync(path.join(dataDir, 'logs', 'codeagent-model.log'), 'utf8');
-  assert.match(log(), /event=pick-skipped .*reason=account-default/);
+  assert.doesNotMatch(log(), /pick-skipped/, '不再按配置跳过');
   assert.doesNotMatch(log(), /w00222222|同事/, '日志随诊断发回家里，不带号主信息');
 
   manager.createSession('codeagent', { cwd, purpose: 'company-bridge', codeagentAccount: 'pool', codeagentRouteModel: DS });
-  assert.equal(picks.length, 1, '家里指定了模型：照常选');
+  assert.equal(picks.length, 2, '家里指定了模型：照常选');
 
   manager.createSession('codeagent', { cwd, purpose: 'company-bridge', codeagentPoolAccount: id, codeagentActualModel: DS,
     resumeCCSessionId: 'ae2b2941-1234-4567-89ab-123456789abc' });
-  assert.equal(picks.length, 1, '恢复的会话上一轮就是 DS：不选');
+  assert.equal(picks.length, 2, '恢复的会话上一轮就是 DS：不选');
   assert.match(log(), /reason=resume-same-model/);
 
   manager.createSession('codeagent', { cwd, purpose: 'company-bridge' });
-  assert.equal(picks.length, 2, '个人账号照常选');
-  assert.equal(picks[1].modelId, GLM);
+  assert.equal(picks.length, 3, '个人账号照常选');
+  assert.equal(picks[2].modelId, GLM);
 
   for (let i = 0; i < 3; i += 1) autoPick.record(dataDir, 'personal', false, { error: '模型命令尚未确认' });
   manager.createSession('codeagent', { cwd, purpose: 'company-bridge' });
-  assert.equal(picks.length, 2, '个人账号熔断：不开菜单，直接发问题');
+  assert.equal(picks.length, 3, '个人账号熔断：不开菜单，直接发问题');
   assert.match(log(), /event=pick-skipped .*account=个人 .*reason=breaker/);
   assert.ok(models.modelLabel(GLM));
 });

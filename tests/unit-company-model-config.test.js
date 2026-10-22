@@ -234,13 +234,14 @@ test('set-personal-model 权限依据：清单没经过探测时，要有个人�
 });
 
 // ---- 通道：真实 routeAccounts（个人账号目录 + 号池目录），假会话带原生记录 ----
-function setup(t, { personalModel = DS } = {}) {
+function setup(t, { personalModel = DS, extraDeps = {} } = {}) {
   let r;
   const box = { personalDir: null };
   r = rig(t, { companyDeps: {
     routeAccounts: ({ usePool = true } = {}) => route.routeAccounts({ dataDir: path.join(r.root, 'company'), personalDir: box.personalDir, usePool,
       activeCounts: box.active || {}, personalActive: box.personalActive || 0 }),
     poolLanes: () => 1, personalConfigDir: () => box.personalDir, accountSecrets: () => [], appUpdate: () => null, currentVersion: '2.1.14',
+    ...extraDeps,
   } });
   const dataDir = path.join(r.root, 'company');
   box.personalDir = path.join(r.root, 'personal-cac');
@@ -333,6 +334,65 @@ test('通道：个人账号会话报模型配置有误 → 只对它请求的 DS
   await step(r, 2000);
   assert.deepEqual(Q.modelAvoidAll(r.dataDir), {}, '用那个模型正常答出来就解除');
   void third;
+});
+
+test('通道：号池会话请求了清单外的模型、配置本身没写错（真机 Q-1022）→ 当场在这个会话里用 /model 切到清单里的模型，这一轮重发一次，不换号', async t => {
+  const picked = [];
+  const r = setup(t, { extraDeps: {
+    // 真机上的那一步：main 侧的 fixCodeAgentModel 在同一个会话里驱动 /model 选清单里的模型
+    pickModel: async (sessionId, opts) => { picked.push({ sessionId, opts }); return { ok: true, model: DS_LABEL, confirmed: true }; },
+  } });
+  await pair(r);
+  await step(r, 1000);
+  const asked = await r.home.ask('home-s', { question: '号 1 上问：AirView 里小区级 KPI 的入口在哪个文件？', account: '号 1' });
+  await r.company.checkNow(); await r.company.checkNow();
+  const first = r.created()[0];
+  assert.equal(r.account(first), 'pool');
+  assert.equal(r.cs.sentTo(first.id).length, 1, '第一次发出');
+  // 这个号配置里写的就是它清单里的 DS_LABEL，但会话照样按 GLM 起来了（号池号真机 Q-1022-*）：报错请求的是 GLM，不在权限清单里
+  r.inject(first.id, apiErrorLine('API Error: 模型 "GLM-5.2-WX-Auto" 不存在或配置有误，请检查模型配置', r.clock.now));
+  await step(r, 2000);
+  assert.equal(picked.length, 1, '在同一个会话里切模型');
+  assert.equal(picked[0].sessionId, first.id);
+  assert.equal(picked[0].opts.avoidModel, GLM);
+  assert.equal(picked[0].opts.reason, 'model-config-fix');
+  assert.equal(r.created().length, 1, '不换号新开会话');
+  assert.deepEqual(Q.modelAvoidAll(r.dataDir), {}, '号的配置本身没写错：这条避让记录清掉，不在号池页面上挂着「模型配置有误」');
+  // 这一轮退回排队重发（不是失败、不是换号）
+  const round = () => r.company.thread(asked.thread).rounds[0];
+  assert.equal(round().modelFix, DS_LABEL);
+  assert.equal(round().rehomed, undefined, '不算换号重做');
+  assert.equal(round().error, null, '没判失败（dispatch 重发时清成 null）');
+  await step(r, 1000); await step(r, 1000);
+  assert.equal(r.cs.sentTo(first.id).length, 2, '同一轮在原会话里重发一次');
+  assert.match(r.cs.sentTo(first.id).at(-1).text, /小区级 KPI 的入口/, '重发的还是原来的问题');
+  // 用清单里的模型答出来 → 照常收回答（回执里的模型按原生记录的实际模型）
+  r.inject(first.id, answerLine('入口在 stats/kpi.cpp。', DS_LABEL, r.clock.now));
+  r.cs.answer(first.id, '入口在 stats/kpi.cpp。');
+  await step(r); await step(r, 1000);
+  const hr = r.home.thread(asked.thread).rounds[0];
+  assert.match(hr.reply, /stats\/kpi\.cpp/);
+  assert.equal(picked.length, 1, '每轮只切一次');
+  assert.equal(r.created().length, 1, '全程只在原来那个会话里做，没有新开会话');
+});
+
+test('通道：号池会话的模型配置有误切不动（菜单选不上）→ 记下试过一次，照旧换号重做，不会反复开菜单', async t => {
+  const picked = [];
+  const r = setup(t, { extraDeps: { pickModel: async (sessionId, opts) => { picked.push({ sessionId, opts }); return { ok: false, message: '菜单关不掉' }; } } });
+  await pair(r);
+  await step(r, 1000);
+  const asked = await r.home.ask('home-s', { question: '号 1 上问：RLC 重传计数在哪读', account: '号 1' });
+  await r.company.checkNow(); await r.company.checkNow();
+  const first = r.created()[0];
+  r.inject(first.id, apiErrorLine('API Error: 模型 "GLM-5.2-WX-Auto" 不存在或配置有误，请检查模型配置', r.clock.now));
+  await step(r, 2000);
+  assert.equal(picked.length, 1);
+  const second = r.created()[1];
+  assert.ok(second, '切不动就照旧换号新开会话');
+  assert.notEqual(second.id, first.id);
+  assert.equal(r.company.thread(asked.thread).rounds[0].rehomed, 1);
+  await step(r, 2000); await step(r, 2000);
+  assert.equal(picked.length, 1, '同一个号同一轮不重复开菜单');
 });
 
 test('通道：换到的号也报模型配置有误、又没有别的号能接 → 如实报失败并给出修法，不再换号、不排队', async t => {
