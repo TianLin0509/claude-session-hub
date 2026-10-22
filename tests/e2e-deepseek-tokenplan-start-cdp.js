@@ -8,7 +8,7 @@ async function main(){
   if(!process.env.HUB_ACP_LIVE_CONFIG)throw Error('HUB_ACP_LIVE_CONFIG required');
   const acp=JSON.parse(fs.readFileSync(process.env.HUB_ACP_LIVE_CONFIG,'utf8')).acp;
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-deepseek-start-')),data=path.join(root,'data');
-  const out=path.resolve('artifacts','20261006-deepseek-tokenplan-start-codex1-'+Date.now());
+  const out=path.resolve('artifacts','20261022-deepseek-dsh-default-codex-'+Date.now());
   fs.mkdirSync(data);fs.mkdirSync(out,{recursive:true});
   const configFile=path.join(data,'config.json');fs.writeFileSync(configFile,j({acp}));
   let hub,c,sid;const report={passed:false,checks:[],out};
@@ -37,8 +37,7 @@ async function main(){
     await until('document.querySelector("#new-session-menu")?.getBoundingClientRect().height>0','launch center visible');
     await _waitMs(350);
     await click('.new-session-option[data-kind="deepseek"]');
-    await c.eval(`(()=>{const s=document.querySelector('#new-session-deepseek-route');s.value='deepseek-acp';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-    await until(`document.querySelector('#new-session-model')?.value===${j(acp.providers['deepseek-acp'].model)}`,'Token Plan model loaded');
+    await until(`document.querySelector('#new-session-model')?.value===${j(require('../core/model-options').DEFAULT_MODEL_BY_KIND['deepseek-acp'])}`,'Token Plan model loaded');
     await _waitMs(350);await click('#new-session-submit');
     await until('[...sessions.values()].some(s=>s.kind==="deepseek-acp")','created from launch center');
     sid=await c.eval('[...sessions.values()].find(s=>s.kind==="deepseek-acp").id');

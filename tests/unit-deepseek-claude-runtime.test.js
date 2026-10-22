@@ -319,7 +319,7 @@ test('old DeepSeek sessions keep their original runtimes on resume', () => {
   assert.equal(plan.opts.forkCCSessionId, '11111111-1111-4111-8111-111111111111');
 });
 
-test('new-session panel has no ChatGPT entry and DeepSeek offers only the two Claude Code routes', () => {
+test('new-session panel defaults to DSH while legacy Claude routes remain compatible', () => {
   const html = read('renderer/index.html');
   assert.doesNotMatch(html, /data-kind="chatgpt"/);
   assert.doesNotMatch(html, /chatgpt-web-panel/);
@@ -330,13 +330,14 @@ test('new-session panel has no ChatGPT entry and DeepSeek offers only the two Cl
   assert.match(html, /data-kind="deepseek"[^>]*>.*DeepSeek<\/button>/);
   const controller = read('renderer/workspace-controller.js');
   assert.doesNotMatch(controller, /chatgpt: 'ChatGPT'/);
+  assert.match(controller, /if \(DEEPSEEK_PANEL_KINDS\.has\(kind\)\) return 'deepseek-acp';/);
   assert.match(controller, /'deepseek-claude': 'DeepSeek · Claude Code'/);
   assert.match(controller, /if \(selectedKind === 'deepseek-claude'\) opts\.deepseekRoute = deepseekRoute;/);
   const modal = read('renderer/meeting-create-modal.js');
-  assert.match(modal, /HIDDEN_CREATE_KINDS = new Set\(\['chatgpt', 'deepseek', 'deepseek-acp'\]\)/);
+  assert.match(modal, /HIDDEN_CREATE_KINDS = new Set\(\['chatgpt', 'deepseek', 'deepseek-claude'\]\)/);
   assert.doesNotMatch(modal, /Codex CLI · DeepSeek API|Token Plan · 旧 Harness/);
   const room = read('renderer/meeting-room.js');
-  assert.match(room, /\['claude', 'codex', 'deepseek-claude', 'qwen', 'glm', 'gemini'/);
+  assert.match(room, /\['claude', 'codex', 'deepseek-acp', 'qwen', 'glm', 'gemini'/);
   assert.doesNotMatch(room, /\['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp'/);
 });
 

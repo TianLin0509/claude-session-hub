@@ -105,6 +105,7 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
       modelProviders: { openai: models.map(({id}) => ({ id, name: id, baseUrl: baseURL, envKey: 'OPENAI_API_KEY' })) },
     });
   } else if (kind === 'deepseek-acp') {
+    if (process.platform === 'win32') args.unshift('--require', path.join(__dirname, 'dsh-windows-link-retry.cjs'));
     if(!entry.bridgePath)throw new Error('DeepSeek 完整交互需要配置 ACP 扩展包目录');
     env.DSH_HOME = path.join(home, '.dsh');
     env.BAILIAN_API_KEY = key;

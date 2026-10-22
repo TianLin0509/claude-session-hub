@@ -25,9 +25,9 @@ const SAFE_ID = /^[a-zA-Z0-9_-]{1,255}$/;
 const KIND_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek', gemini: 'Antigravity', kimi: 'Kimi' };
 
 // 写作群默认成员：三家各出一份稿。CLAUDE_HUB_WRITING_MEMBERS 可改（如 E2E 用 "claude:haiku"）。
-// DeepSeek 与建群弹窗一致跑 Claude Code（deepseek-claude，2026-10-13）；旧 deepseek 写法由写作页换过来。
+// DeepSeek 与建群弹窗一致跑 DSH（deepseek-acp，2026-10-22）；旧 deepseek 写法由写作页换过来。
 function defaultMembers(env = process.env) {
-  const spec = String(env.CLAUDE_HUB_WRITING_MEMBERS || 'claude,codex,deepseek-claude');
+  const spec = String(env.CLAUDE_HUB_WRITING_MEMBERS || 'claude,codex,deepseek-acp');
   return spec.split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
     const [kind, model] = s.split(':');
     return model ? { kind, model } : { kind };
