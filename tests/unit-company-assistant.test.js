@@ -267,7 +267,10 @@ test('服务端到端：取数 → 清单简报 → 交给助理会话 → 核�
   const item = svc.ask('今天的会');
   await new Promise(r => setTimeout(r, 20));
   assert.equal(f.sent.length, 2);
-  assert.equal(f.sent[1].text, '今天的会');
+  // v3.1.2 起每次提问前带预置的领域偏好（可改可删）；说明文字仍然只在第一轮发一次。
+  assert.match(f.sent[1].text, /^- 领域：无线通信/m);
+  assert.match(f.sent[1].text, /今天的会$/);
+  assert.doesNotMatch(f.sent[1].text, /你是我在公司电脑上的工作助理/, '第二次发送不再带说明');
   f.finals.get(sid).push({ id: 'r2', text: '今天有 4 场会。' });
   await svc.collectJob();
   assert.equal(svc.chat().find(c => c.id === item.id).a, '今天有 4 场会。');
@@ -308,6 +311,31 @@ test('午夜前生成今天简报：次日即将开始的会保留在快照中�
   assert.equal(f.sent.length, 1);
   assert.match(f.sent[0].text, /\[meeting:m-a:r[a-f0-9]{32}\]/);
   assert.doesNotMatch(f.sent[0].text, /\[meeting:m-soon:r[a-f0-9]{32}\]/);
+});
+
+test('从 PPT 入口提问：这一轮限定在素材索引里查，普通提问不带这条限制；预置「无线领域」偏好随记忆进入提示词', async t => {
+  const dir = tmp(), f = fakeDeps(dir, path.join(dir, 'calls.log'));
+  const svc = new CompanyAssistant({ ...f.deps, bus: new NoticeBus() });
+  t.after(() => svc.close());
+  svc.start();
+  const item = svc.ask('帮我找几页讲 SRS 信道估计的素材', { entry: 'ppt' });
+  assert.equal(item.entry, 'ppt');
+  for (let i = 0; i < 50 && !f.sent.length; i += 1) await new Promise(r => setTimeout(r, 20));
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].text, /从「PPT 素材库」入口进来/);
+  assert.match(f.sent[0].text, /不要先查 WeLink、邮件或会话/);
+  assert.match(f.sent[0].text, /帮我找几页讲 SRS 信道估计的素材$/m);
+  assert.match(f.sent[0].text, /领域：无线通信/, '第一次提问时预置的领域偏好进入记忆上下文');
+  svc.close();
+
+  const dir2 = tmp(), f2 = fakeDeps(dir2, path.join(dir2, 'calls.log'));
+  const plain = new CompanyAssistant({ ...f2.deps, bus: new NoticeBus() });
+  t.after(() => plain.close());
+  plain.start();
+  plain.ask('今天有哪些会');
+  for (let i = 0; i < 50 && !f2.sent.length; i += 1) await new Promise(r => setTimeout(r, 20));
+  assert.doesNotMatch(f2.sent[0].text, /PPT 素材库」入口/, '普通提问不带素材库范围');
+  plain.close();
 });
 
 test('服务：WeLink 登录过期时简报提示扫码；扫码登录拿到二维码，登录后状态变为已登录', async () => {

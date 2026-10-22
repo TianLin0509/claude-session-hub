@@ -179,6 +179,24 @@ test('每类第16条淘汰最久未用，其他类别和最近用过的保留，
   assert.equal(next.evicted.key, '群1'); assert.ok(a.memory.active().some(x => x.key === '群0'));
   assert.equal(a.memory.active().filter(x => x.kind === 'group').length, 15); assert.equal(a.memory.active().length, 16);
 });
+test('预置「无线领域」偏好：每个号主第一次用时加一条可改可删的偏好；删掉后不再加回', t => {
+  const a = rig(t);
+  const first = a.memory.seedDefaults();
+  assert.equal(first.key, '领域'); assert.equal(first.kind, 'preference');
+  assert.ok(first.text.length <= 60, '一条记忆不超过 60 字');
+  assert.match(first.text, /无线通信/);
+  assert.match(a.memory.context('帮我找几页 PPT 讲 SRS'), /领域：无线通信/);
+  a.memory.execute({ op: 'add', kind: 'preference', key: '领域', text: '毫米波与 Massive MIMO' });
+  assert.equal(a.memory.seedDefaults(), null, '同一号主不再重复加');
+  const item = a.memory.active().find(x => x.key === '领域');
+  assert.equal(item.text, '毫米波与 Massive MIMO', '用户改过的内容不被预置覆盖');
+  a.memory.execute({ op: 'remove', id: item.id });
+  assert.equal(a.memory.seedDefaults(), null, '删掉后不再自动加回');
+  assert.equal(a.memory.active().filter(x => x.key === '领域').length, 0);
+  a.setOwner('owner-b');
+  assert.ok(a.memory.seedDefaults(), '换一个号主也放一条');
+  assert.equal(a.memory.active().filter(x => x.key === '领域').length, 1);
+});
 test('记忆不可从无用户轮次自动学习，UI可显式编辑，身份改变不混用', t => {
   const a = rig(t); a.job = null;
   assert.throws(() => a.memory.execute({ op: 'add', key: '事实', text: '不自动学' }), /当前用户对话/);

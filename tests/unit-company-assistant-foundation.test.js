@@ -272,6 +272,7 @@ test('复用助理会话时跨日更新会议查询时间范围，同日不重�
     at = next; svc.job = null; svc.queue.push({ type: 'probe', prompt: '今天的会' }); await svc.pump();
   }
   assert.ok(prompts[0].includes('welink_meetings') && prompts[0].includes(D.dayKey(now)));
-  assert.equal(prompts[1], '今天的会');
+  assert.match(prompts[1], /今天的会$/m); // v3.1.2 起前面可能带预置的领域偏好记忆
+  assert.doesNotMatch(prompts[1], /welink_meetings/, '说明文字仍然只在第一轮和跨天时补发');
   assert.ok(prompts[2].includes('welink_meetings') && prompts[2].includes(D.dayKey(now + 86400000)));
 });
