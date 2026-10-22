@@ -72,7 +72,7 @@ test('版本探测：超时 120 秒，超时只按 PID 结束自己起的那棵�
   assert.equal(info.exe_version, '2.1.0');
   assert.deepEqual(fs.readdirSync(a.dir).filter(f => f.startsWith('mishu-probe-')), []);
 });
-test('缺少随包运行时就报安装包错误，不回退寻找或启动用户安装的秘书', async t => {
+test('本机没有会议室组件时照直说要去下载，不回退寻找或启动用户安装的秘书', async t => {
   const { a, root } = rig(t), bundle = path.join(root, 'bundle');
   fs.mkdirSync(bundle);
   fs.copyFileSync(path.resolve(__dirname, '../core/company-assistant/room-component/baseline.json'), path.join(bundle, 'baseline.json'));
@@ -80,7 +80,10 @@ test('缺少随包运行时就报安装包错误，不回退寻找或启动用�
   const external = path.join(root, 'external.exe'); fs.writeFileSync(external, 'do not run');
   a.setSettings({ rooms: { exePath: external } });
   a.rooms.deps.roomSpawn = () => { throw Error('must not spawn'); };
-  await assert.rejects(a.rooms.ensure(), /安装包缺少会议室组件/);
+  a.rooms.deps.roomCommand = null;
+  // 这台机器上没有旧副本、也不联网：只报「还没下载」，不去找用户装过的秘书。
+  a.rooms.deps.roomDownloader = null;
+  await assert.rejects(a.rooms.ensure(), /会议室组件还没下载到这台电脑/);
   assert.equal(a.settings().rooms.exePath, external);
   assert.equal(a.rooms.status().available, false);
 });
@@ -144,7 +147,7 @@ test('公司打包前置校验在运行时缺失或哈希错误时硬失败', t 
   const { root } = rig(t), { stageRuntime } = require('../core/company-assistant/room-component/build-runtime');
   const dir = path.join(root, 'core/company-assistant/room-component'); fs.mkdirSync(dir, { recursive: true });
   fs.copyFileSync(path.resolve(__dirname, '../core/company-assistant/room-component/baseline.json'), path.join(dir, 'baseline.json'));
-  assert.throws(() => stageRuntime({ appDir: root, source: '' }), /安装包必须自带/);
+  assert.throws(() => stageRuntime({ appDir: root, source: '' }), /AI_HUB_ROOM_RUNTIME_SOURCE/);
   const wrong = path.join(root, 'wrong.exe'); fs.writeFileSync(wrong, 'wrong');
   assert.throws(() => stageRuntime({ appDir: root, source: wrong }), /签名清单不符/);
 });
