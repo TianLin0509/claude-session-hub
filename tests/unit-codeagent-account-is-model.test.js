@@ -72,13 +72,14 @@ test('1. 自动会话只按号定下的模型走菜单；菜单处理只在启�
     assert.equal(launch.model, GLM);
   }
   const handlers = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'session-handlers.js'), 'utf8');
-  assert.match(handlers, /\['company-bridge', 'company-assistant', 'company-forum'\]\.includes\(session\.purpose\) && reason !== 'launch' && reason !== 'relaunch'/);
+  // 会话中途切换一律拒绝，只放行启动 / 原地重拉，以及 2026-10-22 起的 model-config-fix（通道报「模型配置有误」后当场换模型）
+  assert.match(handlers, /\['company-bridge', 'company-assistant', 'company-forum'\]\.includes\(session\.purpose\)\s*&& reason !== 'launch' && reason !== 'relaunch' && reason !== 'model-config-fix'/);
   // 菜单没选上、输入框已恢复：自动会话照旧发活（不卡住这一轮），并且不把显示模型改成没选上的那个
   // 2026-10-21 起：旧版画面认不出输入框、但菜单已关时（inputUsable）也照常发（core/codeagent-model-picker.js inputUsableAfterPick）
   assert.match(handlers, /const automatic = \['company-bridge', 'company-assistant', 'company-forum'\]\.includes\(session\.purpose\);/);
   assert.match(handlers, /const fallback = !result\.ok && automatic && \(result\.inputReady \|\| result\.inputUsable\);/);
   assert.match(handlers, /if \(fallback\) \{\s*return \{ \.\.\.result, ok: true, fallback: 'cli-default-model' \};/);
-  assert.ok(handlers.indexOf("fallback: 'cli-default-model'") < handlers.indexOf('codeagentUserModel: modelId'), '回退在记录「用户选中的模型」之前返回');
+  assert.ok(handlers.indexOf("fallback: 'cli-default-model'") < handlers.indexOf('codeagentUserModel: picked'), '回退在记录「用户选中的模型」之前返回');
 });
 
 test('1/4. 自动会话恢复：不传模型、不选型，启动覆盖里带模型也不认', async () => {

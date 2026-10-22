@@ -68,8 +68,18 @@
 
 - 真机证据：只有 `DeepSeek-V4-Flash-0731` 权限的号 2、号 4 在「特战通道」会话里请求 `GLM-5.2-WX-Auto`，被后端判「模型不存在或配置有误」，记成按「号 + 模型」的模型配置避让（不自动到期、6 小时一次试探），看起来「一直避让」。号 1 的模型日志：`default-model before=GLM-5.2-WX-Auto after=deepseek-v4-flash-0731 restoredTo=GLM-5.2-WX-Auto`——号池号自己的 `settings.json` 里就写着 GLM。
 - 来源：导入号池时会把源 `.cac` 目录 `settings.json` 的 `model` 抄进新号（`importLocal`），公司那个目录常年写着 GLM；开关关着（账号即模型）时 `syncSharedConfig` 只认号自己写的值、不做权限校验，于是 GLM 一直留着，全靠启动后 `/model` 菜单纠正。
-- 两处纠正漏口：`codeagent-auto-pick.js` 的 `account-default` 跳过菜单时直接继承配置里的模型；`session-handlers.js` 的 `fallback=send-with-cli-model` 在菜单没选上时照发。任一漏口都会拿 GLM 去撞后端。
+- 两处纠正漏口：`codeagent-auto-pick.js` 的 `account-default` 跳过菜单时直接继承配置里的模型（**2026-10-22 已删，见下节**）；`session-handlers.js` 的 `fallback=send-with-cli-model` 在菜单没选上时照发。任一漏口都会拿 GLM 去撞后端。
 - **A 启动前**：`codeagent-pool.js` 的 `permissionSafeModel` —— 号写的模型不在权限清单里、清单权威且只有一个模型时，一律换成清单里那个（写进 `settings.json`，其余键原样保留），`syncSharedConfig` 回报 `modelFix` 并记 `pool-model-fix`；`importLocal` 抄模型时同样按源目录的权限清单纠正。清单有多个模型或清单不权威时不动（该用哪个无法判断）。
 - **B 兜底**：`quota-watch.js` 撞到模型配置有误时，先对**号池的号**（Hub 管配置）调 `fixPoolModel` 把配置改对，并且这次不记「一直避让」（`probeMs: 0`，下一次直接重试）；同一个号同一个模型 6 小时内只自动修一次，修了还报同样的错说明问题不在配置，照旧 6 小时试探。个人账号是号主自己的配置，只提示不改（仍走 `set-personal-model`）。
-- **B 兜底（发送前，只诊断）**：`runCodeAgentPick` 在自动会话发第一条问题前核对「这次会用的模型」（选成了就是选中的；没选成就是配置里写的）在不在权限清单里，不在就记一行 `pick ... error=off-permission`，**照旧发出**。2026-10-22 发布验收实测：拦截返回 `ok:false` 会让通道按 notSent 一轮轮重试（退避 1→2→5→10 分钟、不计数），家里始终收不到回执；个人账号的「模型配置有误」避让和修正卡片也再没机会触发。配置本身由 A（启动前）和 B（报错后）修。
+- **B 兜底（发送前，只诊断）**：`runCodeAgentPick` 在自动会话发第一条问题前核对「这次会用的模型」（选成了就是选中的；没选成就是配置里写的）在不在权限清单里，不在就记一行 `pick ... error=off-permission`，**照旧发出**。2026-10-22 发布验收实测：拦截返回 `ok:false` 会让通道按 notSent 一轮轮重试（退避 1→2→5→10 分钟、不计数），家里始终收不到回执；个人账号的「模型配置有误」避让和修正卡片也再没机会触发。配置本身由 A（启动前）和 B（报错后）修。**2026-10-22 起改为「改选清单里的模型再发」，见下节第 2 条。**
 - 单测 `tests/unit-codeagent-model-permission-fix.test.js`。
+
+## 模型配置有误的三处兜底（2026-10-22 田哥，公司真机 Q-1022-*）
+
+真机症状：在启动中心亲手开的会话，明明是 DeepSeek 号（号 1 / 2 / 4），起来却是 GLM，发第一条问题就报「模型不存在或配置有误」。号自己的 `settings.json` 里写着 GLM（导入时抄来的），而 `settings.json` 会被 CodeAgent 在用户按回车后自己写回，不能当证据。
+
+1. **号池号不再按配置跳过选模型**（`core/codeagent-auto-pick.js`）：删掉 `account-default` 分支——号的 `settings.json` 写着什么、调用方带来什么模型，都不再决定开不开菜单；号池号一律在启动后开菜单选中「这次要用的模型」。只留两条跳过依据：熔断开着（连续 3 次自动选模型没成功，4 小时内直接发问题）、恢复的会话上一轮实际就是这个模型（`actualModel` 来自原生记录，不是配置）。
+2. **发送前不在权限清单里就改选**（`main/ipc/session-handlers.js`）：`runCodeAgentPick` 发现「这次会用的模型」不在清单里（清单以「一键获取模型权限」的探测文件为准，`permitted.authoritative`）时，再开一次菜单改选清单里的第一个模型，选中后才发；改选也没成时保留原来的「照旧发出 + 记一行 `off-permission` 诊断」。记账的 `currentModel` / `codeagentUserModel` 用最终选中的模型。
+3. **报错后当场切模型重发**（`core/company-bridge/company.js` 的 `fixModelInSession` → main 侧 `fixCodeAgentModel`）：通道撞到「模型配置有误」且没有别的号可换时，在这个会话里用 `/model` 切到清单里第一个不是刚报错那个的模型，把这一轮重发一次（`modelFixTried` 保证每轮只试一次；会话正忙、账号已被避让时不试；切成了清掉该号该模型的避让记录）。切不成照旧换号 / 报错。重发时 `quotaHitIgnored` 记下这次命中的时间，避免下一拍 `collect` 把同一条命中当成新命中而先换号。
+- 前置条件：公司 Hub 上先点一次「一键获取全部模型权限」，否则清单不权威，第 2、3 条都不动（`fixCodeAgentModel` 回 `no-model`）。
+- 单测 `tests/unit-codeagent-model-fix-fallback.test.js`、`tests/unit-codeagent-auto-pick-fallback.test.js`、`tests/unit-company-model-config.test.js`。
