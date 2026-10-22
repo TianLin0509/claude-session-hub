@@ -1,4 +1,6 @@
 'use strict';
+// These calendar/business-hours fixtures use Shanghai wall time on every host.
+process.env.TZ = 'Asia/Shanghai';
 // 公司版「助理」（2026-10-16）：只读白名单、回执解析、简报出处核对、6 条提醒的触发/去重/限流、服务端到端（假 welink-cli + 假会话）。
 const test = require('node:test');
 const assert = require('node:assert/strict');

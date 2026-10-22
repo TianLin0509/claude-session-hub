@@ -121,7 +121,8 @@ test('名额只算干活中：一个线索回答写完只在等核对（会话�
 
 test('排队时已有会话的线索（追问、改写）先派', async t => {
   const x = rig(t);
-  x.company.setSettings({ maxParallel: 1 });
+  // This case tests queue priority, independent of the host's busy/idle hours.
+  x.company.setSettings({ maxParallel: 1, maxParallelIdle: 1 });
   x.add('Q-NEW', [{ round: 1, question: '新开会话的问题', receivedAt: x.clock.now }], { createdAt: x.clock.now - 10 * MIN });
   x.s.map.set('sess-f', { id: 'sess-f', status: 'idle' });
   x.add('Q-FOLLOW', [{ round: 1, question: 'x', reply: 'y', replyAt: x.clock.now - MIN }, { round: 2, question: '追问', receivedAt: x.clock.now }], { sessionId: 'sess-f', everAnswered: true });

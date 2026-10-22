@@ -20,6 +20,8 @@ assert.equal(dsh.authMeta['api-key'].apiKey,config.acp.apiKey);
 const patches=JSON.parse(fs.readFileSync(dsh.launch.args[dsh.launch.args.indexOf('--patch')+1],'utf8'));
 assert(patches.find(p=>p.id==='llm-pi-ai').config.providers['bailian-tpp'].models.every(m=>m.compat.supportsDeveloperRole===false),
   'Token Plan system instructions must use the supported system role');
+assert(patches.find(p=>p.id==='system-prompt').config.personaSuffix.includes('ask_user_question'));
+assert(patches.some(p=>p.id==='acp-plugin'),'behavior patch retains the ACP transport');
 // Remove only the owned fixture link so the suite can safely clean its temp tree.
 const bridgeLink=path.join(dsh.launch.env.DSH_HOME,'profiles/acp/node_modules/@openma/deepseek-harness-acp');
 assert(path.resolve(bridgeLink).startsWith(path.resolve(root)+path.sep));
