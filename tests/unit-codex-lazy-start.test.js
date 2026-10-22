@@ -15,7 +15,13 @@ function harness() {
     env:{CODEX_HOME:path.join(dir,'codex'),CLAUDE_HUB_DATA_DIR:path.join(dir,'hub')},
     threadParams:{cwd:dir,model:'fixture-model',approvalPolicy:'never',sandbox:'danger-full-access',config:{model_reasoning_effort:'max'}},
     turnParams:{model:'fixture-model',effort:'max'},
-    clientFactory:()=>new CodexAppServerClient({cwd:dir,timeoutMs:1500,launch:{command:process.execPath,
+    // 请求超时：这里的 1.5s 是只给测试用的预算（生产走 60s 的 NATIVE_CONFIRMATION_MS），
+    // 但本文件在合并闸门里要和另外 893 个文件并发跑，夹具后端子进程冷启动 + initialize 握手
+    // 在 8 / 16 并发下会超过 1.5s，报成「Codex 请求超时：initialize」的假失败
+    //（2026-10-22 合并闸门连撞两次：并行 24.2s / 14.4s 失败，单跑 2.2s / 4.2s 通过；同一天另一席位
+    // 也在修同一类并发假失败 de114d90）。超时值本身不是断言对象，抬到 20s 只影响失败路径的等待时长，
+    // 真卡死的后端仍旧超时报错。与 22-23 行那条「1s poll 在 16 并发下失败过」是同一类修正。
+    clientFactory:()=>new CodexAppServerClient({cwd:dir,timeoutMs:20000,launch:{command:process.execPath,
       args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:{...process.env,
         CLAUDE_HUB_NATIVE_FIXTURE_STORE:store,CLAUDE_HUB_NATIVE_FIXTURE_TRACE:trace,CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY:'1'}}})};
   return {dir,opts,store,make:(extra={})=>new CodexNativeSession({...opts,...extra}),
