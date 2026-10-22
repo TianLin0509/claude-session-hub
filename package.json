@@ -1,6 +1,6 @@
 {
   "name": "ai-group-chat-hub",
-  "version": "1.6.577",
+  "version": "1.6.578",
   "description": "多模型 AI 群聊 Hub",
   "main": "main-bootstrap.js",
   "scripts": {
@@ -58,6 +58,7 @@
       "renderer/**/*",
       "scripts/**/*",
       "!scripts/firewall-whitelist-electron.ps1",
+      "!**/*.map",
       "claude-wx.ico",
       "package.json"
     ],

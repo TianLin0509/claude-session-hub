@@ -42,7 +42,11 @@ function patchVersion(resources, version) {
 async function main() {
   assert.ok(fs.existsSync(path.join(build, 'dist', 'win-unpacked')), '需要 --build 指向已打包的公司版导出目录');
   const latest = JSON.parse(fs.readFileSync(path.join(build, 'dist', 'latest.json'), 'utf8'));
-  const payload = fs.readFileSync(path.join(build, 'dist', latest.incremental.file));
+  // v3.1.3：清单里还有「只带变化文件」的小包；旧安装目录就是这次构建复制出来的，核对项全对，会走小包。
+  const chosen = latest.incrementalDelta || latest.incremental;
+  const payloads = new Map([[latest.incremental.file, fs.readFileSync(path.join(build, 'dist', latest.incremental.file))]]);
+  if (latest.incrementalDelta) payloads.set(latest.incrementalDelta.file, fs.readFileSync(path.join(build, 'dist', latest.incrementalDelta.file)));
+  const chosenMb = (chosen.bytes / 1024 / 1024).toFixed(1);
   fs.mkdirSync(out, { recursive: true });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-app-update-e2e-'));
   const install = path.join(root, 'install'), dataDir = path.join(root, 'data');
@@ -60,7 +64,8 @@ async function main() {
     const m = /^\/(github|aliyun)\/(latest\.json|v[\d.]+\/(.+))$/.exec(req.url);
     if (!m) { res.writeHead(404); res.end('not found'); return; }
     if (m[2] === 'latest.json') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(latest)); return; }
-    if (decodeURIComponent(m[3]) !== latest.incremental.file) { res.writeHead(404); res.end('not found'); return; }
+    const payload = payloads.get(decodeURIComponent(m[3]));
+    if (!payload) { res.writeHead(404); res.end('not found'); return; }
     if (m[1] === 'github') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': blockPage.length }); res.end(blockPage); return; }
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': payload.length });
     let offset = 0;
@@ -126,7 +131,7 @@ async function main() {
     await click('#hub-update-pill');
     await until(`!!document.querySelector('.app-update-dialog [data-au="download"]')`, 'dialog');
     const intro = await c.eval(`document.querySelector('.app-update-dialog').innerText`);
-    check(/v1\.0\.0/.test(intro) && /v1\.0\.1/.test(intro) && /程序更新（不含运行库） · 7\.\d MB/.test(intro) && /CodeAgent 回答卡片显示智谱头像/.test(intro), `${tag}：弹窗显示 v1.0.0 → v1.0.1、增量包大小和发布说明`);
+    check(/v1\.0\.0/.test(intro) && /v1\.0\.1/.test(intro) && new RegExp(`程序更新（不含运行库） · ${chosenMb} MB`).test(intro) && /CodeAgent 回答卡片显示智谱头像/.test(intro), `${tag}：弹窗显示 v1.0.0 → v1.0.1、增量包大小（${chosenMb} MB）和发布说明`);
     await shot(`${tag}-02-dialog`);
     await click('.app-update-dialog [data-au="download"]');
     await until(`!!document.querySelector('.app-update-dialog .au-progress') && /阿里云/.test(document.querySelector('.app-update-dialog .au-section')?.textContent||'')`, 'downloading from aliyun', 30000);

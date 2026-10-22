@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http');
 const { spawnSync } = require('node:child_process');
 const { validateManifest, planUpdate, compareVersions, currentRuntime } = require('../core/app-update/manifest');
-const { packPayload, unpackPayload, sha256 } = require('../core/app-update/payload');
+const { packPayload, unpackPayload, verifyLocalFiles, sha256 } = require('../core/app-update/payload');
 const { checkManifests, downloadWithFallback } = require('../core/app-update/downloader');
 const { stageIncremental, stagingPaths, takeLastResult } = require('../core/app-update/apply');
 
@@ -175,4 +175,56 @@ test('增量包里的路径只能是 app.asar 和 app.asar.unpacked/（不含依
   const legacyOk = p => p === 'app.asar' || (p.startsWith('app.asar.unpacked/') && !p.startsWith('app.asar.unpacked/node_modules/'));
   assert.ok(packed.files.every(f => legacyOk(f.path)), packed.files.map(f => f.path).join(', '));
   assert.ok(packed.files.some(f => f.path === 'app.asar.unpacked/scripts/desktop-icon-layout.ps1'), '解包出来的脚本随增量包送达');
+});
+
+test('增量小包：没变的解包文件只留路径和校验值，本机对不上就拒收（stale-local），不会半套替换', t => {
+  const root = tmp(t);
+  const v1 = fakeResources(path.join(root, 'v1'), 'ASAR-1');
+  // 模拟那个常年不变的会议室运行时：大文件，占完整包的大头。
+  fs.mkdirSync(path.join(v1, 'app.asar.unpacked', 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(v1, 'app.asar.unpacked', 'runtime', 'Mishu.exe'), require('node:crypto').randomBytes(300 * 1024));
+  const complete = packPayload(v1, path.join(root, 'complete.gz'));
+  assert.equal(complete.schema, 1, '完整更新包仍是 schema 1，老客户端认得');
+
+  const v2 = path.join(root, 'v2');
+  fs.cpSync(v1, v2, { recursive: true });
+  fs.writeFileSync(path.join(v2, 'app.asar'), 'ASAR-2');
+  const delta = packPayload(v2, path.join(root, 'delta.gz'), { previous: complete.index });
+  assert.equal(delta.schema, 2);
+  assert.deepEqual(delta.files.map(f => f.path), ['app.asar'], '只有 app.asar 进包');
+  assert.deepEqual(delta.unchanged.map(f => f.path).sort(), ['app.asar.unpacked/core/settings.json', 'app.asar.unpacked/runtime/Mishu.exe']);
+  assert.ok(delta.bytes < complete.bytes / 3, `小包 ${delta.bytes} 应远小于完整包 ${complete.bytes}`);
+
+  // 本机就是上一版的样子 → 只写 app.asar；没变的文件保持原样。
+  const newDir = path.join(root, 'new');
+  const written = unpackPayload(path.join(root, 'delta.gz'), newDir, { resourcesDir: v1 });
+  assert.deepEqual(written.map(f => f.path), ['app.asar']);
+  assert.equal(fs.readFileSync(path.join(newDir, 'app.asar'), 'utf8'), 'ASAR-2');
+
+  // 本机缺文件 / 文件被改动 → 整包拒收，暂存目录里什么都不写。
+  const broken = fakeResources(path.join(root, 'broken'), 'ASAR-1');
+  const missingDir = path.join(root, 'new2');
+  assert.throws(() => unpackPayload(path.join(root, 'delta.gz'), missingDir, { resourcesDir: broken }), error => {
+    assert.equal(error.code, 'stale-local');
+    assert.match(error.message, /Mishu\.exe/);
+    return true;
+  });
+  assert.equal(fs.existsSync(missingDir), false, '核对不过时没有写任何文件');
+  assert.deepEqual(verifyLocalFiles(delta.unchanged, v1), { ok: true, stale: [] });
+  assert.equal(verifyLocalFiles(delta.unchanged, broken).stale.length, 1);
+  // 不传 resourcesDir（老调用方式）照旧解包，不做本机核对。
+  assert.equal(unpackPayload(path.join(root, 'delta.gz'), path.join(root, 'new3')).length, 1);
+});
+
+test('清单：增量小包必须带合规的核对项；只有小包时也按增量更新', () => {
+  const ok = manifest({ incremental: null, incrementalDelta: { file: 'd.gz', bytes: 90000, sha256: SHA,
+    requires: [{ path: 'app.asar.unpacked/runtime/Mishu.exe', bytes: 80568759, sha256: SHA }] } });
+  const parsed = validateManifest(ok);
+  assert.equal(parsed.incrementalDelta.requires.length, 1);
+  assert.equal(planUpdate(parsed, { version: '1.0.0', runtime: { electron: '41.2.0', native: { 'node-pty': '1.1.0' } } }).kind, 'incremental');
+  const bad = path => manifest({ incrementalDelta: { file: 'd.gz', bytes: 90000, sha256: SHA, requires: [{ path, sha256: SHA }] } });
+  assert.throws(() => validateManifest(bad('app.asar.unpacked/node_modules/node-pty/x.node')), /核对项不合规/);
+  assert.throws(() => validateManifest(bad('../evil')), /核对项不合规/);
+  assert.throws(() => validateManifest(manifest({ incrementalDelta: { file: 'd.gz', bytes: 90000, sha256: 'nope', requires: [] } })), /校验值无效/);
+  assert.throws(() => validateManifest(manifest({ incrementalDelta: { file: 'd.gz', bytes: 90000, sha256: SHA, requires: 'x' } })), /核对项不合规/);
 });
