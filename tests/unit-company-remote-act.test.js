@@ -100,6 +100,16 @@ test('kill-orphans：只结束 5 分钟内直查列为「可结束」、PID 与�
   assert.equal(v.status, '公司没处理'); assert.match(v.note, /60 秒内只做一次/);
 });
 
+test('kill-orphans 总时长上限：到点后不再处理剩下的，如实回报（v3.1.2）', async t => {
+  const r = setup(t, { killBudgetMs: 0 }); await pair(r);
+  await diag(r);
+  r.clock.now += 61000;
+  const v = actResult(r, (await act(r, 'kill-orphans', { targets: [{ pid: 300, startedAt: NOW - 86400000 }] })).id);
+  assert.equal(v.act.ok, false, '一个都没结束时不报成功');
+  assert.deepEqual(r.box.killed, [], '到上限后不再动手');
+  assert.match(v.act.results[0].why, /本次结束已到 .*上限，剩下的没处理/);
+  assert.match(v.note, /1 个没动/);
+});
 test('kill-orphans 硬保护：即使清单被篡改成 Hub 进程、PID 被复用、或重新判定已不是残留，都不结束', async t => {
   const r = setup(t); await pair(r);
   await diag(r);
