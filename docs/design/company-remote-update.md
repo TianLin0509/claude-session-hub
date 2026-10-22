@@ -88,6 +88,7 @@
   参数家里先核、公司再核（`parseParams`）；每次写 `logs/company-act.log`，界面轻提示「对端执行了：…」（不弹系统通知）；公司每条回报带 `caps:['diag','act']`，旧版公司家里直接说明不支持。
 - suspend-idle：只动 purpose=company-bridge、不在干活、没有排队 / 在途问题的会话，走 `suspendSession` 现有底线（置顶、正看着、群聊成员不收；空闲不足 1 分钟不收）；人自己开的会话一律不动。回报休眠了哪些、跳过哪些及原因、可用内存前后。
 - kill-orphans（二审加固）：重新枚举的结果里找不到当前 Hub 主进程就整体拒绝（fail-closed）；隔 1.5 秒采两次量 CPU，量不到或最近还在用的不结束；发出结束后最多轮询 5 秒，回报区分「已结束」和「已发出结束请求、未确认」。
+- kill-orphans 总时长上限（v3.1.2）：一次最多 30 秒（`KILL_BUDGET_MS`；测试可用 `deps.killBudgetMs` 改短）。到点后不再处理剩下的目标，逐个回报「本次结束已到 N 秒上限，剩下的没处理，可以再执行一次」，避免 20 个目标各等 5 秒把对端拖住；结束时按实际结束数量判成败。
 - kill-orphans：对端传 `targets:[{pid,startedAt}]`（最多 20 个），必须在 5 分钟内那次直查记下的「可结束」清单里（`hubAdmin.lastDiagKillable`，PID + 启动时间都一致）；
   动手前重新枚举进程、用同一套参数（`diag.js analyzeOptions`）再判一次：仍是「可结束」、启动时间没变（PID 没被复用）、不在保护名单（当前 Hub 进程树、所有别的 Hub 主进程及其进程树、Hub 后台脚本、本进程）才结束。
   只按 PID 结束（`process.kill(pid)`），绝不按命令行匹配；结束前后各记一次可用内存，结束过的从清单里划掉。

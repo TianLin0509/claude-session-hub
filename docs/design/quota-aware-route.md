@@ -63,3 +63,13 @@
 - set-personal-model 回给对端的只有固定文案 + code（`bad-json` / `unverified` / `verify-failed` 等），路径、JSON 片段只写本机 `company-act.log`。
 - 权限依据：清单权威（「获取模型权限」的探测文件 `probe`，或 CodeAgent 自己存在 `.cac.json` 的账号清单 `enterprise`——2.1.12 直查个人号 models 只有 GLM、没有混进 settings 里写的 DS，说明来自后者），或个人账号实际用该模型作答过（回执元数据的实际模型 + 代称 / 会话归属，或会话记录的 `codeagentActualModel`；分档名 `GLM-5.2-WX` 算 `GLM-5.2-WX-Auto`）。都没有时拒绝并提示「获取模型权限」或 `--force-unverified`；`force:true` 只跳过这一条，回报、轻提示、审计都标「未经权限校验」。直查 pool 段带 `modelsAuthoritative` / `modelsProbedAt` / `modelsSource`，个人一行另带 `answeredModels`、`lastBackup`。
 - 撤销（restore）不清避让；家里卡片个人一行有「撤销上次修改（改回 X）」按钮（二次确认）。
+
+## 号池号的默认模型权限兜底（v3.1.2，2026-10-22 公司真机 v3.1.1）
+
+- 真机证据：只有 `DeepSeek-V4-Flash-0731` 权限的号 2、号 4 在「特战通道」会话里请求 `GLM-5.2-WX-Auto`，被后端判「模型不存在或配置有误」，记成按「号 + 模型」的模型配置避让（不自动到期、6 小时一次试探），看起来「一直避让」。号 1 的模型日志：`default-model before=GLM-5.2-WX-Auto after=deepseek-v4-flash-0731 restoredTo=GLM-5.2-WX-Auto`——号池号自己的 `settings.json` 里就写着 GLM。
+- 来源：导入号池时会把源 `.cac` 目录 `settings.json` 的 `model` 抄进新号（`importLocal`），公司那个目录常年写着 GLM；开关关着（账号即模型）时 `syncSharedConfig` 只认号自己写的值、不做权限校验，于是 GLM 一直留着，全靠启动后 `/model` 菜单纠正。
+- 两处纠正漏口：`codeagent-auto-pick.js` 的 `account-default` 跳过菜单时直接继承配置里的模型；`session-handlers.js` 的 `fallback=send-with-cli-model` 在菜单没选上时照发。任一漏口都会拿 GLM 去撞后端。
+- **A 启动前**：`codeagent-pool.js` 的 `permissionSafeModel` —— 号写的模型不在权限清单里、清单权威且只有一个模型时，一律换成清单里那个（写进 `settings.json`，其余键原样保留），`syncSharedConfig` 回报 `modelFix` 并记 `pool-model-fix`；`importLocal` 抄模型时同样按源目录的权限清单纠正。清单有多个模型或清单不权威时不动（该用哪个无法判断）。
+- **B 兜底**：`quota-watch.js` 撞到模型配置有误时，先对**号池的号**（Hub 管配置）调 `fixPoolModel` 把配置改对，并且这次不记「一直避让」（`probeMs: 0`，下一次直接重试）；同一个号同一个模型 6 小时内只自动修一次，修了还报同样的错说明问题不在配置，照旧 6 小时试探。个人账号是号主自己的配置，只提示不改（仍走 `set-personal-model`）。
+- **B 兜底（发送前）**：`runCodeAgentPick` 在自动会话发第一条问题前核对「这次会用的模型」（选成了就是选中的；没选成就是配置里写的）在不在权限清单里，不在就不发——发出去只会得到「模型不存在」并被记成长期避让。日志 `pick ... error=off-permission`。
+- 单测 `tests/unit-codeagent-model-permission-fix.test.js`。

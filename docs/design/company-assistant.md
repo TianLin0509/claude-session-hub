@@ -84,3 +84,12 @@
 - 回归入口：`tests/unit-company-assistant-foundation.test.js`；`tests/e2e-company-assistant-foundation-cdp.js` 使用真实隔离 Hub、真实 Claude Haiku 作为 CodeAgent 兼容替身、合成 WeLink CLI。公司真机接口证据与本地模拟验收分别记录，不能混称公司 GUI 已验收。
 - 第3轮真机补证：page 从 1 起，排序传 `asc`，size=2 连续两页无重叠；时间范围的包含/相交语义与末页未实测。联系人有效+无效混合批次返回 code=0、仅有效 users，未命中者回退账号；47111 拆批仅为全批失败时的兼容处理。
 - 独立复核修正：缓存裁剪同步覆盖起点，扩大回看时间会补旧页；未知消息/会话响应结构标查询异常；旧补名不当作新姓名证据；跨进程缓存写入加短锁并保留较新的成功结果。最近会话查询失败保留同账号快照并注明原采集时间；出处在14天保留文件中按完整编号、同账号回查；每日给既有助理会话更新会议时间参数。
+
+## PPT 出处自动核对、素材库入口与无线领域偏好（v3.1.2，2026-10-22）
+
+v3.1.0 的 20 题对比里只有 13 题出了 Hub 核对过的出处卡片，其余是模型直接作答。本轮补三条，模型不走 `ppt_library op=report` 时也尽量把出处管住：
+
+- **Hub 自动核对回答里的出处**：`core/company-assistant/citation-check.js` 从回答里找同一行的「文件名 + 第 N 页」（表格、加粗、路径、`P12` 都认；跨行不合并），用 `execute('status')` 缓存下来的文稿页数核对：文稿不在本次索引里、页码超过页数分别报出来；全对时写一句「引用了 N 页，其中 N 页和素材索引对得上」。只核对文件与页码是否存在，不判断页面内容是否支持结论；没有索引、没有 Python 或回答里没有具体出处时一句都不加，不把「核对不了」写成「引用有错」。附加在模型回答后面，与 `report` 的逐页原文核对区分开。
+- **从 PPT 入口进来时限定在素材库里查**：助理页侧栏「PPT 素材库」或设置页「去对话里找素材」进来时，`ask` 带 `entry:'ppt'`（重试沿用），这一轮的提示词前面加一句范围：只在已选素材文件夹与 PPT Doctor 索引里查，直接用 `ppt_find` / `ppt_read`，汇总前用 `ppt_library op=report`，不要先查 WeLink、邮件或会话；索引缺失时直接说明原因和设置入口。普通提问不带这条。
+- **预置「无线领域」偏好**：每个号主第一次提问时在记忆里放一条 `preference`（key「领域」，60 字内，写明 5G/6G、RRM、MSG、LTE/NR、3GPP，找 PPT 时按这些术语扩展），随记忆上下文每次进入提示词；用户可改、可删，删掉后不再自动加回（按号主记 `seeds.domain`，写记忆时保留同一文件的其他顶层字段）。
+- 测试：`tests/unit-company-assistant-citation-check.test.js`（解析、超页、缺失、前后缀、接入真实 SQLite 索引、无索引不加话）；`tests/unit-company-assistant-query-memory.test.js`（预置、改、删、不复发、换号主）；`tests/unit-company-assistant.test.js`（PPT 入口范围只在这一轮、普通提问不带、领域偏好进入提示词）。
