@@ -69,19 +69,19 @@ function mountWritingComposer({ host, h, ipcRenderer, value = '', placeholder, l
 
 // 成员卡与「新建 AI 群聊」同一套：样式用 meeting-create-modal.css 的 .mcm-*，模型、思考强度、速度
 // 都按 WorkspaceController.resolveSessionTuning 算（2026-10-13 田哥：写作 Tab 的成员区和默认配置参考群聊，保持一致）。
-// 新建入口里 DeepSeek 一律跑 Claude Code（deepseek-claude，默认 V4.1 Flash）；旧 Codex / 原生 Harness 接入
+// 新建入口里 DeepSeek 默认使用 DSH（deepseek-acp）；旧 Codex / Claude Code 接入
 // 只留给历史会话恢复，本机存过的旧 DeepSeek 成员在这里换过来。
 // 2026-10-22 田哥要求：写作成员与建群弹窗用同一份清单，群里能加的 AI 写作台都能加（包括 Antigravity）。
 const deepseekProfile = require('../core/deepseek-claude-profile');
-const LEGACY_DEEPSEEK_KINDS = new Set(['deepseek', 'deepseek-acp']);
+const LEGACY_DEEPSEEK_KINDS = new Set(['deepseek', 'deepseek-claude']);
 const WRITING_MEMBER_KINDS = GROUP_MEMBER_KINDS.filter(kind => !LEGACY_DEEPSEEK_KINDS.has(kind));
 const MEMBER_FIELDS = ['model', 'effort', 'codexSpeedTier', 'fastMode', 'deepseekRoute'];
 
 function normalizeWritingMember(member = {}) {
-  const requested = LEGACY_DEEPSEEK_KINDS.has(member.kind) ? 'deepseek-claude' : member.kind;
+  const requested = LEGACY_DEEPSEEK_KINDS.has(member.kind) ? 'deepseek-acp' : member.kind;
   const kind = WRITING_MEMBER_KINDS.includes(requested) ? requested : 'claude';
   const next = { kind };
-  // 换了运行时（旧 DeepSeek → Claude Code），旧的模型名与调参不能带过去。
+  // 换了运行时（旧 DeepSeek → DSH），旧的模型名与调参不能带过去。
   if (kind === member.kind) for (const key of MEMBER_FIELDS) if (member[key] !== undefined && member[key] !== '') next[key] = member[key];
   return next;
 }

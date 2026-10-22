@@ -55,13 +55,13 @@ test('group defaults to Claude + Codex and keeps DeepSeek as the optional third 
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-flash');
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*\}/);
-  // 2026-10-11：第三位可选成员是跑在 Claude Code 上的 DeepSeek。
-  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek-claude'\s*\}/);
-  assert.strictEqual(DEFAULT_MODEL_BY_KIND['deepseek-claude'], 'deepseek-v4.1-flash');
+  // 2026-10-11：第三位可选成员是跑在 DSH 上的 DeepSeek。
+  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek-acp'\s*\}/);
+  assert.strictEqual(DEFAULT_MODEL_BY_KIND['deepseek-acp'], 'deepseek-v4.1-flash');
   assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS\s*=\s*DEFAULT_SLOTS\.slice\(0,\s*2\)/);
   assert.match(MODAL_JS, /\{ KIND_LABELS, GROUP_MEMBER_KINDS \} = require\('\.\.\/core\/ai-kinds.js'\)/);
   assert.deepStrictEqual(require('../core/ai-kinds').GROUP_MEMBER_KINDS,
-    ['claude','codex','deepseek-claude','qwen','deepseek-acp','glm','codeagent','gemini']);
+    ['claude','codex','deepseek-acp','qwen','glm','codeagent','gemini']);
 });
 
 test('group membership is a default, not a cap: same kind may repeat and the roster is unbounded', () => {

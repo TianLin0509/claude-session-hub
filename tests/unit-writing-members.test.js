@@ -16,30 +16,31 @@ function controller({ routeOk = true } = {}) {
 let passed = 0;
 function test(name, fn) { fn(); passed += 1; console.log(`  ✓ ${name}`); }
 
-test('本机存过的旧 DeepSeek 成员换到 Claude Code，旧 Codex 模型名不带过去', () => {
-  assert.deepStrictEqual(normalizeWritingMember({ kind: 'deepseek', model: 'deepseek-v4-pro', effort: 'high' }), { kind: 'deepseek-claude' });
-  assert.deepStrictEqual(normalizeWritingMember({ kind: 'deepseek-acp' }), { kind: 'deepseek-claude' });
+test('本机存过的旧 DeepSeek 成员换到 DSH，旧 Codex 模型名不带过去', () => {
+  assert.deepStrictEqual(normalizeWritingMember({ kind: 'deepseek', model: 'deepseek-v4-pro', effort: 'high' }), { kind: 'deepseek-acp' });
+  assert.deepStrictEqual(normalizeWritingMember({ kind: 'deepseek-claude' }), { kind: 'deepseek-acp' });
+  assert.deepStrictEqual(normalizeWritingMember({ kind: 'deepseek-acp', model: 'deepseek-v4-pro' }), { kind: 'deepseek-acp', model: 'deepseek-v4-pro' });
   assert.deepStrictEqual(normalizeWritingMember({ kind: 'codex', model: 'gpt-6-astra', effort: 'low', model2: 'x' }), { kind: 'codex', model: 'gpt-6-astra', effort: 'low' });
   // 写作成员与建群弹窗同一份清单：Antigravity（gemini）从 2026-10-22 起可加，不再回落成 Claude。
   assert.deepStrictEqual(normalizeWritingMember({ kind: 'gemini', model: 'gemini-3.1-pro-high' }), { kind: 'gemini', model: 'gemini-3.1-pro-high' });
 });
 
 test('写作成员清单与建群弹窗一致（只去掉旧 DeepSeek 接入），Antigravity 在列', () => {
-  assert.deepStrictEqual(WRITING_MEMBER_KINDS, GROUP_MEMBER_KINDS.filter(kind => kind !== 'deepseek-acp'));
+  assert.deepStrictEqual(WRITING_MEMBER_KINDS, GROUP_MEMBER_KINDS);
   assert.ok(WRITING_MEMBER_KINDS.includes('gemini'), 'Antigravity 能加进写作群');
 });
 
-test('默认三位成员里 DeepSeek 跑 Claude Code', () => {
-  assert.deepStrictEqual(defaultMembers({}), [{ kind: 'claude' }, { kind: 'codex' }, { kind: 'deepseek-claude' }]);
+test('默认三位成员里 DeepSeek 跑 DSH', () => {
+  assert.deepStrictEqual(defaultMembers({}), [{ kind: 'claude' }, { kind: 'codex' }, { kind: 'deepseek-acp' }]);
 });
 
-test('建群成员带上 DeepSeek 接入；选中的接入不可用时直接拦下', () => {
+test('新建成员使用 DSH，不携带旧 Claude 接入选项', () => {
   const slots = writingMemberSlots([{ kind: 'claude' }, { kind: 'deepseek' }], controller());
   assert.deepStrictEqual(slots, [
     { index: 0, kind: 'claude', model: 'claude-default' },
-    { index: 1, kind: 'deepseek-claude', model: 'deepseek-claude-default', deepseekRoute: 'tokenplan' },
+    { index: 1, kind: 'deepseek-acp', model: 'deepseek-acp-default' },
   ]);
-  assert.throws(() => writingMemberSlots([{ kind: 'deepseek-claude', deepseekRoute: 'api' }], controller({ routeOk: false })), /成员 1：.*不可用：没有配置 Key/);
+  assert.deepStrictEqual(writingMemberSlots([{ kind: 'deepseek-claude', deepseekRoute: 'api' }], controller()), [{ index: 0, kind: 'deepseek-acp', model: 'deepseek-acp-default' }]);
   // Antigravity 与群里一样按选定的模型与思考档出发，不被换成 Claude
   assert.deepStrictEqual(writingMemberSlots([{ kind: 'gemini', model: 'gemini-3.1-pro-high', effort: 'high' }], controller()),
     [{ index: 0, kind: 'gemini', model: 'gemini-3.1-pro-high', effort: 'high' }]);
