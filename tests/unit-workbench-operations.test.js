@@ -271,7 +271,9 @@ test('concurrent review decisions remain additive instead of last-writer-wins', 
     createWorkbenchOperationsService({ dataDir }),
     createWorkbenchOperationsService({ dataDir }),
   ];
-  const details = await Promise.all(files.map(filePath => services[0].diff({ repoRoot: repo, filePath })));
+  // Race the review writes, not fixture reads (each diff starts three Git processes).
+  const details = [];
+  for (const filePath of files) details.push(await services[0].diff({ repoRoot: repo, filePath }));
   await Promise.all(details.map((detail, index) => services[index % services.length].setReviewDecision({
     repoRoot: repo,
     filePath: files[index],
@@ -279,7 +281,8 @@ test('concurrent review decisions remain additive instead of last-writer-wins', 
     decision: 'accepted',
     comment: `review-${index}`,
   })));
-  const reviewed = await Promise.all(files.map(filePath => services[0].diff({ repoRoot: repo, filePath })));
+  const reviewed = [];
+  for (const filePath of files) reviewed.push(await services[0].diff({ repoRoot: repo, filePath }));
   assert.deepStrictEqual(
     reviewed.map(detail => detail.hunks[0].review && detail.hunks[0].review.comment),
     files.map((_file, index) => `review-${index}`),
