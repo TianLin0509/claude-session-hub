@@ -799,17 +799,17 @@ function registerSessionIpc(ipcMain, deps) {
         sendToPty: require('../../core/group-chat-watcher').sendToPty });
     } catch (error) { result = { ok: false, message: error && error.message ? error.message : String(error) }; }
     const automatic = ['company-bridge', 'company-assistant', 'company-forum'].includes(session.purpose);
-    // 兜底（2026-10-22 B）：自动会话发第一条问题之前，先确认这次会用的模型在这个号的权限清单里，不在就别发。
-    // 发出去只会得到「模型不存在或配置有误」，并被记成「模型配置有误」避让——这种避让不自动到期，6 小时才放行一次试探。
-    // 用哪个模型：选成了就是选中的那个（pickModel 已经核过清单）；没选成（跳过菜单，或菜单失败照发）就是配置里写的那个。
+    // 兜底（2026-10-22 B）：自动会话发第一条问题之前，核对这次会用的模型在这个号的权限清单里。
+    // 不在清单里时**只记一行诊断、不拦这一轮**：拦截会让通道一轮轮重试（notSent 不计次数）而家里收不到回执，
+    // 个人账号的「模型配置有误」避让与修正卡片也再没机会触发。号池号的配置由启动前的权限兜底（A）和报错后的
+    // 当场修正（B）处理；个人账号照旧走避让 + 修正卡片。
     const willUse = result.ok ? modelId : before;
     const offPermission = automatic && permitted.authoritative && permitted.models.length && willUse
       && !permitted.models.some(m => String(m).toLowerCase() === String(willUse).toLowerCase());
     if (offPermission) {
       codeagentModels.appendModelLog(dataDir, { event: 'pick', session: String(sessionId).slice(0, 8), account: account.replace(/\s+/g, ''), reason, model: willUse,
-        ok: false, error: 'off-permission：会请求的模型不在权限清单里，这一轮没有发出去', fallback: '' });
-      return { ok: false, inputReady: true, offPermission: true,
-        message: `这个号会请求 ${willUse}，但它的模型权限只有 ${permitted.models.join('、')}，这一轮没有发出去（配置没改对之前发出去也一定报「模型不存在」）` };
+        ok: false, error: 'off-permission：会请求的模型不在权限清单里，照旧发出，交给报错后的配置修正 / 避让',
+        fallback: session.codeagentPoolAccount ? 'pool-model-fix' : 'model-config-avoid' });
     }
     // 自动选模型的熔断计数（core/codeagent-auto-pick.js）：自动会话启动时菜单没选成记一次失败；这个号上任何一次选成就清零。
     // 不在权限清单里（没开菜单）不算菜单失败。

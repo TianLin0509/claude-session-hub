@@ -71,5 +71,5 @@
 - 两处纠正漏口：`codeagent-auto-pick.js` 的 `account-default` 跳过菜单时直接继承配置里的模型；`session-handlers.js` 的 `fallback=send-with-cli-model` 在菜单没选上时照发。任一漏口都会拿 GLM 去撞后端。
 - **A 启动前**：`codeagent-pool.js` 的 `permissionSafeModel` —— 号写的模型不在权限清单里、清单权威且只有一个模型时，一律换成清单里那个（写进 `settings.json`，其余键原样保留），`syncSharedConfig` 回报 `modelFix` 并记 `pool-model-fix`；`importLocal` 抄模型时同样按源目录的权限清单纠正。清单有多个模型或清单不权威时不动（该用哪个无法判断）。
 - **B 兜底**：`quota-watch.js` 撞到模型配置有误时，先对**号池的号**（Hub 管配置）调 `fixPoolModel` 把配置改对，并且这次不记「一直避让」（`probeMs: 0`，下一次直接重试）；同一个号同一个模型 6 小时内只自动修一次，修了还报同样的错说明问题不在配置，照旧 6 小时试探。个人账号是号主自己的配置，只提示不改（仍走 `set-personal-model`）。
-- **B 兜底（发送前）**：`runCodeAgentPick` 在自动会话发第一条问题前核对「这次会用的模型」（选成了就是选中的；没选成就是配置里写的）在不在权限清单里，不在就不发——发出去只会得到「模型不存在」并被记成长期避让。日志 `pick ... error=off-permission`。
+- **B 兜底（发送前，只诊断）**：`runCodeAgentPick` 在自动会话发第一条问题前核对「这次会用的模型」（选成了就是选中的；没选成就是配置里写的）在不在权限清单里，不在就记一行 `pick ... error=off-permission`，**照旧发出**。2026-10-22 发布验收实测：拦截返回 `ok:false` 会让通道按 notSent 一轮轮重试（退避 1→2→5→10 分钟、不计数），家里始终收不到回执；个人账号的「模型配置有误」避让和修正卡片也再没机会触发。配置本身由 A（启动前）和 B（报错后）修。
 - 单测 `tests/unit-codeagent-model-permission-fix.test.js`。
