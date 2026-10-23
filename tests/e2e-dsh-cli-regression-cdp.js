@@ -43,6 +43,7 @@ async function main(){
         await until(`!!document.querySelector('.effort-picker-menu [data-effort="high"]')`,'effort choices');
         await c.eval(`document.querySelector('.effort-picker-menu [data-effort="high"]').click()`);
         await until(`sessions.get(${j(s.id)}).effort==='high'&&!sessions.get(${j(s.id)})._modelSwitchPending`,'native effort confirmation');
+        await until(`!document.querySelector('.effort-picker-menu')`,'successful effort menu closes');
         check(kind+' real UI effort switch confirmed by native CLI');
       }
       if(process.argv.includes('--title-pin')) {
