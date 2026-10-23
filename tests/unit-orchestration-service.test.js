@@ -84,19 +84,81 @@ function fixture(t, { settings = {}, dataDir } = {}) {
 const planArgs = { summary: '调研并实现', team: [{ memberId:'m2', role: '开发位' }, { memberId:'m3', role: '审核位' }],
   segments: [{ name: 'PF 实现', preset: 'development', goal: '实现 PF', acceptance: '单测通过' }] };
 
+test('star: members contact leader; peer links require leader approval and cannot impersonate', async t => {
+  const x=fixture(t); await x.addExisting({kind:'kimi'}); await x.addExisting({kind:'gemini'});
+  x.busy.add('s-orch'); x.busy.add('s-2'); x.busy.add('s-3');
+  const status=await x.call('orch_status',{},'s-2'); assert.equal(status.members.length,3);
+  await assert.rejects(x.call('orch_propose_plan',{summary:'steal'},'s-2'),/编排员/);
+  await x.call('orch_send_message',{to:'m1',message:'question',from:'m3'},'s-2');
+  const channel=x.service.ledgerFor('mt1').channel;
+  assert.equal(channel.messages[0].from,'m2');
+  await assert.rejects(x.call('orch_send_message',{to:'m3',message:'hello'},'s-2'),/申请/);
+  const r=await x.call('orch_request_peer',{memberId:'m3',reason:'核对接口'},'s-2');
+  await assert.rejects(x.call('orch_decide_peer',{requestId:r.id,approve:true},'s-2'),/编排员/);
+  await x.call('orch_decide_peer',{requestId:r.id,approve:false,reason:'先独立分析'});
+  await assert.rejects(x.call('orch_send_message',{to:'m3',message:'hello'},'s-2'),/申请/);
+  const r2=await x.call('orch_request_peer',{memberId:'m3',reason:'需要对齐结果'},'s-2');
+  await x.call('orch_decide_peer',{requestId:r2.id,approve:true});
+  await x.call('orch_send_message',{to:'m3',message:'approved'},'s-2');
+  await x.call('orch_send_message',{to:'m2',message:'reply'},'s-3');
+  assert.ok(x.service.ledgerFor('mt1').notices.some(n=>n.text.includes('approved')));
+  await assert.rejects(x.call('orch_report',{kind:'final',summary:'done'}),/待处理/);
+  x.busy.delete('s-3'); await x.service.tickMeeting('mt1'); await tick();
+  assert.ok(x.dispatches.some(d=>d.targetMemberIds?.includes('m3')));
+});
+
+test('star: old answers are baselined, new formal answers and revisions reach the leader once', async t => {
+  const x=fixture(t); await x.addExisting({kind:'codex'}); x.busy.add('s-orch');
+  const old={role:'assistant',sid:'s-2',memberId:'old-id',turnNum:1,content:'old',answer:{state:'delivered',at:10}};
+  const fresh={...old,turnNum:2,content:'new',answer:{state:'delivered',at:1000001}};
+  const o={state:{messages:[old,fresh]},answerFileFor:()=>({ready:'/answer.md'})};
+  x.service.onAnswersChanged('mt1',o); x.service.onAnswersChanged('mt1',o);
+  const l=x.service.ledgerFor('mt1'); assert.equal(l.notices.filter(n=>n.key.startsWith('member-answer:')).length,1);
+  fresh.content='revised'; fresh.answer.at++; x.service.onAnswersChanged('mt1',o);
+  assert.equal(l.notices.filter(n=>n.key.startsWith('member-answer:')).length,2);
+  fresh.answer.state='draft'; fresh.content='draft'; x.service.onAnswersChanged('mt1',o);
+  assert.equal(l.notices.filter(n=>n.key.startsWith('member-answer:')).length,2);
+});
+
+test('star: natural-language work can finish without a fixed workflow', async t => {
+  const x=fixture(t); await x.call('orch_propose_plan',{summary:'由我规划并汇报'});
+  assert.equal((await x.call('orch_report',{kind:'final',summary:'结果与证据已汇总'})).status,'finished');
+});
+
+test('star: optional custom workflow preserves more than six rounds and three workers', async t=>{
+  const x=fixture(t);for(let i=0;i<4;i++)await x.addExisting({kind:'codex'});
+  const members=['m2','m3','m4','m5'];const seg={name:'long',preset:'custom',goal:'g',acceptance:'a',steps:9};
+  await x.call('orch_propose_plan',{summary:'完整步骤',segments:[seg]});
+  const rounds=Array.from({length:9},(_,i)=>({name:'step'+i,prompt:'task',members,after:i===8?'end':'next'}));
+  await x.call('orch_start_workflow',{...seg,members,rounds});
+  assert.equal(x.meetingObj.serialWorkflow.deliveryStages.length,9);
+  assert.equal(x.meetingObj.serialWorkflow.deliveryStages[0].members.length,4);
+});
+
+test('star: HTTP identity is bound to token and generic terminal helper works for a member',async t=>{
+  const x=fixture(t);await x.addExisting({kind:'gemini'});await x.service.start();
+  x.service.userMessage('mt1',{text:'开始'});
+  const file=path.join(x.dir,'orchestration','connections','s-2.json');const endpoint=JSON.parse(fs.readFileSync(file,'utf8'));
+  const response=await fetch(endpoint.url,{method:'POST',headers:{Authorization:'Bearer '+endpoint.token,'Content-Type':'application/json','X-Hub-Orchestrator-Session':'s-orch'},body:JSON.stringify({name:'orch_propose_plan',arguments:{summary:'forged'},callerSessionId:'s-orch'})});
+  const rejected=await response.json();assert.equal(rejected.ok,false);assert.match(rejected.error,/编排员/);
+  const args=path.join(x.dir,'args.json');fs.writeFileSync(args,'{}');
+  const {stdout}=await require('node:util').promisify(require('node:child_process').execFile)(process.execPath,[path.resolve(__dirname,'../scripts/orchestrator-mcp.js'),'--connection',file,'--tool','orch_status','--args-file',args],{windowsHide:true});
+  assert.equal(JSON.parse(stdout).members.length,2);
+});
+
 test('lightweight: a new task starts with defaults and archives the previous task evidence',async t=>{
   const x=fixture(t,{settings:{roundCap:8,timeCapMin:180}});
   const ledger=x.service.ledgerFor('mt1');
   ledger.status='finished';ledger.budget.roundCap=10;ledger.budget.roundsUsed=10;ledger.budget.timeCapMs=30*60000;
   ledger.plan={version:1,summary:'上一个任务'};ledger.segments=[{name:'旧任务',status:'passed'}];
   x.service.userMessage('mt1',{text:'接下来帮我分析新需求'});
-  assert.equal(ledger.budget.roundCap,8);assert.equal(ledger.budget.roundsUsed,0);assert.equal(ledger.budget.timeCapMs,180*60000);
+  assert.equal(ledger.budget.roundCap,null);assert.equal(ledger.budget.roundsUsed,0);assert.equal(ledger.budget.timeCapMs,null);
   assert.equal(ledger.plan,null);assert.deepEqual(ledger.segments,[]);assert.equal(ledger.taskHistory[0].budget.roundCap,10);
 });
 
 test('only the orchestrator session may call tools; a submitted plan takes effect without any UI confirmation', async t => {
   const x = fixture(t);
-  await assert.rejects(x.call('orch_status', {}, 's-other'), /只有编排群里的编排员/);
+  await assert.rejects(x.call('orch_status', {}, 's-other'), /编排群/);
   await assert.rejects(x.call('orch_add_member', { role: '开发位', kind: 'codex' }), /已有成员/);
   await x.addExisting({role:'',kind:'codex'});await x.addExisting({role:'',kind:'claude'});
   assert.equal((await x.call('orch_status')).status, 'planning');
@@ -139,7 +201,7 @@ test('development uses distinct existing members even with the same backend', as
   await assert.rejects(x.call('orch_start_workflow', { ...args, sameKindReason: 'x' }), /已有工作段在进行/);
 });
 
-test('review verdicts reach the orchestrator, budget exhaustion pauses the workflow, and the user\'s words let the orchestrator grant more', async t => {
+test('review verdicts reach the orchestrator, old budget caps never pause work and natural language is retained', async t => {
   const x = fixture(t, { settings: { roundCap: 2 } });
   await x.addExisting({ role: '开发位', kind: 'codex', tier: 'fast' });
   await x.addExisting({ role: '审核位', kind: 'claude', tier: 'fast' });
@@ -154,24 +216,17 @@ test('review verdicts reach the orchestrator, budget exhaustion pauses the workf
   x.writeRun({ id: 'run-1', kind: 'file', status: 'running', stages, steps: [...base, { id: 'd', index: 1, members: ['m2'], deliveries: d('m2', 'ready', 4) }, { id: 'e', index: 2, members: ['m3'], deliveries: d('m3', 'rework', 5) }, { id: 'f', index: 1, members: ['m2'], createdAt: 1, deliveries: {} }] });
   x.service.reconcile('mt1');
   let status = await x.call('orch_status');
-  assert.equal(status.status, 'halted');
-  assert.equal(status.halt.reason, 'budget_rounds');
-  assert.ok(x.engineCalls.some(c => c[0] === 'stop'), 'Hub pauses the workflow itself');
-  await assert.rejects(x.call('orch_control_workflow', { action: 'continue' }), /orch_grant_budget/);
-  x.service.userMessage('mt1', { text: '行，再给两轮' });
-  assert.equal(x.service.ledgerFor('mt1').status, 'halted', 'talking does not lift a budget halt by itself');
-  await assert.rejects(x.call('orch_grant_budget', { rounds: 2, sourceQuote: '田哥说随便加' }), /原话/);
-  await assert.rejects(x.call('orch_grant_budget', { rounds: 99, sourceQuote: '再给两轮' }), /1–30/);
-  const granted = await x.call('orch_grant_budget', { rounds: 2, sourceQuote: '再给两轮' });
+  assert.equal(status.status, 'running');
+  assert.equal(status.budget.roundCap, null);
+  assert.equal(x.engineCalls.some(c => c[0] === 'stop'), false);
+  x.service.userMessage('mt1', { text: '再给两轮，然后汇报' });
+  const granted = await x.call('orch_grant_budget', { rounds: 99 });
   assert.equal(granted.status, 'running');
-  assert.equal(granted.budget.roundCap, 4);
-  await assert.rejects(x.call('orch_grant_budget', { rounds: 2, sourceQuote: '再给两轮' }), /每条消息只能用一次/);
-  await assert.rejects(x.call('orch_grant_budget', { rounds: 2, sourceQuote: '两轮' }), /每条消息只能用一次/, 'another slice of the same message is not a new approval');
-  await x.call('orch_control_workflow', { action: 'continue' });
-  assert.ok(x.engineCalls.some(c => c[0] === 'resume'));
+  assert.equal(granted.budget.roundCap, null);
+  assert.equal(x.service.ledgerFor('mt1').userLog.at(-1).text, '再给两轮，然后汇报');
 });
 
-test('notices wait while the orchestrator is busy or the user just spoke, and two empty wakes halt until the user replies', async t => {
+test('notices wait while the orchestrator is busy or the user just spoke, and repeated wakes do not impose a turn limit', async t => {
   const x = fixture(t);
   x.busy.add('s-orch');
   x.service.ledgerFor('mt1').status = 'running';
@@ -189,10 +244,8 @@ test('notices wait while the orchestrator is busy or the user just spoke, and tw
   L.enqueue(x.service.ledgerFor('mt1'), 'n3', '第三条');
   await x.service.deliver('mt1');
   const status = await x.call('orch_status');
-  assert.equal(status.status, 'halted');
-  assert.equal(status.halt.reason, 'no_progress');
-  assert.match(x.dispatches.at(-1).userInput, /暂停派活/);
-  assert.match(x.dispatches.at(-1).userInput, /等他在输入框回话/);
+  assert.equal(status.status, 'running');
+  assert.doesNotMatch(x.dispatches.at(-1).userInput, /暂停派活/);
   x.setDispatchResult({ status: 'no_sent' });
   L.enqueue(x.service.ledgerFor('mt1'), 'n4', '第四条');
   await x.service.deliver('mt1');
@@ -203,7 +256,8 @@ test('notices wait while the orchestrator is busy or the user just spoke, and tw
 
 test('final report is refused until every segment has a reviewer conclusion', async t => {
   const x = fixture(t);
-  await assert.rejects(x.call('orch_report', { kind: 'final', summary: '都好了' }), /不能结项/);
+  await x.call('orch_propose_plan', { summary: '待完成', segments: [{ name:'调研', preset:'research', goal:'g', acceptance:'a' }] });
+  await assert.rejects(x.call('orch_report', { kind: 'final', summary: '都好了' }), /未完成|计划/);
   await x.addExisting({ role: '调研', kind: 'codex', tier: 'fast' });
   await x.addExisting({ role: '收口', kind: 'claude', tier: 'fast' });
   await x.call('orch_start_workflow', { name: '调研', preset: 'research', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
@@ -347,7 +401,7 @@ test('review fixes: failed asks are released, finished rooms reopen, repeated pa
 test('the tool endpoint path is known before the bridge starts', t => {
   const x = fixture(t);
   const opts = x.service.launchOptions('codex', 'sid-early');
-  assert.match(opts.codexMcpEntries[0].env.HUB_ORCH_ENDPOINT_FILE, /orchestration[\\/]bridge-endpoint\.json$/);
+  assert.match(opts.codexMcpEntries[0].env.HUB_ORCH_ENDPOINT_FILE, /orchestration[\\/]connections[\\/]sid-early\.json$/);
 });
 
 test('CodeAgent can be the orchestrator: same --mcp-config bridge as Claude (company build 2026-10-14)', t => {
@@ -359,7 +413,7 @@ test('CodeAgent can be the orchestrator: same --mcp-config bridge as Claude (com
   const server = Object.values(config.mcpServers)[0];
   assert.equal(server.env.HUB_ORCH_SESSION_ID, 'sid-ca', 'tool identity is the Hub session id, not a CLI --session-id');
   assert.deepEqual(x.service.resumeOptions({ purpose: x.service.PURPOSE, kind: 'codeagent-resume', id: 'sid-ca' }).mcpConfigFile, opts.mcpConfigFile);
-  assert.throws(() => x.service.launchOptions('kimi', 'sid-k'), /Claude、Codex 或 CodeAgent/);
+  for (const kind of ['kimi','gemini','qwen','deepseek','zcode']) assert.equal(x.service.launchOptions(kind, 'sid-'+kind).purpose, x.service.PURPOSE);
 });
 
 test('lightweight: existing roster is fixed and plan roles bind to member IDs', async t => {
@@ -372,13 +426,14 @@ test('lightweight: existing roster is fixed and plan roles bind to member IDs', 
   assert.equal(x.meetingObj.subSessions.length,3);
 });
 
-test('lightweight: a natural-language budget takes effect with the submitted plan', async t => {
+test('lightweight: natural-language limits remain user instructions', async t => {
   const x=fixture(t);
   x.service.userMessage('mt1',{text:'做一个小功能，允许10轮以内迭代，最多半小时。'});
   await x.call('orch_propose_plan',{summary:'实现小功能',segments:[{name:'功能',preset:'custom',goal:'功能',acceptance:'通过'}]});
   const after=await x.call('orch_status');
-  assert.equal(after.plan.budget.roundCap,10);assert.equal(after.plan.budget.timeCapMin,30);
-  assert.equal(after.budget.roundCap,10);assert.equal(after.budget.minutesCap,30);
+  assert.equal(after.plan.budget,null);
+  assert.equal(after.budget.roundCap,null);assert.equal(after.budget.minutesCap,null);
+  assert.match(x.service.ledgerFor('mt1').userLog.at(-1).text,/半小时/);
 });
 
 test('lightweight: any reply to the orchestrator lifts a pause; the orchestrator decides what it means', async t => {
@@ -412,7 +467,7 @@ test('lightweight: full plan coverage is required for final report', async t => 
   await assert.rejects(x.call('orch_report',{kind:'final',summary:'全部完成'}),/B|计划/);
 });
 
-test('lightweight: runtime failures go to the orchestrator to handle; only repeated failures halt for the user', async t => {
+test('lightweight: runtime failures go to the orchestrator to handle; repeated failures stay visible without a fixed retry limit', async t => {
   const x=fixture(t);
   await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
   const args={name:'PF',preset:'development',goal:'实现 PF',acceptance:'通过',members:['m2','m3']};
@@ -430,8 +485,8 @@ test('lightweight: runtime failures go to the orchestrator to handle; only repea
   await x.call('orch_control_workflow',{action:'continue'});
   for(let i=2;i<=4;i+=1){x.writeRun(resumed);x.service.reconcile('mt1');x.writeRun(failed('Internal error #'+i));x.service.reconcile('mt1');}
   status=await x.call('orch_status');
-  assert.equal(status.status,'halted');assert.equal(status.halt.reason,'repeated_failure');
-  assert.ok(x.service.ledgerFor('mt1').notices.some(n=>/已故障 4 次/.test(n.text)));
+  assert.equal(status.status,'running');
+  assert.match(status.currentRun.error,/Internal error #4/);
   x.service.userMessage('mt1',{text:'跳过他，其他人继续'});
   assert.equal(x.service.ledgerFor('mt1').status,'running');
   x.writeRun({id:'run-1',kind:'file',status:'paused',error:'成员报告阻塞',stages,steps:[{id:'s',index:1,members:['m2'],deliveries:{m2:{memberId:'m2',outcome:'blocked',path:'/step/m2/阻塞.md'}}}]});
@@ -465,20 +520,22 @@ test('review: a changed natural-language budget applies with the next plan versi
   await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
   x.service.userMessage('mt1',{text:'允许10轮以内迭代'});
   await x.call('orch_propose_plan',planArgs);
-  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,10);
+  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,null);
   x.service.userMessage('mt1',{text:'现在允许12轮以内迭代'});
   await x.call('orch_propose_plan',planArgs);
-  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,12);
+  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,null);
+  assert.match(x.service.ledgerFor('mt1').userLog.at(-1).text,/12轮/);
 });
 
-test('review: an unsupported user budget is refused rather than truncated',async t=>{
+test('review: large user limits are retained without truncation',async t=>{
   const x=fixture(t);
   await x.addExisting({role:'实现',kind:'codex'});await x.addExisting({role:'审核',kind:'claude'});
   await x.call('orch_propose_plan',planArgs);
   x.service.userMessage('mt1',{text:'允许40轮以内迭代'});
-  await assert.rejects(x.call('orch_propose_plan',planArgs),/不会静默截断/);
-  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,3);
-  assert.equal(x.service.ledgerFor('mt1').plan.version,1);
+  await x.call('orch_propose_plan',planArgs);
+  assert.equal(x.service.ledgerFor('mt1').budget.roundCap,null);
+  assert.equal(x.service.ledgerFor('mt1').plan.version,2);
+  assert.match(x.service.ledgerFor('mt1').userLog.at(-1).text,/40轮/);
 });
 
 test('plan tool reports the Hub round check, and a filework segment runs edit then review without merge terms', async t => {
@@ -488,9 +545,8 @@ test('plan tool reports the Hub round check, and a filework segment runs edit th
   const plan = await x.call('orch_propose_plan', { summary: '调研后落盘', segments: [
     { name: '调研', preset: 'research', goal: 'g', acceptance: 'a' },
     { name: '落盘', preset: 'filework', goal: '写入记忆', acceptance: '审核通过' }] });
-  assert.equal(plan.budgetCheck.minRounds, 4);
-  assert.equal(plan.budgetCheck.ok, false, 'default 3 rounds cannot finish research (3) + filework (1)');
-  assert.match(plan.note, /不够/);
+  assert.equal(plan.budgetCheck, null);
+  assert.doesNotMatch(plan.note, /不够/);
   const y = fixture(t);
   await y.addExisting({ role: '落盘', kind: 'codex' });
   await y.addExisting({ role: '审核', kind: 'claude' });
@@ -512,21 +568,12 @@ test('review: granting budget only lifts budget halts and needs words said after
   L.halt(ledger, 'user_pause');
   const granted = await x.call('orch_grant_budget', { rounds: 5, sourceQuote: '再加 5 轮' });
   assert.equal(granted.status, 'halted', 'a grant never lifts the user\'s own pause');
-  assert.equal(ledger.budget.roundCap, 8);
-  ledger.status = 'running'; ledger.halt = null;
-  x.service.userMessage('mt1', { text: '以后也可以再加 5 轮' });
-  x.advance(1000);
-  ledger.budget.roundsUsed = ledger.budget.roundCap;
-  L.halt(ledger, 'budget_rounds', '', x.service.ledgerFor('mt1').budget.lastTickAt + 1_000_000);
-  ledger.halt.at = 2_000_000;
-  await assert.rejects(x.call('orch_grant_budget', { rounds: 5, sourceQuote: '再加 5 轮' }), /额度用满之后/);
-  x.advance(1_000_000);
-  x.service.userMessage('mt1', { text: '好，再加 5 轮' });
-  assert.equal((await x.call('orch_grant_budget', { rounds: 5, sourceQuote: '再加 5 轮' })).status, 'running');
-  await assert.rejects(x.call('orch_grant_budget', { rounds: 1, sourceQuote: '轮' }), /原话/);
+  assert.equal(ledger.budget.roundCap, null);
+  x.service.userMessage('mt1', { text: '继续推进，完成后停下' });
+  assert.equal(ledger.status, 'running');
 });
 
-test('review: a start failure is handed to the orchestrator; repeated start failures halt', async t => {
+test('review: a start failure is handed to the orchestrator; repeated start failures stay visible without a fixed limit', async t => {
   const x = fixture(t);
   await x.addExisting({ role: '调研', kind: 'claude' }); await x.addExisting({ role: '收口', kind: 'claude' });
   const args = { name: '调研', preset: 'research', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] };
@@ -540,7 +587,7 @@ test('review: a start failure is handed to the orchestrator; repeated start fail
     if (i < L.FAILURE_LIMIT) {
       assert.equal(ledger.status, 'running', 'a start failure does not lock the room');
       assert.ok(ledger.notices.some(n => /orch_restart_member/.test(n.text)));
-    } else assert.equal(ledger.halt?.reason, 'repeated_failure');
+    } else assert.equal(ledger.status, 'running');
   }
   assert.equal(starts, L.FAILURE_LIMIT);
 });
@@ -566,11 +613,10 @@ test('review: continuing into an immediate failure still counts toward the repea
   x.service.reconcile('mt1');
   for (let i = 0; i < 3; i += 1) await x.call('orch_control_workflow', { action: 'continue' });   // 每次续跑都立刻再失败
   const ledger = x.service.ledgerFor('mt1');
-  assert.equal(ledger.halt?.reason, 'repeated_failure');
-  x.service.userMessage('mt1', { text: '换个人做吧' });
   assert.equal(ledger.status, 'running');
-  assert.equal(ledger.segments[0].failures, 0, 'the count restarts after the user replies');
+  assert.ok(ledger.segments[0].failures >= 4);
+  assert.match((await x.call('orch_status')).currentRun.error,/provider_error/);
+  x.service.userMessage('mt1', { text: '换个人做吧' });
   for (let i = 0; i < 4; i += 1) await x.call('orch_control_workflow', { action: 'continue' });
-  assert.equal(ledger.halt?.reason, 'repeated_failure');
-  assert.equal(ledger.notices.filter(n => /已故障 4 次/.test(n.text)).length + x.dispatches.filter(d => /已故障 4 次/.test(d.userInput || '')).length >= 2, true, 'the second repeated-failure halt also reaches the orchestrator');
+  assert.equal(ledger.status, 'running');
 });
