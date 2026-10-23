@@ -8,7 +8,10 @@ function parseAntigravityTranscriptToTurns(file, options = {}) {
   if (!match || !UUID.test(match[1]) || (options.expectedSessionId && match[1] !== options.expectedSessionId))
     throw new Error('Antigravity 记录不属于当前会话');
   const candidates = ['transcript.jsonl','transcript_full.jsonl'].map(name=>path.join(path.dirname(file),name))
-    .filter(candidate=>fs.existsSync(candidate)).sort((a,b)=>fs.statSync(a).mtimeMs-fs.statSync(b).mtimeMs);
+    .filter(candidate=>fs.existsSync(candidate)).sort((a,b)=>fs.statSync(a).mtimeMs-fs.statSync(b).mtimeMs
+      // Windows can stamp adjacent writes identically. The live snapshot is
+      // authoritative on a tie; its truncated fields still borrow full text.
+      || (path.basename(a)==='transcript_full.jsonl' ? -1 : 1));
   const rows = new Map();
   for (const candidate of candidates) {
     const lines = fs.readFileSync(candidate, 'utf8').replace(/^\uFEFF/, '').split('\n');
