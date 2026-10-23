@@ -92,6 +92,9 @@
   let codeagentPoolPick = (() => { try { return localStorage.getItem(CODEAGENT_POOL_PICK_KEY) || ''; } catch { return ''; } })();
   // 所选账号不选具体模型时启动会用的模型（主进程 codeagent:models 的 defaultModel）：「沿用」那一项就写成它（2026-10-19 田哥：
   // 选了号，模型下拉只列这个号能用的模型、默认选中这个号的默认模型）。为空表示说不定（比如号池自动挑号、各号默认不同）。
+  // 2026-10-22（田哥报「个人账号建 codeagent 报 API deepseek 错误」）：个人账号的清单权威且只有一个模型时主进程也把它报上来，
+  // 启动中心按它启动（session-manager），所以这东西同时是「摘要里写哪个模型」的来源（tuningTag）和「启动用哪个模型」的承诺，
+  // 两处必须同一口径——摘要写空就是不承诺，那也确实是按配置里写的起。
   let codeagentDefaultModel = '';
   const codeagentModelLabel = id => { try { return require('../core/codeagent-models').modelLabel(id); } catch { return id; } };
   // 个人账号的登录状态（号池列表里的 personal.state）：不是 ready 时在账号下拉和说明里写出来。

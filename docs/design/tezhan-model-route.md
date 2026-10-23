@@ -41,6 +41,19 @@
 - **显示**：沿用 CodeAgent 当前模型的会话，内部 `currentModel.id` 仍为空（第一条回答到了按实际模型补），显示名先填「预计模型」：恢复的会话用上一轮实际模型（`codeagentActualModel` 随会话持久化、恢复时带回）；号池号用同步配置定下的模型；个人账号用纠正后的默认。Hub 启动加载休眠会话不再拿模型清单第一项顶；唤醒合并时主进程给的显示名为空或是占位就保留本地已有的；侧栏图标在当前模型为空时看上一轮实际模型。
 - **回执的模型**：发回执前从原生记录同步读一次最后一条回答的模型（`read-last-assistant.js` `readLastAssistantModelSync`），不再和异步补记实际模型赛跑。
 
+## 手动新建的会话也按权限清单起（2026-10-22）
+
+田哥公司真机 v3.1.4：用个人账号从启动中心建 codeagent，一开就报「API deepseek 错误」，手动 `/model` 切一下就好。根因是自动会话与手动会话走的两条路只有前者接了权限清单：
+
+- **手动会话原来不带模型也不开菜单**：启动中心给 codeagent 收起了「模型」下拉（一号一模型），建的会话既没有 `--model`、也不触发 `/model` 菜单，CLI 就按自己 `settings.json` 里写的 `model` 起。个人账号那份配置里写着 `deepseek-v4-flash-0731`（2026-10-20 起），而它只有 `GLM-5.2-WX-Auto` 的权限 → 每次新建都撞同一个错。号池号没这个问题：启动前 `syncSharedConfig` 已按号写好自己的模型。
+- **现在的规则**（`core/session-manager.js` `_createSession`）：手动新建（`freshLaunch`、非通道、非号池）时按自动会话同一把尺——`personalDefaultModel` 不传 `single` 读出来是空（配置里的值定不下权限内的模型）、而传 `single` 能给出唯一模型时，把它交给启动选型（带 `--model` + 在 `/model` 菜单里选中）。其余一律不动：清单未知、清单有多个模型、配置写的值本来就在清单里或能归进清单（`GLM-5.2-WX` 这种分档名也算）——那四种能确定的情形都轮不到这里。熔断（连续 3 次没选成、4 小时）照旧生效，跳过了在 `codeagent-model.log` 写 `pick-skipped`。
+- **菜单外改选的门放宽到启动 / 原地重拉**（`main/ipc/session-handlers.js` `runCodeAgentPick`）：`automatic` 之外加上 `reason === 'launch' | 'relaunch'`；用户在界面上明确切换（`switch`）不在其列——那一路菜单本身只列清单里的模型，选不出没权限的。这门实际作用的差别要如实看：清单权威时 `pickModel` 拿着同一份 `allowedModels`，目标不在清单里就直接拒绝、根本不打开菜单（`core/codeagent-model-picker.js` 358 行），所以那条「菜单选成了清单外的模型 → 改选」的分支在真机上到不了；真正兜住的是「拒绝打开菜单 + 记一行 `off-permission` 诊断 + 报错后的当场修正 / 避让」。放宽后手动会话多出来的正是这行诊断（`fallback=user-pick`：手动会话没人自动修，等用户自己 `/model`）。
+- **启动中心的口径一致**（`codeagent:models` 的个人账号分支传 `single: true`）：摘要和「默认」那一项写的就是启动会用的模型，不再是一句「沿用 CodeAgent 当前模型」。
+- **这条门管的是「非通道的新会话」，不只是启动中心**（`freshLaunch`、非 `company-*` 用途、非号池）：公司助理的建会话工具（`core/company-assistant/hub-tools.js` 的 `create_session`）走的也是这条路（它建的会话没有用途标记），同样是「配置里写的定不下、清单只有一个模型」时按清单起，否则一样会撞「API deepseek 错误」。这些会话的第一条问题由 `group-chat-watcher.sendToPty` 发出，它会先等模型选完（`picker.isPicking` → `waitForPick`）再发，不抢在菜单操作中间。
+- **新建后马上发第一条会等一会儿**：手动会话是用户自己发第一条，所以选模型这段时间里发出的消息会等它选完（选不动时会明确回「CodeAgent 正在切换模型，本条消息未发送」，`core/codeagent-model-picker.js` `beforePrompt`）；等的是「画出输入框 → 敲 `/model` → 选中」这几秒。
+- **不改个人账号的 `settings.json`**：仍是只判定和显示，修正只走经授权的远程维护 `set-personal-model`（`core/codeagent-personal-model.js`）。
+- **验证**：单测 `tests/unit-codeagent-manual-model-permission.test.js`（会话怎么定启动模型、四种不该动的情形、熔断、启动中心的摘要口径）、`tests/unit-codeagent-model-fix-fallback.test.js` 的两条 launch/relaunch；端到端 `tests/e2e-codeagent-manual-model-permission.js`（公司版导出 + 真实点击启动中心 + 替身启动参数里带 `--model GLM-5.2-WX-Auto`、模型日志 `reason=off-permission`；号池号的手动会话照旧不带 `--model`）。替身跑的是真 Claude Code，它的 `/model` 菜单里没有公司模型，所以「在菜单里选中 GLM」这一步在 e2e 里确认不了，由 `tests/unit-codeagent-model-picker.test.js`（真实抓下来的公司菜单）覆盖。
+
 ## 兼容
 
 - 老公司（不认 `model`）：忽略，照旧默认模型作答（单测用 9a7b4082 的 `company.js` 原文验证）。

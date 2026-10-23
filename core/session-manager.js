@@ -1726,6 +1726,37 @@ class SessionManager extends EventEmitter {
       opts = skip ? { ...opts, model: undefined, codeagentModelPick: false, codeagentAccountModel: undefined }
         : { ...opts, model: target || undefined, codeagentModelPick: !!target, codeagentAccountModel: target || undefined };
     }
+    // 手动新建的会话（启动中心）也核一次这个号的模型权限（2026-10-22 田哥报：个人账号建的 codeagent 一开就报「API deepseek 错误」，
+    // 手动 /model 之后才回来）：启动中心给 codeagent 收起了模型下拉，不带 --model、也不开菜单，CLI 就按自己 settings.json 里写的模型起——
+    // 个人号的配置里写着 deepseek-v4-flash-0731，而它的权限只有 GLM-5.2-WX-Auto（公司真机 10-23 直查：清单权威且只有 GLM、配置写的 DS），
+    // 于是每次新建都撞一遍同一个错。这里沿用自动会话那把尺（个人账号同一把 personalDefaultModel + single）：
+    // 只在「配置里的值定不下权限内的模型（personalDefaultModel 不传 single 读出来是空），而权限清单能说出唯一一个模型」时替它选一次；
+    // 其余一律不猜、保持原样（清单未知、清单有多个模型、配置写的值本来就在清单里或能归进清单——GLM-5.2-WX 这种分档名也算，
+    // 那四种能确定的情形都轮不到这里）。选之前先看这个号的熔断，跳过了在模型日志里写清楚原因。
+    // 号池号的手动会话不走这里：启动前 syncSharedConfig 已按号写好自己的模型（_resolveCodeAgentPool），没有这个问题。
+    if (isCodeAgent && freshLaunch && !codeAgentReadOnly(opts) && !codeagentPool) {
+      const route = require('./codeagent-model-route');
+      const readPersonal = single => {
+        try { return route.personalModels({ dataDir: getHubDataDir(), personalDir: codeagentConfig.configDir, single }); }
+        catch (error) { console.warn('[codeagent] 手动会话核对模型权限读不到清单，保持原样：' + error.message); return null; }
+      };
+      const known = readPersonal(false);
+      const target = known && !known.defaultModel ? readPersonal(true)?.defaultModel || '' : '';
+      if (target) {
+        let skip = null;
+        try {
+          skip = require('./codeagent-auto-pick').skipReason({ dataDir: getHubDataDir(), account: 'personal', isPool: false, target, freshLaunch, actualModel: opts.codeagentActualModel || '' });
+        } catch (error) { console.warn('[codeagent] 手动会话的选模型跳过判断出错，照常选：' + error.message); }
+        try {
+          require('./codeagent-models').appendModelLog(getHubDataDir(), skip
+            ? { event: 'pick-skipped', session: String(id).slice(0, 8), account: '个人', model: target, reason: skip.reason, note: skip.note }
+            : { event: 'launch-model', session: String(id).slice(0, 8), account: '个人', written: known.written || '(空)', use: target, reason: 'off-permission',
+                note: '手动新建的会话：配置里写的模型不在这个号的权限清单里（清单权威且只有这一个模型），启动时在菜单里改选清单里那个' });
+        } catch { /* 只是日志 */ }
+        if (skip) console.log(`[codeagent] ${String(id).slice(0, 8)} 手动会话不开模型菜单（${skip.reason}）：${skip.note}`);
+        opts = skip ? opts : { ...opts, model: target, codeagentModelPick: true, codeagentAccountModel: target };
+      }
+    }
 
     if (isClaude) {
       const cv = getConfigValues();

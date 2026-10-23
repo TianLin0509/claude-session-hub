@@ -16,10 +16,13 @@ const GLM = 'GLM-5.2-WX-Auto', DS = 'deepseek-v4-flash-0731';
 const tmp = (t, name) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), `hub-modelfix-${name}-`)); t.after(() => fs.rmSync(d, { recursive: true, force: true })); return d; };
 
 // 一个号池号的会话：配置目录里有探测到的权限清单（hub-models.json ⇒ authoritative）
-function harness(t, { models = [DS], account = 'acct-1', purpose = 'company-bridge', pickResults = [] } = {}) {
+// personal=true：个人账号的手动会话（不带号池标记、不带 purpose），权限清单按个人账号的规矩读数据目录里的 personal-models.json。
+function harness(t, { models = [DS], account = 'acct-1', purpose = 'company-bridge', pickResults = [], personal = false } = {}) {
   const dataDir = tmp(t, 'data');
   const cfg = tmp(t, 'cfg');
-  fs.writeFileSync(path.join(cfg, 'hub-models.json'), JSON.stringify({ schema: 1, models, defaultModel: models[0] || '', at: new Date().toISOString() }));
+  const probedFile = personal ? require('../core/codeagent-pool').personalModelsFile(dataDir) : path.join(cfg, 'hub-models.json');
+  fs.mkdirSync(path.dirname(probedFile), { recursive: true });
+  fs.writeFileSync(probedFile, JSON.stringify({ schema: 1, models, defaultModel: models[0] || '', at: new Date().toISOString() }));
   fs.writeFileSync(path.join(cfg, 'settings.json'), JSON.stringify({ model: models[0] || '' }));
   const prev = process.env.CLAUDE_HUB_DATA_DIR;
   process.env.CLAUDE_HUB_DATA_DIR = dataDir;
@@ -29,7 +32,7 @@ function harness(t, { models = [DS], account = 'acct-1', purpose = 'company-brid
     calls.push({ modelId: opts.modelId, allowedModels: opts.allowedModels, readyFirstMs: opts.readyFirstMs });
     return pickResults[calls.length - 1] || { ok: true, confirmed: true, menu: models.slice() };
   });
-  const session = { id: 'ca-1', kind: 'codeagent', purpose, id2: undefined, codeagentConfigDir: cfg, codeagentPoolAccount: account };
+  const session = { id: 'ca-1', kind: 'codeagent', purpose, id2: undefined, codeagentConfigDir: cfg, codeagentPoolAccount: personal ? undefined : account };
   const manager = new EventEmitter();
   const patched = [];
   manager.getSession = id => (id === session.id ? session : null);
@@ -132,4 +135,33 @@ test('报错后的兜底入口：菜单选不上 → ok=false 带原因，通道
 test('权限清单来自探测文件：号池号用自己目录里的 hub-models.json（回归）', t => {
   const h = harness(t, { models: [GLM, DS] });
   assert.deepEqual(probe.readProbed(path.join(h.cfg, probe.MODELS_FILE)).models, [GLM, DS]);
+});
+
+// 手动新建 / 原地重拉的会话也核这一条（2026-10-22 田哥：启动中心建的会话不带模型、也不开菜单，个人号按配置里写的 DS 起、报「API deepseek 错误」）：
+// 这条路以前只认自动会话（automatic），手动会话即使把模型交到菜单里也不改选。界面上明确的切换（switch）仍不改选——
+// 那一路菜单只列清单里的模型（pickModel 的 allowedModels），选不出没权限的。
+test('手动会话启动（launch）也核清单外的模型：菜单选成的模型不在权限清单里就改选清单里的', async t => {
+  const h = harness(t, { models: [GLM], personal: true, purpose: '' });
+  h.manager.emit('codeagent-model-pick', { sessionId: h.session.id, modelId: DS, reason: 'launch' });
+  const result = await picker.waitForPick(h.session.id);
+  assert.equal(result.ok, true);
+  assert.equal(result.model, GLM, '结果是清单里的模型');
+  assert.deepEqual(h.calls.map(c => c.modelId), [DS, GLM], '先按目标选，发现没权限后改选清单里的');
+  assert.equal(h.calls[0].readyFirstMs, 45000, '手动会话启动时同样等输入框出来再敲 /model');
+  assert.deepEqual(h.patched.at(-1).currentModel, { id: GLM, displayName: require('../core/codeagent-models').modelLabel(GLM) });
+  assert.match(h.log(), /off-permission：deepseek-v4-flash-0731 不在这个号的权限清单里，改选清单里的 GLM-5\.2-WX-Auto/);
+  assert.equal(h.sent.some(([e]) => e === 'session-notice'), false, '没报「没切成功」的提示');
+});
+
+test('手动会话原地重拉（relaunch）同样核；用户自己点「切换模型」（switch）不在这里改选', async t => {
+  const relaunch = harness(t, { models: [GLM], personal: true, purpose: '' });
+  relaunch.manager.emit('codeagent-model-pick', { sessionId: relaunch.session.id, modelId: DS, reason: 'relaunch' });
+  await picker.waitForPick(relaunch.session.id);
+  assert.deepEqual(relaunch.calls.map(c => c.modelId), [DS, GLM], '重拉也改选');
+  assert.equal(relaunch.calls[0].readyFirstMs, 45000, '重拉同样等输入框');
+
+  const switched = harness(t, { models: [GLM], personal: true, purpose: '' });
+  switched.manager.emit('codeagent-model-pick', { sessionId: switched.session.id, modelId: DS, reason: 'switch' });
+  await picker.waitForPick(switched.session.id);
+  assert.deepEqual(switched.calls.map(c => c.modelId), [DS], '界面上明确的切换不改选（菜单本身只列清单里的模型）');
 });
