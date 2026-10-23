@@ -8,7 +8,8 @@ const meeting={id:'g1'};
 const msg={sid:'same-provider-1',turnNum:3,id:'pending-1'};
 const a=journal.attributes(meeting,msg,escapeHtml);
 assert(a.includes('data-journal-expanded="true"') && a.includes('data-journal-minimized="false"'),'new answers start fully expanded');
-assert(journal.attributes({id:'orchestrated'},msg,escapeHtml,{defaultMinimized:true}).includes('data-journal-minimized="false"'),'new orchestration answers follow the same reading default');
+// 2026-10-23 田哥要求：负责人群里只看自己和负责人，成员卡默认折叠成一行、点开看全文；其他群照旧默认展开。
+assert(journal.attributes({id:'orchestrated'},msg,escapeHtml,{defaultMinimized:true}).includes('data-journal-minimized="true"'),'lead-mode member answers start folded to one line');
 const b=journal.attributes(meeting,{...msg,id:'durable-1'},escapeHtml);
 assert.equal(a,b,'pending and durable answer keep the same reading identity');
 assert.notEqual(a,journal.attributes(meeting,{...msg,turnNum:4},escapeHtml),'a new round must not reuse disclosure');

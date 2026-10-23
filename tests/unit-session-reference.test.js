@@ -287,9 +287,12 @@ async function main() {
     const launch = _private.buildClaudePtyLaunch('hub-ref-unit', 'claude',
       { model: 'claude-haiku-4-5-20251001', effort: 'low', mcpProfile: 'none', addDirs: [path.join(isolatedDataDir, 'transcripts')] },
       isolatedDataDir, {}, {});
-    const addDirs = launch.cmd.split(' --add-dir ').length - 1;
+    const transcriptFlags = launch.cmd.split(` --add-dir ${path.join(isolatedDataDir, 'transcripts')}`).length - 1;
     assert.ok(launch.cmd.includes(`--add-dir ${path.join(isolatedDataDir, 'transcripts')}`), launch.cmd);
-    assert.strictEqual(addDirs, 1, 'a persisted transcripts --add-dir must not be duplicated on resume');
+    assert.strictEqual(transcriptFlags, 1, 'a persisted transcripts --add-dir must not be duplicated on resume');
+    // 负责人群的项目档案目录同样免审批读取（2026-10-23）。
+    assert.ok(launch.cmd.includes(`--add-dir ${path.join(isolatedDataDir, 'orchestration', 'project-briefs')}`), launch.cmd);
+    assert.strictEqual(launch.cmd.split(' --add-dir ').length - 1, 2);
   } finally {
     if (previousDataDir === undefined) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = previousDataDir;
     fs.rmSync(isolatedDataDir, { recursive: true, force: true });
