@@ -2930,7 +2930,9 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
     (result && Array.isArray(result.turns)) ? result.turns : []);
   let nextPageState=null;
   if (paged && !result?.error) {
-    if (opts.older || !incremental || view.changed) {
+    // A cached session keeps its already-loaded window. The short tail refresh
+    // on returning to it cannot decide whether that earlier window has more.
+    if (opts.older || !incremental || (view.changed && !view.hydrated)) {
       nextPageState={more:turns.length > pageLimit || (result?.turns?.length || 0) > pageLimit,limit:pageLimit};
     }
     turns = turns.slice(-pageLimit);

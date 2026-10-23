@@ -8,10 +8,10 @@ function plainProgressText(text) {
     return fence ? line : line.replace(/^(\s*)(?:PLAN|UPDATE)\s*[:：]\s*/,'$1');
   }).join('\n');
 }
-function renderMessageBody(text, {isUser=false, plainProgress=false, foldLong=true, escapeHtml, renderMarkdown}) {
+function renderMessageBody(text, {isUser=false, plainProgress=false, foldLong=true, collapseLong=false, escapeHtml, renderMarkdown}) {
   // Hub 附带块（规则、工作区规则、记忆索引）不进卡片（2026-10-13 用户要求），在「发送内容」面板里看。
   const memory = isUser && require('../core/memory-index-envelope').splitMemoryIndex(text);
-  if (memory?.indexText) return renderMessageBody(memory.userText,{isUser,plainProgress,foldLong,escapeHtml,renderMarkdown});
+  if (memory?.indexText) return renderMessageBody(memory.userText,{isUser,plainProgress,foldLong,collapseLong,escapeHtml,renderMarkdown});
   const raw=plainProgress && !isUser ? plainProgressText(text) : String(text || '');
   const body=isUser ? `<div class="conversation-user-text">${escapeHtml(raw)}</div>` : renderMarkdown(raw);
   if(!foldLong || (raw.length<1200 && raw.split('\n').length<32))return body;
@@ -20,7 +20,7 @@ function renderMessageBody(text, {isUser=false, plainProgress=false, foldLong=tr
   // Reuse the complete, sanitized rendering: slicing Markdown can cut a fence,
   // link or emphasis delimiter. CSS clips the preview without changing source.
   // Keep block Markdown outside summary so tables/lists/code remain valid HTML.
-  return `<div class="conversation-long-frame"><details class="conversation-long-message" open><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · </span><span class="conversation-expand-label">展开全文</span><span class="conversation-collapse-label">收起全文</span></summary>`
+  return `<div class="conversation-long-frame"><details class="conversation-long-message"${collapseLong?'':' open'}><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · </span><span class="conversation-expand-label">展开全文</span><span class="conversation-collapse-label">收起全文</span></summary>`
     + `<div class="conversation-full-text">${body}</div></details>`
     + `<div class="conversation-long-preview" data-copy-exclude>${body}</div></div>`;
 }

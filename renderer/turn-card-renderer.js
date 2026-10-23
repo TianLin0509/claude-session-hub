@@ -569,7 +569,7 @@ function renderTurnCard(turn) {
     {escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths,actions:renderCardActions(turn)})
     : emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
     : require('./conversation-message-view').renderMessageBody(turn.assistantContext?.userText ?? turn.text,
-      {isUser,escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths}));
+      {isUser,collapseLong:turn.source==='antigravity-cli',escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths}));
   const attachments = isUser ? renderImageAttachments(turn.attachments, { escapeHtml, cwd: turn.attachmentCwd }) : '';
   const assistantContext = isUser && turn.assistantContext
     ? `<details class="assistant-turn-context"><summary>本轮请求 · 查看原生提交内容</summary><pre>${escapeHtml(turn.assistantContext.rawText)}</pre></details>` : '';
