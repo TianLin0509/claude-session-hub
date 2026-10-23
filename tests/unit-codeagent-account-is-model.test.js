@@ -387,7 +387,8 @@ test('2. 探测过的清单只有一个模型时就是它（2026-10-20 公司真
   // 清单没探测过（不权威）或有多个模型：照旧严格，不猜
   assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '' }, { single: true }), '');
   assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '', authoritative: true }, { single: true }), GLM);
-  // 手动会话的预计模型显示（不传 single）照旧严格：手动会话不会自动在菜单里选它
+  // 不传 single 照旧严格（2026-10-22 改）：这一档现在只给「清单有多个/未知时不当着用户的面承诺模型」用，
+  // 手动会话的启动选型另外走 single（session-manager），不用这个返回值。
   assert.equal(pool.personalDefaultModel('deepseek-v4-flash-0731', { models: [GLM], defaultModel: '', authoritative: true }), '');
   assert.equal(pool.strictDefaultModel('MiniMax-M2.7', [GLM, DS], { authoritative: true }).model, '');
   assert.equal(pool.strictDefaultModel('deepseek-v4-flash-0731', [GLM]).model, '');
