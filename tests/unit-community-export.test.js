@@ -53,6 +53,16 @@ test('main.js 剥离段里的顶层声明，剥离后不再被引用', () => {
   assert.deepEqual(dangling, [], '这些名字的声明被剥了，引用也要包进剥离标记');
 });
 
+test('团队入口仅在公司目标专用目录文件放行完整 URL，其他位置和私有路径仍拒绝', () => {
+  const file = 'core/team-workspace/sites.json';
+  const line = '"url":"https://me.lt-stockpartner.tech/captain/"';
+  assert.equal(scanText(line, file, { target: 'company' }).length, 0);
+  assert.ok(scanText(line, file).length);
+  assert.ok(scanText(line, 'core/other.json', { target: 'company' }).length);
+  assert.ok(scanText(line.replace('/captain/', '/captain/private'), file, { target: 'company' }).length);
+  assert.ok(scanText(line + ',"private":"https://me.lt-stockpartner.tech/private/"', file, { target: 'company' }).length);
+});
+
 test('公司版产品名放行只对传了 leakAllow 的导出生效，社区版照拦；放行项必须是带 Huawei/华为 的完整名字', () => {
   const line = '窗口标题：AI HUB-Huawei 内测先锋版；安装包 AIHubHuawei-Setup-1.0.1.exe';
   assert.ok(scanText(line, 'f').some(h => h.rule === 'personal-preference'), '社区版不传放行，照拦');

@@ -29,7 +29,8 @@
     "accounts": false,
     "homeLink": true,
     "companyAssistant": true,
-    "companyForum": true
+    "companyForum": true,
+    "teamWorkspace": true
   },
   "$rulesChannel": "「规则」页的通用规则从服务器的 company 频道拉（2026-10-12）",
   "rulesChannel": "company",
