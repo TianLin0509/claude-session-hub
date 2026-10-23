@@ -25,6 +25,7 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
     await c.eval(`window.__failFind=true`); await click('.ca-onboarding [data-ca="find-cli"]'); await until(`document.querySelector('[data-slot="action-error"]').hidden===false`);
     assert.equal(await c.eval(`document.querySelector('.ca-onboarding [data-ca="find-cli"]').disabled`), false);
     await c.eval(`window.__failFind=false`); await click('.ca-onboarding [data-ca="find-cli"]'); await until(`document.querySelector('[data-slot="action-error"]').hidden===true`);
+    assert.equal(await c.eval(`getComputedStyle(document.querySelector('[data-slot="action-error"]')).display`), 'none');
     await until(`document.querySelector('.ca-onboarding [data-ca="find-cli"]').disabled===false`);
     await click('.ca-onboarding [data-ca="find-cli"]'); await until(`document.querySelector('.ca-onboarding [data-ca="find-cli"]').disabled===false`);
     result.checks.push('missing: installation guide, detection retry and failure recovery');
@@ -46,6 +47,14 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
     await state({ cliFound: false, cliSearch: { state: 'searching' } }); await until(`document.querySelector('.ca-onboarding')?.dataset.connection==='searching'`);
     assert.equal(await c.eval(`!!document.querySelector('.ca-onboarding [data-ca="find-cli"]')`), false);
     await click('.ca-onboarding [data-ca="ppt-assist"]'); assert.match(await c.eval(`document.querySelector('.ca-input textarea').value`), /下一场会议/);
+    await c.eval(`document.querySelector('.ca-input textarea').value=''`);
+    await click('.ca-onboarding [data-ca="ppt-assist"]'); await until(`document.querySelector('.ca-input textarea').value.includes('已有 PPT')`);
+    await c.eval(`document.querySelector('.ca-input textarea').value=''`);
+    await state({ cliFound: true, auth: { state: 'online', login: { ok: true, uid: 'fixture' } } }); await until(`document.querySelector('.ca-onboarding')?.dataset.connection==='online'`);
+    await click('[data-ca="starter:0"]'); await click('.ca-input button[type="submit"]');
+    await until(`window.__onboardingCalls.some(c=>c.channel==='company-assistant:ask')`);
+    assert.equal(await c.eval(`window.__onboardingCalls.find(c=>c.channel==='company-assistant:ask').payload.entry||''`), '');
+    result.checks.push('switching from discarded PPT draft to starter clears PPT-only routing');
     for (const [width, height] of [[1440,1000],[1366,680]]) { await c.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }); assert.equal(await c.eval(`document.documentElement.scrollWidth>innerWidth+1`), false); }
     result.checks.push('search progress, independent PPT entry and desktop widths'); result.passed = true;
   } finally { if (hub) await gracefulQuit(hub); if (c) await c.close(); fs.writeFileSync(path.join(out, '20261023-acceptance.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify({ out, ...result })); }

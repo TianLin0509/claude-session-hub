@@ -373,7 +373,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   async function action(name, button) {
     const input = page.querySelector('[data-slot="form"] textarea');
     const [verb, arg] = name.split(/:(.*)/s);
-    if (verb === 'starter') { const item = STARTERS[Number(arg)]; if (item) { if (input.value.trim()) { showMessage?.('输入框里已有草稿，请先处理后再选示例。'); return; } input.value = item[1]; input.focus(); } return; }
+    if (verb === 'starter') { const item = STARTERS[Number(arg)]; if (item) { if (input.value.trim()) { showMessage?.('输入框里已有草稿，请先处理后再选示例。'); return; } pptEntry = false; input.value = item[1]; input.focus(); } return; }
     if (verb === 'toggle-brief') { briefOpen = !briefOpen; render(); return; }
     if (verb === 'chip') return useChip(data.chips[Number(arg)]);
     if (verb === 'save-chip') {
