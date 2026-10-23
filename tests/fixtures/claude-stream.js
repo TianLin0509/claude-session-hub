@@ -14,6 +14,7 @@ if (process.env.CLAUDE_HUB_FIXTURE_CONFIG_DIR) {
   fs.mkdirSync(directory, { recursive: true });
   const at = process.argv.indexOf('--settings');
   fs.writeFileSync(path.join(directory, process.pid + '.json'), JSON.stringify({ args: process.argv.slice(2),
+    configDir:process.env.CLAUDE_CONFIG_DIR,claudeProfile:process.env.CLAUDE_HUB_CLAUDE_PROFILE,
     settings: at >= 0 ? JSON.parse(fs.readFileSync(process.argv[at + 1], 'utf8')) : null }), 'utf8');
 }
 const frame = value => {

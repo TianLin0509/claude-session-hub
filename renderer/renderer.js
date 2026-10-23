@@ -877,6 +877,9 @@ const modelUi = createModelUiController({
   escapeHtml,
   refreshModelCatalog: (kind, session) => window.WorkspaceController.loadModelCatalog(kind, {
     codexProfile: session && session.codexProfile,
+    claudeProfile: session && session.claudeProfile,
+    claudeProfileLabel: session && session.claudeProfileLabel,
+    claudeConfigDir: session && session.claudeConfigDir,
   }),
   getTerminalScreenText: sessionId => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
   openCommandScreen: sessionId => require('./command-screen').openCommandScreen(ipcRenderer, sessionId),
@@ -4491,6 +4494,7 @@ async function switchSessionScene(sessionId, sceneId, inputBox, { fresh }) {
     ...(s.currentModel?.id ? { model: s.currentModel.id } : {}),
     ...(s.effort ? { effort: s.effort } : {}),
     ...(s.codexProfile ? { codexProfile: s.codexProfile } : {}),
+    ...(s.claudeProfile ? {claudeProfile:s.claudeProfile,claudeConfigDir:s.claudeConfigDir} : {}),
     ...(typeof s.fastMode === 'boolean' ? { fastMode: s.fastMode } : {}),
     ...(s.codexSpeedTier ? { codexSpeedTier: s.codexSpeedTier } : {}),
     ...(s.deepseekRoute ? { deepseekRoute: s.deepseekRoute } : {}),
@@ -7439,6 +7443,9 @@ const memoryPanel = createMemoryPanel({
       title: s.title,
       codexSessionsRoot: s.codexSessionsRoot || null,
       codexProfile: s.codexProfile || null,
+      claudeProfile: s.claudeProfile || null,
+      claudeProfileLabel: s.claudeProfileLabel || null,
+      claudeConfigDir: s.claudeConfigDir || null,
       meetingId: s.meetingId || null,
     } : null;
   },
@@ -9402,6 +9409,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
   if (session.codexProfile) local.codexProfile = session.codexProfile;
+  if (session.claudeProfile) {local.claudeProfile=session.claudeProfile;local.claudeProfileLabel=session.claudeProfileLabel;local.claudeConfigDir=session.claudeConfigDir;}
   if (session.codexProfileLabel) local.codexProfileLabel = session.codexProfileLabel;
   if (session.mcpProfile) local.mcpProfile = session.mcpProfile;
   if (typeof session.fastMode === 'boolean') local.fastMode = session.fastMode;
@@ -9571,6 +9579,9 @@ function persistWorkscene(flush = false) {
         codexSessionsRoot: s.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!s.codexAllowMtimeFallback,
         codexProfile: s.codexProfile || null,
+        claudeProfile: s.claudeProfile || null,
+        claudeProfileLabel: s.claudeProfileLabel || null,
+        claudeConfigDir: s.claudeConfigDir || null,
         codexProfileLabel: s.codexProfileLabel || null,
         deepseekRoute: s.deepseekRoute || null,
         mcpProfile: s.mcpProfile || null,
@@ -9945,6 +9956,9 @@ sessionImmersive = require('./session-immersive').createSessionImmersiveControll
         codexSessionsRoot: meta.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!meta.codexAllowMtimeFallback,
         codexProfile: meta.codexProfile || null,
+        claudeProfile: meta.claudeProfile || null,
+        claudeProfileLabel: meta.claudeProfileLabel || null,
+        claudeConfigDir: meta.claudeConfigDir || null,
         codexProfileLabel: meta.codexProfileLabel || null,
         mcpProfile: meta.mcpProfile || null,
         fastMode: typeof meta.fastMode === 'boolean' ? meta.fastMode : null,

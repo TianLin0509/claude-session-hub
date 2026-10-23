@@ -1670,6 +1670,8 @@ class SessionManager extends EventEmitter {
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
+    delete sessionEnv.CLAUDE_HUB_CLAUDE_PROFILE;
+    delete sessionEnv.CLAUDE_HUB_CLAUDE_SCOPE;
     // 公司联动的会话通行证（HUB_BRIDGE_*）只由 Hub 按会话注入（opts.extraEnv，见 _withExtraMcp）：
     // Hub 自己的进程环境里若带着（例如从某个会话里启动了测试 Hub），不能原样传给每个新会话，否则新会话会顶着别人的身份（2026-10-20）。
     for (const key of Object.keys(sessionEnv)) if (/^HUB_BRIDGE_/i.test(key)) delete sessionEnv[key];
@@ -1882,6 +1884,17 @@ class SessionManager extends EventEmitter {
     // Merge extra env vars (used by TeamSessionManager for MCP config etc.)
     if (opts.extraEnv) {
       Object.assign(sessionEnv, opts.extraEnv);
+    }
+
+    let claudeProfile = null;
+    if (isClaude && getConfig().claudeBackend !== 'api') {
+      claudeProfile = require('./claude-subscription-profiles').profileForSession(opts, getConfig());
+      if (claudeProfile.configDir) sessionEnv.CLAUDE_CONFIG_DIR = claudeProfile.home;
+      else delete sessionEnv.CLAUDE_CONFIG_DIR;
+      sessionEnv.CLAUDE_HUB_CLAUDE_PROFILE = claudeProfile.id;
+      sessionEnv.CLAUDE_HUB_CLAUDE_SCOPE = require('./claude-subscription-profiles').usageScope(getConfig(),claudeProfile.id);
+      require('./claude-subscription-profiles').applyNetworkEnv(sessionEnv,getConfig());
+      opts = {...opts, claudeProfile:claudeProfile.id, claudeConfigDir:claudeProfile.home};
     }
 
     const shellArgs = isAgent ? ['-NoProfile', '-NoLogo'] : [];
@@ -2365,6 +2378,7 @@ class SessionManager extends EventEmitter {
       ...(isDeepSeekClaude ? { deepseekRoute: deepseekClaudeLaunch.requestedRoute,
         deepseekActiveRoute: deepseekClaudeLaunch.route } : {}),
       ...(isCodexRuntime && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
+      ...(claudeProfile ? {claudeProfile:claudeProfile.id,claudeProfileLabel:claudeProfile.label,claudeConfigDir:claudeProfile.home,claudeUsageScope:sessionEnv.CLAUDE_HUB_CLAUDE_SCOPE} : {}),
       ...(isCodexRuntime ? { mcpProfile: effectiveCodexMcpProfile } : {}),
       // 速度通道必须连同 inherit 一起落盘，否则显式选择"跟随全局"的会话在
       // resume/relaunch 后会被 Codex 新默认 Fast 覆盖。
@@ -4007,6 +4021,7 @@ try {
       ...(info.codexAllowMtimeFallback ? { codexAllowMtimeFallback: true } : {}),
       ...(info.codexProfile !== undefined ? { codexProfile: info.codexProfile } : {}),
       ...(info.codexProfileLabel !== undefined ? { codexProfileLabel: info.codexProfileLabel } : {}),
+      ...(info.claudeProfile !== undefined ? {claudeProfile:info.claudeProfile,claudeProfileLabel:info.claudeProfileLabel,claudeConfigDir:info.claudeConfigDir,claudeUsageScope:info.claudeUsageScope} : {}),
       ...(info.deepseekRoute ? { deepseekRoute: info.deepseekRoute } : {}),
       ...(info.deepseekActiveRoute ? { deepseekActiveRoute: info.deepseekActiveRoute } : {}),
       ...(info.mcpProfile !== undefined ? { mcpProfile: info.mcpProfile } : {}),

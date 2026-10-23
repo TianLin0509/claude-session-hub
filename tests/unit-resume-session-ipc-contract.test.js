@@ -176,6 +176,14 @@ test('resumes Claude-family sessions with transcript lookup and renderer event',
   ]);
 });
 
+test('restoring a second-account Claude session preserves its login directory', async () => {
+  const ipc=createFakeIpc(),deps=createBaseDeps();registerResumeSessionIpc(ipc,deps);
+  await ipc.handlers.get('resume-session')(null,{hubId:'claude-second',kind:'claude',ccSessionId:'cc-b',cwd:'C:\\repo',
+    claudeProfile:'second',claudeProfileLabel:'第二账号',claudeConfigDir:'C:\\isolated\\claude-b'});
+  const call=deps.calls.find(c=>c[0]==='createSession');
+  assert.equal(call[2].claudeProfile,'second');assert.equal(call[2].claudeConfigDir,'C:\\isolated\\claude-b');
+});
+
 test('resume passes manual rename protection into live session', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps();

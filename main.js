@@ -3581,13 +3581,15 @@ const hookServer = http.createServer((req, res) => {
       } else {
         // DeepSeek on Claude Code 走 API Key，状态栏里没有、也不能混进 Claude 订阅额度。
         const statusSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
-        const deepseekStatus = String(statusSession?.kind || '').replace(/-resume$/, '') === 'deepseek-claude';
+        const deepseekStatus = statusSession && !/^claude(?:-resume)?$/.test(statusSession.kind);
+        const statusScope = statusSession?.claudeUsageScope || currentClaudeScope(statusSession?.claudeProfile || 'default');
         const filtered = deepseekStatus
           ? { usage5h: null, usage7d: null, anyAccepted: false }
-          : claudeUsageFilter.filter(parsed.usage5h, parsed.usage7d);
+          : claudeFilter(statusScope).filter(parsed.usage5h, parsed.usage7d);
         syncSessionRuntimeModel(parsed.sessionId, parsed.model);
         sendToRenderer('status-event', {
           sessionId: parsed.sessionId,
+          claudeScope: statusScope,
           contextPct: parsed.contextPct,
           contextUsed: parsed.contextUsed,
           contextMax: parsed.contextMax,
@@ -3600,7 +3602,7 @@ const hookServer = http.createServer((req, res) => {
           linesAdded: parsed.linesAdded,
           linesRemoved: parsed.linesRemoved,
         });
-        if (filtered.anyAccepted) cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d });
+        if (filtered.anyAccepted) cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d }, statusScope);
       }
     }
     res.writeHead(200); res.end('{}');
@@ -3665,19 +3667,27 @@ function flushUsageCacheSync() {
 // See core/usage-filter.js for why this filter exists (rate_limits monotonic
 // within a window — stale low-pct snapshots from idle sessions must not
 // overwrite the true usage from heavy sessions).
-const claudeUsageFilter = createUsageFilter();
-try { claudeUsageFilter.seed(loadUsageCache().claude); } catch {}
+const claudeScopeTools = require('./core/claude-usage-scope');
+const claudeUsageFilters = new Map();
+function currentClaudeScope(id) { return claudeScopeTools.scope(getHubConfig(),id); }
+function claudeCache(scope = currentClaudeScope()) { return claudeScopeTools.cached(loadUsageCache(),scope); }
+function claudeFilter(scope) {
+  if (!claudeUsageFilters.has(scope)) {const filter=createUsageFilter();filter.seed(claudeCache(scope));claudeUsageFilters.set(scope,filter);}
+  return claudeUsageFilters.get(scope);
+}
 
-function cacheAccountUsage(data) {
+function cacheAccountUsage(data, scope = currentClaudeScope()) {
   try {
     const existing = loadUsageCache();
-    const cur = existing.claude || {};
-    existing.claude = {
+    const key = "claude:" + scope;
+    const cur = existing[key] || {};
+    existing[key] = {
+      claudeScope: scope,
       usage5h: data.usage5h || cur.usage5h || null,
       usage7d: data.usage7d || cur.usage7d || null,
       ts: data.ts || Date.now(),
     };
-    if (JSON.stringify(cur) === JSON.stringify(existing.claude)) return;
+    if (JSON.stringify(cur) === JSON.stringify(existing[key])) return;
     _usageCacheMemory = existing;
     scheduleUsageCacheWrite();
   } catch (error) { console.warn('[claude-usage] cache update failed:', error && error.message); }
@@ -3691,21 +3701,21 @@ function loadStatuslineCache() {
 // status line that used to feed this never runs in that transport. Any live
 // connection can answer, so take the first one and fall back to the cache when
 // none is connected or the engine will not say.
-async function refreshClaudeAccountUsageLive() {
+async function refreshClaudeAccountUsageLive(scope = currentClaudeScope()) {
   for (const session of sessionManager.getAllSessions()) {
-    if (session.runtimeBackend !== 'claude-stream-json') continue;
+    if (session.runtimeBackend !== 'claude-stream-json' || !/^claude(?:-resume)?$/.test(session.kind) || (session.claudeUsageScope || currentClaudeScope(session.claudeProfile || 'default')) !== scope) continue;
     const native = sessionManager.getNativeClaude?.(session.id);
     if (!native || native.closed || native.runtime?.connection !== 'connected') continue;
     let snapshot = null;
     try { snapshot = await native.readAccountUsage(); }
     catch (error) { console.warn('[claude-usage] native read failed:', error && error.message); continue; }
     if (!snapshot) continue;
-    const before = loadUsageCache().claude || null;
-    const filtered = claudeUsageFilter.filter(snapshot.usage5h, snapshot.usage7d);
+    const before = claudeCache(scope);
+    const filtered = claudeFilter(scope).filter(snapshot.usage5h, snapshot.usage7d);
     if (filtered.anyAccepted) {
-      cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d, ts: snapshot.observedAt });
+      cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d, ts: snapshot.observedAt }, scope);
     }
-    const data = loadUsageCache().claude || null;
+    const data = claudeCache(scope);
     return { data, changed: didClaudeSnapshotAdvance(before, { ...data, observedAt: snapshot.observedAt }),
       observedAt: snapshot.observedAt, source: 'claude-native' };
   }
@@ -3716,30 +3726,38 @@ async function refreshClaudeAccountUsage() {
   return claudeAccountRefresh.refresh();
 }
 
-let claudeAccountBroadcast = '';
-const claudeAccountRefresh = require('./main/usage/claude-usage-refresh').createClaudeUsageRefresh({
-  refresh: async () => (await refreshClaudeAccountUsageLive()) || refreshClaudeAccountUsageFromStatuslineCache(),
-  getSessions: () => sessionManager.getAllSessions().flatMap(session => {
-    if (session.runtimeBackend !== 'claude-stream-json') return [];
-    const native = sessionManager.getNativeClaude?.(session.id);
-    return native && !native.closed && native.runtime?.connection === 'connected'
-      ? [{ id: session.id, ...native.runtime }] : [];
-  }),
-  getCached: () => loadUsageCache().claude,
-  publish: data => {
-    const signature = JSON.stringify(data);
-    if (signature === claudeAccountBroadcast) return;
-    claudeAccountBroadcast = signature;
-    sendToRenderer('status-event', { usage5h: data.usage5h, usage7d: data.usage7d,
-      observedAt: data.observedAt || data.ts || 0 });
-  },
-});
+const claudeRefreshers = new Map();
+function claudeRefresher(scope = currentClaudeScope()) {
+  if (claudeRefreshers.has(scope)) return claudeRefreshers.get(scope);
+  let broadcast = '';
+  const controller = require('./main/usage/claude-usage-refresh').createClaudeUsageRefresh({
+    refresh: async () => (await refreshClaudeAccountUsageLive(scope)) || refreshClaudeAccountUsageFromStatuslineCache(scope),
+    getSessions: () => sessionManager.getAllSessions().flatMap(session => {
+      if (!/^claude(?:-resume)?$/.test(session.kind) || session.runtimeBackend !== 'claude-stream-json'
+        || (session.claudeUsageScope || currentClaudeScope(session.claudeProfile || 'default')) !== scope) return [];
+      const native=sessionManager.getNativeClaude?.(session.id);
+      return native && !native.closed && native.runtime?.connection === 'connected' ? [{id:session.id,...native.runtime}] : [];
+    }),
+    getCached: () => claudeCache(scope),
+    publish: data => {
+      if (scope !== currentClaudeScope()) return;
+      const signature=JSON.stringify(data);if(signature===broadcast)return;broadcast=signature;
+      sendToRenderer('status-event',{usage5h:data.usage5h,usage7d:data.usage7d,claudeScope:scope,observedAt:data.observedAt||data.ts||0});
+    },
+  });
+  claudeRefreshers.set(scope,controller);return controller;
+}
+const claudeAccountRefresh = {
+  tick: reason => claudeRefresher().tick(reason),
+  refresh: () => claudeRefresher().refresh(),
+  stop: () => {for(const r of claudeRefreshers.values())r.stop();},
+};
 app.on('browser-window-focus', () => { void claudeAccountRefresh.tick('focus'); });
 app.on('will-quit', () => { claudeAccountRefresh.stop(); });
 
-function refreshClaudeAccountUsageFromStatuslineCache() {
-  const before = loadUsageCache().claude || null;
-  const snapshot = selectClaudeStatuslineUsage(loadStatuslineCache());
+function refreshClaudeAccountUsageFromStatuslineCache(scope = currentClaudeScope()) {
+  const before = claudeCache(scope);
+  const snapshot = selectClaudeStatuslineUsage(claudeScopeTools.selectStatusline(loadStatuslineCache(),scope));
   if (!snapshot) {
     return {
       data: before,
@@ -3748,15 +3766,15 @@ function refreshClaudeAccountUsageFromStatuslineCache() {
       source: 'statusline-cache',
     };
   }
-  const filtered = claudeUsageFilter.filter(snapshot.usage5h, snapshot.usage7d);
+  const filtered = claudeFilter(scope).filter(snapshot.usage5h, snapshot.usage7d);
   if (filtered.anyAccepted) {
     cacheAccountUsage({
       usage5h: filtered.usage5h,
       usage7d: filtered.usage7d,
       ts: snapshot.ts,
-    });
+    }, scope);
   }
-  const data = loadUsageCache().claude || null;
+  const data = claudeCache(scope);
   return {
     data,
     changed: didClaudeSnapshotAdvance(before, { ...data, observedAt: snapshot.ts }),
@@ -3861,7 +3879,7 @@ function loadUsageCacheForCurrentConfig() {
   // Source selection checks expiry; display retains the last account-scoped
   // observation with its real age, including across reset/refresh gaps.
   return { ...filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope()),
-    tokenPlan: tokenPlanUsage.snapshot() };
+    claude: claudeCache(), tokenPlan: tokenPlanUsage.snapshot() };
 }
 
 try {

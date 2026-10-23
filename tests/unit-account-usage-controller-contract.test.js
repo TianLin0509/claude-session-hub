@@ -208,6 +208,14 @@ async function main() {
   empty.applyUsageCache({ codex: { usage5h: { pct: 88 } } });
   assert.strictEqual(emptyDoc.byClass('rail-usage-button').dataset.freshness, 'unknown');
 
+  empty.recordStatusUsage({claudeScope:'default:A',usage5h:{pct:99}});
+  assert.strictEqual(empty.getSnapshot().claude.usage5h,null,'old account broadcast cannot claim uninitialized selection');
+  empty.applyUsageCache({claude:{claudeScope:'second:B',usage5h:{pct:3},ts:now}});
+  empty.recordStatusUsage({claudeScope:'default:A',usage5h:{pct:100},observedAt:now+1});
+  assert.strictEqual(empty.getSnapshot().claude.usage5h.pct,3,'background A cannot replace selected B');
+  empty.applyUsageCache({claude:{claudeScope:'default:A',usage5h:{pct:100},ts:now+2}});
+  assert.strictEqual(empty.getSnapshot().claude.usage5h.pct,3,'late A cache response cannot replace B');
+
   const session = sessions.get('s1');
   session._tokenSamples = [{ t: now - 120000, used: 1000 }, { t: now, used: 7000 }];
   assert.ok(controller.sessionBurnRate(session).tokensPerMin > 0);
