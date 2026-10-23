@@ -565,7 +565,7 @@ function renderTurnCard(turn) {
   // body reads like every other answer, matching Codex's card density.
   const nativeChip = turn.nativeActivity && !isProgress
     ? `<span class="turn-branch-chip turn-native-chip" title="Claude 自行发起的回合${turn.nativeOrigin?.kind ? '：' + escapeHtml(turn.nativeOrigin.kind) : ''}">后台</span>` : '';
-  const body = (isProgress ? require('./conversation-message-view').renderProgressRow(turn,
+  const body = (isProgress && !emptyNative ? require('./conversation-message-view').renderProgressRow(turn,
     {escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths,foldLong:false,actions:renderCardActions(turn)})
     : emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
     : require('./conversation-message-view').renderMessageBody(turn.assistantContext?.userText ?? turn.text,
@@ -578,7 +578,7 @@ function renderTurnCard(turn) {
   const toolHtml = renderToolCluster(turn.id || '', _fullActivityTurns.has(turn.id) ? turn.toolCalls : presentation.activities, presentation.activityCount);
   const deliveryHtml = !isUser && turn.phase !== 'commentary' && turn.phase !== 'activity' ? renderDeliverySummary(presentation.delivery) : '';
   const glanceHtml = deliveryHtml && !isSimple ? renderDeliveryGlance(presentation.delivery) : '';
-  const bodyHtml = `<div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
+  const bodyHtml = `<div class="turn-body${isProgress && !emptyNative ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
       ${attachments}
       ${assistantContext}
       ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}`;

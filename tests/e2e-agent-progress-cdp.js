@@ -89,6 +89,8 @@ for(let i=0;i<65;i++)save({...history,id:'Q-noise-'+i,sessionId:'unrelated-'+i,u
     await c.eval(`(()=>{const display=require('./simple-chat-display').displayChatTurns;const root=document.createElement('div');root.id='provider-progress-check';document.body.appendChild(root);
       for(const kind of ${j(kinds)}){const t=display([{id:'test-'+kind,role:'assistant',kind,text:'最终回答',thinking:'中文长进展。'.repeat(600),ts:${at}}])[0];window._mountSessionTurnCard('${sid}',t,{container:root});}})()`);
     check(await c.eval(`document.querySelectorAll('#provider-progress-check .chat-progress-timeline').length===${kinds.length} && [...document.querySelectorAll('#provider-progress-check .chat-progress-timeline')].every(e=>!e.querySelector('details')&&!e.closest('details')&&e.textContent.includes('中文长进展'))`),'各 Agent 共用显示链路：长中文进展不折叠、不丢失');
+    await c.eval(`(()=>{const turn=require('./simple-chat-display').displayChatTurns([{id:'interrupted-thought',role:'assistant',kind:'claude',thinking:'中断前的思考仍保留。',text:'',stopReason:'interrupted',nativeOutcome:'interrupted',ts:${at}}])[0];window._mountSessionTurnCard('${sid}',turn,{container:document.querySelector('#provider-progress-check')});})()`);
+    check(await c.eval(`document.querySelector('#provider-progress-check [data-turn-id="interrupted-thought"] .turn-native-outcome')?.textContent==='本轮已中断'`),'只有思考的中断回合仍显示明确结果，不留下空白回答');
     result.passed=true;
   }catch(error){result.error=error.stack;process.exitCode=1;if(c)await shot('failure').catch(()=>{});}
   finally{db.close();if(hub)fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));if(c)await c.close();if(hub)await gracefulQuit(hub);fs.writeFileSync(path.join(out,'evidence.json'),j(result,null,2));console.log(j(result,null,2));}
