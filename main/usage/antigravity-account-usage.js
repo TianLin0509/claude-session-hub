@@ -44,7 +44,7 @@ function createAntigravityUsage({ env = process.env, runImpl = run, now = Date.n
       }
       const value = credits.status === 'fulfilled' ? credits.value.command.data?.remaining_credits : undefined;
       if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-        next.credits = value; next.creditsObservedAt = now();
+        next.credits = value; next.creditsObservedAt = now(); delete next.creditsError;
       } else {
         next.credits = cached?.credits ?? null; next.creditsObservedAt = cached?.creditsObservedAt || 0;
         next.creditsError = 'credits 余额未刷新' + (next.creditsObservedAt ? '，保留旧值' : '');

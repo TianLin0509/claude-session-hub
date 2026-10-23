@@ -19,7 +19,7 @@ test('zero credits, coalescing, TTL, independent failures and recovery',async()=
   const [a,b]=await Promise.all([reader.refresh(),reader.refresh()]);assert.equal(a,b);assert.equal(calls,2);assert.equal(a.credits,0);
   await reader.refresh(); assert.equal(calls,2);
   clock=300001;failCredits=true;const partial=await reader.refresh();assert.equal(partial.credits,0);assert.match(partial.creditsError,/未刷新/);
-  clock++;failUsage=true;failCredits=false;const failed=await reader.refresh(true);assert.match(failed.error,/查询失败/);assert.equal(failed.observedAt,300001);assert.equal(failed.creditsObservedAt,clock);
+  clock++;failUsage=true;failCredits=false;const failed=await reader.refresh(true);assert.match(failed.error,/查询失败/);assert.equal(failed.observedAt,300001);assert.equal(failed.creditsObservedAt,clock);assert.equal(failed.creditsError,undefined);
   clock++;failUsage=false;const recovered=await reader.refresh(true);assert.equal(recovered.error,undefined);assert.equal(recovered.observedAt,clock);
 });
 test('isolated Hub never queries the real account without an explicit fixture',async()=>{
