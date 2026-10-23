@@ -5,6 +5,15 @@ function createCompanyMeetingPage({ document, window, call, markdown }) {
   const time = ms => `${String(Math.floor((ms || 0) / 60000)).padStart(2, '0')}:${String(Math.floor((ms || 0) / 1000) % 60).padStart(2, '0')}`;
   let root, id = null, capture, state, poll, sourceList = [];
   function message(s) { if (root) root.querySelector('[data-m="message"]').textContent = s; }
+  function citations(element) {
+    const walker = document.createTreeWalker(element, window.NodeFilter.SHOW_TEXT), nodes = []; let node;
+    while ((node = walker.nextNode())) if (!node.parentElement.closest('a,button,code,pre') && /\[事件\s*\d+\]/.test(node.textContent)) nodes.push(node);
+    for (const node of nodes) {
+      const fragment = document.createDocumentFragment(), text = node.textContent; let last = 0;
+      for (const match of text.matchAll(/\[事件\s*(\d+)\]/g)) { fragment.append(document.createTextNode(text.slice(last, match.index))); const button = document.createElement('button'); button.className = 'ca-link'; button.dataset.event = match[1]; button.textContent = match[0]; fragment.append(button); last = match.index + match[0].length; }
+      fragment.append(document.createTextNode(text.slice(last))); node.replaceWith(fragment);
+    }
+  }
   async function refresh() {
     if (!root?.isConnected) return;
     state = await call('meeting-status', { id });
@@ -19,12 +28,14 @@ function createCompanyMeetingPage({ document, window, call, markdown }) {
     root.querySelector('[data-act="pause"]').textContent = capture?.paused ? '继续' : '暂停';
     root.querySelector('[data-m="history"]').disabled = !!capture?.running;
     if (!m) return;
+    if (m.audio.length && !asr.ready && !asr.phase && !m.error && !m.asrError) message('录音已保存；本地转写尚未就绪。请打开“截图区域与本地语音设置”，点击安装本地转写。');
     if (m.error || m.asrError) message(m.error || m.asrError);
     const timeline = m.events.filter(e => ['slide', 'transcript', 'mark'].includes(e.kind)).sort((a, b) => a.at - b.at || a.seq - b.seq);
     const list = root.querySelector('[data-m="timeline"]'); const stamp = m.events.length + ':' + timeline.length;
     if (list.dataset.stamp !== stamp) { list.dataset.stamp = stamp; list.innerHTML = timeline.map(e => `<button class="meeting-event" data-event="${e.seq}"><span>${time(e.at)} · ${e.kind === 'slide' ? '页面' : e.kind === 'mark' ? '★ 重点' : e.track === 'mic' ? '麦克风' : '系统声音'} · 事件 ${e.seq}</span><div>${esc(e.text || (e.revisit ? '再次展示前页' : '点击查看截图'))}</div></button>`).join('') || '<p>开始后，页面和发言会出现在这里。</p>'; }
-    const summary = root.querySelector('[data-m="summary"]'); const html = markdown(m.summary || '会议理解尚未生成。采集与本地转写独立进行，CodeAgent 可稍后补整理。'); if (summary.innerHTML !== html) summary.innerHTML = html;
+    const summary = root.querySelector('[data-m="summary"]'); const html = markdown(m.summary || '会议理解尚未生成。采集与本地转写独立进行，CodeAgent 可稍后补整理。'); if (summary.dataset.html !== html) { summary.innerHTML = html; citations(summary); summary.dataset.html = html; }
     root.querySelector('[data-m="answers"]').innerHTML = m.answers.map(q => `<details><summary>${esc(q.q)} · ${{ queued: '排队中', running: '理解中', done: '已回答' }[q.state] || q.state}</summary>${markdown(q.answer || '等待 CodeAgent 回答')}</details>`).join('');
+    citations(root.querySelector('[data-m="answers"]'));
   }
   async function action(op) {
     if (op === 'sources') { const r = await call('meeting-sources'); sourceList = r.sources; root.querySelector('[data-m="source"]').innerHTML = sourceList.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join(''); preview(); return; }
