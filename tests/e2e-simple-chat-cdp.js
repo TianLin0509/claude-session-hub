@@ -57,7 +57,7 @@ const port = () => new Promise(resolve => { const s = net.createServer(); s.list
     check(await cdp.eval(`window.__replyHost===document.querySelector('${final}')`),'过程中同一消息节点持续更新到最终回复');
     check(await cdp.eval(`!document.querySelector('${final} .chat-process').open`),'过程默认收起');
     check(await cdp.eval(`document.querySelector('${final} .turn-head .chat-process') && document.querySelector('#msg-overlay .turn-card.user .turn-head .chat-word-count') && !document.querySelector('#msg-overlay .turn-card.user .chat-message-bubble .turn-meta-pills')`),'字数与过程合入信息行，不再占用正文底部');
-    check(await cdp.eval(`document.querySelector('${final} .chat-process-body').textContent.includes('已定位问题')`),'原过程消息保留可展开');
+    check(await cdp.eval(`document.querySelector('${final} .chat-progress-timeline').textContent.includes('已定位问题') && !document.querySelector('${final} .chat-progress-timeline').closest('details')`),'带时间的进展默认展示在正文前');
     const copy=await cdp.eval(`require('./visible-card-text').extractVisibleCardText(document.querySelector('${final} .turn-body'))`);
     check((copy.match(/这是同一条长回答/g)||[]).length===36 && !copy.includes('已定位问题') && !copy.includes('展开全文'),'复制完整最终回复且不混过程与控件');
     evidence.longCopy={length:copy.length,paragraphs:36};

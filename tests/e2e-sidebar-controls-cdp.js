@@ -112,7 +112,7 @@ async function main() {
     await select('#session-model-filter', 1);
     await until(`document.querySelector(${JSON.stringify(row('group-claude'))})`);
     assert.equal(await cdp.eval(`!!document.querySelector(${JSON.stringify(row('group-codex'))})`), false);
-    await select('#session-model-filter', 3);
+    await select('#session-model-filter', 4);
     await until(`document.querySelector(${JSON.stringify(row('sleep-6d'))})`);
     assert.equal(await cdp.eval(`!!document.querySelector('#session-list [data-meeting-id="mixed"]')`), false);
     await select('#session-model-filter', 0);

@@ -158,7 +158,7 @@ test('模型过滤普通行及群聊成员，打开被过滤会话会恢复入�
   assert.ok(h.row('mixed')); assert.ok(h.row('member-c')); assert.equal(h.row('member-x'), undefined);
   h.revealSearchItem('mixed', 'member-x');
   assert.equal(control.value, 'all'); assert.ok(h.row('member-x'));
-  control.value = 'other'; control.listeners.change();
+  control.value = 'deepseek'; control.listeners.change();
   assert.ok(h.row('other')); assert.equal(h.row('mixed'), undefined);
   h.revealSearchItem('codex');
   assert.equal(control.value, 'all'); assert.ok(h.row('codex'));

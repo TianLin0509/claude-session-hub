@@ -52,7 +52,9 @@ function parseAntigravityTranscriptToTurns(file, options = {}) {
       toolCalls:(row.tool_calls||[]).map((t,i)=>({id:`${id}-tool-${i}`,name:t.name,input:t.args,
         status:row.status==='ERROR'?'failed':row.status==='DONE'?'completed':'running',isError:row.status==='ERROR'})),
       // DONE marks a step, not a whole turn. Only the native Stop hook closes a turn.
-      ...(user?{}:{replyKey,nativeOutcome:final?.outcome||null,tsEnd:final?.completedAt||null,displayMessages:text?[{id:`${id}:text`,text,phase:final?.outcome==='completed'?'final_answer':'commentary',ts}]:[]})});
+      ...(user?{}:{replyKey,nativeOutcome:final?.outcome||null,tsEnd:final?.completedAt||null,displayMessages:[
+        ...(typeof row.thinking==='string' && row.thinking.trim() ? [{id:`${id}:thinking`,text:row.thinking,phase:'commentary',fromThinking:true,ts}] : []),
+        ...(text?[{id:`${id}:text`,text,phase:final?.outcome==='completed'?'final_answer':'commentary',ts}]:[])]})});
   }
   const result=options.rawSteps ? turns : groupSteps(turns);
   return Number.isFinite(options.limit)&&options.limit>=0
