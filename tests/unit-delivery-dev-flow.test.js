@@ -97,13 +97,15 @@ async function gateFlow() {
   } finally { f.close(); g.close(); }
 }
 
-async function gateStreak() {
+async function gateStreak(unbounded=false) {
   const f = fixture(), g = repo(), cand = `CANDIDATE: ${g.dir} ${g.sha}`;
   try {
+    if(unbounded)f.m.orchestration={enabled:true};
     await f.e.start(f.m.id, 'goal'); f.deliver('a'); await f.advance();
     g.fail(true);
     for (let n = 1; n <= 3; n++) { f.deliver('a', 'ready', cand); await f.until(() => f.read().steps.at(-1).gate?.state === 'failed' || f.e.status(f.m.id).paused || f.calls.length === 2 + n, 'gate ' + n); }
     const st = f.e.status(f.m.id);
+    if(unbounded){assert.equal(st.paused,false);assert.equal(f.calls.length,5);assert(!f.calls.some(c=>c.targetMemberIds[0]==='b'));return;}
     assert.equal(st.paused, true); assert.match(st.error, /连续 3 次未通过 Hub 测试闸门/); assert.equal(f.calls.length, 4, 'no fourth automatic retry');
     assert(!f.calls.some(c => c.targetMemberIds[0] === 'b'), 'reviewer never sees a failing candidate');
     await f.e.resume(f.m.id); assert.equal(f.calls.length, 5, 'continue grants another try'); assert.deepEqual(f.calls[4].targetMemberIds, ['a']);
@@ -214,5 +216,6 @@ async function composerSubmit() {
 }
 
 (async () => {
+  await gateStreak(true);
   for (const fn of [guidance, candidateParsing, gateFlow, gateStreak, gateSkippedWithoutCandidate, migration, tolerantDeliveryReading, taskModeAfterEnd, composerSubmit]) { await fn(); console.log('PASS ' + fn.name); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

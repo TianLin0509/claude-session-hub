@@ -127,8 +127,8 @@ test('final report needs every segment closed and a reviewer conclusion file', (
 test('orchestrator rules describe the role and the enforced limits; goal text forbids merging', () => {
   const block = Prompt.orchestratorBlock({ ledgerFile: 'ledger.md' });
   assert.match(block, /编排员/); assert.match(block, /orch_status/); assert.match(block, /计划账本：ledger\.md/);
-  for (const tool of ['orch_restart_member', 'orch_grant_budget', 'skip', 'need_decision']) assert.ok(block.includes(tool), tool);
-  assert.match(block, /由你判断哪里需要田哥/); assert.match(block, /田哥的回话就是指令/);
+  for (const tool of ['orch_restart_member', 'orch_send_message', 'orch_request_peer', 'orch_decide_peer', 'need_decision']) assert.ok(block.includes(tool), tool);
+  assert.match(block, /方案规划者/); assert.match(block, /Hub 不设固定上限/);
   assert.doesNotMatch(block, /确认后执行|仅给田哥|等待明确恢复/);
   const goal = Prompt.goalText({ goal: '做 X', acceptance: '测试通过', preset: 'development' });
   assert.match(goal, /验收标准/); assert.match(goal, /审查位独立验证候选通过后/); assert.match(goal, /验证不通过不得合并/);

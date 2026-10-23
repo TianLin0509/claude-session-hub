@@ -24,6 +24,8 @@ d.rounds[0].prompt='x'.repeat(16001);assert.throws(()=>S.validate(d,['a']),/1600
 d.rounds[0].prompt='test';d.rounds[0].members=['a','b','c','d'];assert.throws(()=>S.validate(d,['a','b','c','d']),/1–3/);
 d.rounds[0].members=['missing'];assert.throws(()=>S.validate(d,['a']),/已移除/);
 d.rounds[0].members=['a'];d.rounds=Array.from({length:7},()=>structuredClone(d.rounds[0]));assert.throws(()=>S.validate(d,['a']),/1–6/);
+assert.equal(S.toDeliveryConfig({},d,['a'],{unbounded:true}).deliveryStages.length,7);
+d.rounds[0].members=['a','b','c','d'];assert.equal(S.validate(d,['a','b','c','d'],{unbounded:true}),true);
 const dev=S.createPreset('development',people);dev.rounds[2].members=['a'];assert.throws(()=>S.validate(dev,['a','b']),/独立评审/);
 const legacy={steps:[['a'],['b']],stepConfigs:[{name:'旧步骤',prompt:'保留中文 prompt',timeoutMs:123000}],loop:{enabled:true},fileFlow:{executedRounds:3}};
 assert.equal(S.fromConfig(legacy,people).rounds[0].timeoutMs,123000);

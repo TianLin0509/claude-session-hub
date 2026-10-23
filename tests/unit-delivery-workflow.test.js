@@ -63,13 +63,15 @@ async function malformedAndEditedDeliveries() {
     assert.match(g.e.status(g.m.id).error,/已接纳/);assert.equal(g.calls.length,1);
   }finally{g.close();}
 }
-async function developmentBudget() {
+async function developmentBudget(unbounded=false) {
   const f=fixture('development');try{
+    if(unbounded)f.m.orchestration={enabled:true};
     await f.e.start(f.m.id,'goal');f.deliver('a');await f.advance();
     for(let n=0;n<2;n++){f.deliver('a');await f.advance();f.deliver('b','rework');await f.advance();}
     // Kickoff and builds are free: the third build is still reviewed.
     assert.equal(f.calls.length,6);f.deliver('a');await f.advance();assert.equal(f.calls.length,7,'third build gets its review');
     assert.deepEqual(f.calls[6].targetMemberIds,['b']);f.deliver('b','rework');await f.advance();
+    if(unbounded){assert.equal(f.calls.length,8);assert.equal(f.e.status(f.m.id).paused,false);return;}
     assert.equal(f.calls.length,7);assert.equal(f.e.status(f.m.id).paused,true);assert.match(f.e.status(f.m.id).error,/3 轮审查/);
     await f.e.continueWork(f.m.id,'继续');assert.equal(f.calls.length,8,'continuation advances once, never dispatches new step twice');
     assert.deepEqual(f.calls[7].targetMemberIds,['a']);f.deliver('a');await f.advance();assert.equal(f.calls.length,9);
@@ -130,4 +132,4 @@ async function reconcileFinishedDispatchAfterRestart(){
     await assert.rejects(f.e.continueWork(f.m.id),/提交待核对/);assert.equal(f.calls.length,2,'live local Promise cannot be reconciled early');
   }finally{f.close();}
 }
-(async()=>{for(const fn of [filesDriveTheBarrier,pauseAndRestart,malformedAndEditedDeliveries,developmentBudget,unknownAndWakeRace,ownerAndEmptyFile,cancellationAndFailures,completionContinuationAndDormancy,controlWinsOverResume,reconcileFinishedDispatchAfterRestart]){await fn();console.log('PASS '+fn.name);}})().catch(error=>{console.error(error);process.exitCode=1;});
+(async()=>{await developmentBudget(true);for(const fn of [filesDriveTheBarrier,pauseAndRestart,malformedAndEditedDeliveries,developmentBudget,unknownAndWakeRace,ownerAndEmptyFile,cancellationAndFailures,completionContinuationAndDormancy,controlWinsOverResume,reconcileFinishedDispatchAfterRestart]){await fn();console.log('PASS '+fn.name);}})().catch(error=>{console.error(error);process.exitCode=1;});

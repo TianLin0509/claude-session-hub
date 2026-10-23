@@ -109,22 +109,23 @@ async function main() {
     formatAge: ts => String(ts || 0), formatBalance: data => data.totalBalance == null ? '—' : '¥' + data.totalBalance.toFixed(2),
     freshness: ts => ts === 200 ? 'fresh' : 'stale', nowFn: () => clockNow });
   const buttons = nodes.filter(n => n.tag === 'button');
-  assert.strictEqual(buttons.length, 4);
+  assert.strictEqual(buttons.length, 5);
+  assert.equal(buttons[4].dataset.provider, 'antigravity');
   view.render({ ...cache, deepseek: { ...cache.deepseek, lastSeen: 200 } }, {});
   const values = nodes.filter(n => n.className === 'sidebar-quota-value').map(n => n.textContent);
-  assert.deepStrictEqual(values, ['90%', '—', '60%', '¥0.00', '—']);
+  assert.deepStrictEqual(values, ['90%', '—', '60%', '¥0.00', '—', 'G —', 'C/G —']);
   view.render({ tokenPlan: { usage7d: { pct: 45.3284435 }, lastSeen: 200 } }, {});
-  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '54.67%');
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[4].textContent, '54.67%');
   view.render({ tokenPlan: { usage30d: { pct: 10, resetsAt: 1791820800000 }, lastSeen: 200 } }, {});
-  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '90.00%');
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[4].textContent, '90.00%');
   // Footer must show reset countdowns rather than quota window names. Unknown
   // and elapsed resets keep the old percentage and explain its limits.
   root.dataset.presentation = 'footer';
   const periods = () => nodes.filter(n => n.className === 'sidebar-quota-period').map(n => n.textContent);
   view.render({ claude: { usage5h: { pct: 20, resetsAt: now + 80*60000 }, usage7d: { pct: 30, resetsAt: now + 76*3600000 } },
     codex: { usage7d: { pct: 40, resetsAt: 'invalid' } }, tokenPlan: { usage30d: { pct: 10, resetsAt: now - 1 } } }, {});
-  assert.deepStrictEqual(periods(), ['↻1时20分', '↻3天4时', '刷新未知', '', '待刷新']);
-  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '90.00%');
+  assert.deepStrictEqual(periods(), ['↻1时20分', '↻3天4时', '刷新未知', '', '待刷新', '刷新未知', '刷新未知']);
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[4].textContent, '90.00%');
   assert.match(buttons[0].attrs['aria-label'], /5h 剩余 80% ↻1时20分/);
   assert.match(nodes.filter(n => n.className === 'sidebar-quota-metric')[0].title, /北京时间/);
   assert.match(buttons[3].attrs['aria-label'], /30d 剩余 90.00% 待刷新/);
@@ -136,13 +137,22 @@ async function main() {
   assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[0].textContent, '80%', 'elapsed time must not invent restored quota');
   clockNow = now;
   view.render({ tokenPlan: { usage7d: { pct: 10, resetsAt: now + 86400000 }, lastSeen: now } }, {});
-  assert.strictEqual(periods().at(-1), '↻1天');
+  assert.strictEqual(periods()[4], '↻1天');
   assert.strictEqual(buttons[3].dataset.freshness, 'fresh');
   view.render(cache, { codex: { inFlight: true }, deepseek: { error: 'offline' } });
   assert.strictEqual(nodes.filter(n => n.tag === 'button')[1], buttons[1]);
   assert.strictEqual(buttons[1].attrs['aria-disabled'], 'true');
   assert.strictEqual(nodes.some(n => n.className === 'sidebar-quota-feedback' || n.className === 'sidebar-quota-footer'), false);
   assert.match(buttons[2].title, /offline/, 'refresh errors remain available on the provider control');
+  view.render({antigravity:{credits:0,lastSeen:now,groups:[{id:'gemini',label:'Gemini',usage5h:{pct:80},usage7d:{pct:10}},{id:'thirdParty',label:'Claude/GPT',usage7d:{pct:8}}]}},{});
+  assert.deepEqual(nodes.filter(n=>n.className==='sidebar-quota-value').slice(-2).map(n=>n.textContent),['G 20%','C/G 92%']);
+  assert.match(buttons[4].title,/credits 余额：0/);
+  controller.recordAgentUsage({antigravity:{observedAt:500,credits:0}});
+  controller.recordAgentUsage({antigravity:{observedAt:500,credits:0,error:'offline'}});
+  assert.equal(controller.getSnapshot().refresh.providers.antigravity.error,'offline');
+  controller.recordAgentUsage({antigravity:{observedAt:600,credits:12}});
+  assert.equal(controller.getSnapshot().refresh.providers.antigravity.error,null);
+  assert.equal(controller.getSnapshot().antigravity.credits,12);
   // Exercise the actual main service body: account changes must be rejected
   // before the shared cache and background broadcaster can see the old result.
   const source = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8');

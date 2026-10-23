@@ -24,7 +24,8 @@ test('加入群聊 / 以会话新建群聊 / 分支群聊：CodeAgent 与 DeepSe
 
 test('编排员：建群弹窗允许成员 1 选 CodeAgent', () => {
   const modal = fs.readFileSync(path.join(root, 'renderer', 'meeting-create-modal.js'), 'utf8');
-  assert.match(modal, /const ORCHESTRATOR_KINDS = \['claude', 'codex', 'codeagent'\];/);
+  assert.match(modal, /const ORCHESTRATOR_KINDS = GROUP_MEMBER_KINDS;/);
+  assert.ok(require('../core/ai-kinds').GROUP_MEMBER_KINDS.includes('codeagent'));
   assert.match(modal, /mcm-orch-row" id="mcm-orch-row"\$\{ORCHESTRATOR_KINDS\.some\(require\('\.\.\/core\/distribution'\)\.kindAllowed\)/,
     '公司版只允许 CodeAgent 时，编排员开关因此显示出来');
 });

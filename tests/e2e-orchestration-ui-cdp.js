@@ -14,6 +14,7 @@ const WORK = path.join(ROOT, 'work'), DATA = path.join(ROOT, 'data');
 const ART = path.resolve(__dirname, '../output/playwright', `orchestration-ui-${Date.now()}`);
 const LOG = path.join(ROOT, 'dispatch.jsonl'), SCRIPT = path.join(ROOT, 'dispatch.js');
 fs.mkdirSync(WORK, { recursive: true }); fs.mkdirSync(DATA, { recursive: true }); fs.mkdirSync(ART, { recursive: true });
+fs.writeFileSync(path.join(DATA,'usage-cache.json'),JSON.stringify({antigravity:{observedAt:Date.now(),credits:0,groups:[{id:'gemini',label:'Gemini Models',usage7d:{pct:100,resetsAt:'2026-10-27T07:24:20Z'}},{id:'thirdParty',label:'Claude and GPT models',usage7d:{pct:8,resetsAt:'2026-10-27T07:24:20Z'}}]}}));
 fs.writeFileSync(path.join(DATA, 'prepared-projects.json'), JSON.stringify({ schemaVersion: 1, projects: [], migrations: [] }));
 fs.writeFileSync(path.join(WORK, '.aiwork-root'), '');
 fs.writeFileSync(SCRIPT, `const fs=require('fs'); module.exports=args=>{ fs.appendFileSync(${JSON.stringify(LOG)},JSON.stringify({targetMemberIds:args.targetMemberIds,recipientSids:args.recipientSids,userInput:String(args.userInput||'').slice(0,200),kind:args.workflowRun&&args.workflowRun.kind})+'\\n'); return {text:'受控回答'}; };`);
@@ -45,6 +46,13 @@ async function run() {
     };
     await wait(() => cdp.eval('!!window.openMeetingCreateModal && !!window.MeetingRoom'), 'UI ready');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await wait(()=>cdp.eval("document.querySelector('[data-provider=antigravity]')?.textContent.includes('G 0%')"),'Antigravity quota');
+    ok('底栏显示 Antigravity 两组剩余和真实零 credits',await cdp.eval("(()=>{const e=document.querySelector('[data-provider=antigravity]');return e.textContent.includes('C/G 92%') && e.title.includes('credits 余额：0');})()"));
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:960,height:800,deviceScaleFactor:1,mobile:false});
+    await wait(()=>cdp.eval("document.querySelector('.footer-quota-summary')?.textContent.includes('Antigravity G 0%')"),'tightest Antigravity summary');
+    ok('底栏紧凑汇总仍指出 Antigravity 耗尽',true);
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    await shot('00-antigravity-footer');
 
     // 1. 启动中心 → AI 群聊 → 打开编排员开关 → 删掉初始成员 → 建群
     await cdp.eval("document.getElementById('btn-new-more').click()");
@@ -55,8 +63,10 @@ async function run() {
     await click('#new-session-menu [data-mcm-scene="general"]');
     await click('#new-session-menu [data-mcm-workspace-mode="default"]');
     await click('#new-session-menu .mcm-orch-switch');
-    ok('打开后成员 1 标为编排员、只剩额度设置（没有「计划先给我确认」）', await cdp.eval("!document.getElementById('mcm-orch-confirm')") && await cdp.eval("document.getElementById('mcm-orch-toggle').checked && !document.getElementById('mcm-orch-options').hidden && document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-slot-label').textContent.includes('编排员') && document.querySelector('.mcm-slot[data-slot=\"1\"] .mcm-slot-label').textContent.includes('工作成员')"));
-    await cdp.eval("(()=>{const r=document.getElementById('mcm-orch-rounds'); r.value='6'; r.dispatchEvent(new Event('input',{bubbles:true}));})()");
+    ok('打开后成员 1 标为编排员、显示自然语言编排说明（没有「计划先给我确认」）', await cdp.eval("!document.getElementById('mcm-orch-confirm')") && await cdp.eval("document.getElementById('mcm-orch-toggle').checked && !document.getElementById('mcm-orch-options').hidden && document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-slot-label').textContent.includes('编排员') && document.querySelector('.mcm-slot[data-slot=\"1\"] .mcm-slot-label').textContent.includes('工作成员')"));
+    ok('没有固定轮次或时长输入', await cdp.eval("!document.getElementById('mcm-orch-rounds') && !document.getElementById('mcm-orch-hours')"));
+    await cdp.eval("(()=>{const s=document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-ai-select');s.value='gemini';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
+    ok('Antigravity 可以担任编排员', await cdp.eval("document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-ai-select').value==='gemini'"));
 
     ok('用户预先选定工作成员', await cdp.eval("document.querySelectorAll('#new-session-menu .mcm-slot').length===2"));
     await shot('01-create');
@@ -64,7 +74,7 @@ async function run() {
     await cdp.eval("[...document.querySelectorAll('#new-session-menu button')].find(b=>b.textContent.trim()==='创建群聊').click()");
     const meeting = await wait(async () => { const all = await invoke('get-meetings'); return all.length > before && all.find(m => m.orchestration?.enabled && m.orchestration.sessionId); }, 'orchestration room created', 40000);
     evidence.meeting = { id: meeting.id, orchestration: meeting.orchestration, participants: meeting.participants };
-    ok('群里登记了编排员身份与设置', meeting.orchestration.memberId === 'm1' && meeting.orchestration.settings.roundCap === 6 && meeting.subSessions.length === 2 && JSON.stringify(meeting.participants) === '[0]');
+    ok('群里登记了编排员身份与设置', meeting.orchestration.memberId === 'm1' && meeting.orchestration.settings.coordination === 'star' && meeting.subSessions.length === 2 && JSON.stringify(meeting.participants) === '[0]');
     const session = await cdp.eval(`(()=>{const s=sessions.get(${JSON.stringify(meeting.orchestration.sessionId)}); return s && {purpose:s.purpose,kind:s.kind};})()`);
     ok('编排员是真实会话（purpose=hub-orchestrator）', session && session.purpose === 'hub-orchestrator');
     await cdp.eval(`selectMeeting(${JSON.stringify(meeting.id)})`);
@@ -79,9 +89,10 @@ async function run() {
     ok('输入框默认只发给编排员', JSON.stringify(calls()[0].recipientSids || []) === JSON.stringify([meeting.orchestration.sessionId]) || JSON.stringify(calls()[0].targetMemberIds || []) === '["m1"]');
 
     // 3. 编排员经 Hub 桥提交计划 → 提交即生效，界面没有确认按钮
-    const endpoint = JSON.parse(fs.readFileSync(path.join(DATA, 'orchestration', 'bridge-endpoint.json'), 'utf8'));
+    const endpoint = JSON.parse(fs.readFileSync(path.join(DATA, 'orchestration', 'connections', meeting.orchestration.sessionId + '.json'), 'utf8'));
     const tool = async (name, args, caller = meeting.orchestration.sessionId) => {
-      const r = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + endpoint.token, 'Content-Type': 'application/json', 'X-Hub-Orchestrator-Session': caller }, body: JSON.stringify({ name, arguments: args }) });
+      const r = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + (caller === 'not-the-orchestrator' ? 'invalid' : endpoint.token), 'Content-Type': 'application/json', 'X-Hub-Orchestrator-Session': caller }, body: JSON.stringify({ name, arguments: args }) });
+      if (r.status === 403) return { ok:false, error:'身份无效' };
       return r.json();
     };
     ok('非编排员会话调用工具被拒', (await tool('orch_status', {}, 'not-the-orchestrator')).ok === false);
@@ -95,9 +106,8 @@ async function run() {
     await wait(() => cdp.eval("!!document.querySelector('.mr-orch-ledger')"), 'ledger panel');
     ok('计划账本显示计划，不再有待确认字样', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('一位 Codex 调研') && !document.querySelector('.mr-orch-ledger').textContent.includes('确认')"));
     await shot('03-plan-running');
-    ok('计划账本显示自然语言额度', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('10 轮') && document.querySelector('.mr-orch-ledger').textContent.includes('30 分钟')"));
-    ok('计划账本显示 Hub 按模板核算的最少轮数', await cdp.eval("(()=>{const e=document.querySelector('.mr-orch-ledger .mr-orch-budget-check'); return !!e && e.textContent.includes('至少 3 轮') && e.textContent.includes('额度剩 10 轮') && !e.classList.contains('short');})()"));
-    const budget=(await invoke('orchestration:view',{meetingId:meeting.id})).view.budget; ok('自然语言额度随计划立即生效',budget.roundCap===10 && budget.minutesCap===30);
+    ok('账本显示星型自然语言策略', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('星型')"));
+    const budget=(await invoke('orchestration:view',{meetingId:meeting.id})).view.budget; ok('没有固定轮数或时间上限',budget.roundCap===null && budget.minutesCap===null);
 
     // 4. 组队：成员加入后收件人仍只有编排员；@成员 直接点名
     const added = await tool('orch_add_member', { role: '调研', kind: 'codex', tier: 'fast' });
