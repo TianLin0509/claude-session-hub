@@ -60,7 +60,8 @@ fs.writeFileSync(path.join(data, 'state.json'), j({ version: 1, cleanShutdown: t
     assert.equal(await cdp.eval(`document.querySelector('#msg-overlay details.chat-process').open`), false);
     await cdp.eval(`document.querySelector('#msg-overlay details.chat-process>summary').click()`);
     assert.equal(await cdp.eval(`document.querySelector('#msg-overlay details.chat-process').open`), true);
-    await until(`!!document.querySelector('#msg-overlay .turn-body.folded, #msg-overlay .conversation-long-message:not([open])')`);
+    assert.equal(await cdp.eval(`!!document.querySelector('#msg-overlay .turn-body.folded, #msg-overlay .conversation-long-message:not([open])')`),false,
+      'steps without a native completion receipt remain visible progress, including long text');
     const initial = await ids();
     await cdp.eval(`document.querySelector('#msg-overlay>.card-history-more').click()`);
     await until(`!cardHistoryPager.get(${j(fixtures[0].hubId)}).busy && document.querySelectorAll('#msg-overlay>.turn-card').length===24`);

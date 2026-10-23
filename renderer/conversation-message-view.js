@@ -55,7 +55,8 @@ function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress
 // provider item remains the copy/selection/disclosure boundary.
 function renderProgressRow(message, {escapeHtml,renderMarkdown,plainProgress=false,foldLong=true,actions}) {
   const clock=message.ts ? require('../core/beijing-time').formatBeijingClock(message.ts) : '';
-  return `<time class="conversation-progress-time" data-copy-exclude title="${escapeHtml(clock)}">${escapeHtml(clock.slice(0,5))}</time>`
+  const fullTime=message.ts ? require('../core/beijing-time').formatBeijingDateTime(message.ts) : '';
+  return `<time class="conversation-progress-time" data-copy-exclude title="${escapeHtml(fullTime)}">${escapeHtml(clock.slice(0,5))}</time>`
     + `<div class="conversation-progress-content">${renderMessageBody(message.text,{escapeHtml,renderMarkdown,plainProgress,foldLong})}</div>`
     + `<div class="conversation-progress-actions" data-copy-exclude>${actions ?? '<button class="conversation-message-copy" data-action="conversation-copy" title="复制这条进展" aria-label="复制这条进展">复制</button>'}</div>`;
 }

@@ -2033,13 +2033,16 @@ function paintAppToolbarForSession(sessionId, session, cached) {
 // 从会话栏挪到会话头部（状态点后面），悬停看编号、这一轮到哪了与结论；线程记录刷新（bridge-threads-updated）时就地更新。
 function paintCrumbBridge(sessionId) {
   if (!toolbarCrumbEl || toolbarCrumbEl.dataset.signature !== 'session:' + sessionId) return;
+  window._bridgeThreads?.ensureHistory?.(sessionId);
   let badge = null;
   try { badge = window._bridgeThreads?.badge(sessionId) || null; } catch { badge = null; }
   let chip = toolbarCrumbEl.querySelector('.crumb-bridge');
   let peer = toolbarCrumbEl.querySelector('.crumb-bridge-peer');
   if (!badge) { chip?.remove(); peer?.remove(); return; }
   if (!chip) {
-    chip = document.createElement('span');
+    chip = document.createElement('button');
+    chip.type = 'button';
+    chip.addEventListener('click', () => window._bridgeThreads?.openHistory?.(sessionId));
     chip.className = 'bt-badge crumb-bridge';
     toolbarCrumbEl.appendChild(chip);
   }
@@ -2048,7 +2051,8 @@ function paintCrumbBridge(sessionId) {
   chip.textContent = badge.chip;
   // 配对号牌（2026-10-20）：对端是谁写在标签后面；本会话有多个在途编号时悬停逐条列出。
   const lines = Array.isArray(badge.lines) && badge.lines.length ? '\n' + badge.lines.join('\n') : '';
-  chip.title = badge.sub + (badge.pin ? ' · ' + badge.pin : '') + lines;
+  chip.title = badge.sub + (badge.pin ? ' · ' + badge.pin : '') + lines + '\n点击查看交互历史';
+  chip.setAttribute('aria-label', badge.chip + '，查看交互历史');
   if (!badge.peer) { peer?.remove(); return; }
   if (!peer) {
     peer = document.createElement('span');

@@ -8,7 +8,10 @@ function parseAntigravityTranscriptToTurns(file, options = {}) {
   if (!match || !UUID.test(match[1]) || (options.expectedSessionId && match[1] !== options.expectedSessionId))
     throw new Error('Antigravity 记录不属于当前会话');
   const candidates = ['transcript.jsonl','transcript_full.jsonl'].map(name=>path.join(path.dirname(file),name))
-    .filter(candidate=>fs.existsSync(candidate)).sort((a,b)=>fs.statSync(a).mtimeMs-fs.statSync(b).mtimeMs);
+    .filter(candidate=>fs.existsSync(candidate)).sort((a,b)=>fs.statSync(a).mtimeMs-fs.statSync(b).mtimeMs
+      // Windows can stamp adjacent writes identically. The live snapshot is
+      // authoritative on a tie; its truncated fields still borrow full text.
+      || (path.basename(a)==='transcript_full.jsonl' ? -1 : 1));
   const rows = new Map();
   for (const candidate of candidates) {
     const lines = fs.readFileSync(candidate, 'utf8').replace(/^\uFEFF/, '').split('\n');
@@ -52,7 +55,9 @@ function parseAntigravityTranscriptToTurns(file, options = {}) {
       toolCalls:(row.tool_calls||[]).map((t,i)=>({id:`${id}-tool-${i}`,name:t.name,input:t.args,
         status:row.status==='ERROR'?'failed':row.status==='DONE'?'completed':'running',isError:row.status==='ERROR'})),
       // DONE marks a step, not a whole turn. Only the native Stop hook closes a turn.
-      ...(user?{}:{replyKey,nativeOutcome:final?.outcome||null,tsEnd:final?.completedAt||null,displayMessages:text?[{id:`${id}:text`,text,phase:final?.outcome==='completed'?'final_answer':'commentary',ts}]:[]})});
+      ...(user?{}:{replyKey,nativeOutcome:final?.outcome||null,tsEnd:final?.completedAt||null,displayMessages:[
+        ...(typeof row.thinking==='string' && row.thinking.trim() ? [{id:`${id}:thinking`,text:row.thinking,phase:'commentary',fromThinking:true,ts}] : []),
+        ...(text?[{id:`${id}:text`,text,phase:final?.outcome==='completed'?'final_answer':'commentary',ts}]:[])]})});
   }
   const result=options.rawSteps ? turns : groupSteps(turns);
   return Number.isFinite(options.limit)&&options.limit>=0

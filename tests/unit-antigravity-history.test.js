@@ -40,6 +40,15 @@ test('same creation timestamp does not let an old full snapshot overwrite a newl
  write(file,[{...row,status:'DONE',content:'new completed answer'}]);
  assert.equal(parse(full,{receiptsFile})[0].text,'new completed answer');
 });
+test('equal filesystem timestamps prefer live snapshot and retain full truncated fields',t=>{
+ const {file,full,receiptsFile}=fixture(t);
+ const row={step_index:0,type:'PLANNER_RESPONSE',source:'MODEL',created_at:'2026-10-23T01:00:00Z',status:'DONE'};
+ write(full,[{...row,content:'old full answer',thinking:'complete thinking'}]);
+ write(file,[{...row,content:'new live answer',thinking:'short',truncated_fields:['thinking']}]);
+ for(const candidate of [file,full])fs.utimesSync(candidate,new Date(1000),new Date(1000));
+ const turn=parse(full,{receiptsFile})[0];
+ assert.equal(turn.text,'new live answer');assert.equal(turn.thinking,'complete thinking');
+});
 test('tool output cannot be the answer or receive a completion label; damaged optional receipts preserve history',t=>{
  const {file,receiptsFile}=fixture(t);
  write(file,[{step_index:0,type:'USER_INPUT',content:'question'},

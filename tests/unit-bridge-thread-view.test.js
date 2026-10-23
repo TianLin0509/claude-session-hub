@@ -7,7 +7,7 @@ const view = require('../core/bridge-thread-view');
 const bt = require('../renderer/bridge-thread-renderer');
 
 const MIN = 60000;
-const T0 = new Date(2026, 9, 16, 21, 45, 0).getTime();
+const T0 = Date.parse('2026-10-16T21:45:00+08:00');
 const deps = {
   escapeHtml: s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
   renderMarkdown: s => `<p>${String(s).replace(/</g, '&lt;')}</p>`,

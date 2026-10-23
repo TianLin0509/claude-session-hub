@@ -27,21 +27,21 @@ function loadRendererWith(distribution) {
   finally { delete require.cache[distPath]; delete require.cache[listPath]; }
 }
 
-test('公司版：CodeAgent 单列一族；家里版仍归「其他」', () => {
+test('公司版与家里版：CodeAgent 都单列一族', () => {
   const company = loadRendererWith({ allowedKinds: ['codeagent', 'powershell'], kindAllowed: k => ['codeagent', 'powershell'].includes(String(k).replace(/-resume$/, '')) });
   assert.equal(company.familyOfKind('codeagent'), 'codeagent');
   assert.equal(company.familyOfKind('powershell'), 'other');
   const home = loadRendererWith({ allowedKinds: null, kindAllowed: () => true });
-  assert.equal(home.familyOfKind('codeagent'), 'other');
+  assert.equal(home.familyOfKind('codeagent'), 'codeagent');
   assert.equal(home.familyOfKind('claude'), 'claude');
 });
 
-test('界面：CodeAgent 筛选项默认隐藏，发行版裁剪时按装没装决定；偏好指向被裁掉的家族时退回全部', () => {
+test('模型选项按发行版动态生成，同品牌任一后端可用即可筛选', () => {
+  const company=loadRendererWith({allowedKinds:['codeagent'],kindAllowed:k=>k==='codeagent'});
+  assert.deepEqual(company.SESSION_FAMILY_TABS.map(t=>t.key),['all','codeagent','other']);
+  const dsh=loadRendererWith({allowedKinds:['deepseek-acp'],kindAllowed:k=>k==='deepseek-acp'});
+  assert.deepEqual(dsh.SESSION_FAMILY_TABS.map(t=>t.key),['all','deepseek','other']);
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
-  assert.match(html, /<option value="codeagent" hidden>CodeAgent<\/option>/);
-  const trim = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'edition-trim.js'), 'utf8');
-  assert.match(trim, /#session-model-filter option/);
   const list = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'session-list-renderer.js'), 'utf8');
   assert.match(list, /option\.value === modelFilter && !option\.hidden\)\) modelFilter = 'all'/);
 });

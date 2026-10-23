@@ -113,7 +113,12 @@ test('familyOfKind：Claude CLI 家族（含 -resume），模型不参与判断'
   assert.strictEqual(familyOfKind('claude-resume'), 'claude', '-resume 必须与基础 kind 同族');
   assert.strictEqual(familyOfKind('codex'), 'codex');
   assert.strictEqual(familyOfKind('codex-resume'), 'codex');
-  for (const kind of ['gemini', 'deepseek', 'kimi', 'powershell', 'glm', '', null, undefined]) {
+  for (const kind of ['gemini', 'deepseek', 'kimi', 'glm', 'qwen', 'codeagent']) {
+    assert.equal(familyOfKind(kind), kind);
+    assert.equal(familyOfKind(kind+'-resume'), kind);
+  }
+  for (const kind of ['deepseek-acp','deepseek-claude','deepseek-legacy-resume']) assert.equal(familyOfKind(kind),'deepseek');
+  for (const kind of ['powershell', '', null, undefined]) {
     assert.strictEqual(familyOfKind(kind), 'other', `${kind} 应归「其他」`);
   }
 });

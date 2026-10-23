@@ -48,7 +48,8 @@ test('a turn interrupted after thinking keeps its outcome notice; the note stays
   capture(record, { type: 'assistant', uuid: 'a1', timestamp: new Date(2000).toISOString(),
     message: { id: 'm1', stop_reason: 'tool_use', content: [{ type: 'thinking', thinking: '先看日志。' }] } });
   const running = displayChatTurns(cards([record]))[1];
-  assert.equal(running.text, '先看日志。', 'while running the latest note stands in the body, like Codex');
+  assert.equal(running.text, '', 'thinking stays separate from the answer while running');
+  assert.deepEqual(running.chatProcessMessages.map(m=>m.text), ['先看日志。']);
   record.status = 'interrupted'; record.finalText = ''; record.completedAt = 3000;
   const stopped = displayChatTurns(cards([record]))[1];
   assert.equal(stopped.text, '');
