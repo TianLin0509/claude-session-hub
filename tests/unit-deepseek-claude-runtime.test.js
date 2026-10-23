@@ -332,7 +332,8 @@ test('new-session panel defaults to DSH while legacy Claude routes remain compat
   assert.doesNotMatch(controller, /chatgpt: 'ChatGPT'/);
   assert.match(controller, /if \(DEEPSEEK_PANEL_KINDS\.has\(kind\)\) return 'deepseek-acp';/);
   assert.match(controller, /'deepseek-claude': 'DeepSeek · Claude Code'/);
-  assert.match(controller, /if \(selectedKind === 'deepseek-claude'\) opts\.deepseekRoute = deepseekRoute;/);
+  assert.match(controller, /DEEPSEEK_ROUTE_KINDS = new Set\(\['deepseek-acp', 'deepseek-claude'\]\)/);
+  assert.match(controller, /if \(DEEPSEEK_ROUTE_KINDS\.has\(selectedKind\)\) opts\.deepseekRoute = deepseekRoute;/);
   const modal = read('renderer/meeting-create-modal.js');
   assert.match(modal, /HIDDEN_CREATE_KINDS = new Set\(\['chatgpt', 'deepseek', 'deepseek-claude'\]\)/);
   assert.doesNotMatch(modal, /Codex CLI · DeepSeek API|Token Plan · 旧 Harness/);

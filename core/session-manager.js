@@ -2281,9 +2281,10 @@ class SessionManager extends EventEmitter {
       ...(isAcp ? {runtimeBackend:'acp',nativeRuntime:ptyProcess.runtime,acpSid:opts.acpSid || null,
         cliRuntime:isProviderCli?{...ptyProcess.runtime,source:'provider-cli',observedAt:Date.now()}:null,
         acpProfileId:ptyProcess.options.profileId,acpCapabilities:{},acpConfigOptions:[]} : {}),
+      ...(String(kind).replace(/-resume$/, '') === 'deepseek-acp' && opts.deepseekRoute ? {deepseekRoute:opts.deepseekRoute} : {}),
       // Token Plan 额度用完期间新开或恢复的套餐会话：DeepSeek 旧 Harness 直接走 DeepSeek API，卡片上说清楚在花哪份钱；
       // 千问 / GLM 不改道，卡片上写明等重置。
-      ...(isAcp && ptyProcess.options.tokenPlanRoute === 'deepseek' ? {nativeActionError:require('./token-plan-fallback').deepseekRouteNotice(ptyProcess.options.model,getHubDataDir())}
+      ...(isAcp && opts.deepseekRoute !== 'api' && ptyProcess.options.tokenPlanRoute === 'deepseek' ? {nativeActionError:require('./token-plan-fallback').deepseekRouteNotice(ptyProcess.options.model,getHubDataDir())}
         : isAcp && ptyProcess.options.tokenPlanWait ? {nativeActionError:require('./token-plan-fallback').waitNotice(getHubDataDir(),ptyProcess.options.tokenPlanWait)} : {}),
       connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,

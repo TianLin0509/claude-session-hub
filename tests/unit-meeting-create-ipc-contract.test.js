@@ -465,3 +465,7 @@ test('create-meeting preserves legacy empty-room creation path', async () => {
     ['meeting-created']
   );
 });
+
+test('DSH consumption channel survives group and writing slot validation', () => {
+  assert.equal(sanitizeMeetingSlot({kind:'deepseek-acp',model:'deepseek-v4.1-flash',deepseekRoute:'api'}).deepseekRoute,'api');
+});

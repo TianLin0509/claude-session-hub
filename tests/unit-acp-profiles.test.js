@@ -22,6 +22,18 @@ assert(patches.find(p=>p.id==='llm-pi-ai').config.providers['bailian-tpp'].model
   'Token Plan system instructions must use the supported system role');
 assert(patches.find(p=>p.id==='system-prompt').config.personaSuffix.includes('ask_user_question'));
 assert(patches.some(p=>p.id==='acp-plugin'),'behavior patch retains the ACP transport');
+// Explicit API selection must work without Token Plan credentials and keep the DSH runtime.
+const directConfig={...config,deepseekApiKey:'direct-private-key',acp:{...config.acp,apiKey:'',providers:{'deepseek-acp':{entryPath:entry,bridgePath:bridge,model:'deepseek-v4.1-flash'}}}};
+const direct=buildAcpOptions('deepseek-acp',{id:'direct',cwd:root,deepseekRoute:'api',model:'deepseek-v4.1-flash'},directConfig,root,{});
+assert.equal(direct.profileId,'deepseek-api:deepseek-acp');
+assert.equal(direct.model,'deepseek-flash');
+const directLink=path.join(direct.launch.env.DSH_HOME,'profiles/acp/node_modules/@openma/deepseek-harness-acp');
+if(process.platform==='win32')fs.rmdirSync(directLink);else fs.unlinkSync(directLink);
+assert.equal(direct.launch.env.BAILIAN_API_KEY,'direct-private-key');
+const directPatches=JSON.parse(fs.readFileSync(direct.launch.args[direct.launch.args.indexOf('--patch')+1],'utf8'));
+assert.equal(directPatches.find(p=>p.id==='llm-pi-ai').config.providers['bailian-tpp'].baseURL,'https://api.deepseek.com/v1');
+assert.throws(()=>buildAcpOptions('deepseek-acp',{id:'missing',cwd:root,deepseekRoute:'api'},config,root,{}),/DeepSeek API Key/);
+assert.throws(()=>buildAcpOptions('deepseek-acp',{id:'bad-route',cwd:root,deepseekRoute:'bad'},config,root,{}),/消费通道/);
 // Remove only the owned fixture link so the suite can safely clean its temp tree.
 const bridgeLink=path.join(dsh.launch.env.DSH_HOME,'profiles/acp/node_modules/@openma/deepseek-harness-acp');
 assert(path.resolve(bridgeLink).startsWith(path.resolve(root)+path.sep));
@@ -42,3 +54,7 @@ assert.throws(()=>validateImages(imagePaths('"'+file+'"'),'glm-5.2',{promptCapab
 assert.throws(()=>validateImages(Array(5).fill({type:'localImage',path:file}),'qwen3.8-max',{promptCapabilities:{image:true}}),/最多/);
 assert.doesNotThrow(()=>validateImages([{type:'localImage',path:file}],'qwen3.8-max',{promptCapabilities:{image:true}}));
 console.log('ACP profiles: route lock, environment isolation, MCP validation, fork containment and image capabilities PASS');
+
+const forkPlan=require('../core/session-fork-plan').planSessionFork({source:{id:'source',kind:'deepseek-acp',runtimeBackend:'acp',cwd:root,acpSid:'12345678-1234-1234-1234-123456789abc',acpCapabilities:{sessionCapabilities:{fork:true}},deepseekRoute:'api',currentModel:{id:'deepseek-flash'}}});
+assert.equal(forkPlan.ok,true);
+assert.equal(forkPlan.opts.deepseekRoute,'api');

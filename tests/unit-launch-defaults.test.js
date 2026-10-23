@@ -50,3 +50,10 @@ test('false Fast and explicit inherit survive persistence and creation; defaults
   config.launchDefaults.codex.codexProfile = 'removed';
   assert.equal(creationDefaults('codex', config).codexProfile, 'second');
 });
+
+test('DSH launch defaults retain the selected consumption channel', () => {
+  const saved=withLaunchDefaultsInJson({},'deepseek-acp',{model:'deepseek-v4.1-flash',deepseekRoute:'api'});
+  assert.equal(saved.launch.defaults['deepseek-acp'].deepseekRoute,'api');
+  assert.equal(readLaunchDefaults({launchDefaults:saved.launch.defaults})['deepseek-acp'].deepseekRoute,'api');
+  assert.throws(()=>withLaunchDefaultsInJson({},'deepseek-acp',{model:'deepseek-v4.1-flash',deepseekRoute:'bad'}));
+});
