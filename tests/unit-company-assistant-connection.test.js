@@ -1,0 +1,16 @@
+'use strict';
+const assert = require('node:assert/strict');
+const { connectionState } = require('../renderer/company-assistant-connection');
+const state = (auth, extra = {}) => connectionState({ cliFound: true, auth, ...extra });
+assert.equal(connectionState({ cliFound: false }).kind, 'missing');
+assert.equal(connectionState({ cliFound: false, cliSearch: { state: 'searching' } }).action, '');
+assert.match(connectionState({ cliFound: false, cliSearch: { state: 'error', error: 'denied' } }).title, /未完成/);
+assert.equal(state({ state: 'unknown' }, { login: { ok: true, uid: 'old-account' } }).kind, 'unknown', 'saved login must not appear current');
+assert.equal(state({ state: 'unknown', login: { ok: false, reason: 'error' }, error: 'network error' }).action, 'refresh', 'network error must not ask for QR');
+assert.equal(state({ state: 'unknown', login: { reason: 'unknown' } }).kind, 'unknown');
+assert.equal(state({ state: 'unknown', login: { reason: 'expired' } }).action, 'login');
+assert.equal(state({ state: 'needs-scan' }).action, 'login');
+assert.equal(state({ state: 'renewing', login: { reason: 'expired' } }).action, '');
+assert.equal(state({ state: 'online', login: { ok: true, uid: 'current' } }).kind, 'online');
+assert.equal(state({ state: 'online', login: null }).kind, 'unknown');
+console.log('PASS connection guidance: missing/search/error/unknown/expired/renewing/online and stale snapshot');

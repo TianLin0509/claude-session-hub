@@ -62,6 +62,13 @@ async function main() {
     await expr(`!document.querySelector('[data-team="refresh"]')?.disabled && document.querySelector('.tp-member')?.textContent.includes('最终决定：周三交付')`, '全文采集', 120000);
     await click('.tp-member > details > summary');
     await shot('members'); result.checks.push('查账号→确认关注→7天范围真实采集链→完整尾部原文');
+    await click('[data-team="member.prepare"]');
+    await expr(`document.querySelector('.tp-content h2')?.textContent.includes('沟通准备')`, '成员沟通准备');
+    await click('.tp-content > .tp-section:last-child details > summary');
+    assert.match(await c.eval(`document.querySelector('.tp-content').textContent`), /最终决定：周三交付/);
+    assert.match(await c.eval(`document.querySelector('.tp-content').textContent`), /还没有本次采集对应的单人分析/);
+    await shot('preparation'); await click('[data-team="member.back"]');
+    result.checks.push('成员沟通准备展示本人完整原文及未分析提示，可返回成员页');
     if (realAI) {
       await click('[data-team="analyze"]');
       await until(async () => {

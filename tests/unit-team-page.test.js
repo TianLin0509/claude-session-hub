@@ -121,6 +121,51 @@ async function test(name, fn) { try { await fn(); console.log('  PASS ' + name);
     const h = harness(); h.api.open(); await settle(); await h.click('analysis.sync'); await h.click('weekly.draft');
     for (const c of h.calls.filter(c => c.channel === 'team:call')) assert.equal(c.payload.expectedOwner, 'owner-a');
   });
+  await test('same-owner state refresh preserves the unsaved private scope actually used for collection', async () => {
+    const h = harness(); h.api.open(); await settle(); await h.click('tab', { tab: 'members' });
+    h.input('scope', 'private'); await h.click('reload'); await h.click('refresh');
+    assert.equal(h.calls.find(c => c.payload?.op === 'refresh').payload.scope, 'private');
+    assert.match(h.html(), /value="private" selected/);
+  });
+  await test('saving scope clears the local draft, while a failed save preserves it and owner changes reset it', async () => {
+    const h = harness(); h.api.open(); await settle(); await h.click('tab', { tab: 'members' });
+    h.input('scope', 'private'); h.fail(); await h.click('settings.scope'); await h.click('reload'); await h.click('refresh');
+    assert.equal(h.calls.filter(c => c.payload?.op === 'refresh').at(-1).payload.scope, 'private');
+    h.setState({ ...h.state(), settings: { scope: 'private' } }); await h.click('settings.scope');
+    h.setState({ ...h.state(), settings: { scope: 'all' } }); await h.click('reload'); await h.click('refresh');
+    assert.equal(h.calls.filter(c => c.payload?.op === 'refresh').at(-1).payload.scope, 'all');
+    h.input('scope', 'private'); h.setState({ ...h.state(), owner: 'owner-b' }); await h.click('reload'); await h.click('refresh');
+    assert.equal(h.calls.filter(c => c.payload?.op === 'refresh').at(-1).payload.scope, 'all');
+  });
+  await test('communication preparation combines only this member current single-person analysis, original messages and open commitments without AI calls', async () => {
+    const h = harness();
+    const own = { sourceId: 'src-a', memberId: 'a', account: 'account-a', text: '成员A原文', sender: '甲', at: 1 };
+    h.setState({ ...h.state(), members: [{ id: 'a', account: 'account-a', name: '甲' }, { id: 'b', account: 'account-b', name: '乙' }],
+      lastRefresh: { at: 1, coverage: { status: 'partial', reasons: ['一个会话未取全'] } },
+      evidence: [own, { sourceId: 'src-b', memberId: 'b', account: 'account-b', text: '其他成员秘密' }, { sourceId: 'wrong', memberId: 'a', account: 'account-b', text: '错误账号消息' }],
+      analyses: [
+        { id: 'single', memberIds: ['a'], state: 'done', text: '成员A最新分析', sourceIds: ['src-a'], evidence: [own] },
+        { id: 'batch', memberIds: ['a', 'b'], state: 'done', text: '多人混合结论', sourceIds: [] },
+        { id: 'past', memberIds: ['a'], state: 'done', historical: true, text: '过期分析', sourceIds: [] },
+        { id: 'pending', memberIds: ['a'], state: 'running', text: '未完成分析', sourceIds: [] },
+        { id: 'other', memberIds: ['b'], state: 'done', text: '其他成员分析', sourceIds: [] },
+      ],
+      commitments: [{ id: 'ca', title: '甲的未完成承诺', memberId: 'a', status: 'open', sourceIds: ['src-a'], evidence: [own] }, { id: 'cb', title: '乙的承诺', memberId: 'b', status: 'open' }, { id: 'done', title: '已完成旧承诺', memberId: 'a', status: 'done' }],
+    });
+    h.api.open(); await settle(); await h.click('tab', { tab: 'members' });
+    const before = h.calls.length; await h.click('member.prepare', { id: 'a' });
+    assert.equal(h.calls.length, before, 'opening the preparation view is local read-only');
+    for (const text of ['甲 · 沟通准备', '甲的未完成承诺', '成员A最新分析', '成员A原文', 'src-a', '一个会话未取全']) assert(h.html().includes(text), text);
+    for (const text of ['其他成员秘密', '错误账号消息', '多人混合结论', '过期分析', '未完成分析', '其他成员分析', '乙的承诺', '已完成旧承诺']) assert(!h.html().includes(text), text);
+    await h.click('member.back'); assert(h.html().includes('已关注成员'));
+  });
+  await test('preparation with no member evidence remains explicit about insufficient coverage and resets on account change', async () => {
+    const h = harness(); h.setState({ ...h.state(), members: [{ id: 'a', account: 'account-a', name: '甲' }], lastRefresh: { coverage: { status: 'complete' } }, analyses: [{ memberIds: ['a', 'b'], state: 'done', text: '团队发现' }] });
+    h.api.open(); await settle(); await h.click('member.prepare', { id: 'a' });
+    assert(h.html().includes('本次没有该成员可引用的原文')); assert(h.html().includes('还没有本次采集对应的单人分析')); assert(!h.html().includes('团队发现'));
+    h.setState({ ...h.state(), owner: 'owner-b', members: [{ id: 'a', account: 'account-b', name: '新账号成员' }], analyses: [] }); await h.click('reload');
+    assert(h.html().includes('已关注成员')); assert(!h.html().includes('· 沟通准备'));
+  });
   await test('background company assistant sessions never navigate away from the team page', async () => {
     const fs = require('fs'), vm = require('vm'), path = require('path');
     const source = fs.readFileSync(path.join(__dirname, '../renderer/renderer.js'), 'utf8');
