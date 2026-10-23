@@ -25,9 +25,13 @@ const freePort = () => new Promise(r => { const s = net.createServer(); s.listen
     await c.eval(`window.__failFind=true`); await click('.ca-onboarding [data-ca="find-cli"]'); await until(`document.querySelector('[data-slot="action-error"]').hidden===false`);
     assert.equal(await c.eval(`document.querySelector('.ca-onboarding [data-ca="find-cli"]').disabled`), false);
     await c.eval(`window.__failFind=false`); await click('.ca-onboarding [data-ca="find-cli"]'); await until(`document.querySelector('[data-slot="action-error"]').hidden===true`);
+    await until(`document.querySelector('.ca-onboarding [data-ca="find-cli"]').disabled===false`);
+    await click('.ca-onboarding [data-ca="find-cli"]'); await until(`document.querySelector('.ca-onboarding [data-ca="find-cli"]').disabled===false`);
     result.checks.push('missing: installation guide, detection retry and failure recovery');
     await state({ cliFound: true, auth: { state: 'unknown', error: '公司网络暂不可用', login: { ok: false, reason: 'error' } }, login: { ok: true, uid: 'stale' } });
     await until(`document.querySelector('.ca-onboarding')?.dataset.connection==='unknown'`);
+    await click('.ca-onboarding [data-ca="refresh"]'); await until(`document.querySelector('.ca-onboarding [data-ca="refresh"]').disabled===false`);
+    await click('.ca-onboarding [data-ca="refresh"]'); await until(`document.querySelector('.ca-onboarding [data-ca="refresh"]').disabled===false`);
     await click('[data-ca="settings-tab:welink"]'); await until(`document.querySelector('[data-slot="panel"]')?.dataset.tab==='welink'`);
     assert.equal(await c.eval(`!!document.querySelector('[data-slot="panel"] [data-ca="login"]')`), false); await shot('02-unknown');
     await click('[data-ca="close-panel"]');

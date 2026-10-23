@@ -91,7 +91,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
           b.disabled = false;
           feedback.textContent = '操作未完成：' + e.message + '。可以重试，已填写的内容会保留。'; feedback.hidden = false;
           showMessage?.(e.message);
-        });
+        }).finally(() => { b.disabled = false; if (data) render(); });
       }
     });
     const form = page.querySelector('[data-slot="form"]'), input = form.querySelector('textarea');
@@ -402,6 +402,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
       const panel = page.querySelector('[data-slot="panel"]');
       panel.hidden = true; panel.innerHTML = ''; panel.dataset.kind = 'closed';
       // 从 PPT 入口进来：这一条问题只查素材库，不先查 WeLink（v3.1.2）。
+      if (input.value.trim()) { input.focus(); showMessage?.('输入框里已有草稿，请先处理后再发起 PPT 素材查询。'); return; }
       pptEntry = true;
       if (!input.value.trim()) input.value = '帮我从已有 PPT 中找几页能讲清楚「」的素材，说明推荐理由并附文件路径和页码。';
       input.focus();
