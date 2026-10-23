@@ -18,6 +18,14 @@ const path = require('path');
 // 2026-10-13 用户同意公司版一键更新从阿里云下载，更新目录同理随发行版公开。
 const ALLOWED_PUBLIC_URLS = ['https://me.lt-stockpartner.tech/hub-rules/', 'https://me.lt-stockpartner.tech/hub-update/'];
 
+// 团队工具是本次用户明确要求接入的入口。仅公司目标的专用目录文件放行这六个
+// 完整 JSON 字符串；公开目标、其他文件、子路径和同一行其他内容仍按原规则检查。
+const COMPANY_TEAM_URLS = [
+  'https://me.lt-stockpartner.tech/tools/', 'https://me.lt-stockpartner.tech/captain/',
+  'https://me.lt-stockpartner.tech/style/', 'https://ai.lt-stockpartner.tech/weekly/',
+  'https://ai.lt-stockpartner.tech/ai-team/ui/', 'https://ai.lt-stockpartner.tech/reports/',
+];
+
 // 发行目标可以放行自己的产品显示名（target.json 的 leakAllow；2026-10-13 用户选定公司版叫
 // 「AI HUB-Huawei」并公开发布）。只放行带 Huawei/华为 的完整产品名整串，同一行其余内容照常检查；
 // 社区版和主仓库不传这个参数，拦截不变。
@@ -55,9 +63,11 @@ const TEXT_EXT = /\.(?:js|cjs|mjs|json|md|html|css|ps1|bat|cmd|py|yml|yaml|txt|s
 function scanText(text, file, options = {}) {
   const hits = [];
   const allow = checkedAllowLiterals(options.allowLiterals);
+  const teamUrls = options.target === 'company' && file.replace(/\\/g, '/') === 'core/team-workspace/sites.json'
+    ? COMPANY_TEAM_URLS.map(url => JSON.stringify(url)) : [];
   const lines = text.split(/\r?\n/);
   lines.forEach((line, index) => {
-    const checked = [...ALLOWED_PUBLIC_URLS, ...allow].reduce((text, literal) => text.split(literal).join(' '), line);
+    const checked = [...ALLOWED_PUBLIC_URLS, ...allow, ...teamUrls].reduce((text, literal) => text.split(literal).join(' '), line);
     for (const rule of RULES) {
       const match = rule.re.exec(checked);
       if (match) hits.push({ file, line: index + 1, rule: rule.id, severity: rule.severity || 'block', match: match[0], text: line.trim().slice(0, 160) });

@@ -363,7 +363,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT, targe
     const leftover = files.filter(isText).filter(file => /@community-(?:strip|else|end)\b|@@COMMUNITY_[A-Z]+@@/.test(fs.readFileSync(path.join(outDir, file), 'utf8')));
     const references = checkReferences(outDir, files);
     const syntax = checkSyntax(outDir, files);
-    const hits = scanTree(outDir, files, { allowLiterals: targetSpec && targetSpec.leakAllow });
+    const hits = scanTree(outDir, files, { allowLiterals: targetSpec && targetSpec.leakAllow, target });
     const leaks = hits.filter(hit => hit.severity !== 'residue');
     const residue = hits.filter(hit => hit.severity === 'residue');
     // 公开库自带的通用审计（真实用户目录、账号文件、密钥形态）也必须在导出树上通过。
