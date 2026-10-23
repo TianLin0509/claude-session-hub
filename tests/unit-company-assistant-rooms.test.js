@@ -179,7 +179,12 @@ test('左栏状态圆点 10px（含 2px 白边），四色不变', () => {
 });
 test('WeLink 两次没续上时左栏写「自动续期没成功，点这里扫码登录」，点整行直接扫码', () => {
   const page = fs.readFileSync(path.resolve(__dirname, '../renderer/company-assistant-page.js'), 'utf8');
-  assert.match(page, /'needs-scan' \? '自动续期没成功，点这里扫码登录'/);
+  const { connectionState } = require('../renderer/company-assistant-connection');
+  const connection = connectionState({ cliFound: true, auth: { state: 'needs-scan' } });
+  assert.equal(connection.title, '自动续期没成功，点这里扫码登录');
+  assert.equal(connection.action, 'login');
+  assert.match(page, /const connection = connectionState\(d\)/);
+  assert.match(page, /: connection\.title/);
   assert.doesNotMatch(page, /\? '需要扫码'/);
   assert.match(page, /auth\.state === 'needs-scan' \? 'login' : 'settings-tab:welink'/);
 });
