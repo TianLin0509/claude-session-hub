@@ -50,6 +50,7 @@ class MeetingCapture {
     n.samples = []; n.length = 0; n.at = null;
   }
   async frame(force = false) {
+    if (this.paused) throw new Error('请先继续采集再截图');
     const v = this.video; if (!v?.videoWidth || this.drawing) return; this.drawing = true;
     try {
       const c = this.crop, x = v.videoWidth * c.x, y = v.videoHeight * c.y, width = v.videoWidth * c.w, height = v.videoHeight * c.h;

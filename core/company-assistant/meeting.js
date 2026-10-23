@@ -64,7 +64,7 @@ class MeetingCompanion {
     else if (op === 'stop' && ACTIVE.has(m.state)) { m.state = 'ended'; m.endedAt = this.now(); m.finalRequested = true; }
     else if (op === 'auto') m.autoUnderstand = !!value;
     else if (op === 'retry-asr') { for (const e of m.events) if (e.kind === 'audio' && e.asr === 'error') { e.asr = 'pending'; delete e.error; } m.asrError = ''; }
-    else if (op === 'understand') { m.requested = true; m.error = ''; if (m.job?.state === 'error') m.job = null; }
+    else if (op === 'understand') { m.requested = true; m.error = ''; if (m.job?.state === 'error') { const q = m.answers.find(q => q.id === m.job.questionId); if (q) q.state = 'queued'; m.job = null; } }
     else if (op === 'ask') { const q = String(value || '').trim(); if (!q || q.length > 10000) throw new Error('请输入不超过一万字的问题'); m.answers.push({ id: randomUUID(), q, state: 'queued' }); m.error = ''; }
     else throw new Error('当前状态不支持这个操作');
     this.save(m); this.start(); void this.tick(); return this.status(id);
@@ -150,7 +150,11 @@ class MeetingCompanion {
       const text = answer.text.replace(marker, '').trim();
       // One atomic state commit persists result and cursor together.
       m.summary = text; m.cursor = job.to; m.revision++; m.understoodMs = Math.max(m.understoodMs, ...m.events.filter(e => e.seq <= job.to && e.kind !== 'audio').map(e => e.end || e.at), 0);
-      if (m.audio.length) m.understoodMs = Math.min(m.understoodMs, m.transcribedMs);
+      if (m.audio.length) {
+        m.understoodMs = Math.min(m.understoodMs, m.transcribedMs);
+        const unread = m.events.filter(e => e.kind === 'transcript' && e.seq > job.to);
+        if (unread.length) m.understoodMs = Math.min(m.understoodMs, ...unread.map(e => e.at));
+      }
       m.updatedAt = this.now(); m.error = ''; m.job = null; if (job.final) m.finalRequested = false;
       const q = m.answers.find(q => q.id === job.questionId); if (q) { q.state = 'done'; q.answer = text; }
       write(path.join(this.dir(m.id), `understanding-${m.revision}.json`), { at: m.updatedAt, from: job.from, to: job.to, final: job.final, text }); this.save(m);

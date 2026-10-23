@@ -14,6 +14,7 @@ function createCompanyMeetingPage({ document, window, call, markdown }) {
     root.querySelector('[data-m="progress"]').textContent = m ? `${({ recording: '采集中', paused: '已暂停', ended: '已结束', interrupted: '上次采集已中断' })[m.state]} · 已采集 ${time(m.capturedMs)} · 已转写 ${time(m.transcribedMs)} · 理解覆盖 ${time(m.understoodMs)} · 第 ${m.revision} 版${m.job ? ' · ' + (m.job.state === 'error' ? '理解待重试' : 'CodeAgent 正在整理') : ''}` : '选择会议共享窗口与音频来源，开始后持续保存到本机。';
     root.querySelector('[data-m="levels"]').textContent = capture?.running ? `系统声音 ${Math.round((capture.levels.system || 0) * 100)} · 麦克风 ${Math.round((capture.levels.mic || 0) * 100)}（持续为 0 时请检查音源）` : '';
     for (const name of ['pause', 'stop', 'mark', 'snap']) root.querySelector(`[data-act="${name}"]`).disabled = !capture?.running;
+    for (const name of ['mark', 'snap']) root.querySelector(`[data-act="${name}"]`).disabled = !capture?.running || capture.paused;
     root.querySelector('[data-act="start"]').disabled = !!capture?.running;
     root.querySelector('[data-act="pause"]').textContent = capture?.paused ? '继续' : '暂停';
     root.querySelector('[data-m="history"]').disabled = !!capture?.running;
