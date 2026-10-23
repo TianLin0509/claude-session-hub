@@ -95,6 +95,7 @@ class CompanyAssistant {
     this.auth = new AuthKeeper(this);
     this.memory = new AssistantMemory(this);
     this.query = new AssistantQuery(this);
+    this.meetings = new (require('./meeting').MeetingCompanion)(this, deps);
     this.toolsReady = null;
   }
 
@@ -214,6 +215,7 @@ class CompanyAssistant {
   }
 
   start() {
+    this.meetings.start();
     fs.mkdirSync(this.workspace, { recursive: true });
     const st = this.state();
     // 关注词只看从现在起的新消息；重启前没答完的对话标出来，可重问。
@@ -232,11 +234,12 @@ class CompanyAssistant {
     this.timers.push(setInterval(() => { void this.collectJob().catch(e => console.warn('[company-assistant] collect', e.message)); }, 4000));
     const first = setTimeout(() => { void this.tick().catch(() => {}); }, 15000); this.timers.push(first);
   }
-  close() { for (const t of this.timers) { clearInterval(t); clearTimeout(t); } this.timers = []; this.loginStop?.abort(); this.auth.close(); this.phone.close(); this.ppt.close?.(); this.rooms.close(); this.tools?.close(); }
+  close() { for (const t of this.timers) { clearInterval(t); clearTimeout(t); } this.timers = []; this.meetings.close(); this.loginStop?.abort(); this.auth.close(); this.phone.close(); this.ppt.close?.(); this.rooms.close(); this.tools?.close(); }
   // 给助理会话挂会话工具（main.js 注册的 extraMcpProvider 调用）：只挂给 purpose=company-assistant 的会话。
   // 不等本机接口开始监听（v3.1.1）：mcp.js 每次调用工具时才读接口文件，挂载时用不到地址。以前要求地址已有，
   // 会话若先于接口建好（启动时恢复、或接口还没开始监听），这一整个会话都不带会话工具，也没有任何提示。
   sessionPlan({ opts = {}, id } = {}) {
+    if (this.meetings.ownsSession(opts.id || id)) return {};
     // Team sessions only read their explicitly provided local evidence file.
     // An empty plan also prevents fallback to the home/company bridge MCP.
     if (Object.values(this.state().teamSessionIds || {}).includes(opts.id || id)) return {};

@@ -14,6 +14,7 @@
     "scripts/brand-hub-exe.js",
     "scripts/claude-hub-statusline.js",
     "scripts/deepseek_repl.py",
+    "scripts/meeting-asr-worker.py",
     "scripts/desktop-icon-layout.cs",
     "scripts/desktop-icon-layout.ps1",
     "scripts/firewall-whitelist-electron.ps1",
