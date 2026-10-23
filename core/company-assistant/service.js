@@ -161,7 +161,7 @@ class CompanyAssistant {
   changed() { try { this.deps.onChanged?.(); } catch { /* 界面没开 */ } }
   cli() { return (this.deps.resolveCli || welink.resolveCli)({ configured: this.settings().cliPath }); }
   // 快速查找没找到：后台全盘找一次（2026-10-19），找到就记进设置；同一次启动里没找到的，6 小时后再自动找。
-  // 「再找一次」按钮传 force 立刻重找；状态给界面显示（正在找 / 找到了 / 没找到）。
+  // 「再找一次」按钮传 force 立刻重找；状态区分未找到与查找/接入失败。
   findCli({ force = false } = {}) {
     const s = this.cliSearch || { state: 'idle', at: 0 };
     if (s.state === 'searching') return this.cliSearching;
@@ -170,7 +170,6 @@ class CompanyAssistant {
     this.changed();
     const find = this.deps.findCliDeep || welink.findCliDeep;
     this.cliSearching = Promise.resolve().then(() => find({ onStage: stage => { this.cliSearch = { ...this.cliSearch, stage }; this.changed(); } }))
-      .catch(() => ({ path: null }))
       .then(found => {
         if (found && found.path) {
           this.setSettings({ cliPath: found.path });
@@ -179,9 +178,14 @@ class CompanyAssistant {
           // 找到了：马上取数；今天的简报还是「没找到 welink-cli」的空简报就重新生成。
           void this.refresh({ force: true }).then(() => { const b = this.brief(); if (!b || b.by === 'none') return this.generateBrief(); }).catch(() => {});
         } else this.cliSearch = { state: 'notfound', at: this.now() };
+        return this.cliSearch;
+      }).catch(error => {
+        // 自动查找没有等待者；所有阶段统一收尾，不能留下 rejected Promise 和永久 searching。
+        this.cliSearch = { state: 'error', at: this.now(), error: error?.message || String(error) };
+        return this.cliSearch;
+      }).finally(() => {
         this.cliSearching = null;
         this.changed();
-        return this.cliSearch;
       });
     return this.cliSearching;
   }

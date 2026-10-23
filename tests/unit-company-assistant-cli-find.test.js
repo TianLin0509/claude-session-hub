@@ -71,3 +71,33 @@ test('服务：取数时没找到 welink-cli 就在后台全盘找，找到记�
   assert.throws(() => svc.useCliPath(path.join(dir, 'nope.exe')), /不存在/);
   svc.close();
 });
+
+test('查找、保存路径或准备工作目录失败后结束查找状态，保留原因并允许立即重试', async t => {
+  for (const stage of ['find', 'settings', 'workspace']) await t.test(stage, async () => {
+    let fail = true, finds = 0, refreshes = 0;
+    const message = 'synthetic-' + stage + '-failure';
+    const service = {
+      deps: { findCliDeep: async () => { finds += 1; if (fail && stage === 'find') throw new Error(message); return { path: 'D:/synthetic/welink-cli.exe', via: 'disk' }; } },
+      now: () => 100000,
+      changed() {},
+      setSettings() { if (fail && stage === 'settings') throw new Error(message); },
+      prepareWorkspace() { if (fail && stage === 'workspace') throw new Error(message); },
+      refresh: async () => { refreshes += 1; },
+      brief: () => ({ by: 'list' }),
+    };
+    const find = options => CompanyAssistant.prototype.findCli.call(service, options);
+    const first = find();
+    assert.equal(find({ force: true }), first, '在途查找仍去重');
+    const failed = await first;
+    assert.equal(failed.state, 'error', '查找异常不能当作确实没安装或永远正在查找');
+    assert.equal(failed.error, message);
+    assert.equal(service.cliSearching, null, '失败也释放在途任务');
+    assert.equal(refreshes, 0, '未准备好不开始取数');
+    fail = false;
+    const recovered = await find();
+    assert.equal(finds, 2, '异常不进入未找到时的六小时冷却');
+    assert.equal(recovered.state, 'found');
+    assert.equal(service.cliSearching, null);
+    assert.equal(refreshes, 1, '重试成功继续原有自动取数');
+  });
+});

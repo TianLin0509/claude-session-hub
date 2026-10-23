@@ -17,6 +17,7 @@ function createTeamPage({ document, window, ipcRenderer, closeOtherPanels = () =
   let webId = null, webStatus = '', webEpoch = 0, loadEpoch = 0, observer;
   let editingCommitment = null;
   let verifyingIdentity = false;
+  let scopeDirty = false, preparingMember = null;
   const drafts = { memberInput: '', commitmentTitle: '', commitmentMember: '', commitmentEdit: '', commitmentSources: [], scope: 'all', weekly: {} };
   const isOpen = () => !!page && !page.hidden;
   const memberName = id => data?.members?.find(m => m.id === id)?.name || '未指定成员';
@@ -30,13 +31,14 @@ function createTeamPage({ document, window, ipcRenderer, closeOtherPanels = () =
     return result;
   }
   function acceptState(next) {
+    if (!data || data.owner !== next.owner) { scopeDirty = false; preparingMember = null; }
     if (data && data.owner !== next.owner) {
       resolution = null; editingCommitment = null;
       drafts.memberInput = ''; drafts.commitmentTitle = ''; drafts.commitmentMember = ''; drafts.commitmentEdit = ''; drafts.commitmentSources = []; drafts.weekly = {};
     }
     data = next;
     verifyingIdentity = false;
-    drafts.scope = next.settings?.scope || 'all';
+    if (!scopeDirty) drafts.scope = next.settings?.scope || 'all';
   }
   function build() {
     if (page) return;
@@ -52,9 +54,10 @@ function createTeamPage({ document, window, ipcRenderer, closeOtherPanels = () =
     page.addEventListener('input', event => {
       const input = event.target;
       if (input.dataset.draft) drafts[input.dataset.draft] = input.value;
+      if (input.dataset.draft === 'scope') scopeDirty = true;
       if (input.dataset.weekly) drafts.weekly[input.dataset.weekly] = input.value;
     });
-    page.addEventListener('change', event => { if (event.target.dataset.draft) drafts[event.target.dataset.draft] = event.target.value; });
+    page.addEventListener('change', event => { if (event.target.dataset.draft) drafts[event.target.dataset.draft] = event.target.value; if (event.target.dataset.draft === 'scope') scopeDirty = true; });
     if (window.ResizeObserver) { observer = new window.ResizeObserver(() => { place(); syncBounds(); }); observer.observe(document.body); observer.observe(content); }
     window.addEventListener('resize', onResize);
   }
@@ -112,11 +115,27 @@ function createTeamPage({ document, window, ipcRenderer, closeOtherPanels = () =
       <section class="tp-section"><div class="tp-row"><h3>需要你核实的线索</h3><div class="tp-actions">${btn('analyze', '生成分析', canRead() && active.length ? '' : 'disabled')}${btn('analysis.sync', '读取分析结果', disabled())}</div></div>${analyses((data.analyses || []).filter(a => !a.historical).slice(-8).reverse())}</section>
       <section class="tp-section"><div class="tp-row"><h3>未完成的承诺</h3>${btn('tab', '查看全部', 'data-tab="commitments"')}</div>${open.length ? open.slice(0, 8).map(c => `<div class="tp-list-row"><div><strong>${esc(c.title)}</strong><p class="tp-meta">${esc(memberName(c.memberId))}</p></div>${btn('commitment.done', '标记完成', `data-id="${esc(c.id)}" ${disabled()}`)}</div>`).join('') : empty('没有已确认的待跟进事项。')}</section>`;
   }
+  function preparation(member) {
+    const ownEvidence = (data.evidence || []).filter(e => e.memberId === member.id && e.account === member.account);
+    const open = (data.commitments || []).filter(c => c.memberId === member.id && c.status === 'open');
+    // Multi-person analyses have no finding-level member IDs. Do not assign
+    // their conclusions to one person merely because they were in the batch.
+    const latest = (data.analyses || []).filter(a => !a.historical && a.state === 'done' && a.memberIds?.length === 1 && a.memberIds[0] === member.id).slice(-1);
+    const memberCoverage = ownEvidence.length ? data.lastRefresh?.coverage : { status: 'partial', reasons: ['本次没有该成员可引用的原文，无法据此判断成员状态。'] };
+    return `<div class="tp-title"><div><h2>${esc(member.name)} · 沟通准备</h2><p>先看还未兑现的承诺，再核对交流中的具体问题。</p></div>${btn('member.back', '← 返回成员')}</div>
+      <div class="tp-prep-summary"><span>账号：${esc(member.account)}</span><span>最近采集：${esc(when(data.lastRefresh?.at))}</span><span>${open.length} 项未完成承诺 · ${ownEvidence.length} 条本人原文</span></div>
+      ${coverage(memberCoverage)}<p class="tp-meta">仅汇总当前成员已有资料；不发起 AI 分析，不发送消息。历史分析和多人分析不纳入本页。</p>
+      <section class="tp-section"><div class="tp-row"><h3>还需要跟进的承诺</h3>${btn('tab', '查看分工与承诺', 'data-tab="commitments"')}</div>${open.length ? open.map(c => `<article class="tp-prep-commitment"><div class="tp-list-row"><div><strong>${esc(c.title)}</strong><p class="tp-meta">更新于 ${esc(when(c.updatedAt || c.createdAt))}</p></div>${btn('commitment.done', '标记完成', `data-id="${esc(c.id)}" ${disabled()}`)}</div>${(c.sourceIds || []).length ? `<details><summary>关联原文 · 确认时的记录</summary>${facts((c.evidence || []).filter(e => e.memberId === member.id && e.account === member.account && c.sourceIds.includes(e.sourceId)), false)}</details>` : '<p class="tp-meta">人工记录，未关联聊天出处。</p>'}</article>`).join('') : empty('当前没有该成员的未完成承诺。')}</section>
+      <section class="tp-section"><h3>最近一次单人分析 · 待你核实</h3>${latest.length ? analyses(latest) : empty('还没有本次采集对应的单人分析；可以先看原文，回成员页后按需发起分析。')}</section>
+      <section class="tp-section"><h3>当前采集的本人原文</h3><p class="tp-meta">相邻上下文可能包含其他人的发言，保留说话人和时间，不当作该成员的表态。</p><details><summary>展开 ${ownEvidence.length} 条原文与出处</summary>${facts(ownEvidence)}</details></section>`;
+  }
   function members() {
+    const selected = (data.members || []).find(m => m.id === preparingMember);
+    if (selected) return preparation(selected);
     return `<div class="tp-title"><div><h2>成员</h2><p>先核对账号，再关注；同名联系人不会自动合并。</p></div></div><div class="tp-form"><label>组员 ID / 账号<input data-draft="memberInput" value="${esc(drafts.memberInput)}" placeholder="输入工号或 WeLink 账号" autocomplete="off"></label>${btn('resolve', '查找成员', canRead() ? 'data-primary' : 'disabled')}</div>
       ${resolution ? `<section class="tp-section"><h3>请确认对应的成员账号</h3>${(resolution.candidates || []).length ? resolution.candidates.map(c => `<div class="tp-list-row"><div><strong>${esc(c.name)}</strong><p class="tp-meta">账号：${esc(c.account)}${c.workId ? ' · 工号：' + esc(c.workId) : ''}</p></div>${btn('follow', '确认并关注', `data-account="${esc(c.account)}" ${disabled()}`)}</div>`).join('') : empty('没有找到可确认的成员，请核对输入或稍后重试。')}</section>` : ''}
-      <section class="tp-section"><h3>已关注成员</h3>${(data.members || []).length ? (data.members || []).map(m => `<article class="tp-member"><div class="tp-row"><div><strong>${esc(m.name)}</strong><span class="tp-meta">${m.active === false ? ' · 已暂停关注' : ''}</span><p class="tp-meta">账号：${esc(m.account)}${m.workId ? ' · 工号：' + esc(m.workId) : ''}</p></div><div class="tp-actions">${m.active === false ? btn('restore', '恢复关注', `data-id="${esc(m.id)}" ${disabled()}`) : btn('analyze', '分析近期交流', `data-id="${esc(m.id)}" ${canRead() ? '' : 'disabled'}`) + btn('unfollow', '暂停关注', `data-id="${esc(m.id)}" ${disabled()}`)}</div></div><details><summary>工作原文与分析</summary>${analyses((data.analyses || []).filter(a => (a.memberIds || []).includes(m.id)).slice(-1))}<h4>采集原文</h4>${facts((data.evidence || []).filter(e => e.memberId === m.id))}</details></article>`).join('') : empty('还没有关注成员。输入 ID，核对账号后开始。')}</section>
-      <section class="tp-section"><h3>采集设置</h3><div class="tp-form"><label>会话范围<select data-draft="scope"><option value="all"${drafts.scope === 'all' ? ' selected' : ''}>当前账号可见会话</option><option value="private"${drafts.scope === 'private' ? ' selected' : ''}>仅私聊</option></select></label>${btn('settings.scope', '保存范围', disabled())}${btn('refresh', '立即采集', canRead() ? '' : 'disabled')}</div><div class="tp-actions">${btn('settings.auto', data.settings?.autoRefresh ? '关闭定时采集' : '开启每日采集', disabled())}<span class="tp-meta">${data.settings?.autoRefresh ? '每 ' + esc(data.settings.intervalHours || 24) + ' 小时采集一次' : '当前仅在手动点击时采集'}</span></div></section>`;
+      <section class="tp-section"><h3>已关注成员</h3>${(data.members || []).length ? (data.members || []).map(m => `<article class="tp-member"><div class="tp-row"><div><strong>${esc(m.name)}</strong><span class="tp-meta">${m.active === false ? ' · 已暂停关注' : ''}</span><p class="tp-meta">账号：${esc(m.account)}${m.workId ? ' · 工号：' + esc(m.workId) : ''}</p></div><div class="tp-actions">${btn('member.prepare', '沟通准备', `data-id="${esc(m.id)}" ${disabled()}`)}${m.active === false ? btn('restore', '恢复关注', `data-id="${esc(m.id)}" ${disabled()}`) : btn('analyze', '分析近期交流', `data-id="${esc(m.id)}" ${canRead() ? '' : 'disabled'}`) + btn('unfollow', '暂停关注', `data-id="${esc(m.id)}" ${disabled()}`)}</div></div><details><summary>工作原文与分析</summary>${analyses((data.analyses || []).filter(a => (a.memberIds || []).includes(m.id)).slice(-1))}<h4>采集原文</h4>${facts((data.evidence || []).filter(e => e.memberId === m.id))}</details></article>`).join('') : empty('还没有关注成员。输入 ID，核对账号后开始。')}</section>
+      <section class="tp-section"><h3>采集设置</h3><div class="tp-form"><label>本次采集范围<select data-draft="scope"><option value="all"${drafts.scope === 'all' ? ' selected' : ''}>当前账号可见会话</option><option value="private"${drafts.scope === 'private' ? ' selected' : ''}>仅私聊</option></select></label>${btn('settings.scope', '保存为默认', disabled())}${btn('refresh', '立即采集', canRead() ? '' : 'disabled')}</div><div class="tp-actions">${btn('settings.auto', data.settings?.autoRefresh ? '关闭定时采集' : '开启每日采集', disabled())}<span class="tp-meta">${data.settings?.autoRefresh ? '每 ' + esc(data.settings.intervalHours || 24) + ' 小时采集一次' : '当前仅在手动点击时采集'}</span></div></section>`;
   }
   function weekly() {
     return `<div class="tp-title"><div><h2>周报草稿</h2><p>由已确认的工作事项整理，修改后保存；不会自动提交到云端。</p></div><div class="tp-actions">${btn('weekly.draft', '生成草稿', disabled())}${btn('web', '打开团队周报', 'data-tool="weekly"')}</div></div>${(data.weeklyDrafts || []).length ? (data.weeklyDrafts || []).slice().reverse().map(d => `<section class="tp-section"><div class="tp-row"><h3>草稿 · ${esc(when(d.createdAt))}</h3>${btn('weekly.save', '保存修改', `data-id="${esc(d.id)}" ${disabled()}`)}</div><label class="tp-sr" for="tp-weekly-${esc(d.id)}">周报草稿正文</label><textarea id="tp-weekly-${esc(d.id)}" class="tp-weekly-editor" data-weekly="${esc(d.id)}">${esc(drafts.weekly[d.id] ?? d.text)}</textarea><p class="tp-meta">仅保存到本机；请在既有周报页自行确认提交。</p></section>`).join('') : empty('还没有周报草稿。先在“分工与承诺”里确认工作事项，再生成。')}`;
@@ -165,13 +184,19 @@ function createTeamPage({ document, window, ipcRenderer, closeOtherPanels = () =
     if (op === 'web.close') { stopWeb(); render(); return; }
     if (op === 'web.retry') { await openWeb(webId, { reload: true }); return; }
     if (busy) return;
+    if (op === 'member.prepare') { if (!data?.members?.some(m => m.id === id)) throw new Error('成员已变更，请刷新后重新选择。'); preparingMember = id; tab = 'members'; render(); content.scrollTop = 0; return; }
+    if (op === 'member.back') { preparingMember = null; render(); content.scrollTop = 0; return; }
     if (op === 'resolve') { if (!drafts.memberInput.trim()) throw new Error('请先输入组员 ID 或账号。'); resolution = null; await mutate('resolve', { input: drafts.memberInput.trim() }, '正在核对成员账号…'); }
     else if (op === 'follow') { if (!resolution) throw new Error('请重新查找并确认成员账号。'); if (await mutate('follow', { resolutionId: resolution.resolutionId, account: button.dataset.account, confirmed: true }, '正在保存关注成员…')) { resolution = null; notice = '已确认并关注。可采集近期交流。'; render(); } }
     else if (op === 'unfollow' || op === 'restore') await mutate(op, { memberId: id, confirmed: true });
     else if (op === 'refresh') await mutate('refresh', { scope: drafts.scope }, '正在采集最近 7 天可见会话，通常需要几分钟…');
     else if (op === 'analyze') await mutate('analyze', id ? { memberId: id } : {}, '正在创建分析会话…');
     else if (op === 'analysis.sync') await mutate(op, {}, '正在读取分析结果…');
-    else if (op === 'settings.scope') await mutate('settings', { scope: drafts.scope });
+    else if (op === 'settings.scope') {
+      const savedScope = drafts.scope, savedOwner = data.owner;
+      const result = await mutate('settings', { scope: savedScope });
+      if (result && data.owner === savedOwner && drafts.scope === savedScope) { scopeDirty = false; drafts.scope = result.settings?.scope || 'all'; notice = '采集范围已保存。'; render(); }
+    }
     else if (op === 'settings.auto') await mutate('settings', { autoRefresh: !data.settings?.autoRefresh, intervalHours: 24 });
     else if (op === 'weekly.draft') await mutate(op, {}, '正在整理周报草稿…');
     else if (op === 'weekly.save') { const d = data.weeklyDrafts.find(d => d.id === id); if (await mutate('weekly.update', { id, text: drafts.weekly[id] ?? d?.text ?? '' })) { delete drafts.weekly[id]; notice = '草稿已保存到本机，尚未提交。'; render(); } }
