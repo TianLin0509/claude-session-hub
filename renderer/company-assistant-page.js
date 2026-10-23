@@ -21,6 +21,7 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
     return `${d.getMonth() + 1}-${d.getDate()} ${clock(at)}`;
   };
   const call = async (channel, payload) => { const r = await ipcRenderer.invoke('company-assistant:' + channel, payload); if (r && r.ok === false) throw new Error(r.error || '操作未完成'); return r; };
+  let meetingPage = null;
   let md = null;
   const markdown = text => {
     try {
@@ -149,10 +150,11 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   function capabilities() {
     const r = data.rooms || {}, p = data.ppt || {};
     return [['▤', '今日简报', data.brief ? '已更新' : '待生成', 'brief'],
+      ['◉', '会议伴侣', '采集 · 转写 · 持续理解', 'meeting'],
       ['◷', '抢会议室', r.running ? '守护中' : r.available ? '可配置' : '待接入', 'rooms'],
       ['▧', 'PPT 素材库', p.indexing?.state === 'indexing' ? `正在更新 · ${p.indexing.scanned || 0} 份` : p.available ? `${p.files ?? 0} 份 / ${p.pages ?? 0} 页` : '选择素材目录', 'ppt'],
       ['▣', '手机对话', data.phone?.settings?.enabled ? '已开启' : '待接通', 'phone']]
-      .map(([icon, name, detail, tab]) => `<button class="ca-side-button" data-ca="${tab === 'ppt' ? 'ppt-assist' : 'settings-tab:' + tab}" title="${name} · ${tab === 'ppt' ? '告诉助理你想讲清什么' : detail}"><span class="ca-side-icon">${icon}</span><span class="ca-side-copy">${name}<small>${detail}</small></span></button>`).join('');
+      .map(([icon, name, detail, tab]) => `<button class="ca-side-button" data-ca="${tab === 'meeting' ? 'meeting' : tab === 'ppt' ? 'ppt-assist' : 'settings-tab:' + tab}" title="${name} · ${tab === 'ppt' ? '告诉助理你想讲清什么' : detail}"><span class="ca-side-icon">${icon}</span><span class="ca-side-copy">${name}<small>${detail}</small></span></button>`).join('');
   }
   function assistantMessage(html, extra = '') {
     return `<div class="ca-message-row assistant ${extra}"><img class="ca-avatar" src="${ASSISTANT_AVATAR_SRC}" alt="助理"><div class="ca-message-content">${html}</div></div>`;
@@ -371,6 +373,11 @@ function createCompanyAssistantPage({ document, window, ipcRenderer, openSession
   }
 
   async function action(name, button) {
+    if (name === 'meeting') {
+      if (!meetingPage) meetingPage = require('./company-meeting-page').createCompanyMeetingPage({ document, window, call, markdown });
+      await meetingPage.open(page.querySelector('.ca-main')); return;
+    }
+    meetingPage?.close();
     const input = page.querySelector('[data-slot="form"] textarea');
     const [verb, arg] = name.split(/:(.*)/s);
     if (verb === 'starter') { const item = STARTERS[Number(arg)]; if (item) { if (input.value.trim()) { showMessage?.('输入框里已有草稿，请先处理后再选示例。'); return; } pptEntry = false; input.value = item[1]; input.focus(); } return; }
