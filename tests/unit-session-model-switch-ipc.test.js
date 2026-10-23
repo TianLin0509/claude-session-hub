@@ -46,6 +46,15 @@ test('provider mismatch cannot rewrite model metadata', async () => {
   assert.equal(fixture.session.currentModel, undefined);
 });
 
+test('DSH PTY accepts only the model and effort already confirmed by its native CLI', async () => {
+  const f = setup({ id: 'dsh', kind: 'deepseek-acp', agentRuntime: 'pty', runtimeBackend: null,
+    currentModel: { id: 'deepseek-v4.1-flash' }, effort: 'high' });
+  assert.equal((await f.handler({}, { sessionId: 'dsh', modelId: 'deepseek-v4.1-flash', effort: 'high' })).ok, true);
+  assert.equal((await f.handler({}, { sessionId: 'dsh', modelId: 'deepseek-v4.1-flash', effort: 'max' })).ok, false);
+  assert.equal((await f.handler({}, { sessionId: 'dsh', modelId: 'deepseek-v4-pro', effort: 'high' })).ok, false);
+  assert.equal(f.session.effort, 'high'); assert.equal(f.messages.length, 0);
+});
+
 test('DeepSeek Codex confirms only its provider models and preserves the native effort',async()=>{
   const f=setup({id:'ds',kind:'deepseek',effort:'max'});
   assert.equal((await f.handler({},{sessionId:'ds',modelId:'deepseek-v4-pro',effort:'high'})).ok,true);

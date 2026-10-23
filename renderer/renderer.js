@@ -4611,7 +4611,7 @@ const _codexEffortCache = new Map();
 const CLAUDE_COMPOSER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'auto'];
 
 function composerSupportedEfforts(session) {
-  if (session?.runtimeBackend === 'acp') return require('../core/acp-model-catalog').acpThoughtChoices(session).map(o => o.value);
+  if (session?.runtimeBackend === 'acp' || (session?.agentRuntime === 'pty' && /^deepseek-acp(?:-resume)?$/.test(session.kind))) return require('../core/acp-model-catalog').acpThoughtChoices(session).map(o => o.value);
   const kind = String((session && session.kind) || '').replace(/-resume$/i, '').toLowerCase();
   // A native Claude session changes effort over its own command channel, so the
   // chip is live there; a PTY session still cannot and stays static.
@@ -9391,6 +9391,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.acpSid) local.acpSid = session.acpSid;
   if (session.acpProfileId) local.acpProfileId = session.acpProfileId;
   if (session.acpCapabilities) local.acpCapabilities = session.acpCapabilities;
+  if (session.acpConfigOptions) local.acpConfigOptions = session.acpConfigOptions;
   if (Object.hasOwn(session,'cliRuntime')) local.cliRuntime = session.cliRuntime;
   // 终端型 ACP 会话（千问 / GLM CLI）的卡片提示也以主进程为准，重启后不留旧进程的退出提示。
   if (Object.hasOwn(session,'nativeActionError')) local.nativeActionError = session.nativeActionError;
