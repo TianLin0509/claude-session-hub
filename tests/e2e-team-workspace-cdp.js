@@ -5,7 +5,7 @@ const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
 const { connectFirstPage, connectCDP } = require('./helpers/cdp-client');
 const pause = ms => new Promise(r => setTimeout(r, ms));
 const port = () => new Promise(resolve => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
-const root = path.resolve(__dirname, '..'), out = path.join(root, 'artifacts', '20261023-team-e2e-codex1');
+const root = path.resolve(__dirname, '..'), out = path.join(root, 'artifacts', `20261023-team-e2e-codex1-${process.pid}`);
 const realAI = process.argv.includes('--ai');
 async function main() {
   fs.mkdirSync(out, { recursive: true });
@@ -17,7 +17,8 @@ async function main() {
   const auth = path.join(profile, '.credentials.json');
   const result = { realHub: true, syntheticWelink: true, realAI, checks: [], dataDir };
   let hub, c;
-  const until = async (fn, label, timeout = 60000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await fn()) return; await pause(200); } throw new Error('等待超时：' + label); };
+  // CDPClient returns a RemoteObject for JavaScript undefined; only true is a pass.
+  const until = async (fn, label, timeout = 60000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await fn() === true) return; await pause(200); } throw new Error('等待超时：' + label); };
   const expr = (value, label, timeout) => until(() => c.eval(value).catch(() => false), label, timeout);
   const click = async selector => {
     const point = await c.eval(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e||e.disabled)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2};})()`);
@@ -68,6 +69,8 @@ async function main() {
         const state = JSON.parse(fs.readFileSync(path.join(dataDir, 'team-workspace', require('node:crypto').createHash('sha256').update('user001').digest('hex') + '.json'), 'utf8'));
         const analysis = state.analyses.at(-1);
         if (analysis?.state === 'error') throw new Error('真实模型分析失败：' + analysis.error);
+        if (analysis?.state !== 'done' || !analysis.findings?.length) return false;
+        result.analysis = { state: analysis.state, findingCount: analysis.findings.length, text: analysis.text };
         return c.eval(`!document.getElementById('team-page').hidden && document.querySelector('.tp-member')?.textContent.includes('周三') && document.querySelector('.tp-member')?.textContent.includes('已生成，待你核实')`);
       }, '真实模型分析', 300000);
       await click('.tp-member > details > summary'); await shot('real-ai');
