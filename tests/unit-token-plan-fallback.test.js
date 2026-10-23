@@ -352,3 +352,14 @@ test('long answers about quota stay answers; a reroute done meanwhile is not rep
   // 正在答上一轮的 DeepSeek 旧 Harness：不打断；这条留在原线路的队列，下一条再切。
   assert.equal(await busyCtl.beforeSend('s1'), false);
 });
+
+test('explicit DSH API selection stays API before and after Token Plan quota changes', async t => {
+  const h = harness(t);
+  Object.assign(h.session,{deepseekRoute:'api',acpProfileId:'deepseek-api:deepseek-acp'});
+  assert.equal(await h.controller.beforeSend('s1'),false);
+  fallback.markExhausted(h.dataDir,{resetsAt:Date.now()+3600_000});
+  assert.equal(await h.controller.beforeSend('s1'),false);
+  fallback.clearExhausted(h.dataDir);
+  assert.equal(await h.controller.beforeSend('s1'),false);
+  assert.deepEqual(h.restarts,[]);
+});
