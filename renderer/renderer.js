@@ -4640,6 +4640,8 @@ function composerSupportedEfforts(session) {
   // A native Claude session changes effort over its own command channel, so the
   // chip is live there; a PTY session still cannot and stays static.
   if (session?.runtimeBackend === 'claude-stream-json') return CLAUDE_COMPOSER_EFFORTS;
+  // PTY Claude：经 /effort 命令切换，以 transcript 确认（core/claude-pty-effort.js）。
+  if (kind === 'claude' && require('../core/agent-runtime-mode').isPtyAgentSession(session)) return require('../core/claude-pty-effort').PTY_CLAUDE_EFFORTS;
   if (kind !== 'codex') return null;
   const slug = String((session.currentModel && session.currentModel.id) || '').trim();
   if (!slug) return null;

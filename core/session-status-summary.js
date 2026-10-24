@@ -177,7 +177,8 @@ function composerThinkingChip(session, options = {}) {
     return choices.length ? { visible: true, label: label || '模型默认', interactive: true, options: choices.map(o => o.value) } : hidden;
   }
   if (!label) return hidden;
-  if (kind === 'codex' || session?.runtimeBackend === 'claude-stream-json') {
+  const ptyClaude = kind === 'claude' && require('./agent-runtime-mode').isPtyAgentSession(session);
+  if (kind === 'codex' || session?.runtimeBackend === 'claude-stream-json' || ptyClaude) {
     const supported = Array.isArray(options.supportedEfforts)
       ? options.supportedEfforts.map(value => String(value || '').trim().toLowerCase()).filter(Boolean)
       : [];

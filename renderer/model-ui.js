@@ -801,6 +801,35 @@ function createModelUiController({
         return null;
       }
     }
+    // PTY Claude（2026-10-24）：主进程发 /effort 并以会话记录确认，失败不改 chip。
+    if (/^claude(?:-resume)?$/.test(session.kind || '') && session.agentRuntime === 'pty' && !session.runtimeBackend) {
+      const efforts = (openModelPicker && openModelPicker.efforts) || [effort];
+      if (isSessionBusy(session)) {
+        renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: '当前回答仍在运行，请结束后再切换', state: 'error' });
+        return null;
+      }
+      if (!terminalAcceptsModelCommand(commandText(sessionId), 'claude-inline')) {
+        renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: 'Claude 输入框有未发送内容；请先发送或清空后再切换', state: 'error' });
+        return null;
+      }
+      session._modelSwitchPending = { id: session.currentModel?.id, label: effort };
+      updateActiveModelChip();
+      renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: `正在切换到 ${effort}…`, state: 'pending' });
+      try {
+        const result = await ipcRenderer.invoke('claude-pty:set-effort', { sessionId, effort });
+        if (!result?.ok) throw new Error(result?.message || 'Claude 未确认思考档');
+        session.effort = result.result.effort;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        closeModelPicker();
+        return result.result;
+      } catch (error) {
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: '切换失败：' + error.message, state: 'error' });
+        return null;
+      }
+    }
     if (!['codex-picker','acp-native'].includes(modelSwitchStrategy(session.kind))) return null;
     const modelId = String(session.currentModel && session.currentModel.id || '').trim();
     if (!modelId) return null;
