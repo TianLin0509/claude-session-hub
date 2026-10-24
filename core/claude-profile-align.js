@@ -29,14 +29,27 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(temp, file);
 }
 
-function listFiles(root, rel = '', out = []) {
+// 主账号的技能多数是指向 ~/.codex/skills、~/.agents/skills 等处的目录链接：跟随链接复制内容，
+// 用 realpath 防止链接成环。
+function listFiles(root, rel = '', out = [], seen = new Set()) {
   let entries;
-  try { entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return out; }
+  const dir = path.join(root, rel);
+  try {
+    const real = fs.realpathSync(dir).toLowerCase();
+    if (seen.has(real)) return out;
+    seen.add(real);
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch { return out; }
   for (const entry of entries) {
     if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
     const child = rel ? path.join(rel, entry.name) : entry.name;
-    if (entry.isDirectory()) listFiles(root, child, out);
-    else if (entry.isFile()) out.push(child);
+    let kind = entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : '';
+    if (entry.isSymbolicLink()) {
+      try { const stat = fs.statSync(path.join(root, child)); kind = stat.isDirectory() ? 'dir' : stat.isFile() ? 'file' : ''; }
+      catch { kind = ''; }
+    }
+    if (kind === 'dir') listFiles(root, child, out, seen);
+    else if (kind === 'file') out.push(child);
   }
   return out;
 }
@@ -126,7 +139,12 @@ function alignClaudeProfile({ primaryDir, primaryStateFile, profileDir }) {
     const primaryState = readJson(primaryStateFile);
     const stateFile = path.join(profileDir, '.claude.json');
     const state = readJson(stateFile);
-    if (primaryState && state && JSON.stringify(state.mcpServers || {}) !== JSON.stringify(primaryState.mcpServers || {})) {
+    // 新版 Claude Code 首次登录会弹「auto 已成默认」并把 permissions.defaultMode 改成 auto；
+    // 主账号的跳过确认标记一并同步，配合每次启动前重写 settings，让权限模式保持一致。
+    const flags = ['skipDangerousModePermissionPrompt'];
+    const flagsDiffer = primaryState && state && flags.some(k => Object.hasOwn(primaryState, k) && state[k] !== primaryState[k]);
+    if (primaryState && state && (flagsDiffer || JSON.stringify(state.mcpServers || {}) !== JSON.stringify(primaryState.mcpServers || {}))) {
+      for (const k of flags) if (Object.hasOwn(primaryState, k)) state[k] = primaryState[k];
       state.mcpServers = primaryState.mcpServers || {};
       writeJsonAtomic(stateFile, state);
       report.mcpServers = true;
