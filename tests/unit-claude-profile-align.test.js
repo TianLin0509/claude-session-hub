@@ -62,3 +62,21 @@ test('the primary directory itself is never treated as a profile', () => {
   assert.equal(report.backup, null);
   assert.equal(fs.existsSync(path.join(primary, '.hub-align-backup')), false);
 });
+
+test('skills that are directory links in the primary account are copied too', () => {
+  const { root, primary, profile, run } = setup();
+  const shared = path.join(root, 'shared-skills', 'tiange-ui');
+  write(path.join(shared, 'SKILL.md'), 'linked skill');
+  fs.symlinkSync(shared, path.join(primary, 'skills', 'tiange-ui'), 'junction');
+  fs.symlinkSync(path.join(primary, 'skills'), path.join(shared, 'loop'), 'junction');
+  run();
+  assert.equal(fs.readFileSync(path.join(profile, 'skills', 'tiange-ui', 'SKILL.md'), 'utf8'), 'linked skill');
+});
+
+test('permission-prompt acknowledgement follows the primary account', () => {
+  const { root, profile, run } = setup();
+  const stateFile = path.join(root, '.claude.json');
+  fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(stateFile, 'utf8')), skipDangerousModePermissionPrompt: true }));
+  run();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(profile, '.claude.json'), 'utf8')).skipDangerousModePermissionPrompt, true);
+});
