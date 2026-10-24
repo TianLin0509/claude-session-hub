@@ -114,15 +114,12 @@
         <button type="button" class="hub-new-instance" id="btn-new-hub" title="新建 AI Hub 实例" aria-label="新建 AI Hub 实例"><img src="../claude-wx.ico" alt="AI Hub" /></button>
         <strong>AI Hub</strong><span id="coldwhite-preview-label" hidden>冷白预览 0.1</span><span id="hub-version"></span><span class="hub-pid" id="hub-pid"></span>
       </div>
-      <div id="touch-tools" class="touch-tools">
-        <button type="button" id="btn-touch-tools" aria-expanded="false" aria-controls="touch-tools-panel" title="常用工具 · 复制、粘贴、全屏截图">工具</button>
-        <div id="touch-tools-panel" hidden aria-label="常用工具">
-          <button type="button" data-touch-action="screenshot">全屏截图</button>
-          <button type="button" data-touch-action="copy">复制选中内容</button>
-          <button type="button" data-touch-action="paste">粘贴</button>
-          <button type="button" data-touch-action="select-all">全选</button>
-          <small role="status" aria-live="polite"></small>
-        </div>
+      <!-- 触屏常用工具（2026-10-24 重做）：三个图标一次点击直接生效，结果用按钮下方的短气泡提示。 -->
+      <div id="touch-tools" class="touch-tools" role="group" aria-label="常用工具">
+        <button type="button" data-touch-action="screenshot" title="全屏截图，复制到剪贴板" aria-label="全屏截图"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg></button>
+        <button type="button" data-touch-action="copy" title="复制选中内容" aria-label="复制选中内容"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button>
+        <button type="button" data-touch-action="paste" title="粘贴到刚才的输入位置，不自动发送" aria-label="粘贴"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6v3H9z"/><path d="M15 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/><path d="M9 13h6M9 17h4"/></svg></button>
+        <span class="touch-tools-toast" role="status" aria-live="polite" hidden></span>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>
       <div class="header-overflow-wrap" id="toolbar-more-wrap">

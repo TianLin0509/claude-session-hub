@@ -41,14 +41,14 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
     el('span', 'sidebar-quota-name', row, NAMES[provider]);
     const account = el('span', 'sidebar-quota-account', row);
     const metrics = el('span', 'sidebar-quota-metrics', row);
-    const windows = provider === 'antigravity' ? ['gemini','thirdParty'] : ['claude','codex'].includes(provider) ? ['5h', '7d'] : provider === 'tokenPlan' ? ['7d'] : ['balance'];
+    const windows = provider === 'antigravity' ? ['gemini'] : ['claude','codex'].includes(provider) ? ['5h', '7d'] : provider === 'tokenPlan' ? ['7d'] : ['balance'];
     const cells = {};
     for (const window of windows) {
       const cell = el('span', 'sidebar-quota-metric', metrics); cell.dataset.window = window;
       const line = el('span', 'sidebar-quota-reading', cell);
       if (['claude','codex'].includes(provider)) el('span', 'sidebar-quota-window', line, window);
       const value = el('b', 'sidebar-quota-value', line, '—');
-      const period = el('span', 'sidebar-quota-period', line, window === 'balance' ? '' : '刷新未知');
+      const period = el('span', 'sidebar-quota-period', line, '');
       const track = window !== 'balance' ? el('span', 'sidebar-quota-track', cell) : null;
       const fill = track ? el('i', '', track) : null;
       if (track) track.setAttribute('aria-hidden', 'true');
@@ -117,14 +117,16 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
             const pct = remainingPercent(observation);
             cell.value.textContent = pct === null ? (provider === 'tokenPlan' && data.needsLogin ? '需登录' : '—')
               : (provider === 'tokenPlan' ? pct.toFixed(2) : Math.round(pct)) + '%';
-            if (provider === 'antigravity') cell.value.textContent = (window === 'gemini' ? 'G ' : 'C/G ') + cell.value.textContent;
             cell.fill.style.width = (pct ?? 0) + '%';
+            // Codex 订阅没有 5 小时窗口，服务端不给数据时整格隐藏，省出底栏空间。
+            cell.cell.hidden = provider === 'codex' && window === '5h' && !observation;
             cell.cell.dataset.level = pct !== null && pct < 15 ? 'danger' : pct !== null && pct <= 40 ? 'warn' : 'normal';
             const countdown = formatResetCountdown(observation?.resetsAt, now);
             const reset = observation?.resetsAt ? new Date(observation.resetsAt).getTime() : NaN;
             const knownReset = Number.isFinite(reset);
             const expired = knownReset && reset <= now;
-            cell.period.textContent = !knownReset ? '↻—' : expired ? '待刷新' : '↻' + countdown;
+            // 只写倒计时本身，不加箭头；重置时间未知就不占位。
+            cell.period.textContent = !knownReset ? '' : expired ? '待刷新' : countdown;
             cell.cell.dataset.resetState = !knownReset ? 'unknown' : expired ? 'due' : 'countdown';
             cell.cell.title = windowLabel + ' 剩余额度 · ' + formatAge(observation?.observedAt || data.lastSeen)
               + (expired ? ' · 上次记录，等待刷新' : knownReset ? ' · 距离额度重置 ' + countdown : ' · 重置时间未知')
@@ -132,7 +134,7 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
               + ' · 点击刷新 ' + NAMES[provider] + (status ? ' · ' + status : '');
           }
         }
-        button.setAttribute('aria-label', NAMES[provider] + (data.profileLabel ? ' · ' + data.profileLabel : '') + ' · ' + Object.entries(cells).map(([window, cell]) =>
+        button.setAttribute('aria-label', NAMES[provider] + (data.profileLabel ? ' · ' + data.profileLabel : '') + ' · ' + Object.entries(cells).filter(([, cell]) => !cell.cell.hidden).map(([window, cell]) =>
           (window === 'balance' ? '余额 ' : cell.cell.dataset.period + ' 剩余 ') + cell.value.textContent + ' ' + cell.period.textContent
         ).join(' · ') + ' · 点击刷新' + (status ? ' · ' + status : ''));
       }

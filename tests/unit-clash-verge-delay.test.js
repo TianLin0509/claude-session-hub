@@ -88,3 +88,33 @@ test('pipe candidates only include local verge-mihomo pipes', () => {
   assert.deepEqual(controllerPipeCandidates('external-controller-pipe: http://example.test\n', () => ['\\\\.\\pipe\\verge-mihomo-a']),
     ['\\\\.\\pipe\\verge-mihomo-a']);
 });
+
+test('uses the MATCH rule group and probes once when a hand-picked node has no history', async () => {
+  const live = {
+    GLOBAL: { type: 'Selector', now: 'DIRECT' },
+    'VPS-Overseas': { type: 'Selector', now: 'BWH-HY2' },
+    'BWH-HY2': { type: 'Hysteria2', history: [] },
+  };
+  const paths = [];
+  let clock = measuredAt;
+  const http = { request(options, onResponse) {
+    paths.push(options.path);
+    const request = new EventEmitter();
+    request.end = () => {
+      const response = new EventEmitter();
+      response.statusCode = 200;
+      onResponse(response);
+      const body = options.path === '/proxies' ? { proxies: live }
+        : options.path === '/rules' ? { rules: [{ type: 'DomainSuffix', proxy: 'DIRECT' }, { type: 'Match', proxy: 'VPS-Overseas' }] }
+        : { delay: 158 };
+      process.nextTick(() => { response.emit('data', JSON.stringify(body)); response.emit('end'); });
+    };
+    return request;
+  } };
+  const reader = createClashVergeDelayReader({ readFile: async () => '', listPipes: () => ['\\.\pipe\verge-mihomo-x'], http, now: () => clock });
+  assert.deepEqual(await reader.sample(), { status: 'ok', delayMs: 158, measuredAt, nodeName: 'BWH-HY2' });
+  assert.ok(paths[2].startsWith('/proxies/BWH-HY2/delay?url='));
+  clock += 60_000;
+  await reader.sample();
+  assert.equal(paths.filter(p => p.includes('/delay')).length, 1, 'no second probe within five minutes');
+});
