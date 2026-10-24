@@ -135,6 +135,11 @@ async function main() {
     try { started=Date.now(); await key('c'); await _waitMs(650); await unlockRetry();
       await verify('Windows lock released during retry',marker,started);
     } finally { await unlockRetry(); }
+    // 2026-10-24：手动复制优先——别的程序占住剪贴板 3.5 秒（远程桌面同步常见）后放开，Hub 仍要写进去。
+    await select(card,marker); await resetFeedback(); const unlockLong=await lockClipboard();
+    try { started=Date.now(); await key('c'); await _waitMs(3500); await unlockLong();
+      await verify('Windows lock held 3.5 s, manual copy still wins',marker,started);
+    } finally { await unlockLong(); }
     // Touch title tools must preserve selection and the input caret across button presses.
     const tap = async selector => {
       const p = await client.eval(`(() => {const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);

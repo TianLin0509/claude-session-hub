@@ -98,9 +98,16 @@ function registerAppUtilityIpc(ipcMain, deps) {
       const source = sources.find(item => item.display_id === String(display.id));
       if (!source || source.thumbnail.isEmpty()) throw new Error('未能截取当前屏幕，请重试');
       if (!isCurrent()) throw new Error('期间有新的复制操作，已保留新内容，请重新截图');
-      deps.clipboard.writeImage(source.thumbnail);
-      const copied = deps.clipboard.readImage();
-      if (copied.isEmpty() || !copied.toPNG().equals(source.thumbnail.toPNG())) throw new Error('截图写入剪贴板失败，请重试');
+      const expected = source.thumbnail.toPNG();
+      let copied = null;
+      // 剪贴板被占用时与文字复制同样持续重试；期间有新复制就让位。
+      const written = await writeClipboardText.retry(() => {
+        deps.clipboard.writeImage(source.thumbnail);
+        copied = deps.clipboard.readImage();
+        return !copied.isEmpty() && copied.toPNG().equals(expected);
+      }, isCurrent);
+      if (written.reason === 'superseded') throw new Error('期间有新的复制操作，已保留新内容，请重新截图');
+      if (!written.ok) throw new Error('截图写入剪贴板失败，请重试');
       return { ok: true, size: copied.getSize() };
     } catch (error) { return { ok: false, error: error.message }; }
   });

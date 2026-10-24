@@ -1896,6 +1896,10 @@ class SessionManager extends EventEmitter {
       claudeProfile = require('./claude-subscription-profiles').profileForSession(opts, getConfig());
       if (claudeProfile.configDir) sessionEnv.CLAUDE_CONFIG_DIR = claudeProfile.home;
       else delete sessionEnv.CLAUDE_CONFIG_DIR;
+      // 独立账号目录也要有 Hub 的 hook 与额度上报 statusLine（2026-10-24：第二账号一直没装，额度和状态都收不到）。
+      if (claudeProfile.configDir && typeof this.deployClaudeProfileHooks === 'function') {
+        try { this.deployClaudeProfileHooks(claudeProfile.home); } catch (error) { console.warn(`[claude-profile] ${claudeProfile.id} hook：${error.message}`); }
+      }
       sessionEnv.CLAUDE_HUB_CLAUDE_PROFILE = claudeProfile.id;
       sessionEnv.CLAUDE_HUB_CLAUDE_SCOPE = require('./claude-subscription-profiles').usageScope(getConfig(),claudeProfile.id);
       require('./claude-subscription-profiles').applyNetworkEnv(sessionEnv,getConfig());

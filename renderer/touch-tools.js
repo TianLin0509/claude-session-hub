@@ -53,6 +53,7 @@ function initTouchTools({ document, window, copyText, expandText, ipcRenderer, g
         const text = expandText(saved?.text || '');
         if (!text) throw new Error('先选中文字，再点复制');
         const result = await copyText(text, { source: 'touch-tools' });
+        if (result.reason === 'superseded') { show(button, '已有更新的复制，保留新的', 'ok'); return; }
         if (!result.ok) throw new Error('复制没成功，请再点一次');
         show(button, `已复制 ${result.length} 字`, 'ok');
       } else if (action === 'screenshot') {
