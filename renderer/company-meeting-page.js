@@ -30,7 +30,7 @@ function createCompanyMeetingPage({ document, window, call, markdown }) {
     if (!m) return;
     const rec=m.recording, ready=rec?.segments.filter(s=>s.status==='ready')||[];
     root.querySelector('[data-m="recording-status"]').textContent=rec ? `录像已落盘至 ${time(rec.savedThrough)} · ${(rec.bytes/1024/1024).toFixed(1)} MB · ${ready.length} 个可回放片段${rec.segments.some(s=>s.status==='writing')?' · 当前片段保存中':''}` : '此会议没有录像（旧会议仍可查看截图和原音频）。';
-    root.querySelector('[data-m="gaps"]').textContent=(rec?.gaps||[]).map(g=>`${time(g.at)}—${time(g.end)} ${g.reason}`).join('；');
+    root.querySelector('[data-m="gaps"]').textContent=[...(rec?.gaps||[]), ...(rec?.openGap ? [{...rec.openGap,end:null}] : [])].map(g=>`${time(g.at)}—${g.end==null||g.open?'未恢复':time(g.end)} ${g.reason}`).join('；');
     root.querySelector('[data-m="seek"]').max=String(Math.max(0,m.capturedMs/1000));
     for(const op of ['play','extract'])root.querySelector(`[data-act="${op}"]`).disabled=!ready.length;
     if (m.audio.length && !asr.ready && !asr.phase && !m.error && !m.asrError) message('录音已保存；本地转写尚未就绪。请打开“截图区域与本地语音设置”，点击安装本地转写。');
