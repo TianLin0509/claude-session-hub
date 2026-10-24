@@ -59,8 +59,11 @@ function profileForSession(opts, config, env = process.env) {
 
 function accountLabel(home) {
   try {
-    const file = path.join(home, '.claude.json');
-    const data = JSON.parse(fs.readFileSync(fs.existsSync(file) ? file : path.basename(home) === '.claude' ? path.join(path.dirname(home), '.claude.json') : file, 'utf8'));
+    // The default CLI stores identity beside .claude, not inside it. A stale
+    // nested file from an old explicit CLAUDE_CONFIG_DIR must never shadow it.
+    const file = path.basename(home) === '.claude'
+      ? path.join(path.dirname(home), '.claude.json') : path.join(home, '.claude.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
     return String(data.oauthAccount?.emailAddress || '');
   } catch { return ''; }
 }

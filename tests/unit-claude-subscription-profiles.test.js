@@ -12,6 +12,16 @@ function setup(t) {
   const config={claudeSubscriptionProfile:'second',claudeSubscriptionProfiles:p.normalizeProfiles([],home)};
   return {home,env,config};
 }
+
+test('default identity ignores obsolete nested account, including when canonical identity is missing', t=>{
+  const {home}=setup(t),dir=path.join(home,'.claude');
+  fs.mkdirSync(dir,{recursive:true});
+  fs.writeFileSync(path.join(dir,'.claude.json'),JSON.stringify({oauthAccount:{emailAddress:'obsolete@example.com'}}));
+  fs.writeFileSync(path.join(home,'.claude.json'),JSON.stringify({oauthAccount:{emailAddress:'current@example.com'}}));
+  assert.equal(p.accountLabel(dir),'current@example.com');
+  fs.unlinkSync(path.join(home,'.claude.json'));
+  assert.equal(p.accountLabel(dir),'');
+});
 test('new sessions follow selection; persisted and legacy histories retain their account',t=>{
   const {config,env,home}=setup(t);
   assert.equal(p.profileForSession({},config,env).id,'second');
