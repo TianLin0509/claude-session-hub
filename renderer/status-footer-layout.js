@@ -6,8 +6,6 @@ function installStatusFooterLayout(doc = globalThis.document) {
   if (!footer || footer.dataset.fitInstalled) return;
   footer.dataset.fitInstalled = 'true';
   const win = doc.defaultView;
-  const summary = doc.createElement('button');
-  summary.type = 'button'; summary.className = 'footer-quota-summary';
   const more = doc.createElement('button');
   more.type = 'button'; more.id = 'footer-status-details'; more.textContent = '⋯';
   more.setAttribute('aria-label', '查看全部硬件、余量和网络状态');
@@ -22,6 +20,7 @@ function installStatusFooterLayout(doc = globalThis.document) {
   const refreshDetails = () => {
     if (popover.hidden) return;
     const activeProvider = doc.activeElement?.dataset?.refreshProvider;
+    const activeProfile = doc.activeElement?.dataset?.refreshProfile || '';
     popover.replaceChildren();
     const heading = doc.createElement('strong'); heading.textContent = '全部状态'; popover.append(heading);
     for (const node of footer.querySelectorAll('.strip-resource')) {
@@ -34,6 +33,7 @@ function installStatusFooterLayout(doc = globalThis.document) {
     for (const node of footer.querySelectorAll('.sidebar-quota-provider')) {
       const button = doc.createElement('button'); button.type = 'button';
       button.dataset.refreshProvider = node.dataset.provider;
+      button.dataset.refreshProfile = node.dataset.profileId || '';
       button.textContent = node.getAttribute('aria-label');
       button.title = node.title;
       const levels = [...node.querySelectorAll('.sidebar-quota-metric')].map(el => el.dataset.level);
@@ -46,49 +46,37 @@ function installStatusFooterLayout(doc = globalThis.document) {
       if (line.tagName === 'BUTTON') { line.type = 'button'; line.addEventListener('click', () => node.click()); }
       popover.append(line);
     }
-    if (activeProvider) popover.querySelector(`[data-refresh-provider="${activeProvider}"]`)?.focus({ preventScroll:true });
+    if (activeProvider) [...popover.querySelectorAll('[data-refresh-provider]')].find(node => node.dataset.refreshProvider === activeProvider && node.dataset.refreshProfile === activeProfile)?.focus({ preventScroll:true });
   };
   const setOpen = open => {
     popover.hidden = !open;
-    more.setAttribute('aria-expanded', String(open)); summary.setAttribute('aria-expanded', String(open));
+    more.setAttribute('aria-expanded', String(open));
     refreshDetails();
   };
-  summary.setAttribute('aria-haspopup', 'dialog'); summary.setAttribute('aria-controls', popover.id);
-  summary.addEventListener('click', () => setOpen(popover.hidden));
   more.addEventListener('click', () => setOpen(popover.hidden));
   doc.addEventListener('pointerdown', event => {
-    if (!popover.contains(event.target) && !more.contains(event.target) && !summary.contains(event.target)) setOpen(false);
+    if (!popover.contains(event.target) && !more.contains(event.target)) setOpen(false);
   });
   doc.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !popover.hidden) { event.preventDefault(); setOpen(false); more.focus({ preventScroll:true }); }
   });
   const sync = () => {
     scheduled = false;
-    const quota = footer.querySelector('.sidebar-quota');
-    if (quota && !summary.parentElement) quota.append(summary);
-    const cells = [...footer.querySelectorAll('.sidebar-quota-metric')];
-    const known = cells.filter(el => /%$/.test(el.querySelector('.sidebar-quota-value')?.textContent || ''));
-    const remaining = el => Number(el.querySelector('.sidebar-quota-value').textContent.match(/([\d.]+)%$/)?.[1]);
-    const tightest = known.sort((a,b) => remaining(a) - remaining(b))[0];
-    const provider = tightest?.closest('.sidebar-quota-provider');
-    summary.textContent = tightest ? provider.querySelector('.sidebar-quota-name').textContent + ' '
-      + tightest.querySelector('.sidebar-quota-value').textContent + ' ' + tightest.querySelector('.sidebar-quota-period').textContent : '余量详情';
-    summary.dataset.level = tightest?.dataset.level || 'normal';
-    summary.setAttribute('aria-label', summary.textContent + '；当前最紧张窗口，点击查看所有提供商');
-    summary.title = summary.getAttribute('aria-label');
-    // Read bounding boxes rather than scrollWidth: overflow is disabled in every mode.
-    for (const mode of ['full','compact','minimal','summary']) {
+    const quota = footer.querySelector('#rail-usage');
+    if (quota) { quota.tabIndex = 0; quota.setAttribute('aria-label', '各账号余量与刷新时间；空间不足时可横向滑动'); }
+    // Keep every account and both windows. Only secondary hardware/route text folds.
+    for (const mode of ['full','compact','minimal']) {
       footer.dataset.density = mode;
       const right = footer.getBoundingClientRect().right - 4;
-      if ([...footer.querySelectorAll('.strip-resource,.sidebar-quota-provider,.strip-route-row,.strip-transfer,.footer-quota-summary,#footer-status-details')]
+      if ((!quota || quota.scrollWidth <= quota.clientWidth + 1) && [...footer.querySelectorAll('.strip-resource,.strip-route-row,.strip-transfer,#footer-status-details')]
         .every(el => !el.getBoundingClientRect().width || el.getBoundingClientRect().right <= right + .5)) break;
     }
     refreshDetails();
   };
   const schedule = () => { if (!scheduled) { scheduled = true; win.requestAnimationFrame(sync); } };
-  // Never watch our own density/summary writes; quota and telemetry keep their current owners.
+  // Never watch our own density writes; quota and telemetry keep their current owners.
   const observer = new win.MutationObserver(records => {
-    if (records.some(r => !summary.contains(r.target) && r.target !== footer)) schedule();
+    if (records.some(r => r.target !== footer && r.target !== footer.querySelector('#rail-usage'))) schedule();
   });
   observer.observe(footer, { subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['data-level','aria-label'] });
   new win.ResizeObserver(schedule).observe(footer);

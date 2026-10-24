@@ -90,8 +90,8 @@ async function main() {
   });
   const controller = createAccountUsageController({
     document, sessions, escapeHtml: s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'),
-    ipcRenderer: { invoke(channel) { invokeCalls.push(channel); return refreshResult(); } },
-    setIntervalFn: fn => { interval = fn; return 1; },
+    ipcRenderer: { invoke(channel) { invokeCalls.push(channel); if (channel === 'account-profile-usage' || channel === 'refresh-account-profile-usage') return Promise.resolve({claude:[],codex:[]}); return refreshResult(); } },
+    setIntervalFn: (fn, ms) => { if (ms === 60000) interval = fn; return 1; },
     setTimeoutFn: (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; },
     clearTimeoutFn: id => timers.delete(id),
     nowFn: () => now,

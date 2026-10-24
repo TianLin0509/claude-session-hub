@@ -50,6 +50,37 @@ function createAccountUsageController({
   const accountUsage = { usage5h: null, usage7d: null };
   let claudeScope = '';
   let claudeSelectionRevision = 0;
+  let profileUsage = null;
+  let profileUsageError = '';
+  let profileFlight = null;
+  let profileFlightKey = '';
+  const pendingProfileRefreshes = new Map();
+  function loadProfileUsage(options = {}) {
+    const key = `${options.provider || '*'}:${options.profileId || '*'}:${!!options.force}`;
+    if (profileFlight) {
+      if (!options.force || key === profileFlightKey) return profileFlight;
+      if (!pendingProfileRefreshes.has(key)) pendingProfileRefreshes.set(key, profileFlight.then(() => { pendingProfileRefreshes.delete(key); return loadProfileUsage(options); }));
+      return pendingProfileRefreshes.get(key);
+    }
+    profileFlightKey = key;
+    profileFlight = Promise.resolve().then(async () => {
+      try {
+        const value = await ipcRenderer.invoke('refresh-account-profile-usage', options);
+        if (!Array.isArray(value?.claude) || !Array.isArray(value?.codex)) throw new Error('账号额度快照不可用');
+        profileUsage = value; profileUsageError = '';
+      } catch (error) { profileUsageError = error.message || '账号额度刷新失败'; }
+    }).finally(() => { profileFlight = null; render(); });
+    render();
+    return profileFlight;
+  }
+  Promise.resolve().then(async () => {
+    try {
+      const cached = await ipcRenderer.invoke('account-profile-usage');
+      if (Array.isArray(cached?.claude) && Array.isArray(cached?.codex)) profileUsage = cached;
+    } catch (error) { profileUsageError = error.message || '账号额度缓存不可用'; }
+    render();
+    await loadProfileUsage();
+  });
   // The Codex subscription accounts not in use right now: read when the popover opens.
   let otherCodex = [];
   const otherCodexState = { inFlight: false };
@@ -252,7 +283,8 @@ function createAccountUsageController({
     return nowFn() - ts > 120000 ? 'stale' : 'fresh';
   }
 
-  async function refreshProviderNow(provider) {
+  async function refreshProviderNow(provider, profileId) {
+    if (profileId && ['claude', 'codex'].includes(provider)) return loadProfileUsage({ provider, profileId, force: true });
     const selectionRevision = claudeSelectionRevision;
     if (!Object.prototype.hasOwnProperty.call(providerRefreshStates, provider)) throw new Error('不支持的刷新提供方');
     const state = providerRefreshStates[provider];
@@ -292,6 +324,7 @@ function createAccountUsageController({
       .then((result) => {
         if (selectionRevision !== claudeSelectionRevision) return null;
         void loadOtherCodex(true);
+        void loadProfileUsage({ force: true });
         usageRefreshState.providerResults = result && result.providerResults || null;
         usageRefreshState.error = ['claude', 'codex', 'deepseek'].flatMap(provider => {
           const status = usageRefreshState.providerResults?.[provider];
@@ -459,7 +492,10 @@ function createAccountUsageController({
     if (ticker) ticker.style.display = 'none'; // One-release compatibility node.
     if (!ensureUi()) return;
     const snapshot = getSnapshot();
-    if (ui.sidebar) ui.sidebar.render(snapshot, providerRefreshStates);
+    if (ui.sidebar) ui.sidebar.render(snapshot, profileUsageError ? { ...providerRefreshStates,
+      claude: { ...providerRefreshStates.claude, error: profileUsageError },
+      codex: { ...providerRefreshStates.codex, error: profileUsageError },
+    } : providerRefreshStates);
     const tightest = pickTightestWindow(snapshot);
     const lastSeen = tightest ? snapshot[tightest.provider]?.lastSeen : 0;
     const freshness = usageFreshnessClass(lastSeen);
@@ -554,13 +590,14 @@ function createAccountUsageController({
     // aria-disabled keeps keyboard focus on the same node; refreshUsageNow guards re-entry.
     ui.refresh.setAttribute('aria-disabled', String(usageRefreshState.inFlight || Object.values(providerRefreshStates).some(s => s.inFlight)));
     ui.memo.classList.toggle('active', isMemoOpen());
-    ui.notice.textContent = usageRefreshState.error ? '刷新异常：' + usageRefreshState.error
+    ui.notice.textContent = profileUsageError ? '账号额度刷新异常：' + profileUsageError : usageRefreshState.error ? '刷新异常：' + usageRefreshState.error
       : usageRefreshState.lastManualAt && nowFn() - usageRefreshState.lastManualAt < 60000 ? '刷新请求已完成，数据时间以各提供商观测为准' : '';
     ui.notice.hidden = !ui.notice.textContent;
     positionPopover();
   }
 
   setIntervalFn(render, 60000);
+  setIntervalFn(() => { void loadProfileUsage(); }, 120000);
   
   function pctClass(pct) {
     if (pct >= 85) return 'danger';
@@ -578,10 +615,18 @@ function createAccountUsageController({
     usageRefreshState.providerResults=null;usageRefreshState.error=null;
     render();
     Promise.resolve(ipcRenderer.invoke('get-usage-cache')).then(applyUsageCache).catch(()=>{});
+    void loadProfileUsage();
   });
 
   function getSnapshot() {
     return {
+      accounts: profileUsage ? Object.fromEntries(['claude','codex'].map(provider => [provider, profileUsage[provider].map(row => {
+        const current = provider === 'claude' ? { ...accountUsage, lastSeen: _claudeUsageLastSeen } : agentUsage.codex;
+        const sameAccount = provider === 'claude' ? row.scope === claudeScope : row.scope === (current?.scopeKey || current?.codexScopeKey);
+        const fresh = sameAccount && (current?.observedAt || current?.lastSeen || 0) > row.lastSeen;
+        return { ...row, ...(fresh ? { usage5h: current.usage5h, usage7d: current.usage7d, lastSeen: current.observedAt || current.lastSeen } : {}),
+          error: profileUsageError || row.error, inFlight: !!profileFlight };
+      })])) : null,
       claude: {
         usage5h: accountUsage.usage5h,
         usage7d: accountUsage.usage7d,

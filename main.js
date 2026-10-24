@@ -3958,6 +3958,19 @@ const codexOtherUsage = require('./main/usage/codex-other-profiles-usage.js').cr
 });
 ipcMain.handle('codex-other-usage', () => codexOtherUsage.list());
 ipcMain.handle('refresh-codex-other-usage', (_event, opts = {}) => codexOtherUsage.refresh({ force: opts && opts.force === true }));
+const accountProfileUsage = require('./main/usage/account-profile-usage').createAccountProfileUsage({
+  claudeProfiles: () => require('./core/claude-subscription-profiles').normalizeProfiles(getHubConfig().claudeSubscriptionProfiles),
+  claudeScope: currentClaudeScope, claudeCached: claudeCache,
+  refreshClaude: scope => claudeRefresher(scope).refresh(),
+  codexScope: currentCodexUsageScope,
+  codexCached: () => loadUsageCacheForCurrentConfig().codex,
+  codexOrder: () => ['default', ...(getHubConfig().codexSubscriptionProfiles || []).map(p => p.id).filter(id => id !== 'default')],
+  otherCodex: () => codexOtherUsage.list(),
+  refreshCodex: force => refreshCodexUsageIfDue(force),
+  refreshOtherCodex: options => codexOtherUsage.refresh(options),
+});
+ipcMain.handle('account-profile-usage', () => accountProfileUsage.list());
+ipcMain.handle('refresh-account-profile-usage', (_event, options = {}) => accountProfileUsage.refresh(options));
 
 const antigravityUsage = require('./main/usage/antigravity-account-usage').createAntigravityUsage();
 async function refreshAntigravityUsage(force = false) {
