@@ -1056,6 +1056,7 @@ function registerSessionIpc(ipcMain, deps) {
       ...(sessionModelId(old) ? { model: sessionModelId(old) } : {}),
       ...(old.effort ? { effort: old.effort } : {}),
       ...(old.codexProfile ? { codexProfile: old.codexProfile } : {}),
+      ...(old.claudeProfile ? {claudeProfile:old.claudeProfile,claudeConfigDir:old.claudeConfigDir} : {}),
       ...(old.mcpProfile ? { mcpProfile: old.mcpProfile } : {}),
       ...(old.fastMode === false ? { fastMode: false } : {}),
       ...(old.codexSpeedTier ? { codexSpeedTier: old.codexSpeedTier } : {}),

@@ -13,7 +13,12 @@ const {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-claude-locator-'));
 try {
   assert.ok(CLAUDE_PROJECT_ROOT_DIRS.includes('.claude-deepseek'));
-  assert.strictEqual(claudeProjectRoots(tmp).length, CLAUDE_PROJECT_ROOT_DIRS.length);
+  for (const dir of CLAUDE_PROJECT_ROOT_DIRS) assert.ok(claudeProjectRoots(tmp).includes(path.join(tmp,dir,'projects')));
+  const secondProjects = path.join(tmp,'.claude-profiles','second','projects','second-project');
+  fs.mkdirSync(secondProjects,{recursive:true});
+  const secondTranscript=path.join(secondProjects,'second-history.jsonl');
+  fs.writeFileSync(secondTranscript,'{}\n');
+  assert.strictEqual(findTranscriptByCCSessionId('second-history',tmp),secondTranscript);
 
   const projectDir = path.join(tmp, '.claude-deepseek', 'projects', 'proj-a');
   fs.mkdirSync(projectDir, { recursive: true });
