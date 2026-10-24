@@ -89,6 +89,7 @@
   <link rel="stylesheet" href="styles/editor-workspace.css">
   <link rel="stylesheet" href="styles/display-presets.css">
   <link rel="stylesheet" href="styles/navigation-hover.css">
+  <link rel="stylesheet" href="styles/rail-groups.css">
   <link rel="stylesheet" href="styles/preview-immersive.css">
   <link rel="stylesheet" href="styles/session-immersive.css">
 <link rel="stylesheet" href="styles/zoom-label.css">
@@ -153,29 +154,41 @@
       <div class="rail-drawer-head"><strong>导航</strong><button type="button" id="rail-pin" class="rail-pin" aria-label="取消固定并收起导航" aria-pressed="true" title="取消固定并收起导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 14v7"/></svg></button></div>
       <div class="rail-navigation">
       <button type="button" class="btn-shell-nav active" id="btn-home" title="主页" aria-current="page"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/home.png" alt="" aria-hidden="true" /></span><span class="btn-label">主页</span></button>
-      <!-- 规则 Tab（2026-10-12）：Hub 里的 Agent 默认带上的规则。放在主页和助理之间，公开版、公司版都有。 -->
-      <button type="button" class="btn-shell-nav" id="btn-rules" data-rules-entry title="规则 · Agent 默认带上的规则" aria-label="规则"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/rules.png" alt="" aria-hidden="true" /></span><span class="btn-label">规则</span></button>
+      <!-- 规则组（2026-10-24）：规则 / 资源 / 账号 / 回顾 四个入口收成一个，悬停向右展开成横排。
+           成员按钮原样搬进 .rail-group-menu：id、data-*、可访问名和事件接线都不变，只换父节点，
+           所以 renderer.js / rules.js / hub-workspaces.js 里的 getElementById 仍然命中同一批节点。
+           悬停展开、定位与键盘操作见 renderer/rail-groups.js。 -->
+      <div class="rail-group" id="rail-group-rules" data-rail-group="rules">
+        <button type="button" class="btn-shell-nav rail-group-trigger" id="btn-rail-group-rules" data-rail-group-trigger="rules" aria-haspopup="true" aria-expanded="false" aria-controls="rail-group-rules-menu" aria-label="规则 · 资源、账号、回顾" title="规则 · 资源、账号、回顾；悬停展开"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/rules.png" alt="" aria-hidden="true" /></span><span class="btn-label">规则</span></button>
+        <div class="rail-group-menu" id="rail-group-rules-menu" role="group" aria-labelledby="btn-rail-group-rules" hidden>
+          <!-- 规则 Tab（2026-10-12）：Hub 里的 Agent 默认带上的规则。公开版、公司版都有。 -->
+          <button type="button" class="btn-shell-nav" id="btn-rules" data-rules-entry title="规则 · Agent 默认带上的规则" aria-label="规则"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/rules.png" alt="" aria-hidden="true" /></span><span class="btn-label">规则</span></button>
+          <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="资源 · 工具与记忆" aria-label="资源" aria-expanded="false" aria-controls="hub-workspace"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/resources.png" alt="" aria-hidden="true" /></span><span class="btn-label">资源</span></button>
+          <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/accounts.png" alt="" aria-hidden="true" /></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
+          <button type="button" class="btn-shell-nav" id="btn-rail-memo" data-action="open-review" title="回顾 · 备忘与昨日之我" aria-label="回顾" aria-expanded="false" aria-controls="hub-workspace"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/review.png" alt="" aria-hidden="true" /></span><span class="btn-label">回顾</span></button>
+          <button type="button" class="btn-shell-nav" id="btn-rail-memory" hidden data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4ZM4 7l8 4 8-4M12 11v10"/></svg></span><span class="btn-label">记忆</span></button>
+        </div>
+      </div>
       <button type="button" class="btn-shell-nav" id="btn-assistant" title="助理 · 进展与下一步" aria-label="助理" aria-controls="terminal-panel"><span class="btn-icon" aria-hidden="true"><img src="assets/assistant/penguin.png" alt="" /></span><span class="btn-label">助理</span></button>
-      <!-- @community-strip 投研、学习入口 -->
-      <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/research.png" alt="" aria-hidden="true" /></span><span class="btn-label">投研</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/study.png" alt="" aria-hidden="true" /></span><span class="btn-label">学习</span></button>
+      <!-- 应用组（2026-10-24）：投研 / 学习 / 写作 / 无线 收成一个入口，悬停向右展开成横排。
+           与规则组同一套机制，成员节点原样搬入。 -->
+      <!-- @community-strip 投研、学习、写作、无线依赖私人模块与文章库 -->
+      <div class="rail-group" id="rail-group-applications" data-rail-group="applications">
+        <button type="button" class="btn-shell-nav rail-group-trigger" id="btn-rail-group-applications" data-rail-group-trigger="applications" aria-haspopup="true" aria-expanded="false" aria-controls="rail-group-applications-menu" aria-label="投研 · 学习、写作、无线" title="投研 · 学习、写作、无线；悬停展开"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/research.png" alt="" aria-hidden="true" /></span><span class="btn-label">投研</span></button>
+        <div class="rail-group-menu" id="rail-group-applications-menu" role="group" aria-labelledby="btn-rail-group-applications" hidden>
+          <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/research.png" alt="" aria-hidden="true" /></span><span class="btn-label">投研</span></button>
+          <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/study.png" alt="" aria-hidden="true" /></span><span class="btn-label">学习</span></button>
+          <!-- 写作 Tab（2026-09-30）：作品库 / 写作台 / 文风。 -->
+          <button type="button" class="btn-shell-nav" id="btn-writing" data-writing-entry title="写作 · 作品库、写作台与文风" aria-label="写作"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/writing.png" alt="" aria-hidden="true" /></span><span class="btn-label">写作</span></button>
+          <!-- 无线 Tab：SuperRAN 助理（2026-10-14） -->
+          <button type="button" class="btn-shell-nav" id="btn-wireless" title="无线 · SuperRAN 助理：已推进的提案自动交给 Agent 实现" aria-label="无线"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 12v9M9 21h6"/><circle cx="12" cy="10" r="1.6"/><path d="M8.5 6.5a5 5 0 0 0 0 7M15.5 6.5a5 5 0 0 1 0 7M5.6 3.8a9 9 0 0 0 0 12.4M18.4 3.8a9 9 0 0 1 0 12.4"/></svg></span><span class="btn-label">无线</span></button>
+        </div>
+      </div>
       <!-- @community-end -->
       <button type="button" class="btn-shell-nav" id="btn-team" hidden style="display:none" title="团队 · 成员关注、承诺跟进与周报草稿" aria-label="团队" aria-controls="team-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="9" cy="8" r="3"/><path d="M3 21v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M21 21v-2a6 6 0 0 0-4-5.7"/></svg></span><span class="btn-label">团队</span></button>
       <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/dev.png" alt="" aria-hidden="true" /></span><span class="btn-label">开发</span></button>
-      <!-- @community-strip 无线 Tab：SuperRAN 助理（2026-10-14） -->
-      <button type="button" class="btn-shell-nav" id="btn-wireless" title="无线 · SuperRAN 助理：已推进的提案自动交给 Agent 实现" aria-label="无线"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 12v9M9 21h6"/><circle cx="12" cy="10" r="1.6"/><path d="M8.5 6.5a5 5 0 0 0 0 7M15.5 6.5a5 5 0 0 1 0 7M5.6 3.8a9 9 0 0 0 0 12.4M18.4 3.8a9 9 0 0 1 0 12.4"/></svg></span><span class="btn-label">无线</span></button>
-      <!-- @community-end -->
-      <div class="rail-separator" aria-hidden="true"></div>
-      <button type="button" class="btn-shell-nav" id="btn-rail-memo" data-action="open-review" title="回顾 · 备忘与昨日之我" aria-label="回顾" aria-expanded="false" aria-controls="hub-workspace"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/review.png" alt="" aria-hidden="true" /></span><span class="btn-label">回顾</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-memory" hidden data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4ZM4 7l8 4 8-4M12 11v10"/></svg></span><span class="btn-label">记忆</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="资源 · 工具与记忆" aria-label="资源" aria-expanded="false" aria-controls="hub-workspace"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/resources.png" alt="" aria-hidden="true" /></span><span class="btn-label">资源</span></button>
       <!-- @community-strip 云端仅在本地 Hub 提供 -->
       <button type="button" class="btn-shell-nav" id="btn-cloud" title="云端 · 阿里云机器、服务与维护" aria-label="云端" aria-controls="cloud-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18a4 4 0 1 1 0-8 6 6 0 0 1 12-2 5 5 0 0 1 0 10H6Z"/></svg></span><span class="btn-label">云端</span></button>
-      <!-- @community-end -->
-      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/accounts.png" alt="" aria-hidden="true" /></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
-      <!-- @community-strip 写作 Tab 依赖私人文章库与文风 skill -->
-      <!-- 写作 Tab（2026-09-30）：作品库 / 写作台 / 文风。按田哥要求放在「账号」正下方。 -->
-      <button type="button" class="btn-shell-nav" id="btn-writing" data-writing-entry title="写作 · 作品库、写作台与文风" aria-label="写作"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/writing.png" alt="" aria-hidden="true" /></span><span class="btn-label">写作</span></button>
       <!-- @community-end -->
       </div>
       <div class="rail-spacer"></div>

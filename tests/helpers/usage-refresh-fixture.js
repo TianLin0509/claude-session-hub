@@ -210,6 +210,24 @@ async function click(cdp, selector) {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
 }
 
+// 2026-10-24：规则/资源/账号/回顾、投研/学习/写作/无线 收进了分组入口。
+// 走真实路径点它们：先悬停入口把 dock 展开，再点成员；一级入口（主页/助理/开发/云端）直接点。
+async function clickRailEntry(cdp, id) {
+  const where = await cdp.eval(`(() => {
+    const el = document.getElementById(${JSON.stringify(id)});
+    if (!el) throw new Error('missing rail entry ' + ${JSON.stringify(id)});
+    const group = el.closest('.rail-group');
+    if (!group) return { grouped: false };
+    const trigger = group.querySelector('.rail-group-trigger');
+    const r = trigger.getBoundingClientRect();
+    return { grouped: true, x: r.x + r.width / 2, y: r.y + r.height / 2, menu: '#' + group.querySelector('.rail-group-menu').id };
+  })()`);
+  if (!where.grouped) { await click(cdp, '#' + id); return; }
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: where.x, y: where.y });
+  await waitFor(cdp, `!document.querySelector(${JSON.stringify(where.menu)}).hidden`, 5000);
+  await click(cdp, '#' + id);
+}
+
 async function key(cdp, key, code, virtualKey) {
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: virtualKey,
     ...(key === 'Enter' ? { text: '\r' } : {}) });
@@ -217,4 +235,4 @@ async function key(cdp, key, code, virtualKey) {
 }
 
 
-module.exports = { getFreePort, seedUsageData, waitFor, click, key };
+module.exports = { getFreePort, seedUsageData, waitFor, click, key, clickRailEntry };
