@@ -41,6 +41,7 @@ class CompanyWebAi {
     if(this.closed||this.roots.get(root))return;this.roots.set(root,true);
     try{
       const claimed=await this.request(root,'claim',{});
+      if(this.closed)return;
       if(claimed.job){
         const job=claimed.job;
         if(!/^[a-f0-9-]{36}$/.test(job.id)||!/^[a-f0-9]{64}$/.test(job.receipt)||typeof job.system!=='string'||typeof job.text!=='string')throw Error('团队 AI 任务格式无效');

@@ -16,6 +16,11 @@ const {CompanyWebAi,bridgeRoot}=require('../core/company-web-ai');
   worker.roots.set(bridge,false);await worker.poll(bridge);worker.close();
   assert.equal(ran,1);assert.equal(calls.length,2);assert.equal(JSON.parse(calls[1].options.body).text,'result');assert.equal(calls[1].options.redirect,'error');
   assert.equal(events.at(-1).state,'done');
+  let release;
+  const late=new CompanyWebAi({dataDir:root,catalog,run:async()=>{throw Error('Locked worker must not execute');},fetch:()=>new Promise(r=>{release=r;})});
+  late.roots.set(bridge,false);const waiting=late.poll(bridge);late.close();
+  release({ok:true,json:async()=>({job:{id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',receipt:'b'.repeat(64),system:'instruction',text:'material'}})});
+  await waiting;
   console.log('PASS company web worker: scoped header, denied origins, claimed task and result receipt');
  }finally{worker.close();fs.rmSync(root,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);process.exitCode=1;});

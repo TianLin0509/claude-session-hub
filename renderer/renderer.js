@@ -8854,6 +8854,7 @@ if (require('../core/distribution').personalModules) {
 if (require('../core/team-workspace/catalog').teamEnabled()) {
   const teamPage = require('./team-page').createTeamPage({
     document, window, ipcRenderer,
+    authorize: async () => { const result = await ipcRenderer.invoke('team:access'); return result?.ok && result.unlocked; },
     closeOtherPanels: () => {
       window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close();
       for (const key of ['__cloudHide', '__assistantHide', '__companyAssistantHide', '__companyForumHide', '__wirelessHide', '__writingHide', '__rulesHide', '__chuxinHide', '__studyHide', '__ranHide']) window[key]?.();
@@ -8862,6 +8863,9 @@ if (require('../core/team-workspace/catalog').teamEnabled()) {
   });
   window.__teamHide = () => teamPage.close();
   document.getElementById('btn-team')?.addEventListener('click', () => teamPage.open());
+  require('./team-access').createTeamAccess({ document, window, ipcRenderer,
+    onUnlocked: () => teamPage.open(), onLocked: () => teamPage.close(), showMessage: message => showToast(message),
+  });
 } else document.getElementById('btn-team')?.remove();
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;

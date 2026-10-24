@@ -2654,6 +2654,7 @@ try {
 // 公司版「助理」（2026-10-16）：每日简报 + 对话 + 6 条提醒，只读 WeLink，数据只留在本机 Hub 数据目录。
 // 只在公司版启用（core/company-assistant/gate.js），不依赖家里联动的配对。提醒经提醒总线发布：这里转成桌面通知并告诉页面。
 let companyAssistantService = null;
+const teamAccess = new (require('./core/team-workspace/access').TeamAccess)();
 try {
   if (require('./core/company-assistant/gate').companyAssistantEnabled()) {
     const { CompanyAssistant } = require('./core/company-assistant/service');
@@ -2664,6 +2665,7 @@ try {
       return saved ? { ...saved, id: saved.hubId || id } : null;
     };
     companyAssistantService = new CompanyAssistant({
+      assertTeamAccess: () => teamAccess.assert(),
       dataDir: getHubDataDir(),
       noTimer: process.env.CLAUDE_HUB_ASSISTANT_TIMER === '0',
       createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
@@ -2742,24 +2744,31 @@ let teamWorkspace = null, teamToolsView = null, companyWebAi = null;
 try {
   const { teamEnabled, toolsCatalog } = require('./core/team-workspace/catalog');
   if (teamEnabled()) {
-    if(require('./core/company-ai-policy').companyOnly()) companyWebAi=new (require('./core/company-web-ai').CompanyWebAi)({
+    const startTeam = () => {
+      teamAccess.assert();
+      if(require('./core/company-ai-policy').companyOnly() && !companyWebAi) companyWebAi=new (require('./core/company-web-ai').CompanyWebAi)({
       dataDir:getHubDataDir(),catalog:toolsCatalog(),run:runCompanyAi,
       onChanged:state=>sendToRenderer('company-ai:changed',{...state,source:'team-web'}),
-    });
+      });
+      teamWorkspace.start();
+    };
     teamWorkspace = require('./core/team-workspace').createTeamWorkspace({
+      assertAccess: () => teamAccess.assert(),
       dataDir: getHubDataDir(), getAssistant: () => companyAssistantService,
       onChanged: () => sendToRenderer('team:changed', {}),
     });
     teamToolsView = require('./main/team-tools-view').createTeamToolsView({
       getWindow: () => mainWindow, WebContentsView: require('electron').WebContentsView,
       session: require('electron').session, catalog: toolsCatalog(),
+      assertAccess: () => teamAccess.assert(),
       configureSession:webSession=>companyWebAi?.attach(webSession),
       onChanged: state => sendToRenderer('team:web-state', state),
     });
     require('./main/ipc/team-workspace-handlers').registerTeamWorkspaceIpc(ipcMain, {
       workspace: teamWorkspace, web: teamToolsView, getWindow: () => mainWindow,
+      access: teamAccess, onUnlock: startTeam,
+      onLock: async () => { teamWorkspace.stop(); teamToolsView.dispose(); companyWebAi?.close(); companyWebAi = null; await companyAssistantService?.revokeTeamAccess(); },
     });
-    teamWorkspace.start();
   }
 } catch (error) { console.error('[team-workspace] 团队工作台未启动：', error.message); }
 // 公司版「论坛」（2026-10-18）：每天同步稼先社区、心声社区的热门帖子并附 AI 摘要，数据只留在本机 Hub 数据目录。
