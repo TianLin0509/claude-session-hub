@@ -255,6 +255,16 @@ const clipboardController = createClipboardController({ document, window, clipbo
   writeTextVerified: (text, formats) => ipcRenderer.invoke('clipboard:write-text', text, formats),
   expandText: pasteChips.expandPasteMarkers });
 clipboardController.init();
+require('./touch-tools').initTouchTools({ document, window, ipcRenderer,
+  copyText: (text, options) => clipboardController.copyText(text, options),
+  expandText: pasteChips.expandPasteMarkers,
+  getTerminal: target => [...terminalCache.values()].find(entry => entry.container?.contains(target))?.terminal,
+  pasteTerminal: terminal => {
+    const entry = [...terminalCache.entries()].find(([, value]) => value.terminal === terminal);
+    if (!entry) throw new Error('原终端已关闭，请重新选择输入位置');
+    return handlePasteForSession(entry[0]);
+  },
+});
 // xterms are created lazily, then live for exactly as long as their live Hub
 // sessions. Switching sessions must not dispose a still-running CLI: doing so
 // turns ordinary navigation into a snapshot-replay path and can lose the

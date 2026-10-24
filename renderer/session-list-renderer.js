@@ -411,7 +411,7 @@ function _sessionWarningText(session) {
     // 读不出代理地址（自动配置脚本）但 xGate 开着时，主进程照样按系统代理探了出口：探到了就显示它（公司直连本来就出不去）。
     const displayRoute = proxyShort || (xgate && foreign && foreign.ok) ? foreign : domestic;
     const alert = egress && egress.alert;
-    const clashDelay = proxyShort && proxy?.clashDelay?.status === 'ok' ? proxy.clashDelay : null;
+    const clashDelay = proxy?.clashDelay?.status === 'ok' ? proxy.clashDelay : null;
 
     const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
     const foreignTitle = [
@@ -455,7 +455,7 @@ function _sessionWarningText(session) {
     const domesticLabel = !egress ? '国内检测中' : domestic?.ok ? '国内正常' : '国内异常';
     const markup =
       '<div class="strip-resources" title="点击 CPU / 内存查看进程，点击硬盘释放空间">' + metric('CPU', cpuPct) + gpuMetric + metric('内存', memoryPct) + diskMetric + '</div>' +
-      `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${routeLabel}</span><span class="strip-location">${escapeHtml(location)}</span>${clashDelay ? `<span class="strip-delay">节点 ${clashDelay.delayMs} ms</span>` : ''}</button>` +
+      `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${routeLabel}</span><span class="strip-location">${escapeHtml(location)}</span><span class="strip-delay" data-state="${clashDelay ? 'known' : 'unknown'}">${clashDelay ? `节点 ${clashDelay.delayMs} ms` : '节点待测'}</span></button>` +
       transfer + (showDomesticRoute() ? `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span>` : '') + '</div>';
     if (stripEl._resourceMarkup === markup) return;
     stripEl._resourceMarkup = markup;

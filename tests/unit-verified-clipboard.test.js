@@ -4,6 +4,18 @@ const assert = require('node:assert/strict');
 const { createVerifiedClipboardWriter } = require('../core/verified-clipboard');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('clipboard held for 500 ms recovers without another user copy', async () => {
+  let elapsed = 0; let stored = 'old';
+  const write = createVerifiedClipboardWriter({
+    clipboard: { writeText(text) { if (elapsed < 500) throw new Error('clipboard busy'); stored = text; }, readText: () => stored },
+    wait: async ms => { elapsed += ms; },
+  });
+  const result = await write('remote copy');
+  assert.equal(result.ok, true);
+  assert.equal(stored, 'remote copy');
+  assert.ok(elapsed < 2000, 'recovery must remain bounded');
+});
+
 test('main writer retries busy and silently dropped writes before acknowledging', async () => {
   let stored = 'old'; let writes = 0;
   const write = createVerifiedClipboardWriter({
@@ -53,6 +65,21 @@ test('permanent failure and missing readback never claim success', async () => {
     const write = createVerifiedClipboardWriter({ clipboard, wait: async () => {} });
     assert.equal((await write('wanted')).ok, false);
   }
+});
+
+test('screenshot invalidates old text retries and yields to newer text copies', async () => {
+  let stored = ''; const pending = [];
+  const write = createVerifiedClipboardWriter({ clipboard: { writeText(text) { stored = text; }, readText: () => stored },
+    wait: () => new Promise(resolve => pending.push(resolve)) });
+  const old = write('old');
+  const screenshotIsCurrent = write.beginExternalWrite();
+  pending.shift()();
+  assert.equal((await old).reason, 'superseded');
+  assert.equal(screenshotIsCurrent(), true);
+  const next = write('new');
+  assert.equal(screenshotIsCurrent(), false);
+  pending.shift()();
+  assert.equal((await next).ok, true);
 });
 
 test('native copy preserves HTML alongside the verified plain text', async () => {

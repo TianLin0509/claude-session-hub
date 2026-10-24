@@ -2,10 +2,10 @@
 
 // 主进程统一写入并读回系统剪贴板。所有窗口共享次序：新复制到达后，旧重试立即作废。
 function createVerifiedClipboardWriter({ clipboard, wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
-  retryDelaysMs = [0, 20, 50, 100, 200] } = {}) {
+  retryDelaysMs = [0, 20, 50, 100, 200, 400, 800] } = {}) {
   let sequence = 0;
   const normalize = value => String(value ?? '').replace(/\r\n?/g, '\n');
-  return async function writeText(value, formats = {}) {
+  async function writeText(value, formats = {}) {
     const request = ++sequence;
     const text = String(value ?? '');
     const result = { ok: false, length: Array.from(text).length, attempts: 0 };
@@ -30,7 +30,10 @@ function createVerifiedClipboardWriter({ clipboard, wait = ms => new Promise(res
       }
     }
     return result;
-  };
+  }
+  // Screenshot writes share the same ordering as text copies.
+  writeText.beginExternalWrite = () => { const request = ++sequence; return () => request === sequence; };
+  return writeText;
 }
 
 module.exports = { createVerifiedClipboardWriter };
