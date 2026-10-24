@@ -26,6 +26,8 @@ function setup(t) {
   return f;
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
+// 负载高时发送链路要多走几拍：最多等 2 秒，条件成立即返回。
+const eventually = async (check, ms = 2000) => { const end = Date.now() + ms; while (!check() && Date.now() < end) await new Promise(r => setTimeout(r, 10)); };
 
 test('团队口令锁定取消排队/运行任务并隐藏助理中的团队记录，普通对话保留', async t => {
   const f=setup(t),a=f.a;let unlocked=true;
@@ -39,6 +41,7 @@ test('团队口令锁定取消排队/运行任务并隐藏助理中的团队记�
   assert.deepEqual(a.status().chat.map(x=>x.q),['普通问题']);
   assert.throws(()=>a.retryChat(pending.id),/未解锁/);
   assert.equal(f.sent.filter(x=>x.prompt.includes('排队中的私人')).length,0);
+  await eventually(()=>f.sent.some(x=>x.prompt.includes('普通问题')));
   assert.ok(f.sent.some(x=>x.prompt.includes('普通问题')));
   unlocked=true;assert.equal(a.status().chat.length,3);
 });
