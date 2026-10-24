@@ -319,6 +319,16 @@ function claudeProfileHookDirs() {
   }
 }
 
+function alignClaudeProfileDir(dir) {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const report = require('./core/claude-profile-align').alignClaudeProfile({
+      primaryDir: path.join(home, '.claude'), primaryStateFile: path.join(home, '.claude.json'), profileDir: dir });
+    if (report.backup) console.log(`[claude-profile-align] 首次对齐，原配置已备份到 ${report.backup}`);
+    if (report.errors.length) console.warn(`[claude-profile-align] ${dir}：${report.errors.join('；')}`);
+  } catch (error) { console.warn(`[claude-profile-align] ${dir}：${error.message}`); }
+}
+
 function ensureHooksDeployed(claudeDirPath) {
   const claudeDir = claudeDirPath;
   const srcDir = HUB_IS_PACKAGED
@@ -4579,9 +4589,11 @@ app.whenReady().then(async () => {
   //   群聊卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
   //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
   //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
+  // 账号对齐（2026-10-24）：独立账号目录先按主账号同步设置/技能/插件/MCP，再装 hook。
+  if (!isIsolatedHub()) for (const dir of claudeProfileHookDirs()) alignClaudeProfileDir(dir);
   for (const claudeDir of claudeDirs) ensureHooksDeployed(claudeDir);
   // 会话启动前再补一次：运行中新加的账号目录也能当场装上。隔离 Hub 不碰真实账号目录。
-  sessionManager.deployClaudeProfileHooks = dir => { if (!isIsolatedHub()) ensureHooksDeployed(dir); };
+  sessionManager.deployClaudeProfileHooks = dir => { if (!isIsolatedHub()) { alignClaudeProfileDir(dir); ensureHooksDeployed(dir); } };
   // 公司 Code Agent（Claude 形态，core/codeagent-config.js）：配置目录已存在才部署，不凭空创建 ~/.cac。
   // 隔离 Hub 只在测试显式指定了它的配置目录时部署，绝不碰真实 home。
   const codeagentHookTargets = [];

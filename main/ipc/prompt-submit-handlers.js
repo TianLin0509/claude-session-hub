@@ -388,6 +388,31 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   };
   ipcMain.handle('session:send-prompt', submitPrompt);
 
+  // PTY Claude 的推理档：经同一提交闭环发 /effort，以 transcript 确认后才落到会话元数据。
+  ipcMain.handle('claude-pty:set-effort', async (_event, request = {}) => {
+    const sessionId = typeof request.sessionId === 'string' ? request.sessionId : '';
+    const session = sessionId ? sessionManager.getSession(sessionId) : null;
+    if (!session || !/^claude(?:-resume)?$/.test(session.kind || '')
+        || !require('../../core/agent-runtime-mode').isPtyAgentSession(session)) {
+      return { ok: false, message: '只有终端运行的 Claude 会话走这条切换' };
+    }
+    if (session.status === 'running') return { ok: false, message: '当前回答仍在运行，请结束后再切换推理档' };
+    const configDir = session.claudeConfigDir || require('path').join(require('os').homedir(), '.claude');
+    // 还没发过消息时 hook 尚未上报路径：按 --session-id 与 cwd 推算 Claude 必写的那份记录。
+    const transcriptPath = session.transcriptPath || (session.ccSessionId && session.cwd
+      ? require('path').join(configDir, 'projects', require('../../core/claude-transcript-locator').projectSlug(session.cwd), session.ccSessionId + '.jsonl')
+      : null);
+    const result = await require('../../core/claude-pty-effort').setPtyClaudeEffort({
+      session: { ...session, transcriptPath }, effort: request.effort, configDir,
+      send: (text, observer) => require('../../core/group-chat-watcher').sendToPty(sessionId, text, session.kind,
+        { requireReady: false, localCommandObserver: observer }),
+    });
+    if (!result.ok) return result;
+    const updated = sessionManager.updateSessionMeta(sessionId, { effort: result.effort });
+    if (updated) sendToRenderer('session-updated', { session: updated });
+    return { ok: true, result: { effort: result.effort } };
+  });
+
   // 「⚠ 未提交 · 补发」按钮。复用群聊那条手动补发路径：它会先用 prompt 首行指纹
   //   判断原文是否还留在输入框里 —— 在 → 只补回车；不在 → 整条重写再提交。
   //   直接盲发回车会在「原文其实没进去」时提交一个空输入框。
