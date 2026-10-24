@@ -72,8 +72,8 @@ async function main() {
     await until('document.querySelector(' + JSON.stringify(box) + ').textContent.includes("不要合并")', 'partial directly in draft');
     assert.equal(await cdp.eval('document.querySelector(' + JSON.stringify(box) + ').textContent'), '已有草稿：不要合并');
     assert.equal(await cdp.eval('document.querySelectorAll(".voice-panel,.voice-preview").length'), 0);
-    const placement = await cdp.eval('(()=>{const a=document.querySelector(".composer-start-actions"),b=document.querySelector(".fi-bridge-toolbar"),i=document.querySelector(".floating-input-box");return {sameRow:a.parentElement===b.parentElement,after:b.nextElementSibling===a,below:a.getBoundingClientRect().top>=i.getBoundingClientRect().bottom};})()');
-    assert.deepEqual(placement, { sameRow: true, after: true, below: true });
+    const placement = await cdp.eval('(()=>{const b=document.querySelector(".fi-bridge-toolbar"),i=document.querySelector(".floating-input-box");return {inSecondary:b.parentElement.classList.contains("composer-secondary-actions"),below:b.getBoundingClientRect().top>=i.getBoundingClientRect().bottom};})()');
+    assert.deepEqual(placement, { inSecondary: true, below: true });
     await snap('recording'); await click(mic);
     await until('document.querySelector(' + JSON.stringify(box) + ').textContent.includes("SRS")', 'final inserted');
     assert.equal(await cdp.eval('document.querySelector(' + JSON.stringify(box) + ').textContent'), '已有草稿：不要合并 master。SRS 是十毫秒。');

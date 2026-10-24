@@ -273,7 +273,7 @@ function _paintSceneHint() {
   const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
   if (!hint) return;
   if (_currentMode === 'dev') {
-    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员。建好后直接输入任务，Hub 安排第一位开题与实现、第二位独立审查与合并。单人开发请使用普通会话的「一键开工」。';
+    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员。建好后直接输入任务，Hub 安排第一位开题与实现、第二位独立审查与合并。单人开发直接用普通会话。';
     hint.style.display = '';
   } else {
     hint.textContent = '';
@@ -647,7 +647,7 @@ async function _onCreate() {
     const scene = sceneInput ? sceneInput.value : 'general';
     const orchestration = _orchestrationPayload();
     if (orchestration && slots.length < 2) throw new Error('编排群至少需要负责人和一位工作成员；请先选择成员');
-    if (!orchestration && scene === 'dev' && slots.length < 2) throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
+    if (!orchestration && scene === 'dev' && slots.length < 2) throw new Error('开发群聊至少需要两位成员；单人开发直接用普通会话。');
     // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
     const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
     const titleInput = _modalEl.querySelector('#mcm-title-input');

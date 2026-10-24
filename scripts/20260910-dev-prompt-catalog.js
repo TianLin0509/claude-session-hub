@@ -13,7 +13,6 @@ const entries=[];
 function add(id,title,group,trigger,source,text,added=false){entries.push({id,title,group,trigger,source,original:text,added});}
 const meeting={groupChat:true,scene:'dev',workspace:'{{项目根目录}}',serialWorkflow:{fileFlowVersion:2}};
 const dir='{{任务目录}}';
-add('one-click-start','一键开工','主流程','普通 session 点击后预填，用户发送后授权执行','renderer/one-click-start.js',require('../renderer/one-click-start').PROMPT,true);
 add('prep','立项','主流程','点击立项，仅填入输入框','core/dev-file-workflow.js · PROJECT_PREP_PROMPT',F.PROJECT_PREP_PROMPT);
 add('common','双 Agent 通用约束','主流程','每个 Agent 首次成功送达；协议或项目角色变化时更新','core/dev-file-workflow.js · common',F.common(meeting,dir));
 for(const [phase,n,title] of [['kickoff',0,'开题'],['build',1,'首次实现'],['build',2,'返工实现'],['merge',1,'验证与合并']]){

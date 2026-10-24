@@ -413,7 +413,7 @@ async function main() {
     })()`);
     assert.deepEqual(result.sceneReset, {
       scene: 'dev', devSceneSelected: true, workspaceMode: 'existing',
-      hintShown: true, hintText: '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员。建好后直接输入任务，Hub 安排第一位开题与实现、第二位独立审查与合并。单人开发请使用普通会话的「一键开工」。',
+      hintShown: true, hintText: '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员。建好后直接输入任务，Hub 安排第一位开题与实现、第二位独立审查与合并。单人开发直接用普通会话。',
     }, '重开后场景说明必须跟着场景一起复位');
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
     await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });
