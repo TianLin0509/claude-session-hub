@@ -53,7 +53,7 @@ test('规则文字：正面写法，要求按假设做完并在末尾列出假�
   assert.match(rules.NO_CHOICE_RULE, /假设与备选/);
   assert.ok(!/家里/.test(rules.NO_CHOICE_RULE + rules.DENY_REASON), '公司侧文案不出现「家里」');
   assert.equal(rules.DENY_REASON, '这个会话是自动派活的，没人能回答选择题：请按最合理的假设继续，并在回答里写明假设');
-  assert.deepEqual(rules.AUTO_PURPOSES, ['company-bridge', 'company-assistant', 'company-forum']);
+  assert.deepEqual(rules.AUTO_PURPOSES, ['company-bridge', 'company-assistant', 'company-forum', 'company-ai']);
 });
 
 // ---------- 强制层：会话环境与 hook 登记 ----------
@@ -66,7 +66,10 @@ test('会话环境：只给三类自动派活会话设标记；其余会话去�
   for (const purpose of rules.AUTO_PURPOSES) {
     const e = {};
     assert.equal(rules.applySessionEnv(e, purpose, cfg), true);
-    assert.deepEqual(e, { AI_HUB_NO_CHOICE: '1', AI_HUB_NO_CHOICE_REASON: rules.DENY_REASON, AI_HUB_NO_CHOICE_TOOLS: 'AskUserQuestion' });
+    assert.equal(e.AI_HUB_NO_CHOICE, '1');
+    assert.equal(e.AI_HUB_NO_CHOICE_TOOLS, 'AskUserQuestion');
+    if (purpose === 'company-ai') assert.match(e.AI_HUB_NO_CHOICE_REASON, /保留材料原有的不确定性.*指定格式/);
+    else assert.equal(e.AI_HUB_NO_CHOICE_REASON, rules.DENY_REASON);
   }
   const off = rules.gateConfig({ AI_HUB_CODEAGENT_CHOICE_GATE: '0' }, {});
   assert.equal(off.enabled, false);

@@ -148,6 +148,8 @@ function registerSessionIpc(ipcMain, deps) {
       kind = 'powershell';
       opts = {};
     }
+    require('../../core/company-ai-policy').assertKind(kind || 'powershell');
+    if (require('../../core/company-ai-policy').companyOnly() && require('../../core/chatgpt-web-models').isChatgptWebModel(opts.model)) throw new Error('公司版只使用 CodeAgent');
     if (kind === 'chatgpt') {
       if (!require('../../core/chatgpt-web-models').isChatgptWebModel(opts.model)) throw new Error('请选择可用的 ChatGPT 模型');
       kind = 'codex';

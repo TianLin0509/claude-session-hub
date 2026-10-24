@@ -1,6 +1,6 @@
 'use strict';
 // Remote sites are top-level, sandboxed web contents. They never receive a preload or Hub IPC authority.
-function createTeamToolsView({ getWindow, WebContentsView, session, catalog, onChanged = () => {} }) {
+function createTeamToolsView({ getWindow, WebContentsView, session, catalog, onChanged = () => {}, configureSession = () => {} }) {
   const byId = new Map(catalog.map(item => [item.id, item]));
   const origins = new Set(catalog.map(item => new URL(item.url).origin));
   let view = null, attachedTo = null, current = null, phase = 'idle', error = null, epoch = 0;
@@ -30,6 +30,7 @@ function createTeamToolsView({ getWindow, WebContentsView, session, catalog, onC
     if (view && !view.webContents.isDestroyed()) return;
     const partition = 'persist:team-tools';
     const webSession = session.fromPartition(partition);
+    configureSession(webSession);
     webSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     webSession.setPermissionCheckHandler(() => false);
     view = new WebContentsView({ webPreferences: { partition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, spellcheck: false } });

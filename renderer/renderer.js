@@ -9050,7 +9050,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
     return;
   }
   // 公司助理的简报和团队分析会在后台创建会话；成员页输入与团队导航保持原位。
-  if (session.purpose === 'company-assistant') {
+  if (session.purpose === 'company-assistant' || session.purpose === 'company-ai') {
     if (wasDormant && activeSessionId === session.id && !document.body.classList.contains('team-page-open')) await selectSession(session.id, { forceScrollBottom: pendingResume?.forceScrollBottom === true });
     scheduleSessionListRender();
     return;
