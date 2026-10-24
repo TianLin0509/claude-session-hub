@@ -4959,34 +4959,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   const composer = document.createElement('div');
   composer.className = 'composer';
   composer.dataset.state = 'ready';
-  const startActions = document.createElement('div');
-  startActions.className = 'composer-start-actions';
-  // Group members use the group's own dispatch controls, even in session view.
-  startActions.hidden = !!sessions.get(sessionId)?.meetingId
-    || Object.values(meetings).some(m => m?.subSessions?.includes(sessionId));
-  const startButton = document.createElement('button');
-  startButton.type = 'button';
-  startButton.className = 'composer-one-click-start';
-  startButton.textContent = '一键开工';
-  startButton.title = '追加自主实现、验证与合并的提示词；可编辑，发送后授权执行';
-  startButton.addEventListener('click', () => {
-    const suffix = require('./one-click-start').suffix(readContenteditablePlainText(inputBox));
-    inputBox.focus();
-    placeCaretAtContenteditableEnd(inputBox);
-    if (suffix) {
-      // Append at the end instead of replacing the draft, preserving attachments
-      // and the browser undo history. The existing send path remains unchanged.
-      const html = escapeHtml(suffix).replace(/\n/g, '<br>');
-      if (!document.execCommand('insertHTML', false, html)) inputBox.appendChild(document.createTextNode(suffix));
-      saveFloatingInputDraft(sessionId, inputBox);
-      inputBox.dispatchEvent(new Event('input', { bubbles: true }));
-      placeCaretAtContenteditableEnd(inputBox);
-    }
-  });
-  startActions.appendChild(startButton);
   const secondaryActions = document.createElement('div');
   secondaryActions.className = 'composer-secondary-actions';
-  secondaryActions.append(bridgeToolbar, startActions);
+  secondaryActions.append(bridgeToolbar);
   const tuningControls = document.createElement('div');
   tuningControls.className = 'composer-tuning-controls';
   tuningControls.append(attachBtn, secondaryActions, modelChip, thinkingChip, speedChip);

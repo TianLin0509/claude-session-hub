@@ -77,7 +77,7 @@ async function run() {
       await click('[data-mcm-scene="dev"]');
       await click('#meeting-create-modal .mcm-create');
       await wait(() => cdp.eval("document.querySelector('.mcm-error')?.textContent.includes('至少需要两位')"), 'solo creation rejected');
-      ok('单人开发引导至普通会话的一键开工', await cdp.eval("document.querySelector('.mcm-error').textContent.includes('一键开工')"));
+      ok('单人开发引导至普通会话', await cdp.eval("document.querySelector('.mcm-error').textContent.includes('单人开发直接用普通会话')"));
       evidence.ok=true;
       return;
     }

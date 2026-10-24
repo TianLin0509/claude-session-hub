@@ -44,15 +44,11 @@ async function run() {
     await cdp.eval(`sessions.get(${sid}).contextPct=19;updateFloatingBarState()`);
     ok('remaining percentage precedes ring', await cdp.eval(`(()=>{const p=document.querySelector('.composer-context-value'),r=document.querySelector('.composer-ctx');return p.textContent==='81%'&&p.getBoundingClientRect().right<=r.getBoundingClientRect().left;})()`));
     ok('duplicate status strip removed and footer shrunk', await cdp.eval(`!document.querySelector('#card-session-status')&&document.querySelector('.floating-input-bar').getBoundingClientRect().height===164`));
-    ok('all three actions precede model on one row', await cdp.eval(`(()=>{const a=document.querySelector('.composer-secondary-actions').getBoundingClientRect(),m=document.querySelector('.composer-model').getBoundingClientRect();return a.right<=m.left+1&&Math.abs(a.y-m.y)<6&&!!document.querySelector('.composer-tuning-controls .fi-bridge-fork')&&!!document.querySelector('.composer-tuning-controls .composer-one-click-start');})()`));
+    ok('all three actions precede model on one row', await cdp.eval(`(()=>{const a=document.querySelector('.composer-secondary-actions').getBoundingClientRect(),m=document.querySelector('.composer-model').getBoundingClientRect();return a.right<=m.left+1&&Math.abs(a.y-m.y)<6&&!!document.querySelector('.composer-tuning-controls .fi-bridge-fork')&&!document.querySelector('.composer-one-click-start');})()`));
     ok('all eight rail labels visible', await cdp.eval(`document.querySelectorAll('.rail-navigation .btn-label').length===8&&[...document.querySelectorAll('.rail-navigation .btn-label')].every(e=>e.getBoundingClientRect().height>0)`));
     await shot('ordinary-wide');
     await click('.floating-input-box');await cdp.send('Input.insertText',{text:'保留多行草稿\n第二行'});
-    const stableHeight = await cdp.eval(`document.querySelector('.floating-input-bar').getBoundingClientRect().height`);
-    await click('.composer-one-click-start');
-    ok('one-click start preserves draft and fixed geometry', await cdp.eval(`document.querySelector('.floating-input-box').innerText.startsWith(${JSON.stringify('保留多行草稿\n第二行')})&&document.querySelector('.floating-input-box').innerText.includes('【一键开工】')&&document.querySelector('.floating-input-bar').getBoundingClientRect().height===${stableHeight}`));
     const turns = () => fs.readFileSync(trace,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(e=>e.method==='turn/start');
-    ok('one-click start does not send a model turn', turns().length===0);
     for (const theme of ['dark','codex']) {
       await cdp.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
       await cdp.send('Emulation.setDeviceMetricsOverride',{width:900,height:640,deviceScaleFactor:1,mobile:false});

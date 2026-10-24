@@ -303,7 +303,7 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     } else delete safe.orchestration;
     if (!orchestration && (safe.serialWorkflow?.soloDevelopment || safe.serialWorkflow?.templateId === 'dev-task-solo'
       || (safe.mode === 'dev' && (!Array.isArray(devSlots) || devSlots.length < 2)))) {
-      throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
+      throw new Error('开发群聊至少需要两位成员；单人开发直接用普通会话。');
     }
     const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
     safe.autoTitlePending = !hasCustomTitle;
