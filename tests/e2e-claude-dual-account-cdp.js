@@ -2,7 +2,7 @@
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
 const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
 const {connectFirstPage}=require('./helpers/cdp-client');
-const {getFreePort,waitFor,click}=require('./helpers/usage-refresh-fixture');
+const {getFreePort,waitFor,click,clickRailEntry}=require('./helpers/usage-refresh-fixture');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-dual-claude-'));
 const data=path.join(root,'data'),home=path.join(root,'home'),cwd=path.join(root,'workspaces','task');
 const out=path.resolve('artifacts','20261023-claude-dual-account-codex');
@@ -63,7 +63,7 @@ async function main(){
     checks.push('切换账号后用量 scope 切换，B 缺额度时保持空值');
     await click(c,'#new-session-close');
     await c.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});
-    await click(c,'#btn-rail-accounts');
+    await clickRailEntry(c,'btn-rail-accounts');
     await waitFor(c,'document.querySelectorAll("[data-ac=claude-quota]").length===2',15000);
     assert.ok(await c.eval(`document.querySelector('[aria-label="Claude 用量账号"]').textContent.includes('已有会话恢复、重启仍用原账号')`));
     await click(c,'[data-ac="claude-quota"][data-profile="default"]');

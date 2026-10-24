@@ -59,7 +59,9 @@ function installSessionFirstNavigation(doc = globalThis.document) {
       const keyboardFocus = rail.contains(doc.activeElement) && doc.activeElement.matches(':focus-visible');
       const popoverOpen = [...rail.querySelectorAll('#theme-menu,#options-menu')]
         .some(el => win.getComputedStyle(el).display !== 'none');
-      if (inside || keyboardFocus || popoverOpen || rail.classList.contains('rail-editing')) return;
+      // 分组 dock 是 fixed 的，浮在 rail 外面；它开着的时候 rail 不能收，否则手指刚伸过去入口就没了。
+      const groupOpen = !!rail.querySelector('.rail-group-menu:not([hidden])');
+      if (inside || keyboardFocus || popoverOpen || groupOpen || rail.classList.contains('rail-editing')) return;
       preview = false; render();
     }, 180);
   };
@@ -92,6 +94,10 @@ function installSessionFirstNavigation(doc = globalThis.document) {
   });
   // Finishing a drag or closing a menu may be the last event while the pointer is outside.
   new win.MutationObserver(scheduleClose).observe(rail, { subtree:true, attributes:true, attributeFilter:['class','style'] });
+  // 分组入口（2026-10-24）：规则/资源/账号/回顾、投研/学习/写作/无线 各收成一个入口，
+  // 悬停向右展开。先装分组、再装长按排序：排序脚本要读到入口的标题后缀。
+  require('./rail-groups').installRailGroups(doc);
+  doc.addEventListener('hub:rail-group-closed', scheduleClose);
   require('./navigation-order').installNavigationOrder(doc);
 }
 

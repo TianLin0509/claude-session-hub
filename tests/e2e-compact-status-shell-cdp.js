@@ -3,7 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
 const {launchIsolatedHub,gracefulQuit,_waitMs}=require('./helpers/hub-launcher');
 const {connectFirstPage}=require('./helpers/cdp-client');
-const {seedUsageData,getFreePort,waitFor,click,key}=require('./helpers/usage-refresh-fixture');
+const {seedUsageData,getFreePort,waitFor,click,key,clickRailEntry}=require('./helpers/usage-refresh-fixture');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'hub-compact-status-')),dataDir=path.join(temp,'data');
 const fixture=seedUsageData(dataDir,'regression');
 const out=path.resolve(__dirname,'../artifacts/20261006-gpu-footer-codex1',String(Date.now()));
@@ -48,7 +48,9 @@ const hover=async selector=>{await c.eval(`document.querySelector(${JSON.stringi
     await click(c,'#btn-toggle-navigation');
     await waitFor(c,'document.querySelector("#btn-toggle-navigation").getAttribute("aria-expanded")==="true"');
    }
-   const labels=await c.eval(`[...document.querySelectorAll('#scene-rail .btn-shell-nav:not([hidden])')].map(e=>{const a=e.querySelector('.btn-icon').getBoundingClientRect(),l=e.querySelector('.btn-label'),r=l.getBoundingClientRect(),b=e.getBoundingClientRect();return {text:l.textContent,display:getComputedStyle(l).display,visible:r.width>0&&r.height>0,below:r.top>=a.bottom-1,fits:r.left>=b.left-1&&r.right<=b.right+1};})`);
+   // 2026-10-24：rail 上只留一级入口，规则/应用两组的成员收在悬停展开条里（默认不渲染），
+   // 所以这里只核对「rail 上真正可见的入口」，不要求成员常显。
+   const labels=await c.eval(`[...document.querySelectorAll('#scene-rail .btn-shell-nav')].filter(e=>e.getClientRects().length).map(e=>{const a=e.querySelector('.btn-icon').getBoundingClientRect(),l=e.querySelector('.btn-label'),r=l.getBoundingClientRect(),b=e.getBoundingClientRect();return {text:l.textContent,display:getComputedStyle(l).display,visible:r.width>0&&r.height>0,below:r.top>=a.bottom-1,fits:r.left>=b.left-1&&r.right<=b.right+1};})`);
    check(labels.every(l=>l.text.length<=4&&l.visible&&l.display!=='none'&&l.below&&l.fits),'图标下短标签在'+(i?'恢复后的':'默认')+'导航均常显');
   }
   await shot('compact-rail');
@@ -88,7 +90,7 @@ const hover=async selector=>{await c.eval(`document.querySelector(${JSON.stringi
    if(width===390){await shot('footer-narrow');check(await c.eval('document.querySelector("#hub-system-footer").dataset.density==="summary" && document.querySelector("#footer-status-details").getBoundingClientRect().width>0'),'窄屏保留关键摘要与全部状态详情入口');}
   }
   await c.eval('require("electron").webFrame.setZoomFactor(1)');await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
-  await click(c,'#btn-rail-accounts');await waitFor(c,'document.body.classList.contains("accounts-open")');
+  await clickRailEntry(c,'btn-rail-accounts');await waitFor(c,'document.body.classList.contains("accounts-open")');
   check(await c.eval('getComputedStyle(document.querySelector("#hub-system-footer")).display==="flex"'),'账号 Tab 打开后底栏保持可见');await click(c,'#btn-home');
   await c.eval('themeController.setTheme("dark")');await shot('dark-footer');
   await footerShot('dark-footer-detail');

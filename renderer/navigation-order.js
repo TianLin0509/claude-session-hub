@@ -22,16 +22,26 @@ function installNavigationOrder(doc = globalThis.document) {
   if (!list || list.dataset.orderInstalled) return;
   list.dataset.orderInstalled = 'true';
   const win = doc.defaultView, rail = doc.getElementById('scene-rail');
-  const buttons = [...list.querySelectorAll('.btn-shell-nav')].filter(e => !e.hidden);
-  const ids = buttons.map(e => e.id), byId = new Map(buttons.map(e => [e.id, e]));
+  // 2026-10-24：只排 rail 的一级入口（普通按钮或 .rail-group 分组容器）。分组里的成员
+  // 是展开条的一部分，不能参与拖动 —— 否则 list.append 会把它们从 dock 里拽出来。
+  const entryOf = el => (el && (el.classList.contains('btn-shell-nav') || el.classList.contains('rail-group')) ? el : null);
+  const titleNode = el => (el && el.classList.contains('rail-group') ? el.querySelector('.rail-group-trigger') : el);
+  const entryId = el => (el && el.classList.contains('rail-group') ? titleNode(el)?.id : el?.id) || '';
+  const buttons = [...list.children].map(entryOf).filter(e => e && !e.hidden);
+  const ids = buttons.map(entryId), byId = new Map(buttons.map(e => [entryId(e), e]));
   let storage, saved;
   try { storage = win.localStorage; saved = JSON.parse(storage.getItem(STORAGE_KEY)); } catch {}
   for (const id of normalizeNavigationOrder(saved, ids)) list.append(byId.get(id));
   for (const button of buttons) {
-    button.dataset.orderHint = button.title;
-    button.title += ' · 长按调整顺序';
-    button.setAttribute('aria-keyshortcuts', 'F2');
-    button.querySelectorAll('img').forEach(e => e.draggable = false);
+    // 分组的标题由 rail-groups.js 动态生成（会带上「当前：xxx」），这里只登记后缀，
+    // 由它拼进 title；普通入口照旧直接追加。
+    const node = titleNode(button);
+    if (!node) continue;
+    node.dataset.orderHint = node.title;
+    node.dataset.titleSuffix = ' · 长按调整顺序';
+    if (!node.classList.contains('rail-group-trigger')) node.title += ' · 长按调整顺序';
+    node.setAttribute('aria-keyshortcuts', 'F2');
+    node.querySelectorAll('img').forEach(e => e.draggable = false);
   }
   const done = doc.createElement('button');
   done.type = 'button'; done.id = 'nav-edit-done'; done.textContent = '完成'; done.hidden = true;
@@ -39,7 +49,7 @@ function installNavigationOrder(doc = globalThis.document) {
   rail.querySelector('.rail-drawer-head').append(done);
   let editing = false, pending = null, dragging = null, timer = null, suppressUntil = 0;
   const persist = () => {
-    try { storage?.setItem(STORAGE_KEY, JSON.stringify([...list.children].filter(e => ids.includes(e.id)).map(e => e.id))); } catch {}
+    try { storage?.setItem(STORAGE_KEY, JSON.stringify([...list.children].map(entryOf).filter(e => e && ids.includes(entryId(e))).map(entryId))); } catch {}
   };
   const cancelTimer = () => { if (timer !== null) win.clearTimeout(timer); timer = null; };
   const setEditing = value => {
@@ -48,8 +58,10 @@ function installNavigationOrder(doc = globalThis.document) {
   };
   const beginDrag = button => { dragging = button; button.classList.add('nav-dragging'); };
   const buttonAt = target => {
-    const e = target?.closest?.('.btn-shell-nav');
-    return e && byId.has(e.id) && list.contains(e) ? e : null;
+    const hit = target?.closest?.('.rail-group-trigger, .btn-shell-nav');
+    if (!hit) return null;
+    const entry = entryOf(hit.classList.contains('rail-group-trigger') ? hit.closest('.rail-group') : hit);
+    return entry && byId.has(entryId(entry)) && list.contains(entry) ? entry : null;
   };
   list.addEventListener('pointerdown', e => {
     const button = buttonAt(e.target);
@@ -96,10 +108,10 @@ function installNavigationOrder(doc = globalThis.document) {
     if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();setEditing(false);return;}
     if(!button||!e.altKey||!['ArrowUp','ArrowDown'].includes(e.key))return;
     e.preventDefault();
-    const order=[...list.children].filter(el=>ids.includes(el.id)),i=order.indexOf(button);
+    const order=[...list.children].map(entryOf).filter(el=>el&&ids.includes(entryId(el))),i=order.indexOf(button);
     if(e.key==='ArrowUp'&&i>0)list.insertBefore(button,order[i-1]);
-    if(e.key==='ArrowDown'&&i<order.length-1)list.insertBefore(button,order[i+1].nextSibling);
-    button.focus();persist();
+    if(e.key==='ArrowDown'&&i>=0&&i<order.length-1)list.insertBefore(button,order[i+1].nextSibling);
+    titleNode(button)?.focus();persist();
   },true);
   done.addEventListener('click',()=>setEditing(false));
   doc.addEventListener('hub:navigation-layout',()=>{if(editing)setEditing(false);});
