@@ -48,6 +48,12 @@
   background: var(--surface-hover) !important;
   color: var(--fg-strong) !important;
 }
+/* 图标换人时轻轻落一下。换图标是重新写 innerHTML，新节点自然会跑这条动画；
+   没换人就一次都不会重播。 */
+:root body #scene-rail .rail-group-trigger.rail-group-current .btn-icon > img,
+:root body #scene-rail .rail-group-trigger.rail-group-current .btn-icon > svg {
+  animation: rail-group-icon-in 160ms ease-out;
+}
 
 /* 展开条：横向 dock。4 格 × 54px + 间距 + 内边距 ≈ 234px。 */
 .rail-group-menu {
@@ -115,8 +121,15 @@
   to   { opacity: 1; transform: translateX(0); }
 }
 
+@keyframes rail-group-icon-in {
+  from { opacity: 0.35; transform: scale(0.86); }
+  to   { opacity: 1; transform: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rail-group-menu { animation: none; }
+  :root body #scene-rail .rail-group-trigger.rail-group-current .btn-icon > img,
+  :root body #scene-rail .rail-group-trigger.rail-group-current .btn-icon > svg { animation: none; }
 }
 
 /* 矮窗口里 rail 会压缩入口高度，dock 的成员格同步收一点，保持同一行文字。 */

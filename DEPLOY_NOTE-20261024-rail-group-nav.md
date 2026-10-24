@@ -15,6 +15,8 @@
   4 格 × 54px，图标在上、短标签在下，和 rail 上的入口同构；点谁进谁，dock 随即收起。
 - 组内有当前页时，入口给同款底色，并在图标右下角点一个小圆点；
   tooltip / aria-label 写成「规则 · 资源、账号、回顾；当前：资源」。
+- **入口图标跟着当前页走**（同日追加）：在账号页时，「规则」入口显示的是账号图标，
+  字始终是「规则 / 投研」。只重写图标节点的 innerHTML（160ms 落一下），离开这一组换回本来的图标。
 - 成员按钮是**原节点搬家**：`id`、`data-*`、`aria-controls`、可访问名一字未改，
   只是父节点从 `.rail-navigation` 变成 `.rail-group-menu`。
   `rules.js` / `hub-workspaces.js` / `chuxin.js` / `study.js` / `writing.js` / `wireless-page.js`
