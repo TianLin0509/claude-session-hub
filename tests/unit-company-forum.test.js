@@ -262,7 +262,7 @@ test('关掉定时同步（CLAUDE_HUB_FORUM_TIMER=0）时，收 AI 回答的循�
 
 test('整理会话不挂 Hub 的 MCP、不挂「问家里」', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
-  assert.match(src, /\['company-bridge', 'company-assistant', 'company-forum'\]\.includes\(opts\.purpose\)/);
+  assert.match(src, /\['company-bridge', 'company-assistant', 'company-forum', 'company-ai'\]\.includes\(opts\.purpose\)/);
   const home = fs.readFileSync(path.join(__dirname, '..', 'core', 'company-bridge', 'ask-home.js'), 'utf8');
   assert.match(home, /opts\.purpose === 'company-forum'/);
 });

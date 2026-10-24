@@ -27,6 +27,30 @@ function setup(t) {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('团队口令锁定取消排队/运行任务并隐藏助理中的团队记录，普通对话保留', async t => {
+  const f=setup(t),a=f.a;let unlocked=true;
+  a.deps.assertTeamAccess=()=>{if(!unlocked)throw Error('团队未解锁');};
+  const active=a.ask('运行中的私人分析',{teamOwner:'owner-a'});await settle();f.busy=true;
+  const pending=a.ask('排队中的私人分析',{teamOwner:'owner-a'});
+  a.ask('普通问题');
+  unlocked=false;await a.revokeTeamAccess();await settle();
+  assert.deepEqual(f.interrupted,['team-session']);
+  for(const id of [active.id,pending.id])assert.equal(a.chat().find(x=>x.id===id).state,'error');
+  assert.deepEqual(a.status().chat.map(x=>x.q),['普通问题']);
+  assert.throws(()=>a.retryChat(pending.id),/未解锁/);
+  assert.equal(f.sent.filter(x=>x.prompt.includes('排队中的私人')).length,0);
+  assert.ok(f.sent.some(x=>x.prompt.includes('普通问题')));
+  unlocked=true;assert.equal(a.status().chat.length,3);
+});
+
+test('团队在创建会话期间锁定，即使随后解锁也不继续发原任务', async t => {
+  const f=setup(t),a=f.a;let release;
+  a.ensureTeamSession=()=>new Promise(r=>{release=r;});
+  const item=a.ask('未发出的团队分析',{teamOwner:'owner-a'});
+  await a.revokeTeamAccess();release('team-session');await settle();
+  assert.equal(f.sent.length,0);assert.equal(a.chat().find(x=>x.id===item.id).state,'error');
+});
+
 test('真实 CompanyAssistant 队列：换号后旧 owner 任务不发送，重试不丢绑定', async t => {
   const f = setup(t), a = f.a;
   a.pumping = true;

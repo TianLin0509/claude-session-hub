@@ -782,7 +782,13 @@ transcriptTap.on('turn-complete', (ev) => {
   }
 });
 
+let companyAiTasks = null;
+const runCompanyAi = (request, options) => {
+  if (!companyAiTasks) return Promise.reject(new Error('CodeAgent 服务尚未准备好，请稍后重试'));
+  return companyAiTasks.run(request, options);
+};
 const autoTitleManager = createAutoTitleManager({
+  runCompanyAi,
   allAiKinds: ALL_AI_KINDS,
   getHubConfig,
   kindLabels: KIND_LABELS,
@@ -2648,6 +2654,7 @@ try {
 // 公司版「助理」（2026-10-16）：每日简报 + 对话 + 6 条提醒，只读 WeLink，数据只留在本机 Hub 数据目录。
 // 只在公司版启用（core/company-assistant/gate.js），不依赖家里联动的配对。提醒经提醒总线发布：这里转成桌面通知并告诉页面。
 let companyAssistantService = null;
+const teamAccess = new (require('./core/team-workspace/access').TeamAccess)();
 try {
   if (require('./core/company-assistant/gate').companyAssistantEnabled()) {
     const { CompanyAssistant } = require('./core/company-assistant/service');
@@ -2658,6 +2665,7 @@ try {
       return saved ? { ...saved, id: saved.hubId || id } : null;
     };
     companyAssistantService = new CompanyAssistant({
+      assertTeamAccess: () => teamAccess.assert(),
       dataDir: getHubDataDir(),
       noTimer: process.env.CLAUDE_HUB_ASSISTANT_TIMER === '0',
       createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
@@ -2714,24 +2722,53 @@ try {
     require('./main/ipc/company-assistant-handlers').registerCompanyAssistantIpc(ipcMain, companyAssistantService);
   }
 } catch (error) { console.error('[company-assistant] 公司助理未启动：', error.message); }
+if (require('./core/company-ai-policy').companyOnly()) {
+  const live = new (require('./core/hub-assistant/live-history').LiveHistory)();
+  companyAiTasks = new (require('./core/company-ai-tasks').CompanyAiTasks)({
+    dataDir:getHubDataDir(),
+    createSession:(kind,opts)=>sessionOperations.createSession({kind,opts}),
+    sendPrompt:(sessionId,text,clientSubmissionId)=>promptOperations.submitPrompt(null,{sessionId,text,clientSubmissionId,waitForCliReady:true}),
+    lastFinal:id=>{
+      const meta=sessionManager.getSession(id)||require('./core/session-store').loadSessionFile(id,{strict:true});
+      const result=meta&&live.read({...meta,id:meta.id||meta.hubId||id,kind:'claude'});
+      return result?.available ? result.records?.at(-1) : null;
+    },
+    closeSession:id=>require('./core/company-ai-tasks').closeOwnedSession(sessionManager,id),
+    onChanged:state=>sendToRenderer('company-ai:changed',state),
+  });
+  const earlierPlan=sessionManager.extraMcpProvider;
+  sessionManager.setExtraMcpProvider(request=>companyAiTasks.sessionPlan(request)||(earlierPlan?earlierPlan(request):null));
+}
 // 团队工作台：家里可访问既有管理工具；WeLink 工作材料只在公司助理所在的本机生成。
-let teamWorkspace = null, teamToolsView = null;
+let teamWorkspace = null, teamToolsView = null, companyWebAi = null;
 try {
   const { teamEnabled, toolsCatalog } = require('./core/team-workspace/catalog');
   if (teamEnabled()) {
+    const startTeam = () => {
+      teamAccess.assert();
+      if(require('./core/company-ai-policy').companyOnly() && !companyWebAi) companyWebAi=new (require('./core/company-web-ai').CompanyWebAi)({
+      dataDir:getHubDataDir(),catalog:toolsCatalog(),run:runCompanyAi,
+      onChanged:state=>sendToRenderer('company-ai:changed',{...state,source:'team-web'}),
+      });
+      teamWorkspace.start();
+    };
     teamWorkspace = require('./core/team-workspace').createTeamWorkspace({
+      assertAccess: () => teamAccess.assert(),
       dataDir: getHubDataDir(), getAssistant: () => companyAssistantService,
       onChanged: () => sendToRenderer('team:changed', {}),
     });
     teamToolsView = require('./main/team-tools-view').createTeamToolsView({
       getWindow: () => mainWindow, WebContentsView: require('electron').WebContentsView,
       session: require('electron').session, catalog: toolsCatalog(),
+      assertAccess: () => teamAccess.assert(),
+      configureSession:webSession=>companyWebAi?.attach(webSession),
       onChanged: state => sendToRenderer('team:web-state', state),
     });
     require('./main/ipc/team-workspace-handlers').registerTeamWorkspaceIpc(ipcMain, {
       workspace: teamWorkspace, web: teamToolsView, getWindow: () => mainWindow,
+      access: teamAccess, onUnlock: startTeam,
+      onLock: async () => { teamWorkspace.stop(); teamToolsView.dispose(); companyWebAi?.close(); companyWebAi = null; await companyAssistantService?.revokeTeamAccess(); },
     });
-    teamWorkspace.start();
   }
 } catch (error) { console.error('[team-workspace] 团队工作台未启动：', error.message); }
 // 公司版「论坛」（2026-10-18）：每天同步稼先社区、心声社区的热门帖子并附 AI 摘要，数据只留在本机 Hub 数据目录。
@@ -3992,7 +4029,7 @@ require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
     return found?.exists ? require('./core/voice-text').recentFromTranscript(found.path) : '';
   },
 });
-require('./main/ipc/prompt-polish-handlers').registerPromptPolishIpc(ipcMain, { getConfig: getHubConfig });
+require('./main/ipc/prompt-polish-handlers').registerPromptPolishIpc(ipcMain, { getConfig: getHubConfig, runCompanyAi });
 
 // --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
 // 保留旧 IPC 兼容入口，但不再启动向原生规则写入的旧沉淀调度器。
@@ -4686,6 +4723,8 @@ async function runFinalShutdownCleanup() {
   capture('company-bridge', () => companyBridgeService?.close());
   capture('team-workspace', () => { teamWorkspace?.stop(); teamToolsView?.dispose(); });
   capture('company-assistant', () => companyAssistantService?.close());
+  capture('company-ai', () => companyAiTasks?.close());
+  capture('company-web-ai', () => companyWebAi?.close());
   capture('company-forum', () => { companyForumService?.close(); companyForumBrowser?.close(); });
   capture('hub-orchestration', () => global.__orchestrationService?.stop());
   capture('hub-phone', () => phoneService?.close());

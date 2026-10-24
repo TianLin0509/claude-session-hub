@@ -55,7 +55,7 @@ test('remote/subframe IPC cannot inspect or mutate private team state', async ()
   assert.equal(wrong.ok, false); assert.equal(reads, 0);
   assert.equal((await handlers['team:state']({ sender: r.win.webContents, senderFrame: {} })).ok, false);
   const good = await handlers['team:state']({ sender: r.win.webContents, senderFrame: r.win.webContents.mainFrame });
-  assert.equal(good.owner, 'self'); assert.equal(reads, 1);
+  assert.equal(good.ok, false); assert.match(good.error, /未解锁/); assert.equal(reads, 0);
 });
 test('public edition does not show private team tools', () => {
   assert.equal(teamEnabled({}, { personalModules: false, target: null }), false);
