@@ -1015,6 +1015,18 @@ function normalizeMarkdownPathBreaks(text) {
 const { createSessionListRenderer } = require('./session-list-renderer.js');
 const meetingUnread = require('./meeting-unread.js');
 const sessionListRenderer = createSessionListRenderer({
+  // 会话 logo 右下角的订阅账号序号：与底栏额度的 1/2 同一顺序；只有一个账号时不显示。
+  subscriptionAccount: s => {
+    try {
+      const kind = String(s?.kind || '').replace(/-resume$/, '');
+      if (kind !== 'claude' && kind !== 'codex') return null;
+      const rows = accountUsageController.getSnapshot().accounts?.[kind];
+      if (!Array.isArray(rows) || rows.length < 2) return null;
+      const id = kind === 'claude' ? (s.claudeProfile || 'default') : (s.codexProfile || rows.find(r => r.selected)?.profileId);
+      const index = rows.findIndex(r => r.profileId === id);
+      return index < 0 ? null : { no: index + 1, label: rows[index].profileLabel || id };
+    } catch { return null; }
+  },
   requestSessionUsage: ids => ipcRenderer.send('session-usage:watch', ids),
   document,
   localStorage,
@@ -7407,6 +7419,7 @@ const accountUsageController = createAccountUsageController({
   sessions,
   escapeHtml,
   isMemoOpen: () => memoPanel.isOpen(),
+  onAccountsChanged: () => renderSessionList(),
 });
 const renderAccountUsage = accountUsageController.render;
 // CodeAgent 额度条：每轮回答结束读屏幕 Stats 面板的 Credit（applyCodeAgentScreenContext），每个账号一行。

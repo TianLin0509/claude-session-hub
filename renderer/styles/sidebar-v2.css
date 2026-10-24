@@ -269,3 +269,13 @@
 }
 :root #session-list .session-item.slim.runtime-error:hover { background: rgba(248, 113, 113, .15); }
 :root #session-list .session-item.slim.runtime-error .sl-warning { color: var(--mark-red); }
+
+/* 订阅账号序号（2026-10-24）：Claude / Codex 有多个账号时，在会话 logo 右下角标 1 / 2。 */
+#session-list .sl-kind[data-account] { position: relative; overflow: visible; }
+#session-list .sl-kind[data-account]::after {
+  content: attr(data-account); position: absolute; right: -4px; bottom: -3px;
+  min-width: 9px; height: 9px; padding: 0 1px; box-sizing: border-box; border-radius: 5px;
+  font: 700 7.5px/9px var(--font-sans, 'Microsoft YaHei', sans-serif); text-align: center;
+  color: #fff; background: var(--fg-muted, #5b6573); box-shadow: 0 0 0 1px var(--surface-canvas, #fff);
+}
+#session-list .sl-kind[data-account='2']::after { background: var(--brand, #3478f6); }
