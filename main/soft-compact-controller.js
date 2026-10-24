@@ -10,11 +10,40 @@
 //   3. 等待期间用户已经发了新消息（本轮又跑起来了），就不压缩，留给下一次断点。
 //   4. 每一步（开始、完成、失败、超时）都在会话卡片上留一条看得见的提示。
 //   5. 同一会话压缩完成后 10 分钟内再出现标记不再压，防止 AI 在继续的回复里重复留标记导致连环压缩。
+//   6. 标记只说明「这里是断点」，压不压看实际上下文：不到软线九成（默认 54 万）就忽略标记。
+//      2026-10-24 实测：提醒被写进压缩摘要，AI 压缩后每条回复都留标记，冷却一过就在 8.5 万时被连压两次。
 const { readLastTerminalAssistantTextFromClaudeTranscript } = require('../core/transcript-tap');
 const { observeClaudeLocalCommand } = require('../core/claude-identity-switch');
+const fs = require('fs');
 
 const MARKER_RE = /\[\[hub:compact(-continue)?\]\]/;
 const CONTINUE_PROMPT = '（Hub 提示：上下文已自动压缩。先读本任务的进展卡，确认当前步骤和下一步，再接着做。）';
+// 与提醒钩子同一条软线；端到端测试经同名环境变量压低。
+const SOFT_TOKENS = Number(process.env.SOFT_COMPACT_SOFT_TOKENS) || 600_000;
+const TAIL_BYTES = 4 * 1024 * 1024;
+
+// 与提醒钩子同一算法：transcript 末尾最后一条主线 assistant 的 usage 合计。读不到返回 null。
+async function readClaudeContextTokens(transcriptPath) {
+  const handle = await fs.promises.open(transcriptPath, 'r');
+  let text;
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    text = buffer.toString('utf8');
+  } finally { await handle.close(); }
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"usage"')) continue;
+    let rec;
+    try { rec = JSON.parse(lines[i]); } catch { continue; }
+    if (rec.type !== 'assistant' || rec.isSidechain) continue;
+    const u = rec.message?.usage || {};
+    return (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0);
+  }
+  return null;
+}
 
 function findMarker(text) {
   const tail = String(text || '').trimEnd().slice(-400);
@@ -29,6 +58,8 @@ function createSoftCompactController(deps = {}) {
     sendToPty = (...args) => require('../core/group-chat-watcher').sendToPty(...args),
     readFinalText = async transcriptPath => (await readLastTerminalAssistantTextFromClaudeTranscript(transcriptPath))?.text || null,
     observeCompact = sessionId => observeClaudeLocalCommand(sessionManager, sessionId, 'compact', ''),
+    readContextTokens = readClaudeContextTokens,
+    minTokens = Math.round(SOFT_TOKENS * 0.9),
     isBusy = () => false,
     notify = null,
     logger = console,
@@ -61,6 +92,12 @@ function createSoftCompactController(deps = {}) {
     if (!mode) return null;
     if (now() - (lastDone.get(sessionId) || -Infinity) < cooldownMs) {
       logger.log(`[soft-compact] ${short(sessionId)} skipped: compacted within cooldown`);
+      return null;
+    }
+    let tokens = null;
+    if (transcriptPath) { try { tokens = await readContextTokens(transcriptPath); } catch {} }
+    if (tokens == null || tokens < minTokens) {
+      logger.log(`[soft-compact] ${short(sessionId)} marker ignored: context ${tokens ?? 'unknown'} < ${minTokens}`);
       return null;
     }
     if (session.meetingId) {
@@ -141,4 +178,4 @@ function createSoftCompactController(deps = {}) {
   return { start, onStop, onCompactEnd, forget, isCompacting: id => compacting.has(id) };
 }
 
-module.exports = { createSoftCompactController, findMarker, CONTINUE_PROMPT };
+module.exports = { createSoftCompactController, findMarker, readClaudeContextTokens, CONTINUE_PROMPT };

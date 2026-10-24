@@ -4,10 +4,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-const { createSoftCompactController, findMarker, CONTINUE_PROMPT } = require('../main/soft-compact-controller');
+const { createSoftCompactController, findMarker, readClaudeContextTokens, CONTINUE_PROMPT } = require('../main/soft-compact-controller');
 
-function setup({ session = {}, busy = false, finalText = null, sendResult = null } = {}) {
+function setup({ session = {}, busy = false, finalText = null, sendResult = null, tokens = 700_000 } = {}) {
   const manager = new EventEmitter();
   manager.getSession = id => ({ id, kind: 'claude', agentRuntime: 'pty', ...session });
   const writes = [], notices = [];
@@ -23,6 +26,8 @@ function setup({ session = {}, busy = false, finalText = null, sendResult = null
       return { ok: true, status: 'confirmed' };
     },
     readFinalText: async () => finalText,
+    readContextTokens: async () => tokens,
+    minTokens: 540_000,
     isBusy: () => busy,
     notify: (sessionId, message, level) => notices.push({ sessionId, message, level }),
     logger: { log() {}, warn() {} },
@@ -112,4 +117,27 @@ test('压缩完成后冷却期内再出现标记不再压缩', async () => {
   await flush();
   assert.equal(await controller.onStop('s1', { transcriptPath: 'x.jsonl' }), null);
   assert.deepEqual(writes.map(w => w.text), ['/compact', CONTINUE_PROMPT]);
+});
+
+test('上下文不到软线九成时忽略标记（压缩后 AI 仍留标记的回归）', async () => {
+  for (const tokens of [85_708, 539_999, null]) {
+    const { controller, writes } = setup({ finalText: '等合并通知。\n[[hub:compact-continue]]', tokens });
+    assert.equal(await controller.onStop('s1', { transcriptPath: 'x.jsonl' }), null, String(tokens));
+    assert.equal(writes.length, 0, String(tokens));
+    assert.ok(!controller.isCompacting('s1'));
+  }
+  const { controller, writes } = setup({ finalText: '[[hub:compact-continue]]', tokens: 540_000 });
+  assert.equal(await controller.onStop('s1', { transcriptPath: 'x.jsonl' }), 'continue');
+  assert.deepEqual(writes.map(w => w.text), ['/compact']);
+});
+
+test('上下文读数取最后一条主线 assistant 的 usage 合计，跳过子 Agent', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soft-compact-tokens-'));
+  const file = path.join(dir, 't.jsonl');
+  const usage = (n, extra = {}) => JSON.stringify({ type: 'assistant', ...extra, message: { usage: { input_tokens: n, cache_creation_input_tokens: 10, cache_read_input_tokens: 100, output_tokens: 1 } } });
+  fs.writeFileSync(file, [usage(1000), JSON.stringify({ type: 'user', message: { content: 'hi' } }), usage(5000), usage(9, { isSidechain: true }), '{坏行', ''].join('\n'));
+  assert.equal(await readClaudeContextTokens(file), 5111);
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'hi' } }) + '\n');
+  assert.equal(await readClaudeContextTokens(file), null);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
