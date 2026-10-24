@@ -143,12 +143,12 @@ async function main() {
       await _waitMs(80);
     };
     await select(card,marker); await resetFeedback();
-    await tap('#btn-touch-tools'); started=Date.now(); await tap('[data-touch-action="copy"]');
+    started=Date.now(); await tap('[data-touch-action="copy"]');
     await verify('touch toolbar copies preserved card selection',marker,started);
     await client.eval(`document.getElementById('copy-paste-probe').value='AB';document.getElementById('copy-paste-probe').focus();document.getElementById('copy-paste-probe').setSelectionRange(1,1);`);
     // verify() focused the probe without an outside pointer; close before the next opening.
     await client.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));document.getElementById('copy-paste-probe').focus();document.getElementById('copy-paste-probe').setSelectionRange(1,1);`);
-    await tap('#btn-touch-tools'); await tap('[data-touch-action="paste"]');
+    await tap('[data-touch-action="paste"]');
     await waitExpr(`document.getElementById('copy-paste-probe').value===${JSON.stringify('A'+marker+'B')}`);
     result.cases.push({label:'touch toolbar native paste preserves caret',nativePasteMatch:true});
     const markdown=path.join(TEMP,'20261015-copy-preview.md'); const previewMarker='预览文字复制 中文 123'; remember(previewMarker);
@@ -186,8 +186,8 @@ async function main() {
     await waitExpr(`terminalCache.get('title-codex')?.terminal && document.querySelector('.floating-input-bar[data-session-id="title-codex"] .floating-input-box')`);
     const composer='.floating-input-bar[data-session-id="title-codex"] .floating-input-box';
     await client.eval(`document.querySelector(${JSON.stringify(composer)}).textContent='';document.querySelector(${JSON.stringify(composer)}).focus();`);
-    await tap('#btn-touch-tools'); await tap('[data-touch-action="screenshot"]');
-    await waitExpr(`document.querySelector('#touch-tools-panel small').textContent.includes('全屏截图已复制')`);
+    await tap('[data-touch-action="screenshot"]');
+    await waitExpr(`document.querySelector('.touch-tools-toast').textContent.includes('截图已复制')`);
     await tap('[data-touch-action="paste"]');
     await waitExpr(`document.querySelector(${JSON.stringify(composer)}).textContent.includes('.png')`);
     result.cases.push({label:'toolbar full-screen screenshot then native image paste into real composer',imagePasted:true});
@@ -222,10 +222,10 @@ async function main() {
       window.__touchOriginalPaste=terminalCache.get('title-codex').terminal.paste;
       terminalCache.get('title-codex').terminal.paste=text=>{window.__touchPasteReceipt={sessionId:'title-codex',text};};`);
     try {
-      await tap('#btn-touch-tools'); started=Date.now(); await tap('[data-touch-action="copy"]');
+      started=Date.now(); await tap('[data-touch-action="copy"]');
       await verify('toolbar copies focused terminal despite different primary session',termMarker,started);
       await client.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));terminalCache.get('title-codex').terminal.focus();`);
-      await tap('#btn-touch-tools'); await tap('[data-touch-action="paste"]');
+      await tap('[data-touch-action="paste"]');
       await waitExpr(`window.__touchPasteReceipt?.sessionId==='title-codex' && window.__touchPasteReceipt.text===${JSON.stringify(termMarker)}`);
       result.cases.push({label:'toolbar routes paste to captured terminal instead of primary session',routingReceipt:true});
     } finally { await client.eval(`activeSessionId=window.__touchOriginalActive;terminalCache.get('title-codex').terminal.paste=window.__touchOriginalPaste;`); }

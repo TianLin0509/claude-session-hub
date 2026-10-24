@@ -35,6 +35,8 @@ async function shot(name){const image=await c.send('Page.captureScreenshot',{for
  await c.eval(`hubProxyInfo={...hubProxyInfo,proxy:'http://127.0.0.1:7890',clashDelay:{status:'ok',delayMs:168,nodeName:'fixture',measuredAt:Date.now()}};renderSidebarStrip()`);
  for(const width of [1440,1100,900]){
   await c.send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await _waitMs(200);
+  // 后台真实取数会把夹具延时刷成「不可用」（不可用时不再显示），测量前重新注入。
+  await c.eval(`hubProxyInfo={...hubProxyInfo,proxy:'http://127.0.0.1:7890',clashDelay:{status:'ok',delayMs:168,nodeName:'fixture',measuredAt:Date.now()}};renderSidebarStrip()`);
   const g=await c.eval(`(()=>{const f=document.querySelector('#hub-system-footer'),r=f.getBoundingClientRect(),q=document.querySelector('#rail-usage'),delay=document.querySelector('.strip-delay').getBoundingClientRect();return {height:r.height,density:f.dataset.density,quotaScroll:q.scrollWidth,quotaWidth:q.clientWidth,delay:{left:delay.left,right:delay.right,width:delay.width},rows:[...q.querySelectorAll('.sidebar-quota-provider')].map(e=>({provider:e.dataset.provider,profile:e.dataset.profileId,top:e.getBoundingClientRect().top,bottom:e.getBoundingClientRect().bottom,logo:getComputedStyle(e.querySelector('.sidebar-quota-icon')).display,name:getComputedStyle(e.querySelector('.sidebar-quota-name')).display,windows:[...e.querySelectorAll('.sidebar-quota-metric')].map(m=>({window:m.dataset.window,top:m.getBoundingClientRect().top,value:m.querySelector('b').textContent,reset:m.querySelector('.sidebar-quota-period').textContent,display:getComputedStyle(m).display}))}))}})()`);
   result.geometry.push({width,...g});
   check(g.height<=35,'single footer row '+width);
@@ -59,11 +61,10 @@ async function shot(name){const image=await c.send('Page.captureScreenshot',{for
  await waitFor(c,`window.__profileCalls.some(p=>p?.provider==='claude'&&p.profileId==='second'&&p.force)`);
  check(await c.eval(`(async()=> (await ipcRenderer.invoke('account-profile-usage')).claude[0].selected===true)()`),'refreshing second account never switches active login');
  await c.eval(`ipcRenderer.invoke=window.__originalProfileInvoke;hubProxyInfo={...hubProxyInfo,clashDelay:{status:'unavailable'}};renderSidebarStrip()`);
- check(await c.eval(`document.querySelector('.strip-delay').textContent==='节点待测'`),'unknown delay remains explicit');
+ check(await c.eval(`!document.querySelector('.strip-delay')`),'unknown delay takes no footer space');
  await c.eval(`themeController.setTheme('dark')`);await shot('dark');
  await c.eval(`themeController.setTheme('codex')`);
- await click(c,'#btn-touch-tools'); // Hover may open it first; only require the button remains hit-testable.
- check(await c.eval(`document.getElementById('btn-touch-tools').getBoundingClientRect().width>=40`),'title tools remain present');
+ check(await c.eval(`[...document.querySelectorAll('#touch-tools [data-touch-action]')].map(b=>b.dataset.touchAction).join()==='screenshot,copy,paste' && [...document.querySelectorAll('#touch-tools [data-touch-action]')].every(b=>b.getBoundingClientRect().width>=28)`),'title tools: three inline icons, no select-all');
  result.passed=true;
 }catch(error){result.error=error.stack;process.exitCode=1;if(c){try{result.debug=await c.eval(`({ready:document.readyState,accounts:accountUsageController.getSnapshot().accounts,providers:document.querySelectorAll('.sidebar-quota-provider').length})`);await shot('failure');}catch(e){result.debugError=e.message;}}}
 finally{if(c)await c.close();if(hub){result.teardown=await gracefulQuit(hub);fs.writeFileSync(path.join(out,run+'-hub.log'),hub.log().join('\n'));}fs.writeFileSync(path.join(out,run+'.json'),JSON.stringify(result,null,2));console.log(JSON.stringify({...result,out},null,2));}})();

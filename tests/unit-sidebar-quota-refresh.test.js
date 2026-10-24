@@ -113,7 +113,7 @@ async function main() {
   assert.equal(buttons[4].dataset.provider, 'antigravity');
   view.render({ ...cache, deepseek: { ...cache.deepseek, lastSeen: 200 } }, {});
   const values = nodes.filter(n => n.className === 'sidebar-quota-value').map(n => n.textContent);
-  assert.deepStrictEqual(values, ['90%', '—', '—', '60%', '¥0.00', '—', 'G —', 'C/G —']);
+  assert.deepStrictEqual(values, ['90%', '—', '—', '60%', '¥0.00', '—', '—']);
   view.render({ tokenPlan: { usage7d: { pct: 45.3284435 }, lastSeen: 200 } }, {});
   assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[5].textContent, '54.67%');
   view.render({ tokenPlan: { usage30d: { pct: 10, resetsAt: 1791820800000 }, lastSeen: 200 } }, {});
@@ -124,20 +124,22 @@ async function main() {
   const periods = () => nodes.filter(n => n.className === 'sidebar-quota-period').map(n => n.textContent);
   view.render({ claude: { usage5h: { pct: 20, resetsAt: now + 80*60000 }, usage7d: { pct: 30, resetsAt: now + 76*3600000 } },
     codex: { usage7d: { pct: 40, resetsAt: 'invalid' } }, tokenPlan: { usage30d: { pct: 10, resetsAt: now - 1 } } }, {});
-  assert.deepStrictEqual(periods(), ['↻1h20m', '↻3d4h', '↻—', '↻—', '', '待刷新', '↻—', '↻—']);
+  // 倒计时不带箭头；重置时间未知时留空不占位；Codex 没有 5h 数据就整格隐藏。
+  assert.deepStrictEqual(periods(), ['1h20m', '3d4h', '', '', '', '待刷新', '']);
+  assert.deepStrictEqual(nodes.filter(n => n.className === 'sidebar-quota-metric').map(n => !!n.hidden), [false, false, true, false, false, false, false]);
   assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[5].textContent, '90.00%');
-  assert.match(buttons[0].attrs['aria-label'], /5h 剩余 80% ↻1h20m/);
+  assert.match(buttons[0].attrs['aria-label'], /5h 剩余 80% 1h20m/);
   assert.match(nodes.filter(n => n.className === 'sidebar-quota-metric')[0].title, /北京时间/);
   assert.match(buttons[3].attrs['aria-label'], /30d 剩余 90.00% 待刷新/);
   const countdownSample = { claude: { usage5h: { pct: 20, resetsAt: now + 80*60000 } } };
   clockNow += 60000; view.render(countdownSample, {});
-  assert.strictEqual(periods()[0], '↻1h19m', 'countdown decreases without a new provider observation');
+  assert.strictEqual(periods()[0], '1h19m', 'countdown decreases without a new provider observation');
   clockNow += 80*60000; view.render(countdownSample, {});
   assert.strictEqual(periods()[0], '待刷新');
   assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[0].textContent, '80%', 'elapsed time must not invent restored quota');
   clockNow = now;
   view.render({ tokenPlan: { usage7d: { pct: 10, resetsAt: now + 86400000 }, lastSeen: now } }, {});
-  assert.strictEqual(periods()[5], '↻1d');
+  assert.strictEqual(periods()[5], '1d');
   assert.strictEqual(buttons[3].dataset.freshness, 'fresh');
   view.render(cache, { codex: { inFlight: true }, deepseek: { error: 'offline' } });
   assert.strictEqual(nodes.filter(n => n.tag === 'button')[1], buttons[1]);
@@ -145,7 +147,7 @@ async function main() {
   assert.strictEqual(nodes.some(n => n.className === 'sidebar-quota-feedback' || n.className === 'sidebar-quota-footer'), false);
   assert.match(buttons[2].title, /offline/, 'refresh errors remain available on the provider control');
   view.render({antigravity:{credits:0,lastSeen:now,groups:[{id:'gemini',label:'Gemini',usage5h:{pct:80},usage7d:{pct:10}},{id:'thirdParty',label:'Claude/GPT',usage7d:{pct:8}}]}},{});
-  assert.deepEqual(nodes.filter(n=>n.className==='sidebar-quota-value').slice(-2).map(n=>n.textContent),['G 20%','C/G 92%']);
+  assert.deepEqual(nodes.filter(n=>n.className==='sidebar-quota-value').slice(-1).map(n=>n.textContent),['20%']);
   assert.match(buttons[4].title,/credits 余额：0/);
   controller.recordAgentUsage({antigravity:{observedAt:500,credits:0}});
   controller.recordAgentUsage({antigravity:{observedAt:500,credits:0,error:'offline'}});

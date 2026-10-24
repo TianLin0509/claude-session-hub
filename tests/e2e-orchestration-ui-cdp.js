@@ -46,8 +46,8 @@ async function run() {
     };
     await wait(() => cdp.eval('!!window.openMeetingCreateModal && !!window.MeetingRoom'), 'UI ready');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await wait(()=>cdp.eval("document.querySelector('[data-provider=antigravity]')?.textContent.includes('G 0%')"),'Antigravity quota');
-    ok('底栏显示 Antigravity 两组剩余和真实零 credits',await cdp.eval("(()=>{const e=document.querySelector('[data-provider=antigravity]');return e.textContent.includes('C/G 92%') && e.title.includes('credits 余额：0');})()"));
+    await wait(()=>cdp.eval("document.querySelector('[data-provider=antigravity]')?.textContent.includes('0%')"),'Antigravity quota');
+    ok('底栏只显示 Antigravity 的 Gemini 剩余和真实零 credits',await cdp.eval("(()=>{const e=document.querySelector('[data-provider=antigravity]');return !e.textContent.includes('C/G') && e.title.includes('credits 余额：0');})()"));
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:960,height:800,deviceScaleFactor:1,mobile:false});
     await wait(()=>cdp.eval("document.querySelector('.footer-quota-summary')?.textContent.includes('Antigravity G 0%')"),'tightest Antigravity summary');
     ok('底栏紧凑汇总仍指出 Antigravity 耗尽',true);

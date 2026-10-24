@@ -52,13 +52,20 @@
   -webkit-app-region: no-drag;
 }
 
-.touch-tools { position: relative; flex: 0 0 auto; -webkit-app-region: no-drag; }
-#btn-touch-tools { min-width: 44px; min-height: 32px; border: 0; border-radius: 5px; color: inherit; background: var(--bg-hover); cursor: pointer; }
-#touch-tools-panel { position: absolute; top: 100%; right: 0; width: 220px; padding: 8px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px #0002; -webkit-app-region: no-drag; }
-#touch-tools-panel[hidden] { display: none; }
-#touch-tools-panel button { display: block; width: 100%; min-height: 44px; padding: 8px 12px; text-align: left; color: inherit; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
-#touch-tools-panel button:hover, #touch-tools-panel button:focus-visible { background: var(--bg-hover); }
-#touch-tools-panel small { display: block; line-height: 1.5; padding: 4px 10px; white-space: normal; }
+/* 触屏常用工具：与侧栏开关同一套 28px 线条图标按钮，三枚并排成一组。 */
+.touch-tools { position: relative; flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface-sunken, rgba(128, 128, 128, 0.07)); -webkit-app-region: no-drag; }
+.touch-tools > button { display: grid; place-items: center; width: 30px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-muted, #5b6573); cursor: pointer; transition: background-color .12s, color .12s, transform .08s; }
+.touch-tools > button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.touch-tools > button:hover { background: var(--surface-raised, #fff); color: var(--fg-strong, #17212f); box-shadow: 0 1px 2px rgba(20, 35, 55, .08); }
+.touch-tools > button:active { transform: scale(.92); }
+.touch-tools > button:focus-visible { outline: 2px solid var(--brand, #3478f6); outline-offset: 1px; }
+.touch-tools > button[data-state='busy'] { color: var(--brand, #3478f6); cursor: progress; }
+.touch-tools > button[data-state='ok'] { color: var(--status-success, #1f8f4e); }
+.touch-tools > button[data-state='error'] { color: var(--status-warning, #b26a00); }
+.touch-tools-toast { position: absolute; top: calc(100% + 6px); left: var(--anchor, 50%); transform: translateX(-50%); z-index: 2300; padding: 4px 10px; border-radius: 6px; background: var(--fg-strong, #17212f); color: var(--surface-raised, #fff); font-size: 12px; line-height: 18px; white-space: nowrap; pointer-events: none; box-shadow: 0 4px 14px rgba(20, 35, 55, .16); animation: touch-toast-in .14s ease-out; }
+.touch-tools-toast[data-state='error'] { background: var(--status-warning, #b26a00); }
+.touch-tools-toast[hidden] { display: none; }
+@keyframes touch-toast-in { from { opacity: 0; transform: translate(-50%, -3px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
 .hub-new-instance {
   display: inline-flex;

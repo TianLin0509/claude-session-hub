@@ -68,7 +68,7 @@ const reload=async()=>{await c.send('Page.reload');await _waitMs(500);await c.cl
   if([1440,960,390].includes(width))await shot('footer-'+width);
  }
  await click(c,'#footer-status-details');await waitFor(c,'!document.querySelector("#footer-status-popover").hidden');
- check(await c.eval('(()=>{const p=document.querySelector("#footer-status-popover"),r=p.getBoundingClientRect();return ["硬盘","Claude","Codex","DeepSeek","Token Plan","↻","155"].every(s=>p.textContent.includes(s)) && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;})()'),'窄屏详情含全部硬件、四家余量、倒计时与 VPN 延时，并在屏内');await shot('footer-details');
+ check(await c.eval('(()=>{const p=document.querySelector("#footer-status-popover"),r=p.getBoundingClientRect();return ["硬盘","Claude","Codex","DeepSeek","Token Plan","155"].every(s=>p.textContent.includes(s)) && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;})()'),'窄屏详情含全部硬件、四家余量、倒计时与 VPN 延时，并在屏内');await shot('footer-details');
  await click(c,'[data-refresh-provider="codex"]');await waitFor(c,'accountUsageController.getSnapshot().codex?.source==="app-server"');
  check(await c.eval('document.querySelector("[data-refresh-provider=codex]").textContent.includes("93%")'),'窄屏详情保留真实 IPC 单家刷新');
  await key(c,'Escape','Escape',27);check(await c.eval('document.querySelector("#footer-status-popover").hidden'),'键盘关闭详情');

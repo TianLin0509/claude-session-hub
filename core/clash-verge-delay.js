@@ -27,10 +27,12 @@ function controllerPipeCandidates(config, listPipes = listVergeMihomoPipes) {
   return candidates;
 }
 
-function selectedNode(proxies) {
+// 先认常见分组名；都没有时用调用方给的兜底分组（Clash 规则模式下 MATCH 规则实际走的那个）。
+function selectedNode(proxies, fallbackGroup = '') {
   const groups = Object.entries(proxies || {});
   const group = groups.find(([name, value]) => value?.type === 'Selector' && /节点选择/.test(name))
-    || groups.find(([name, value]) => value?.type === 'Selector' && /^(PROXY|Proxy)$/i.test(name));
+    || groups.find(([name, value]) => value?.type === 'Selector' && /^(PROXY|Proxy)$/i.test(name))
+    || (fallbackGroup && proxies?.[fallbackGroup]?.now ? [fallbackGroup, proxies[fallbackGroup]] : null);
   if (!group) return null;
   let name = group[0];
   const seen = new Set();
@@ -56,10 +58,10 @@ function latestDelay(node, now = Date.now()) {
   return { delayMs: Math.round(delayMs), measuredAt, nodeName: node.name };
 }
 
-function readProxies(httpApi, socketPath, secret) {
+function readJson(httpApi, socketPath, secret, apiPath, timeout = 1_500) {
   return new Promise((resolve, reject) => {
     const request = httpApi.request({
-      socketPath, path: '/proxies', method: 'GET', timeout: 1_500,
+      socketPath, path: apiPath, method: 'GET', timeout,
       headers: secret ? { Authorization: `Bearer ${secret}` } : {},
     }, response => {
       if (response.statusCode !== 200) { response.resume(); reject(new Error('controller-unavailable')); return; }
@@ -70,7 +72,7 @@ function readProxies(httpApi, socketPath, secret) {
         if (body.length > 2_000_000) request.destroy(new Error('response-too-large'));
       });
       response.on('end', () => {
-        try { resolve(JSON.parse(body).proxies || {}); } catch (error) { reject(error); }
+        try { resolve(JSON.parse(body)); } catch (error) { reject(error); }
       });
       response.on('error', reject);
     });
@@ -80,6 +82,10 @@ function readProxies(httpApi, socketPath, secret) {
   });
 }
 
+function readProxies(httpApi, socketPath, secret) {
+  return readJson(httpApi, socketPath, secret, '/proxies').then(body => body.proxies || {});
+}
+
 function createClashVergeDelayReader(options = {}) {
   const readFile = options.readFile || (file => fs.promises.readFile(file, 'utf8'));
   const httpApi = options.http || http;
@@ -87,8 +93,41 @@ function createClashVergeDelayReader(options = {}) {
   const configPath = options.configPath || path.join(process.env.APPDATA || '', 'io.github.clash-verge-rev.clash-verge-rev', 'clash-verge.yaml');
   const listPipes = options.listPipes || listVergeMihomoPipes;
   const ttlMs = Math.max(5_000, Number(options.ttlMs) || 30_000);
+  const probeUrl = options.probeUrl || 'https://www.gstatic.com/generate_204';
+  const probeEveryMs = Math.max(60_000, Number(options.probeEveryMs) || 5 * 60_000);
   let cached = null;
   let pending = null;
+  let rules = null;
+  let lastProbe = null;
+  // 规则模式下兜底流量走 MATCH 规则指向的分组；规则表很少变，十分钟读一次。
+  async function matchGroup(socketPath, secret) {
+    if (!rules || now() - rules.at > 10 * 60_000) {
+      let target = '';
+      try {
+        const body = await readJson(httpApi, socketPath, secret, '/rules');
+        target = (body.rules || []).find(rule => /^match$/i.test(rule.type))?.proxy || '';
+      } catch { /* 老内核没有 /rules 时就当没有兜底分组。 */ }
+      rules = { at: now(), target };
+    }
+    return rules.target;
+  }
+  // 手选节点的订阅没有自动测速，历史为空或过期时由 Hub 自己测一次（同一节点五分钟内只测一次）。
+  async function probe(socketPath, secret, node) {
+    if (!node) return { status: 'unavailable' };
+    if (lastProbe?.nodeName === node.name && now() - lastProbe.at < probeEveryMs) return lastProbe.value;
+    let value;
+    try {
+      const body = await readJson(httpApi, socketPath, secret,
+        `/proxies/${encodeURIComponent(node.name)}/delay?url=${encodeURIComponent(probeUrl)}&timeout=5000`, 7_000);
+      const delayMs = Number(body.delay);
+      value = delayMs > 0 ? { status: 'ok', delayMs: Math.round(delayMs), measuredAt: now(), nodeName: node.name }
+        : { status: 'timeout', nodeName: node.name, measuredAt: now() };
+    } catch {
+      value = { status: 'timeout', nodeName: node.name, measuredAt: now() };
+    }
+    lastProbe = { nodeName: node.name, at: now(), value };
+    return value;
+  }
   async function sample() {
     if (cached && now() - cached.at < ttlMs) return cached.value;
     if (pending) return pending;
@@ -98,10 +137,12 @@ function createClashVergeDelayReader(options = {}) {
         const config = await readFile(configPath);
         // Never connect to an arbitrary address from a configuration file.
         for (const socketPath of controllerPipeCandidates(config, listPipes)) {
+          const secret = yamlScalar(config, 'secret');
           let proxies;
-          try { proxies = await readProxies(httpApi, socketPath, yamlScalar(config, 'secret')); } catch { continue; }
-          const measurement = latestDelay(selectedNode(proxies), now());
-          if (measurement) value = { status: 'ok', ...measurement };
+          try { proxies = await readProxies(httpApi, socketPath, secret); } catch { continue; }
+          let node = selectedNode(proxies);
+          if (!node) node = selectedNode(proxies, await matchGroup(socketPath, secret));
+          value = latestDelay(node, now()) ? { status: 'ok', ...latestDelay(node, now()) } : await probe(socketPath, secret, node);
           break;
         }
       } catch { /* Clash may be closed or expose no controller. */ }
