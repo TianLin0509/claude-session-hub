@@ -23,7 +23,10 @@ function installRailGroups(doc = globalThis.document) {
     const menu = railGroup.querySelector('.rail-group-menu');
     if (!trigger || !menu) return null;
     trigger.dataset.railGroupTitle = trigger.getAttribute('aria-label') || trigger.textContent.trim();
-    return { railGroup, trigger, menu, open: false, activeId: '' };
+    // 入口图标平时是这一组自己的图标；组里有当前页时换成那一项的图标（字仍是组名），
+    // 所以要留一份原件，离开组的时候换回来。
+    const baseIconHtml = trigger.querySelector('.btn-icon')?.innerHTML || '';
+    return { railGroup, trigger, menu, open: false, activeId: '', baseIconHtml };
   }).filter(Boolean);
   if (!states.length) return null;
   rail.dataset.railGroupsInstalled = 'true';
@@ -176,6 +179,14 @@ function installRailGroups(doc = globalThis.document) {
       state.activeId = activeId;
       const label = active ? (active.querySelector('.btn-label')?.textContent || '').trim() : '';
       state.trigger.classList.toggle('rail-group-current', !!active);
+      // 入口图标跟着当前页走：在账号页时入口显示账号图标，但字还是「规则」。
+      // 只比 innerHTML 再写，避免每次 paint 都重建节点（重建会让 CSS 动画重播）。
+      const icon = state.trigger.querySelector('.btn-icon');
+      if (icon) {
+        const activeIcon = active ? active.querySelector('.btn-icon') : null;
+        const nextHtml = activeIcon ? activeIcon.innerHTML : state.baseIconHtml;
+        if (nextHtml && icon.innerHTML !== nextHtml) icon.innerHTML = nextHtml;
+      }
       const suffix = state.trigger.dataset.titleSuffix || '';
       state.trigger.title = label
         ? `${base}；当前：${label}；悬停展开${suffix}`

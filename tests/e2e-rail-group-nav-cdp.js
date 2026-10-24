@@ -131,8 +131,32 @@ const park = () => c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 9
     check(await c.eval(`document.getElementById('btn-rail-group-rules').classList.contains('rail-group-current')`), '选完成员后，分组入口显示「组内有当前页」');
     check(await c.eval(`/当前：资源/.test(document.getElementById('btn-rail-group-rules').title) && /当前：资源/.test(document.getElementById('btn-rail-group-rules').getAttribute('aria-label'))`), '入口 title / aria-label 说清当前是组里的哪一项');
     check(await c.eval(`document.getElementById('hub-workspace').getBoundingClientRect().left >= document.getElementById('scene-rail').getBoundingClientRect().right`), '资源页仍从 rail 右边开始，没被 dock 挤动');
+    // 3b. 入口图标跟着当前页走：显示「资源」的图标，字仍是「规则」。
+    const iconNow = await c.eval(`(() => {
+      const trigger = document.getElementById('btn-rail-group-rules');
+      const member = document.getElementById('btn-rail-capabilities');
+      return {
+        src: trigger.querySelector('.btn-icon img')?.getAttribute('src') || '',
+        memberSrc: member.querySelector('.btn-icon img')?.getAttribute('src') || '',
+        label: trigger.querySelector('.btn-label').textContent.trim(),
+        size: trigger.querySelector('.btn-icon').getBoundingClientRect().width,
+        dot: getComputedStyle(trigger.querySelector('.btn-icon'), '::after').content !== 'none',
+      };
+    })()`);
+    result.icon = iconNow;
+    check(/resources\.png$/.test(iconNow.src) && iconNow.src === iconNow.memberSrc && iconNow.label === '规则',
+      '入口图标换成当前那一项的（资源），字仍是「规则」');
+    check(iconNow.size >= 20 && iconNow.size <= 30 && iconNow.dot, '换完图标尺寸不变，右下角小点还在');
     await park();
     await shot('after-resource', { x: 0, y: 0, width: 1440, height: 900 });
+    // 3c. 离开这一组（回主页）之后换回组自己的图标。
+    const homeBtnPoint = await c.eval(`(() => { const r = document.getElementById('btn-home').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await press(homeBtnPoint);
+    await waitFor(c, `!/当前：资源/.test(document.getElementById('btn-rail-group-rules').title)`);
+    const iconBack = await c.eval(`document.getElementById('btn-rail-group-rules').querySelector('.btn-icon img')?.getAttribute('src') || ''`);
+    result.iconBack = iconBack;
+    check(/rules\.png$/.test(iconBack) && !(await c.eval(`document.getElementById('btn-rail-group-rules').classList.contains('rail-group-current')`)),
+      '回到主页后，入口图标换回「规则」本来的');
 
     // 4. 键盘：入口上按 → 展开并把焦点送进第一个成员；Escape 收回并还焦点。
     await c.eval(`document.getElementById('btn-rail-group-applications').focus()`);
