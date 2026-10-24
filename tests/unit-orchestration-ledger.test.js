@@ -125,10 +125,17 @@ test('final report needs every segment closed and a reviewer conclusion file', (
 });
 
 test('orchestrator rules describe the role and the enforced limits; goal text forbids merging', () => {
-  const block = Prompt.orchestratorBlock({ ledgerFile: 'ledger.md' });
-  assert.match(block, /编排员/); assert.match(block, /orch_status/); assert.match(block, /计划账本：ledger\.md/);
-  for (const tool of ['orch_restart_member', 'orch_send_message', 'orch_request_peer', 'orch_decide_peer', 'need_decision']) assert.ok(block.includes(tool), tool);
-  assert.match(block, /方案规划者/); assert.match(block, /Hub 不设固定上限/);
+  const block = Prompt.orchestratorBlock({ ledgerFile: 'ledger.md', briefFile: 'brief.md' });
+  assert.match(block, /负责人/); assert.match(block, /orch_status/); assert.match(block, /计划账本：ledger\.md/); assert.match(block, /项目档案：brief\.md/);
+  for (const tool of ['orch_restart_member', 'orch_send_message', 'orch_request_peer', 'orch_decide_peer', 'orch_allow_peer', 'interrupt=true', 'need_decision']) assert.ok(block.includes(tool), tool);
+  assert.match(block, /Hub 不设固定上限/);
+  // 负责人不是纯调度：亲自定方案、审查摘要，有疑点让成员复核或亲自核实。
+  assert.match(block, /亲自/); assert.match(block, /复核/); assert.match(block, /核实/);
+  // 2026-10-23 真实 Haiku 实测：只在聊天里写「结项」不调工具；「按你推荐的来」后擅自 git init 并提交。
+  assert.match(block, /调用 orch_report\(kind=final\) 结项/); assert.match(block, /不扩大到新操作/);
+  assert.doesNotMatch(Prompt.noticeText([{ text: 'x' }]), /请先 orch_status/);
+  const member = Prompt.memberBlock({ role: '开发位', briefFile: 'brief.md' });
+  assert.match(member, /wake=false/); assert.match(member, /摘要/); assert.match(member, /追加指示/);
   assert.doesNotMatch(block, /确认后执行|仅给田哥|等待明确恢复/);
   const goal = Prompt.goalText({ goal: '做 X', acceptance: '测试通过', preset: 'development' });
   assert.match(goal, /验收标准/); assert.match(goal, /审查位独立验证候选通过后/); assert.match(goal, /验证不通过不得合并/);

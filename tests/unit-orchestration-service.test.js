@@ -13,7 +13,7 @@ const { createOrchestrationService } = require('../main/orchestration/service');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function fixture(t, { settings = {}, dataDir } = {}) {
+function fixture(t, { settings = {}, dataDir, mergeMs = 0 } = {}) {
   const dir = dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'orch-svc-'));
   let clock = 1_000_000;
   const sessions = new Map([['s-orch', { id: 's-orch', kind: 'claude', title: 'Claude 1', purpose: 'hub-orchestrator', status: 'idle' }]]);
@@ -61,7 +61,7 @@ function fixture(t, { settings = {}, dataDir } = {}) {
     sessionManager: { getSession: id => sessions.get(id), isAgentTurnActive: id => busy.has(id) },
     getDispatcher: () => dispatcher, getDeliveryEngine: () => engine, addMeetingSubInternal,
     getMembers: m => m.subSessions.map((sid, i) => ({ sid, memberId: m.slotSpecs[i].memberId, displayName: sessions.get(sid).title, kind: sessions.get(sid).kind, model: null })),
-    getDefaults: () => ({}), sendToRenderer: (channel, data) => sent.push([channel, data]), logger: { warn() {}, error() {} },
+    noticeMergeMs: mergeMs, getDefaults: () => ({}), sendToRenderer: (channel, data) => sent.push([channel, data]), logger: { warn() {}, error() {} },
     restartSession: async sid => { restarts.push(sid); return restartResult(sid); },
     ensureMemberReady: async (m, memberId) => { restarts.push('wake:' + memberId); },
   });
@@ -181,7 +181,7 @@ test('existing members keep the orchestrator as the only recipient and plan role
   assert.deepEqual(x.meetingObj.participants, [0]);
   const status = await x.call('orch_status');
   assert.equal(status.members.find(m => m.memberId === 'm2').role, '开发位');
-  assert.match(Rules.rulesFor(x.dir, x.meetingObj, 'm1'), /你是本群的编排员/);
+  assert.match(Rules.rulesFor(x.dir, x.meetingObj, 'm1'), /你是本群的负责人/);
   assert.match(Rules.rulesFor(x.dir, x.meetingObj, 'm2'), /开发位/);
 });
 
@@ -619,4 +619,48 @@ test('review: continuing into an immediate failure still counts toward the repea
   x.service.userMessage('mt1', { text: '换个人做吧' });
   for (let i = 0; i < 4; i += 1) await x.call('orch_control_workflow', { action: 'continue' });
   assert.equal(ledger.status, 'running');
+});
+
+// 2026-10-23 负责人模式：成员决定是否叫醒；挨着到达的唤醒合并；交付通知带摘要；状态只带最近通信；项目档案。
+test('lead mode: quiet notes ride along, near-simultaneous wakes merge, answers carry their summary', async t => {
+  const x = fixture(t, { mergeMs: 8000 });
+  await x.addExisting({ kind: 'codex' }); await x.addExisting({ kind: 'codex' });
+  const L = require('../core/orchestration/ledger');
+  const l = x.service.ledgerFor('mt1'); l.status = 'running';
+  x.advance(10000);
+  await x.call('orch_send_message', { to: 'm1', message: '小进展，不急', wake: false }, 's-2');
+  assert.equal(await x.service.deliver('mt1'), false, 'a quiet note alone never wakes the lead');
+  x.advance(60000);
+  assert.equal(await x.service.deliver('mt1'), false);
+  const o = { state: { messages: [{ role: 'assistant', sid: 's-3', memberId: 'm3', turnNum: 5, content: '结论：接口已改好\n改了什么：a.js\n怎么验证的：node --test 通过', answer: { state: 'delivered', at: 2_000_000 } }] }, answerFileFor: () => ({ ready: 'D:/answers/回答.md' }) };
+  x.service.onAnswersChanged('mt1', o);
+  assert.equal(await x.service.deliver('mt1'), false, 'waits a few seconds so nearby wakes merge');
+  await x.call('orch_send_message', { to: 'm1', message: '卡住了：需要你定接口', wake: true }, 's-2');
+  x.advance(8000);
+  assert.equal(await x.service.deliver('mt1'), true);
+  const text = x.dispatches.at(-1).userInput;
+  assert.equal(x.dispatches.filter(d => d.workflowRun?.kind === 'orch-notice').length, 1, 'one lead turn for all three');
+  assert.match(text, /小进展，不急/); assert.match(text, /卡住了/); assert.match(text, /摘要：\n结论：接口已改好/); assert.match(text, /D:\/answers\/回答\.md/);
+  assert.doesNotMatch(text, /请先 orch_status/);
+  assert.equal(L.pendingNotices(l).length, 0);
+});
+
+test('lead mode: status keeps only recent communication and points at the project brief', async t => {
+  const x = fixture(t);
+  await x.addExisting({ kind: 'codex' });
+  x.service.ledgerFor('mt1').status = 'running';
+  x.busy.add('s-2');
+  for (let i = 0; i < 25; i++) await x.call('orch_send_message', { to: 'm2', message: 'task ' + i + ' ' + 'x'.repeat(500) });
+  const status = await x.call('orch_status');
+  assert.equal(status.communication.totalMessages, 25);
+  assert.ok(status.communication.open.length === 25 && status.communication.open.every(m => m.text.length <= 301), 'queued messages stay visible but clipped');
+  assert.ok(status.communication.recent.length <= 10);
+  assert.ok(fs.existsSync(status.projectBrief), 'brief template is created');
+  assert.match(fs.readFileSync(status.projectBrief, 'utf8'), /历次决定/);
+  assert.match(Rules.rulesFor(x.dir, x.meetingObj, 'm1'), /项目档案：/);
+  assert.match(Rules.rulesFor(x.dir, x.meetingObj, 'm2'), /只读，由负责人维护/);
+  // 按需加载工具的 CLI 要一次加载齐，负责人才调得到结项工具。
+  assert.ok(Rules.rulesFor(x.dir, x.meetingObj, 'm1').includes('mcp__hub_orchestrator__orch_report'));
+  const allowed = await x.call('orch_allow_peer', { memberA: 'm2', memberB: 'm1', allow: true }).catch(e => e);
+  assert.match(String(allowed.message || allowed), /两位不同的工作成员/);
 });

@@ -1,6 +1,6 @@
 'use strict';
 // AI 编排模式界面：真实隔离 Electron + 真实 UI 点击 + 真实 IPC 与持久化。
-// 模型派发用受控夹具（不调用真实模型）；编排员的工具调用经真实 Hub 桥（HTTP + 身份请求头）发出。
+// 模型派发用受控夹具（不调用真实模型）；负责人的工具调用经真实 Hub 桥（HTTP + 身份请求头）发出。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -54,7 +54,7 @@ async function run() {
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     await shot('00-antigravity-footer');
 
-    // 1. 启动中心 → AI 群聊 → 打开编排员开关 → 删掉初始成员 → 建群
+    // 1. 启动中心 → AI 群聊 → 打开负责人开关 → 删掉初始成员 → 建群
     await cdp.eval("document.getElementById('btn-new-more').click()");
     await wait(() => cdp.eval("!!document.getElementById('launch-intent-group')"), 'launch center');
     await click('#launch-intent-group');
@@ -63,10 +63,10 @@ async function run() {
     await click('#new-session-menu [data-mcm-scene="general"]');
     await click('#new-session-menu [data-mcm-workspace-mode="default"]');
     await click('#new-session-menu .mcm-orch-switch');
-    ok('打开后成员 1 标为编排员、显示自然语言编排说明（没有「计划先给我确认」）', await cdp.eval("!document.getElementById('mcm-orch-confirm')") && await cdp.eval("document.getElementById('mcm-orch-toggle').checked && !document.getElementById('mcm-orch-options').hidden && document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-slot-label').textContent.includes('编排员') && document.querySelector('.mcm-slot[data-slot=\"1\"] .mcm-slot-label').textContent.includes('工作成员')"));
+    ok('打开后成员 1 标为负责人、显示自然语言编排说明（没有「计划先给我确认」）', await cdp.eval("!document.getElementById('mcm-orch-confirm')") && await cdp.eval("document.getElementById('mcm-orch-toggle').checked && !document.getElementById('mcm-orch-options').hidden && document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-slot-label').textContent.includes('负责人') && document.querySelector('.mcm-slot[data-slot=\"1\"] .mcm-slot-label').textContent.includes('工作成员')"));
     ok('没有固定轮次或时长输入', await cdp.eval("!document.getElementById('mcm-orch-rounds') && !document.getElementById('mcm-orch-hours')"));
     await cdp.eval("(()=>{const s=document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-ai-select');s.value='gemini';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
-    ok('Antigravity 可以担任编排员', await cdp.eval("document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-ai-select').value==='gemini'"));
+    ok('Antigravity 可以担任负责人', await cdp.eval("document.querySelector('.mcm-slot[data-slot=\"0\"] .mcm-ai-select').value==='gemini'"));
 
     ok('用户预先选定工作成员', await cdp.eval("document.querySelectorAll('#new-session-menu .mcm-slot').length===2"));
     await shot('01-create');
@@ -74,32 +74,32 @@ async function run() {
     await cdp.eval("[...document.querySelectorAll('#new-session-menu button')].find(b=>b.textContent.trim()==='创建群聊').click()");
     const meeting = await wait(async () => { const all = await invoke('get-meetings'); return all.length > before && all.find(m => m.orchestration?.enabled && m.orchestration.sessionId); }, 'orchestration room created', 40000);
     evidence.meeting = { id: meeting.id, orchestration: meeting.orchestration, participants: meeting.participants };
-    ok('群里登记了编排员身份与设置', meeting.orchestration.memberId === 'm1' && meeting.orchestration.settings.coordination === 'star' && meeting.subSessions.length === 2 && JSON.stringify(meeting.participants) === '[0]');
+    ok('群里登记了负责人身份与设置', meeting.orchestration.memberId === 'm1' && meeting.orchestration.settings.coordination === 'star' && meeting.subSessions.length === 2 && JSON.stringify(meeting.participants) === '[0]');
     const session = await cdp.eval(`(()=>{const s=sessions.get(${JSON.stringify(meeting.orchestration.sessionId)}); return s && {purpose:s.purpose,kind:s.kind};})()`);
-    ok('编排员是真实会话（purpose=hub-orchestrator）', session && session.purpose === 'hub-orchestrator');
+    ok('负责人是真实会话（purpose=hub-orchestrator）', session && session.purpose === 'hub-orchestrator');
     await cdp.eval(`selectMeeting(${JSON.stringify(meeting.id)})`);
     await wait(() => cdp.eval("!!document.querySelector('.mr-orch-strip')"), 'orchestration strip');
     ok('标题旁与侧栏都有「编排」标签', await cdp.eval("!!document.querySelector('#mr-title + .mr-orch-title-tag') && [...document.querySelectorAll('.sl-orch-tag')].length>=1"));
-    ok('状态条显示等编排员提交计划', await cdp.eval("document.querySelector('.mr-orch-strip').textContent.includes('等编排员提交计划')"));
+    ok('状态条显示等负责人提交计划', await cdp.eval("document.querySelector('.mr-orch-strip').textContent.includes('等负责人提交计划')"));
     await shot('02-room-planning');
 
-    // 2. 田哥发消息：只发给编排员
+    // 2. 田哥发消息：只发给负责人
     await typeAndSend('帮我调研 AI Hub 群聊回答文件机制的失败场景，允许10轮以内迭代，最多半小时');
     await wait(() => calls().length >= 1, 'user dispatch');
-    ok('输入框默认只发给编排员', JSON.stringify(calls()[0].recipientSids || []) === JSON.stringify([meeting.orchestration.sessionId]) || JSON.stringify(calls()[0].targetMemberIds || []) === '["m1"]');
+    ok('输入框默认只发给负责人', JSON.stringify(calls()[0].recipientSids || []) === JSON.stringify([meeting.orchestration.sessionId]) || JSON.stringify(calls()[0].targetMemberIds || []) === '["m1"]');
 
-    // 3. 编排员经 Hub 桥提交计划 → 提交即生效，界面没有确认按钮
+    // 3. 负责人经 Hub 桥提交计划 → 提交即生效，界面没有确认按钮
     const endpoint = JSON.parse(fs.readFileSync(path.join(DATA, 'orchestration', 'connections', meeting.orchestration.sessionId + '.json'), 'utf8'));
     const tool = async (name, args, caller = meeting.orchestration.sessionId) => {
       const r = await fetch(endpoint.url, { method: 'POST', headers: { Authorization: 'Bearer ' + (caller === 'not-the-orchestrator' ? 'invalid' : endpoint.token), 'Content-Type': 'application/json', 'X-Hub-Orchestrator-Session': caller }, body: JSON.stringify({ name, arguments: args }) });
       if (r.status === 403) return { ok:false, error:'身份无效' };
       return r.json();
     };
-    ok('非编排员会话调用工具被拒', (await tool('orch_status', {}, 'not-the-orchestrator')).ok === false);
+    ok('非负责人会话调用工具被拒', (await tool('orch_status', {}, 'not-the-orchestrator')).ok === false);
     const plan = await tool('orch_propose_plan', { summary: '一位 Codex 调研、一位 Claude 收口', team: [{memberId:'m2',role:'调研与收口'}], segments: [{ name: '失败场景调研', preset: 'research', goal: '列出失败场景', acceptance: '每个场景附代码位置' }] });
     ok('计划提交即生效（编排中）', plan.ok && plan.result.status === 'running');
     const early = await tool('orch_add_member', { role: '调研', kind: 'codex' });
-    ok('编排员不能新增成员', early.ok === false && /已有成员/.test(early.error));
+    ok('负责人不能新增成员', early.ok === false && /已有成员/.test(early.error));
     await wait(() => cdp.eval("document.querySelector('.mr-orch-strip').textContent.includes('编排中')"), 'running strip');
     ok('状态条与卡片上都没有确认/恢复/追加额度按钮', await cdp.eval("!document.querySelector('[data-orch-action=\"confirm\"],[data-orch-action=\"grant-rounds\"],[data-orch-card-action]') && !document.querySelector('.mr-orch-strip [data-orch-action=\"resume\"]')"));
     await click('[data-orch-ledger]');
@@ -109,29 +109,29 @@ async function run() {
     ok('账本显示星型自然语言策略', await cdp.eval("document.querySelector('.mr-orch-ledger').textContent.includes('星型')"));
     const budget=(await invoke('orchestration:view',{meetingId:meeting.id})).view.budget; ok('没有固定轮数或时间上限',budget.roundCap===null && budget.minutesCap===null);
 
-    // 4. 组队：成员加入后收件人仍只有编排员；@成员 直接点名
+    // 4. 组队：成员加入后收件人仍只有负责人；@成员 直接点名
     const added = await tool('orch_add_member', { role: '调研', kind: 'codex', tier: 'fast' });
     ok('组队时仍不能新增成员', !added.ok && /已有成员/.test(added.error));
     const room = await wait(async () => (await invoke('get-meetings')).find(m => m.id === meeting.id && m.subSessions.length === 2), 'member joined');
-    ok('新成员加入后收件人仍只有编排员', JSON.stringify(room.participants) === '[0]');
+    ok('新成员加入后收件人仍只有负责人', JSON.stringify(room.participants) === '[0]');
     const n = calls().length;
     await typeAndSend('@m2 先看 core/group-answer-files.js');
     await wait(() => calls().length > n, 'direct dispatch');
     const direct = calls().at(-1);
     ok('@成员 时直接发给被点名的成员', JSON.stringify(direct.recipientSids || []) === JSON.stringify([room.subSessions[1]]) || JSON.stringify(direct.targetMemberIds || []) === '["m2"]');
     await wait(async () => { const l = JSON.parse(fs.readFileSync(path.join(DATA, 'task-docs', meeting.id, 'orchestration', 'ledger.json'), 'utf8')); return l.notices.some(x => /直接对 m2 说/.test(x.text)) || calls().some(c => c.kind === 'orch-notice' && /直接对 m2/.test(c.userInput)); }, 'copy to orchestrator');
-    ok('点名成员时抄送编排员', true);
+    ok('点名成员时抄送负责人', true);
 
-    // 5. 需要田哥决定：编排员暂停 → 田哥在输入框用一句话回复 → 暂停解除
+    // 5. 需要田哥决定：负责人暂停 → 田哥在输入框用一句话回复 → 暂停解除
     const decide = await tool('orch_report', { kind: 'need_decision', summary: '调研范围比预想大：A 拆两段，B 只做核心。推荐 A' });
-    ok('编排员请你决定时暂停', decide.ok && decide.result.status === 'halted');
+    ok('负责人请你决定时暂停', decide.ok && decide.result.status === 'halted');
     await wait(() => cdp.eval("!!document.querySelector('.mr-orch-strip.is-halted')"), 'halted strip');
-    ok('暂停时提示在输入框回复，没有恢复按钮', await cdp.eval("document.querySelector('.mr-orch-strip').textContent.includes('在输入框回复编排员') && !document.querySelector('.mr-orch-strip [data-orch-action=\"resume\"]')"));
+    ok('暂停时提示在输入框回复，没有恢复按钮', await cdp.eval("document.querySelector('.mr-orch-strip').textContent.includes('在输入框回复负责人') && !document.querySelector('.mr-orch-strip [data-orch-action=\"resume\"]')"));
     await shot('04-halted');
     const before5 = calls().length;
     await typeAndSend('A，按你推荐的拆两段');
     await wait(() => calls().length > before5, 'reply dispatch');
-    ok('回复只发给编排员', JSON.stringify(calls().at(-1).recipientSids || []) === JSON.stringify([meeting.orchestration.sessionId]) || JSON.stringify(calls().at(-1).targetMemberIds || []) === '["m1"]');
+    ok('回复只发给负责人', JSON.stringify(calls().at(-1).recipientSids || []) === JSON.stringify([meeting.orchestration.sessionId]) || JSON.stringify(calls().at(-1).targetMemberIds || []) === '["m1"]');
     await wait(async () => (await invoke('orchestration:view', { meetingId: meeting.id })).view.status === 'running', 'resumed by reply');
     ok('田哥用自然语言回复后暂停解除', await wait(() => cdp.eval("!document.querySelector('.mr-orch-strip.is-halted') && document.querySelector('.mr-orch-strip').textContent.includes('编排中')"), 'strip running'));
     const revised = await tool('orch_propose_plan', { summary: '按田哥选的 A 拆两段', team: [{memberId:'m2',role:'调研与收口'}], segments: [{ name: '失败场景调研', preset: 'research', goal: '列出失败场景', acceptance: '每个场景附代码位置' }, { name: '修复建议', preset: 'custom', steps: 1, goal: '给修复建议', acceptance: '每条建议对应一个场景' }] });
@@ -157,8 +157,8 @@ async function run() {
     const fixture = { ...await invoke('groupchat:get-state', { meetingId: meeting.id }), currentMode: 'idle', currentTurn: 1, messages: [
       { id: 'scope-user', role: 'user', content: '我的筛选测试问题', turnNum: 1 },
       { id: 'scope-dispatch', role: 'user', content: '自动派发测试', dispatch: { stepIndex: 0, kind: 'orchestration' }, turnNum: 1 },
-      { id: 'scope-lead', role: 'assistant', sid: room.subSessions[0], content: '编排员测试回复', turnNum: 1 },
-      { id: 'scope-worker', role: 'assistant', sid: room.subSessions[1], content: '工作成员测试回复', turnNum: 1 },
+      { id: 'scope-lead', role: 'assistant', sid: room.subSessions[0], content: '负责人测试回复', turnNum: 1 },
+      { id: 'scope-worker', role: 'assistant', sid: room.subSessions[1], content: '## 摘要\n结论：接口已改好，测试通过\n改了什么：core/a.js', turnNum: 1 },
     ] };
     const renderFixture = state => cdp.eval(`window.MeetingRoom.debugRenderGroupChatState(${JSON.stringify(meeting.id)},${JSON.stringify(state)})`);
     // Earlier routing checks left optimistic user prompts, which correctly stay visible.
@@ -166,18 +166,30 @@ async function run() {
     await renderFixture(fixture);
     ok('群成员旁默认全员信息', await cdp.eval("document.getElementById('mr-btn-group-members').nextElementSibling.id==='mr-btn-message-scope' && document.getElementById('mr-btn-message-scope').textContent==='全员信息'"));
     ok('全员视图显示四条消息', (await visibleIds()).length === 4);
+    // 负责人模式：成员卡片默认折叠成一行，折叠行显示结论；负责人卡片照常展开；点一下展开。
+    const card = id => `document.querySelector('[data-gc-msg-id="${id}"]')`;
+    ok('成员卡片默认折叠、负责人卡片展开', await cdp.eval(`${card('scope-worker')}.dataset.journalMinimized==='true' && ${card('scope-lead')}.dataset.journalMinimized==='false'`));
+    ok('折叠行显示成员结论而不是「摘要」小标题', await cdp.eval(`${card('scope-worker')}.querySelector('.mr-orch-peek')?.textContent.startsWith('结论：接口已改好')`));
+    ok('负责人卡片标为负责人', await cdp.eval(`${card('scope-lead')}.querySelector('.mr-orch-badge-lead')?.textContent==='负责人'`));
+    await cdp.eval(`${card('scope-lead')}.scrollIntoView({block:'start'})`); await sleep(200);
+    await shot('06a-member-folded');
+    await cdp.eval(`${card('scope-worker')}.querySelector('[data-journal-action="minimize"]').click()`);
+    await sleep(300);
+    ok('点击后成员卡片展开', await cdp.eval(`${card('scope-worker')}.dataset.journalMinimized==='false' && ${card('scope-worker')}.textContent.includes('改了什么')`));
+    await cdp.eval(`${card('scope-lead')}.scrollIntoView({block:'start'})`); await sleep(200);
+    await shot('06b-member-expanded');
     await cdp.eval("document.getElementById('mr-input-box').textContent='尚未发送的草稿'");
     const routesBefore = JSON.stringify((await invoke('get-meetings')).find(m=>m.id===meeting.id).participants);
     const callsBefore = calls().length;
     await click('#mr-btn-message-scope');
-    ok('只看编排保留本人和编排员', JSON.stringify(await visibleIds()) === JSON.stringify(['scope-user', 'scope-lead']));
+    ok('只看编排保留本人和负责人', JSON.stringify(await visibleIds()) === JSON.stringify(['scope-user', 'scope-lead']));
     ok('切换保留输入草稿', await cdp.eval("document.getElementById('mr-input-box').textContent==='尚未发送的草稿'"));
     ok('筛选按群保存', await cdp.eval(`localStorage.getItem('hub:group-message-scope:${meeting.id}')==='orchestrator'`));
     const streaming = { ...fixture, currentMode: 'parallel', messages: fixture.messages.slice(0, 3), _partialBy: { [room.subSessions[1]]: { text: '工作成员正在输出', status: 'streaming' } } };
     await renderFixture(streaming);
     ok('过滤期间的新流式卡片不泄漏队员信息', !(await visibleIds()).some(id=>id.includes(room.subSessions[1])));
     await renderFixture(fixture);
-    ok('完整消息刷新后仍只显示本人和编排员', JSON.stringify(await visibleIds()) === JSON.stringify(['scope-user', 'scope-lead']));
+    ok('完整消息刷新后仍只显示本人和负责人', JSON.stringify(await visibleIds()) === JSON.stringify(['scope-user', 'scope-lead']));
     await shot('06-orchestrator-only');
     await click('#mr-btn-message-scope');
     ok('切回全员恢复全部历史卡片', (await visibleIds()).length === 4);

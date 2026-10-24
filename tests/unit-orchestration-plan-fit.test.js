@@ -114,7 +114,7 @@ test('goal text matches the template: filework never merges, linear templates as
   assert.doesNotMatch(Prompt.goalText({ goal: 'g', acceptance: 'a', preset: 'development' }), /收口结论/);
   const block = Prompt.orchestratorBlock({});
   for (const id of Ledger.PRESETS) assert.ok(block.includes(id), `orchestrator rules describe ${id}`);
-  assert.match(block, /Hub 不设固定上限/); assert.match(block, /核对交付与证据/);
+  assert.match(block, /Hub 不设固定上限/); assert.match(block, /审查成员交付/);
   assert.match(Prompt.memberBlock({ role: 'x' }), /白话/);
 });
 
