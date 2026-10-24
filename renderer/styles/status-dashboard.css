@@ -136,3 +136,11 @@
 @media(max-width:600px) {
   :root body #hub-system-footer #sidebar-strip .strip-resources { display:none; }
 }
+/* 底栏账号序号与会话栏一致：挪到 logo 右下角，不再单独占一格。 */
+#hub-system-footer :is(#rail-usage,#rail-codeagent-quota) .sidebar-quota-provider { position:relative; }
+#hub-system-footer :is(#rail-usage,#rail-codeagent-quota) .sidebar-quota-account:not(:empty) {
+  position:absolute; left:11px; bottom:2px; min-width:9px; height:9px; padding:0 1px; box-sizing:border-box; border-radius:5px;
+  font:700 7.5px/9px var(--font-sans); text-align:center; color:#fff; background:var(--fg-muted);
+  box-shadow:0 0 0 1px var(--surface-raised); pointer-events:none;
+}
+#hub-system-footer :is(#rail-usage,#rail-codeagent-quota) .sidebar-quota-account[data-no='2'] { background:var(--brand); }

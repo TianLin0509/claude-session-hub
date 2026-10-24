@@ -138,6 +138,7 @@ function createSessionListRenderer(options = {}) {
     : id => { try { return (typeof window !== 'undefined' && window._bridgeThreads?.badge(id)) || null; } catch { return null; } };
   doc.addEventListener?.('bridge-threads-updated', () => { try { renderSessionList(); } catch (error) { console.warn('[session-list] bridge refresh failed:', error && error.message); } });
   // CodeAgent 会话的账号字母（renderer/session-account-badge.js）：账号表取到或登录变化后重画会话栏。
+  const subscriptionAccount = typeof options.subscriptionAccount === 'function' ? options.subscriptionAccount : () => null;
   const accountBadge = typeof options.accountBadge === 'function' ? options.accountBadge : (() => {
     const ipc = options.ipcRenderer || (typeof process !== 'undefined' && process.type === 'renderer' ? require('electron').ipcRenderer : null);
     if (!ipc || typeof ipc.invoke !== 'function') return () => null;
@@ -329,7 +330,7 @@ function _logoKind(kind, modelId = '') {
 //   扫列表时真正要一眼分辨的只是"哪家 CLI"，具体型号是二级信息 → 退到 tooltip
 //   （会话行的无障碍标签也包含完整 displayName）。
 //   拿不到图标的 kind 回落成原来的文字列，避免这一列直接消失。
-function _sessionKindHtml(kind, modelTxt, state = 'idle', stateTip = '', modelId = '', targetSessionId = '') {
+function _sessionKindHtml(kind, modelTxt, state = 'idle', stateTip = '', modelId = '', targetSessionId = '', account = null) {
   const k = _logoKind(kind, modelId);
   if (!k) return `<span class="sl-model">${escapeHtml(modelTxt || '')}</span>`;
   const labelKind = String(kind || '').replace(/-resume$/, '') === 'codeagent' ? 'codeagent' : k;
@@ -340,7 +341,9 @@ function _sessionKindHtml(kind, modelTxt, state = 'idle', stateTip = '', modelId
   const navigation = targetSessionId
     ? `role="button" tabindex="0" data-sub-id="${escapeHtml(targetSessionId)}" data-sidebar-control="group-logo-${escapeHtml(targetSessionId)}"`
     : 'role="img"';
-  return `<span class="sl-kind ai-logo logo-${k}" data-state="${state}" ${navigation} aria-label="${escapeHtml(label + ' · ' + status + action)}" title="${escapeHtml(tip + ' · ' + status + action)}"></span>`;
+  const accountTip = account ? ` · 账号 ${account.no}（${account.label}）` : '';
+  const accountAttr = account ? ` data-account="${Number(account.no)}"` : '';
+  return `<span class="sl-kind ai-logo logo-${k}" data-state="${state}"${accountAttr} ${navigation} aria-label="${escapeHtml(label + accountTip + ' · ' + status + action)}" title="${escapeHtml(tip + accountTip + ' · ' + status + action)}"></span>`;
 }
 
 const STATUS_LABELS = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
@@ -890,7 +893,7 @@ sessionListEl.addEventListener('keydown', event => {
         if (!member) return '';
         let state = partitionSidebarSessions([member], { sessionMap, groupMemberIds: new Set([id]) }).states.get(id) || 'idle';
         if (getSessionRuntimeTruth(member).state === RUNTIME_DORMANT && !member._resumePending && state !== 'error') state = 'dorm';
-        return _sessionKindHtml(member.kind, member.currentModel ? modelShort(member.currentModel) : '', state, '', require('../core/codeagent-models').iconModelId(member), id);
+        return _sessionKindHtml(member.kind, member.currentModel ? modelShort(member.currentModel) : '', state, '', require('../core/codeagent-models').iconModelId(member), id, subscriptionAccount(member));
       }).join('');
       div.innerHTML = '<div class="sl-line1">'
         + '<span class="sl-group-logos" data-state="' + dotCls + '" aria-label="群聊 · ' + STATUS_LABELS[dotCls] + '">'
@@ -974,7 +977,7 @@ sessionListEl.addEventListener('keydown', event => {
     // 挪到会话头部（renderer.js paintCrumbBridge）；会话栏只留「重启打断」这类要田哥动手的异常。详细信息模式的第二行照旧。
     const bridge = bridgeBadge(s.id);
     const bridgeHtml = bridge && bridge.role === 'restart' ? `<span class="bt-badge" data-state="${escapeHtml(bridge.state)}" data-role="${escapeHtml(bridge.role || '')}" title="${escapeHtml(bridge.sub)}">${escapeHtml(bridge.chip)}</span>` : '';
-    div.innerHTML = _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), require('../core/codeagent-models').iconModelId(s))
+    div.innerHTML = _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth), require('../core/codeagent-models').iconModelId(s), '', subscriptionAccount(s))
       + '<span class="sl-title">' + _warningHtml(anyWarning) + accountHtml + bridgeHtml + escapeHtml(displayTitle) + '</span>'
       + timeHtml(s, showUnread ? Math.max(1, unreadCount) : 0);
     if (child) div.className += ' child';

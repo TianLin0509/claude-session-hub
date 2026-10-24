@@ -41,6 +41,7 @@ function createAccountUsageController({
   clearTimeoutFn = clearTimeout,
   nowFn = Date.now,
   isMemoOpen = () => false,
+  onAccountsChanged = () => {},
 }) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
@@ -51,6 +52,13 @@ function createAccountUsageController({
   let claudeScope = '';
   let claudeSelectionRevision = 0;
   let profileUsage = null;
+  let accountsSignature = '';
+  const noteAccounts = () => {
+    const signature = profileUsage ? ['claude','codex'].map(p => profileUsage[p].map(r => r.profileId + (r.selected ? '*' : '')).join(',')).join('|') : '';
+    if (signature === accountsSignature) return;
+    accountsSignature = signature;
+    try { onAccountsChanged(); } catch (error) { console.warn('[account-usage] accounts change listener failed:', error && error.message); }
+  };
   let profileUsageError = '';
   let profileFlight = null;
   let profileFlightKey = '';
@@ -69,7 +77,7 @@ function createAccountUsageController({
         if (!Array.isArray(value?.claude) || !Array.isArray(value?.codex)) throw new Error('账号额度快照不可用');
         profileUsage = value; profileUsageError = '';
       } catch (error) { profileUsageError = error.message || '账号额度刷新失败'; }
-    }).finally(() => { profileFlight = null; render(); });
+    }).finally(() => { profileFlight = null; render(); noteAccounts(); });
     render();
     return profileFlight;
   }
@@ -79,6 +87,7 @@ function createAccountUsageController({
       if (Array.isArray(cached?.claude) && Array.isArray(cached?.codex)) profileUsage = cached;
     } catch (error) { profileUsageError = error.message || '账号额度缓存不可用'; }
     render();
+    noteAccounts();
     await loadProfileUsage();
   });
   // The Codex subscription accounts not in use right now: read when the popover opens.

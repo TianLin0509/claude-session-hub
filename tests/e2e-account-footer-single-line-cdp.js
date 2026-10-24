@@ -62,6 +62,19 @@ async function shot(name){const image=await c.send('Page.captureScreenshot',{for
  check(await c.eval(`(async()=> (await ipcRenderer.invoke('account-profile-usage')).claude[0].selected===true)()`),'refreshing second account never switches active login');
  await c.eval(`ipcRenderer.invoke=window.__originalProfileInvoke;hubProxyInfo={...hubProxyInfo,clashDelay:{status:'unavailable'}};renderSidebarStrip()`);
  check(await c.eval(`!document.querySelector('.strip-delay')`),'unknown delay takes no footer space');
+ // 2026-10-24：会话 logo 右下角标账号序号，与底栏 1/2 同序；单账号的 AI 不标。
+ await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+ await c.eval(`window.__hubE2E.addFakeSessions([{id:'acct-c1',kind:'claude',title:'Claude 主账号会话'},{id:'acct-c2',kind:'claude',title:'Claude 第二账号会话',claudeProfile:'second'},{id:'acct-x2',kind:'codex',title:'Codex 第二账号会话',codexProfile:'second'},{id:'acct-g',kind:'gemini',title:'Gemini 会话'}])`);
+ await waitFor(c,`document.querySelector('.session-item[data-session-id="acct-c2"] .sl-kind')?.dataset.account==='2'`);
+ const badges=await c.eval(`Object.fromEntries(['acct-c1','acct-c2','acct-x2','acct-g'].map(id=>{const e=document.querySelector('.session-item[data-session-id="'+id+'"] .sl-kind');return [id,{no:e?.dataset.account||null,after:e?getComputedStyle(e,'::after').content:null,title:e?.title}]}))`);
+ result.badges=badges;
+ check(badges['acct-c1'].no==='1'&&badges['acct-c2'].no==='2'&&badges['acct-x2'].no==='2'&&badges['acct-g'].no===null,'session logos carry account 1/2; single-account AIs carry none');
+ check(badges['acct-c2'].after==='attr(data-account)'||badges['acct-c2'].after==='"2"','corner number is drawn on the logo');
+ check(/账号 2/.test(badges['acct-c2'].title),'hover explains which account');
+ check(await c.eval(`getComputedStyle(document.querySelector('#rail-usage .sidebar-quota-provider[data-profile-id="second"] .sidebar-quota-account')).position==='absolute'`),'footer number sits on the logo corner too');
+ const sb=await c.eval(`(()=>{const r=document.querySelector('.session-item[data-session-id="acct-c2"]').getBoundingClientRect();return {x:0,y:Math.max(0,r.y-60),width:300,height:180,scale:3};})()`);
+ {const img=await c.send('Page.captureScreenshot',{format:'png',clip:sb});fs.writeFileSync(path.join(out,run+'-session-badges.png'),Buffer.from(img.data,'base64'));}
+ {const img=await c.send('Page.captureScreenshot',{format:'png',clip:{x:0,y:860,width:1100,height:40,scale:2}});fs.writeFileSync(path.join(out,run+'-footer-badges.png'),Buffer.from(img.data,'base64'));}
  await c.eval(`themeController.setTheme('dark')`);await shot('dark');
  await c.eval(`themeController.setTheme('codex')`);
  check(await c.eval(`[...document.querySelectorAll('#touch-tools [data-touch-action]')].map(b=>b.dataset.touchAction).join()==='screenshot,copy,paste' && [...document.querySelectorAll('#touch-tools [data-touch-action]')].every(b=>b.getBoundingClientRect().width>=28)`),'title tools: three inline icons, no select-all');

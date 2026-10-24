@@ -79,6 +79,7 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
         const { row, cells, button, account } = entries[key];
         row.style.order = String(index);
         account.textContent = ['claude','codex'].includes(provider) ? String(index + 1) : '';
+        if (account.dataset) account.dataset.no = account.textContent;
         const state = profileId ? { error: data.error, inFlight: data.inFlight } : states[provider] || {};
         row.dataset.freshness = provider === 'tokenPlan' && data.lastSeen
           ? (now - data.lastSeen > 600000 || state.error ? 'stale' : 'fresh') : state.error ? 'stale' : freshness(data.lastSeen);
