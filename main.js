@@ -308,6 +308,17 @@ if (HIDDEN_E2E_DATA_DIR_SAFE
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — keeps Hub-owned entries current and preserves unrelated hooks.
 // claudeDirPath: target Claude config dir (e.g. ~/.claude or ~/.claude-deepseek)
+// Claude 多账号的独立配置目录（主账号就是 ~/.claude，不在此列）；只取已存在的目录，不凭空创建。
+function claudeProfileHookDirs() {
+  try {
+    return require('./core/claude-subscription-profiles').normalizeProfiles(getHubConfig().claudeSubscriptionProfiles)
+      .map(profile => profile.home).filter(dir => dir && fs.existsSync(dir));
+  } catch (error) {
+    console.warn('[claude-profile] 读取账号目录失败：' + error.message);
+    return [];
+  }
+}
+
 function ensureHooksDeployed(claudeDirPath) {
   const claudeDir = claudeDirPath;
   const srcDir = HUB_IS_PACKAGED
@@ -4548,7 +4559,7 @@ app.whenReady().then(async () => {
   const deepseekClaudeDir = require('./core/deepseek-claude-profile').configDir(process.env);
   const claudeDirs = isIsolatedHub()
     ? (process.env.AI_HUB_DEEPSEEK_CLAUDE_CONFIG_DIR ? [deepseekClaudeDir] : [])
-    : [path.join(_home, '.claude'), deepseekClaudeDir];
+    : [path.join(_home, '.claude'), deepseekClaudeDir, ...claudeProfileHookDirs()];
   // @community-else
   // // 端到端测试可以在完全伪造的 home 里部署 hook（CLAUDE_HUB_HOME_DIR 必须就是当前 home）。
   // const e2eFakeHome = process.env.CLAUDE_HUB_E2E_FAKE_HOME === '1' && !!process.env.CLAUDE_HUB_HOME_DIR
@@ -4569,6 +4580,8 @@ app.whenReady().then(async () => {
   //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
   //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
   for (const claudeDir of claudeDirs) ensureHooksDeployed(claudeDir);
+  // 会话启动前再补一次：运行中新加的账号目录也能当场装上。隔离 Hub 不碰真实账号目录。
+  sessionManager.deployClaudeProfileHooks = dir => { if (!isIsolatedHub()) ensureHooksDeployed(dir); };
   // 公司 Code Agent（Claude 形态，core/codeagent-config.js）：配置目录已存在才部署，不凭空创建 ~/.cac。
   // 隔离 Hub 只在测试显式指定了它的配置目录时部署，绝不碰真实 home。
   const codeagentHookTargets = [];

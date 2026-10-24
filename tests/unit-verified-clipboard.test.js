@@ -91,3 +91,54 @@ test('native copy preserves HTML alongside the verified plain text', async () =>
   assert.equal((await write('bold', { html: '<strong>bold</strong>' })).ok, true);
   assert.deepEqual(payload, { text: 'bold', html: '<strong>bold</strong>' });
 });
+
+test('a manual copy keeps retrying for seconds while another program holds the clipboard', async () => {
+  let elapsed = 0; let stored = 'old';
+  const write = createVerifiedClipboardWriter({
+    clipboard: { writeText(text) { if (elapsed < 4000) throw new Error('clipboard busy'); stored = text; }, readText: () => stored },
+    wait: async ms => { elapsed += ms; },
+  });
+  const result = await write('held by remote desktop');
+  assert.equal(result.ok, true);
+  assert.equal(stored, 'held by remote desktop');
+  assert.ok(elapsed < 6000, 'still bounded; never locks the clipboard');
+});
+
+test('a newer copy from another program during readback is never overwritten', async () => {
+  let stored = 'before'; let writes = 0;
+  const write = createVerifiedClipboardWriter({
+    clipboard: {
+      // Our write is silently dropped, and meanwhile the user copies something else elsewhere.
+      writeText() { writes++; stored = 'copied in another app'; },
+      readText: () => stored,
+    }, wait: async () => {},
+  });
+  const result = await write('hub copy');
+  assert.equal(result.reason, 'superseded');
+  assert.equal(result.external, true);
+  assert.equal(writes, 1, 'no retry after a newer external copy');
+  assert.equal(stored, 'copied in another app');
+});
+
+test('image writes share the retry rhythm and yield to newer copies', async () => {
+  let tries = 0;
+  const write = createVerifiedClipboardWriter({ clipboard: { writeText() {}, readText: () => '' }, wait: async () => {} });
+  assert.deepEqual(await write.retry(() => ++tries >= 3), { ok: true });
+  const isCurrent = write.beginExternalWrite();
+  write('newer text');
+  assert.equal((await write.retry(() => false, isCurrent)).reason, 'superseded');
+});
+
+test('empty reads while another program holds the clipboard are not mistaken for a newer copy', async () => {
+  let locked = true; let stored = 'old content'; let ticks = 0;
+  const write = createVerifiedClipboardWriter({
+    clipboard: {
+      writeText(text) { if (!locked) stored = text; },
+      readText: () => (locked ? '' : stored),
+    },
+    wait: async () => { if (++ticks > 4) locked = false; },
+  });
+  const result = await write('manual copy');
+  assert.equal(result.ok, true);
+  assert.equal(stored, 'manual copy');
+});

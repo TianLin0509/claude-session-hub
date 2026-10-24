@@ -251,10 +251,15 @@ const cardHistoryViews = require('./card-history-views').createCardHistoryViews(
 });
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
-const clipboardController = createClipboardController({ document, window, clipboard,
+// 控制器自己的兜底写入用未改道的原始 writeText，避免下面改道后绕回自身。
+const directClipboard = Object.create(clipboard);
+directClipboard.writeText = clipboard.writeText.bind(clipboard);
+const clipboardController = createClipboardController({ document, window, clipboard: directClipboard,
   writeTextVerified: (text, formats) => ipcRenderer.invoke('clipboard:write-text', text, formats),
   expandText: pasteChips.expandPasteMarkers });
 clipboardController.init();
+require('./clipboard-routing').routeClipboardWrites({ clipboard, navigator,
+  copyText: (text, options) => clipboardController.copyText(text, options) });
 require('./touch-tools').initTouchTools({ document, window, ipcRenderer,
   copyText: (text, options) => clipboardController.copyText(text, options),
   expandText: pasteChips.expandPasteMarkers,
