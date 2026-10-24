@@ -132,9 +132,25 @@ async function main() {
     } finally { await unlock(); }
     await resetFeedback(); started=Date.now(); await key('c'); await verify('copy after lock released',marker,started);
     await select(card,marker); await resetFeedback(); const unlockRetry=await lockClipboard();
-    try { started=Date.now(); await key('c'); await _waitMs(100); await unlockRetry();
+    try { started=Date.now(); await key('c'); await _waitMs(650); await unlockRetry();
       await verify('Windows lock released during retry',marker,started);
     } finally { await unlockRetry(); }
+    // Touch title tools must preserve selection and the input caret across button presses.
+    const tap = async selector => {
+      const p = await client.eval(`(() => {const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+      await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[p]});
+      await client.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+      await _waitMs(80);
+    };
+    await select(card,marker); await resetFeedback();
+    await tap('#btn-touch-tools'); started=Date.now(); await tap('[data-touch-action="copy"]');
+    await verify('touch toolbar copies preserved card selection',marker,started);
+    await client.eval(`document.getElementById('copy-paste-probe').value='AB';document.getElementById('copy-paste-probe').focus();document.getElementById('copy-paste-probe').setSelectionRange(1,1);`);
+    // verify() focused the probe without an outside pointer; close before the next opening.
+    await client.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));document.getElementById('copy-paste-probe').focus();document.getElementById('copy-paste-probe').setSelectionRange(1,1);`);
+    await tap('#btn-touch-tools'); await tap('[data-touch-action="paste"]');
+    await waitExpr(`document.getElementById('copy-paste-probe').value===${JSON.stringify('A'+marker+'B')}`);
+    result.cases.push({label:'touch toolbar native paste preserves caret',nativePasteMatch:true});
     const markdown=path.join(TEMP,'20261015-copy-preview.md'); const previewMarker='预览文字复制 中文 123'; remember(previewMarker);
     fs.writeFileSync(markdown,`# 预览复制验收\n\n${previewMarker}\n`,'utf8');
     await client.eval(`window.openPreviewPanel(${JSON.stringify(markdown)})`);
@@ -169,6 +185,12 @@ async function main() {
     await client.eval(`closePreviewPanel(); window.__hubE2E.selectSession('title-codex');`);
     await waitExpr(`terminalCache.get('title-codex')?.terminal && document.querySelector('.floating-input-bar[data-session-id="title-codex"] .floating-input-box')`);
     const composer='.floating-input-bar[data-session-id="title-codex"] .floating-input-box';
+    await client.eval(`document.querySelector(${JSON.stringify(composer)}).textContent='';document.querySelector(${JSON.stringify(composer)}).focus();`);
+    await tap('#btn-touch-tools'); await tap('[data-touch-action="screenshot"]');
+    await waitExpr(`document.querySelector('#touch-tools-panel small').textContent.includes('全屏截图已复制')`);
+    await tap('[data-touch-action="paste"]');
+    await waitExpr(`document.querySelector(${JSON.stringify(composer)}).textContent.includes('.png')`);
+    result.cases.push({label:'toolbar full-screen screenshot then native image paste into real composer',imagePasted:true});
     const composerMarker='真实会话输入框 复制验收'; remember(composerMarker);
     await client.eval(`document.querySelector(${JSON.stringify(composer)}).textContent=${JSON.stringify(composerMarker)}`);
     await select(composer,composerMarker); await resetFeedback(); started=Date.now(); await key('c'); await verify('session composer Ctrl+C',composerMarker,started);
@@ -194,6 +216,19 @@ async function main() {
     await selectTerm(); await resetFeedback(); await click('[data-copy-test-terminal="1"] .xterm-screen','right');
     await waitExpr(`document.getElementById('terminal-context-menu').style.display==='block'`);
     started=Date.now(); await click('#terminal-context-menu [data-action="copy"]'); await verify('terminal right-click Copy keeps spaces',termMarker,started);
+    // The selected terminal can belong to the secondary pane, not activeSessionId.
+    await selectTerm();
+    await client.eval(`window.__touchOriginalActive=activeSessionId;activeSessionId='title-claude';
+      window.__touchOriginalPaste=terminalCache.get('title-codex').terminal.paste;
+      terminalCache.get('title-codex').terminal.paste=text=>{window.__touchPasteReceipt={sessionId:'title-codex',text};};`);
+    try {
+      await tap('#btn-touch-tools'); started=Date.now(); await tap('[data-touch-action="copy"]');
+      await verify('toolbar copies focused terminal despite different primary session',termMarker,started);
+      await client.eval(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));terminalCache.get('title-codex').terminal.focus();`);
+      await tap('#btn-touch-tools'); await tap('[data-touch-action="paste"]');
+      await waitExpr(`window.__touchPasteReceipt?.sessionId==='title-codex' && window.__touchPasteReceipt.text===${JSON.stringify(termMarker)}`);
+      result.cases.push({label:'toolbar routes paste to captured terminal instead of primary session',routingReceipt:true});
+    } finally { await client.eval(`activeSessionId=window.__touchOriginalActive;terminalCache.get('title-codex').terminal.paste=window.__touchOriginalPaste;`); }
     await client.eval(`window.__originalSend=ipcRenderer.send; ipcRenderer.send=function(channel,payload){if(channel==='terminal-input'&&payload?.sessionId==='title-codex'){window.__interruptSent=payload.data;return;}return window.__originalSend.apply(this,arguments);}; const t=terminalCache.get('title-codex').terminal;t.clearSelection();t.focus();`);
     try { await key('c'); await waitExpr(`window.__interruptSent==='\\x03'`); result.terminalInterruptPreserved=true; }
     finally { await client.eval(`ipcRenderer.send=window.__originalSend`); }

@@ -84,6 +84,26 @@ function saveClipboardImage(deps) {
 function registerAppUtilityIpc(ipcMain, deps) {
   const writeClipboardText = require('../../core/verified-clipboard.js').createVerifiedClipboardWriter({ clipboard: deps.clipboard });
   ipcMain.handle('clipboard:write-text', (_event, text, formats) => writeClipboardText(text, formats));
+  ipcMain.handle('touch-tools:paste', event => { event.sender.paste(); return { ok: true }; });
+  ipcMain.handle('touch-tools:screenshot', async event => {
+    const isCurrent = writeClipboardText.beginExternalWrite();
+    try {
+      const { desktopCapturer, screen, BrowserWindow } = require('electron');
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: {
+        width: Math.round(display.size.width * display.scaleFactor),
+        height: Math.round(display.size.height * display.scaleFactor),
+      } });
+      const source = sources.find(item => item.display_id === String(display.id));
+      if (!source || source.thumbnail.isEmpty()) throw new Error('未能截取当前屏幕，请重试');
+      if (!isCurrent()) throw new Error('期间有新的复制操作，已保留新内容，请重新截图');
+      deps.clipboard.writeImage(source.thumbnail);
+      const copied = deps.clipboard.readImage();
+      if (copied.isEmpty() || !copied.toPNG().equals(source.thumbnail.toPNG())) throw new Error('截图写入剪贴板失败，请重试');
+      return { ok: true, size: copied.getSize() };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
   registerPreviewImmersiveIpc(ipcMain, deps);
   const sampleSystemResourceUsage = createSystemResourceSampler(deps.os || systemOs);
   const systemTelemetry = deps.systemTelemetry || createSystemTelemetry();
